@@ -145,10 +145,16 @@ def open_edge_urls(urls, edge_path=None):
     return "the default browser"
 
 
+def is_sale_comment(line):
+    """Keep leading card numbers like #254; ignore ordinary # comments."""
+    stripped = (line or "").lstrip()
+    return stripped.startswith("#") and not re.match(r"^#\s*\d", stripped)
+
+
 def typed_sale_title(text):
     """Return one typed title without the quantity/channel suffix, else None."""
     lines = [line.strip() for line in text.splitlines()
-             if line.strip() and not line.lstrip().startswith("#")]
+             if line.strip() and not is_sale_comment(line)]
     if len(lines) != 1:
         return None
     title = re.sub(r"\s+@(website|web|site|canadianshopper|cs|ebay|facebook|fb|inperson|person)$",
@@ -1954,7 +1960,8 @@ def build_sold(parent, app):
                     "  Card title @facebook sold on Facebook\n"
                     "  Card title @cs       sold on CanadianShopper\n"
                     "  Card title @ebay     sold on eBay\n"
-                    "  Card title @inperson sold in person",
+                    "  Card title @inperson sold in person\n"
+                    "A card number such as #254 is part of the title; use ## for comments.",
                initial="",
                save_to=BASE / "sold-cards.txt",
                save_label="Save title",

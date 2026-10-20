@@ -237,6 +237,11 @@ def merge_rows(existing, new_rows):
 
 
 # --------------------------------------------------------------------------- input
+def is_sale_comment(line):
+    """Treat ordinary # lines as comments but allow numbered titles like #254."""
+    return line.startswith("#") and not re.match(r"^#\s*\d", line)
+
+
 def load_sales(args, log):
     """Read generic sale inputs without requiring the private CS plugin."""
     import sale_inputs
@@ -269,7 +274,7 @@ def load_sales(args, log):
         text = Path(args.list).read_text(encoding="utf-8-sig", errors="replace")
         for raw in text.splitlines():
             line = raw.strip()
-            if not line or line.startswith("#"):
+            if not line or is_sale_comment(line):
                 continue
             qty, last_left = 1, False
             m = re.match(r"^(.*?)[,;\t]\s*(\d+)\s*(?:[,;\t]\s*(last|0|none)\s*)?$",
@@ -433,7 +438,8 @@ examples
 """)
     ap.add_argument("--list", default="", help="text file: one card per line,"
                     " optionally 'title, qty' or 'title, qty, last', and"
-                    " '@ebay' / '@facebook' / '@inperson' to name where it sold")
+                    " '@ebay' / '@facebook' / '@inperson' to name where it sold;"
+                    " # comments are skipped, except numeric card titles such as #254")
     ap.add_argument("--sold-on", default="website",
                     choices=["website", "canadianshopper", "facebook", "ebay",
                              "inperson", "other"],
@@ -540,7 +546,7 @@ examples
         text = Path(args.images_file).read_text(encoding="utf-8-sig", errors="replace")
         for line in text.splitlines():
             line = line.strip()
-            if not line or line.startswith("#"):
+            if not line or is_sale_comment(line):
                 continue
             created += merge_rows(rows, photo_rows(line, "photos", args.scan_dir))
         print("photos    : rows for the cards in %s" % Path(args.images_file).name)

@@ -1100,6 +1100,9 @@ def main():
     check("one typed sale title strips quantity/channel markers",
           gui.typed_sale_title("Arnie Brown #144, 2 @facebook\n") ==
           "Arnie Brown #144")
+    check("leading card-number hash is not mistaken for a comment",
+          gui.typed_sale_title("#254 Terry O'Reilly\n") ==
+          "#254 Terry O'Reilly")
     check("Woo follow-up opens the orders list",
           gui.WOO_ORDERS_ADMIN in
           gui.sale_followup_urls("Arnie Brown #144", "facebook") and
