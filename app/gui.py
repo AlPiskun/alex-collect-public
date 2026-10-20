@@ -1806,6 +1806,13 @@ def build_sold(parent, app):
             box, variable=do_cs,
             text="Also fix CanadianShopper now (separate from the sale source; "
                  "preview and approve before writing)").pack(anchor="w", pady=(6, 2))
+        ttk.Label(
+            box,
+            text="The match picker appears only after a valid session is loaded "
+                 "and a title is unmatched or ambiguous. Check the console for "
+                 "cookie/session errors or the preview details.",
+            style="Dim.TLabel", wraplength=640, justify="left").pack(
+                anchor="w", pady=(0, 2))
     else:
         ttk.Label(box, text="Without the plugin, CanadianShopper stock changes "
                   "remain manual checklist tasks.", style="Dim.TLabel",
@@ -1880,34 +1887,35 @@ def build_sold(parent, app):
             except Exception as exc:
                 log("could not read typed sale list: %s" % exc)
 
-        def after_sale(rc):
-            if rc != 0 or not source_was_typed:
-                return
+        started = app.run_tool("sold-everywhere.py", args,
+                               "Mark the sale(s) everywhere",
+                               cwd=app.settings.get("pipeline_dir", str(WORK)))
+        # Launch search/follow-up pages as soon as the sale command starts,
+        # independently of the optional plugin run. The CS leg can be waiting
+        # for a cookie, a match choice, or explicit approval; don't make that
+        # delay suppress the other follow-up channels.
+        if started and source_was_typed:
             title = typed_sale_title(typed_text)
             if not title:
                 app.console_line(
                     "Several cards were entered; use the checklist links one "
                     "card at a time to avoid opening many Edge tabs.", "dim")
-                return
-            try:
-                app.clipboard_clear()
-                app.clipboard_append(title)
-                app.update_idletasks()
-            except Exception as exc:
-                log("could not copy sale title: %s" % exc)
-            browser = open_edge_urls(sale_followup_urls(title, sale_channel))
-            app.console_line(
-                "Opened the follow-up pages in %s. WooCommerce opens the orders list. "
-                "Paste the copied title into the CanadianShopper store search "
-                "and eBay/Facebook manually; no listings were changed. If "
-                "enabled, the separate "
-                "CanadianShopper checkbox can preview a stock update." %
-                browser, "ok")
-
-        app.run_tool("sold-everywhere.py", args,
-                     "Mark the sale(s) everywhere",
-                     cwd=app.settings.get("pipeline_dir", str(WORK)),
-                     on_done=after_sale)
+            else:
+                try:
+                    app.clipboard_clear()
+                    app.clipboard_append(title)
+                    app.update_idletasks()
+                except Exception as exc:
+                    log("could not copy sale title: %s" % exc)
+                browser = open_edge_urls(
+                    sale_followup_urls(title, sale_channel))
+                app.console_line(
+                    "Opened the follow-up pages in %s. WooCommerce opens the "
+                    "orders list. Paste the copied title into the "
+                    "CanadianShopper store search and eBay/Facebook manually. "
+                    "The optional CanadianShopper stock preview/approval runs "
+                    "separately; no listing was changed by opening these pages." %
+                    browser, "ok")
 
     def fix_cs(apply):
         got = source_args()

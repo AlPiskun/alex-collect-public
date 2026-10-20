@@ -308,6 +308,36 @@ def main():
                                    "--apply", "--gui-dialogs"] and
               cap.last["confirm"] is None, str(cap.last))
 
+        # Browser follow-ups must not wait for the optional CS process to finish
+        # (it may be waiting for a cookie, a match selection, or approval).
+        (gui.BASE / "sold-cards.txt").write_text(
+            "1992 Skybox Larry Card\n", encoding="utf-8")
+        urls_opened = []
+        copied = []
+        old_open_urls = gui.open_edge_urls
+        old_clipboard_clear = app.clipboard_clear
+        old_clipboard_append = app.clipboard_append
+        try:
+            gui.open_edge_urls = lambda urls: (urls_opened.extend(urls) or "Test browser")
+            app.clipboard_clear = lambda: None
+            app.clipboard_append = lambda title: copied.append(title)
+            find_button(app, "eBay", exact=True).invoke()
+            cs_box.invoke()
+            find_button(app, "Add to the checklist", exact=False).invoke()
+        finally:
+            gui.open_edge_urls = old_open_urls
+            app.clipboard_clear = old_clipboard_clear
+            app.clipboard_append = old_clipboard_append
+        check("typed sale opens follow-up pages immediately when CS is ticked",
+              gui.CS_VENDOR_STORE in urls_opened and
+              gui.WOO_ORDERS_ADMIN in urls_opened and
+              gui.FB_SELLING in urls_opened and gui.EBAY_ACTIVE not in urls_opened,
+              str(urls_opened))
+        check("typed sale copies the title for manual marketplace search",
+              copied == ["1992 Skybox Larry Card"], str(copied))
+        check("optional CS run no longer gates page opening on completion",
+              cap.last["on_done"] is None, str(cap.last))
+
     print("== 6. a card needs new photos ==")
     panel("newphotos")
     find_button(app, "Type the cards...").invoke()
