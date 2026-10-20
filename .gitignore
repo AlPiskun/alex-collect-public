@@ -16,3 +16,7 @@ app/pipeline/**/facebook_history.xlsx
 *.tmp
 .DS_Store
 Thumbs.db
+
+# Generated Windows installer outputs and downloaded build prerequisite
+/installer/Output/
+/installer/python-*-amd64.exe
