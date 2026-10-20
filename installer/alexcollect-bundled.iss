@@ -7,7 +7,7 @@
 #define MyAppVersion "2.21"
 #define MyAppPublisher "Alex Collect"
 #define MyAppExe "START Alex Collect.bat"
-#define PythonInstaller "python-3.14.8-amd64.exe"
+#define PythonInstaller "python-3.13.16-amd64.exe"
 
 [Setup]
 AppId={{F81B763F-808E-41D3-94F6-C405593B33DF}
