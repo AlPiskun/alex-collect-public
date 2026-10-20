@@ -1077,12 +1077,20 @@ def main():
                   for url in gui.sale_followup_urls("Arnie Brown #144", "facebook")))
     followups = gui.sale_followup_urls("Arnie Brown #144", "website")
     check("sold-on channel is excluded from browser follow-ups",
-          len(followups) == 2 and gui.WOO_ORDERS_ADMIN not in followups and
-          gui.EBAY_ACTIVE in followups and gui.FB_SELLING in followups)
+          len(followups) == 3 and gui.WOO_ORDERS_ADMIN not in followups and
+          gui.EBAY_ACTIVE in followups and gui.FB_SELLING in followups and
+          gui.CS_VENDOR_STORE in followups)
+    inperson_followups = gui.sale_followup_urls("Arnie Brown #144", "inperson")
+    check("in-person sale opens CanadianShopper and other follow-up pages",
+          len(inperson_followups) == 4 and
+          gui.CS_VENDOR_STORE in inperson_followups and
+          gui.WOO_ORDERS_ADMIN in inperson_followups and
+          gui.EBAY_ACTIVE in inperson_followups and gui.FB_SELLING in inperson_followups)
     cs_followups = gui.sale_followup_urls("Arnie Brown #144", "canadianshopper")
     check("CanadianShopper sale opens follow-ups for the other sources",
           len(cs_followups) == 3 and gui.WOO_ORDERS_ADMIN in cs_followups and
-          gui.EBAY_ACTIVE in cs_followups and gui.FB_SELLING in cs_followups)
+          gui.EBAY_ACTIVE in cs_followups and gui.FB_SELLING in cs_followups and
+          gui.CS_VENDOR_STORE not in cs_followups)
     edge_calls = []
     old_popen = gui.subprocess.Popen
     try:
