@@ -271,6 +271,14 @@ def main():
             "--list", str(gui.BASE / "sold-cards.txt"),
             "--sold-on", "website", "--checklist", str(gui.CHECKLIST)],
             str(a["args"]))
+        cs_radio = find_button(app, "CanadianShopper", exact=True)
+        check("CanadianShopper is a sale-source radio choice",
+              cs_radio is not None)
+        check("plugin-enabled sold panel shows its independent checkbox and controls",
+              find_button(app, "Also fix CanadianShopper", exact=False) is not None and
+              find_button(app, "CanadianShopper only: preview the stock change",
+                          exact=False) is not None and
+              find_button(app, "Apply the previewed change", exact=False) is not None)
         cs_box = find_button(app, "Also fix CanadianShopper", exact=False)
         cs_box.invoke()
         find_button(app, "Add to the checklist", exact=False).invoke()
@@ -278,6 +286,13 @@ def main():
               "--cs" in cap.last["args"] and
               "--gui-dialogs" in cap.last["args"], str(cap.last["args"]))
         cs_box.invoke()
+        cs_radio.invoke()
+        find_button(app, "Add to the checklist", exact=False).invoke()
+        check("CanadianShopper sale source is passed to the checklist tool",
+              "--sold-on" in cap.last["args"] and
+              cap.last["args"][cap.last["args"].index("--sold-on") + 1] ==
+              "canadianshopper", str(cap.last["args"]))
+        find_button(app, "my website", exact=True).invoke()
         find_button(app, "CanadianShopper only: preview the stock change"
                     ).invoke()
         a = cap.last
@@ -466,7 +481,7 @@ def main():
     front_scan.write_bytes(b"png"); back_scan.write_bytes(b"png")
     app.settings["pipeline_dir"] = str(tmpdir)
     panel("pipeline")
-    find_button(app, "Run card_pipeline.py", exact=False).invoke()
+    find_button(app, "Run the card pipeline", exact=False).invoke()
     app.update()
     dlg = next((w for w in app.winfo_children()
                 if isinstance(w, gui.tk.Toplevel) and "pipeline" in
@@ -516,7 +531,7 @@ def main():
         app.clipboard_clear(); app.update()   # no prompt, no answer anywhere
         app.update_idletasks(); app.update()
         panel("pipeline")
-        find_button(app, "Run card_pipeline.py", exact=False).invoke()
+        find_button(app, "Run the card pipeline", exact=False).invoke()
         app.update()
         dlg = next((w for w in app.winfo_children()
                     if isinstance(w, gui.tk.Toplevel) and "pipeline" in
@@ -542,7 +557,7 @@ def main():
         gui.filedialog.askopenfilename = lambda **k: ""
         panel("pipeline")
         n = len(cap.calls)
-        find_button(app, "Run card_pipeline.py", exact=False).invoke()
+        find_button(app, "Run the card pipeline", exact=False).invoke()
         app.update()
         check("missing pipeline + cancelled browse = no run, no crash",
               len(cap.calls) == n)
@@ -551,7 +566,7 @@ def main():
         (fake / "card_pipeline.py").write_text("print('fake')\n")
         gui.filedialog.askopenfilename = \
             lambda **k: str(fake / "card_pipeline.py")
-        find_button(app, "Run card_pipeline.py", exact=False).invoke()
+        find_button(app, "Run the card pipeline", exact=False).invoke()
         app.update()
         check("browsing for the pipeline saves its folder",
               gui.load_settings()["pipeline_dir"] == str(fake),
@@ -629,7 +644,7 @@ def main():
                           on_done=wrapped, confirm=confirm)
     app.runner.start = counting_start
     panel("pipeline")
-    find_button(app, "Run card_pipeline.py", exact=False).invoke()
+    find_button(app, "Run the card pipeline", exact=False).invoke()
     app.update()
     dlg = next((w for w in app.winfo_children()
                 if isinstance(w, gui.tk.Toplevel) and "pipeline" in
@@ -660,7 +675,7 @@ def main():
     # 14a  the dialog confirms a chosen scan immediately
     app.settings["pipeline_dir"] = str(stub)
     panel("pipeline")
-    find_button(app, "Run card_pipeline.py", exact=False).invoke()
+    find_button(app, "Run the card pipeline", exact=False).invoke()
     app.update()
     dlg = next((w for w in app.winfo_children()
                 if isinstance(w, gui.tk.Toplevel) and "pipeline" in
@@ -718,7 +733,7 @@ def main():
     n = len(cap.calls)
     n_shown = len(answers["shown"])
     gui.filedialog.askopenfilename = lambda **k: ""
-    find_button(app, "Run card_pipeline.py", exact=False).invoke()
+    find_button(app, "Run the card pipeline", exact=False).invoke()
     app.update()
     dlg = next((w for w in app.winfo_children()
                 if isinstance(w, gui.tk.Toplevel) and "pipeline" in
@@ -780,7 +795,7 @@ def main():
     app.settings["pipeline_dir"] = str(stub)
     panel("pipeline")
     gui.filedialog.askopenfilename = lambda **k: ""
-    find_button(app, "Run card_pipeline.py", exact=False).invoke()
+    find_button(app, "Run the card pipeline", exact=False).invoke()
     app.update()
     dlg = next((w for w in app.winfo_children()
                 if isinstance(w, gui.tk.Toplevel) and "pipeline" in
@@ -800,7 +815,7 @@ def main():
         check("pressing the button with the answer on the clipboard runs",
               cap.last["args"] and cap.last["args"][0] == "split")
         panel("pipeline")
-        find_button(app, "Run card_pipeline.py", exact=False).invoke()
+        find_button(app, "Run the card pipeline", exact=False).invoke()
         app.update()
         dlg = next((w for w in app.winfo_children()
                     if isinstance(w, gui.tk.Toplevel) and "pipeline" in
@@ -834,7 +849,7 @@ def main():
     print("== 17. prompt buttons vs the answer + sending Enter ==")
     panel("pipeline")
     gui.filedialog.askopenfilename = lambda **k: ""
-    find_button(app, "Run card_pipeline.py", exact=False).invoke()
+    find_button(app, "Run the card pipeline", exact=False).invoke()
     app.update()
     dlg = next((w for w in app.winfo_children()
                 if isinstance(w, gui.tk.Toplevel) and "pipeline" in
@@ -933,8 +948,13 @@ def main():
     tf3.show_panel("sold")
     app3.update()
     sold_widgets = list(walk(app3._mode_frame.inner))
-    check("the sold panel hides the automatic CS leg",
-          find_button(app3, "Also fix CanadianShopper", exact=False) is None)
+    check("CanadianShopper is still a sale-source choice without the plugin",
+          find_button(app3, "CanadianShopper", exact=True) is not None)
+    check("the sold panel hides plugin-only checkbox and two controls",
+          find_button(app3, "Also fix CanadianShopper", exact=False) is None and
+          find_button(app3, "CanadianShopper only: preview the stock change",
+                      exact=False) is None and
+          find_button(app3, "Apply the previewed change", exact=False) is None)
     def _all_texts(widgets):
         out = []
         for w in widgets:
@@ -943,8 +963,8 @@ def main():
             except Exception:
                 pass
         return out
-    check("the sold panel explains the manual fallback",
-          any("stays manual" in t for t in _all_texts(sold_widgets)))
+    check("the sold panel explains the manual CanadianShopper task",
+          any("manual checklist tasks" in t for t in _all_texts(sold_widgets)))
     tf3.show_panel("cookie")
     app3.update()
     check("core mode: no cookie test button",
@@ -956,8 +976,8 @@ def main():
     w3.render()
     app3.update()
     wtext = " ".join(_all_texts(walk(app3._mode_frame.inner)))
-    check("the wizard says CanadianShopper is treated like Facebook",
-          "exactly like Facebook" in wtext, wtext[:200])
+    check("the wizard explains the manual CanadianShopper import",
+          "CanadianShopper remains a manual import" in wtext, wtext[:240])
 
     print("== 19. the shipped pipeline is real and found ==")
     cap = Capture()                  # a capture for the new button below
@@ -973,6 +993,14 @@ def main():
     check("no hint for random text",
           gui._prompt_hint_for("hello world") is None)
     panel("pipeline")
+    pipeline_docs = " ".join(
+        w.get("1.0", "end") for w in walk(app._mode_frame.inner)
+        if isinstance(w, gui.tk.Text))
+    check("pipeline help explains scans, AI copy-back, and manual publishing",
+          "Choose the FRONT scan" in pipeline_docs and
+          "AI chat" in pipeline_docs and
+          "Nothing is uploaded or published" in pipeline_docs and
+          "card_pipeline.py" not in pipeline_docs, pipeline_docs[:220])
     find_button(app, "Run the Facebook feed updater",
                 exact=False).invoke()
     check("the feed-updater button runs the shipped companion",
@@ -1051,6 +1079,10 @@ def main():
     check("sold-on channel is excluded from browser follow-ups",
           len(followups) == 2 and gui.WOO_ORDERS_ADMIN not in followups and
           gui.EBAY_ACTIVE in followups and gui.FB_SELLING in followups)
+    cs_followups = gui.sale_followup_urls("Arnie Brown #144", "canadianshopper")
+    check("CanadianShopper sale opens follow-ups for the other sources",
+          len(cs_followups) == 3 and gui.WOO_ORDERS_ADMIN in cs_followups and
+          gui.EBAY_ACTIVE in cs_followups and gui.FB_SELLING in cs_followups)
     edge_calls = []
     old_popen = gui.subprocess.Popen
     try:
