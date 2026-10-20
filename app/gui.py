@@ -103,6 +103,7 @@ LOG_FILE = BASE / "gui-log.txt"
 CHECKLIST = BASE / "sold-cards-checklist.csv"
 CS_COOKIE_FILE = BASE / "cookie.txt"
 CS_HOME = "https://canadianshopper.ca"
+CS_VENDOR_STORE = "https://canadianshopper.ca/vendors/alex-collect"
 EBAY_ACTIVE = "https://www.ebay.ca/sh/lst/active"
 FB_SELLING = "https://www.facebook.com/marketplace/you/selling"
 WOO_ORDERS_ADMIN = "https://store.piskun.ca/wp-admin/admin.php?page=wc-orders"
@@ -166,6 +167,8 @@ def sale_followup_urls(title, sold_on):
         urls.append(EBAY_ACTIVE)
     if sold_on != "facebook":
         urls.append(FB_SELLING)
+    if sold_on != "canadianshopper":
+        urls.append(CS_VENDOR_STORE)
     return urls
 
 
@@ -725,10 +728,12 @@ card is advertised. CanadianShopper is one of the source choices. Your cards
 often exist as several copies, so enter the quantity sold—or mark the last
 copy—to get the right follow-up (reduce quantity versus end the listing).
 
-The checklist is the reminder for manual follow-ups. eBay and Facebook get
-links, not automation. Without the CanadianShopper plugin, its stock task
-stays manual. When the plugin is enabled, a separate checkbox lets you preview
-and approve a stock update; it is independent of the sale-source choice."""
+The checklist is the reminder for manual follow-ups. For one typed card, the
+remaining seller pages open in Edge; the CanadianShopper store search, eBay and
+Facebook still need the title pasted into their search fields. The title is
+copied for you. Without the CanadianShopper plugin, its stock task stays manual.
+When the plugin is enabled, a separate checkbox lets you preview and approve a
+stock update; it is independent of the sale-source choice."""
 
 DOCS["checklist"] = """\
 The checklist (tools\\sold-cards-checklist.csv) is the memory of what
@@ -795,9 +800,10 @@ add-on's job - without it, square photos by hand with SquareImages.""",
     "sold": """\
 A card sold. Choose where it sold; the checklist covers every other place the
 card is advertised. Your cards can exist as several copies, so enter the
-quantity sold—or mark the last copy—to get the right follow-up. eBay and
-Facebook get links, not automation. Without the CanadianShopper plugin, its
-stock update stays a manual checklist task.""",
+quantity sold—or mark the last copy—to get the right follow-up. For one typed
+card, remaining seller pages open in Edge; the CanadianShopper store-search,
+eBay and Facebook searches are manual (the title is copied for pasting).
+Without the CanadianShopper plugin, its stock update stays a manual checklist task.""",
 }
 
 DOCS["logs"] = """\
@@ -1788,6 +1794,12 @@ def build_sold(parent, app):
                      ("website API key (woo-keys.txt)", "keys")):
         ttk.Radiobutton(row2, text=txt, value=val, variable=src).pack(
             side="left", padx=(8, 0))
+    ttk.Label(
+        box,
+        text="These choices provide card names for the core follow-up checklist "
+             "too; they are not CanadianShopper-plugin-only.",
+        style="Dim.TLabel", wraplength=640, justify="left").pack(
+            anchor="w", pady=(3, 0))
 
     if app.cs_addon:
         ttk.Checkbutton(
@@ -1855,9 +1867,9 @@ def build_sold(parent, app):
                          str(CS_COOKIE_FILE)])
 
         # Keep the title as this sale's durable input, then help find the
-        # remaining listings. Woo opens the orders list; eBay/Facebook open
-        # their own-selling pages with the title copied for Ctrl+V because
-        # stable deep-link searches for the seller pages are not assumed.
+        # remaining listings. Woo opens the orders list. CanadianShopper,
+        # eBay and Facebook have seller pages, but no reliable search URL is
+        # assumed; copy the title so the user can paste it into each search.
         source_was_typed = src.get() == "typed"
         sale_channel = onch.get()
         typed_text = ""
@@ -1885,9 +1897,10 @@ def build_sold(parent, app):
                 log("could not copy sale title: %s" % exc)
             browser = open_edge_urls(sale_followup_urls(title, sale_channel))
             app.console_line(
-                "Opened the follow-up pages in %s. WooCommerce opens the orders list; "
-                "for eBay/Facebook, the title is copied for their listing "
-                "search. No listing was changed. If enabled, the separate "
+                "Opened the follow-up pages in %s. WooCommerce opens the orders list. "
+                "Paste the copied title into the CanadianShopper store search "
+                "and eBay/Facebook manually; no listings were changed. If "
+                "enabled, the separate "
                 "CanadianShopper checkbox can preview a stock update." %
                 browser, "ok")
 
@@ -1913,10 +1926,11 @@ def build_sold(parent, app):
               text="Typed-sale flow: enter the cards, save the list, then add it to "
                    "the checklist. Choose the sale source above; the checklist "
                    "covers the other channels. One typed card opens the remaining "
-                   "listing pages in Edge; WooCommerce opens the orders list and "
-                   "the title is copied for eBay/Facebook. The plugin-only "
-                   "CanadianShopper stock checkbox is independent; no listing is "
-                   "changed automatically.",
+                   "seller pages in Edge, including the CanadianShopper store. "
+                   "Paste the copied title into CanadianShopper, eBay and "
+                   "Facebook searches manually; WooCommerce opens the orders list. "
+                   "The plugin-only CanadianShopper stock checkbox is independent; "
+                   "no listing is changed automatically.",
               style="Dim.TLabel", wraplength=680, justify="left").pack(
                   anchor="w", pady=(4, 0))
 
