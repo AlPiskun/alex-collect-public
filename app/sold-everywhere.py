@@ -151,8 +151,8 @@ def action_for(channel, qty, last_left, scan_dir):
     n = qty if qty and qty > 0 else 1
     word = "1 copy" if n == 1 else "%d copies" % n
     if channel == "canadianshopper":
-        return ("Reduce the stock by %s (and archive it there if that reaches 0). "
-                "Run SoldCards.bat - or let a run of this tool do it with --cs." % word)
+        return ("Reduce the stock by %s in the CanadianShopper vendor dashboard; "
+                "archive the listing if that reaches 0." % word)
     if channel == "ebay":
         if last_left:
             return ("End the eBay listing (Actions -> End) - the last copy has gone."
@@ -191,8 +191,10 @@ def channel_rows(card, qty, last_left, sold_on, ref, scan_dir):
         rows.append(make_row(card, "website",
                              action_for("website", qty, last_left, scan_dir),
                              SITE_LINK + "&s=" + urllib.parse.quote_plus(card[:60]), ref))
-    rows.append(make_row(card, "canadianshopper",
-                         action_for("canadianshopper", qty, last_left, scan_dir), "", ref))
+    if sold_on != "canadianshopper":
+        rows.append(make_row(
+            card, "canadianshopper",
+            action_for("canadianshopper", qty, last_left, scan_dir), "", ref))
     if sold_on != "ebay":
         rows.append(make_row(card, "ebay", action_for("ebay", qty, last_left, scan_dir),
                              EBAY_LINK, ref))
@@ -276,13 +278,14 @@ def load_sales(args, log):
                 line = m.group(1).strip()
                 qty = int(m.group(2))
                 last_left = bool(m.group(3))
-            at = re.search(r"\s+@(website|web|site|cs|ebay|facebook|fb|inperson|person)$",
+            at = re.search(r"\s+@(website|web|site|canadianshopper|cs|ebay|facebook|fb|inperson|person)$",
                            line, re.I)
             sold_on = args.sold_on
             if at:
                 line = line[:at.start()].strip()
                 token = at.group(1).lower()
                 sold_on = {"web": "website", "website": "website", "site": "website",
+                           "canadianshopper": "canadianshopper",
                            "cs": "canadianshopper", "ebay": "ebay",
                            "facebook": "facebook", "fb": "facebook",
                            "person": "inperson", "inperson": "inperson"}[token]
@@ -432,7 +435,8 @@ examples
                     " optionally 'title, qty' or 'title, qty, last', and"
                     " '@ebay' / '@facebook' / '@inperson' to name where it sold")
     ap.add_argument("--sold-on", default="website",
-                    choices=["website", "facebook", "ebay", "inperson", "other"],
+                    choices=["website", "canadianshopper", "facebook", "ebay",
+                             "inperson", "other"],
                     help="where these sales came from (default website)")
     ap.add_argument("--woo-orders-csv", default="", help="orders CSV from your website")
     ap.add_argument("--woo-api", default="")

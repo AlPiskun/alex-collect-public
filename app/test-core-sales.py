@@ -40,6 +40,22 @@ def main():
               {r["channel"] for r in typed_rows} ==
               {"canadianshopper", "ebay", "facebook", "website"}, typed_rows)
 
+        cs_typed = work / "cs-sold.txt"
+        cs_typed.write_text("Card Sold on CS #5, 1\\n", encoding="utf-8")
+        cs_checklist = work / "cs-checklist.csv"
+        result = subprocess.run(
+            [sys.executable, str(work / "sold-everywhere.py"),
+             "--list", str(cs_typed), "--sold-on", "canadianshopper",
+             "--checklist", str(cs_checklist)],
+            cwd=work, capture_output=True, text=True, timeout=30)
+        check("CanadianShopper is accepted as a sale source",
+              result.returncode == 0, result.stdout + result.stderr)
+        with cs_checklist.open(newline="", encoding="utf-8-sig") as fh:
+            cs_rows = list(csv.DictReader(fh))
+        check("CanadianShopper sale leaves only the other channels on checklist",
+              {r["channel"] for r in cs_rows} == {"website", "ebay", "facebook"},
+              cs_rows)
+
         orders = work / "orders.csv"
         orders.write_text(
             "Order Number,Order Status,Item 1 Name,Item 1 Quantity\n"
