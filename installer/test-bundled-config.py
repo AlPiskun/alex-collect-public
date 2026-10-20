@@ -7,6 +7,8 @@ HERE = Path(__file__).resolve().parent
 ISS = (HERE / "alexcollect-bundled.iss").read_text(encoding="utf-8")
 BATCH = (HERE / "build-bundled.bat").read_text(encoding="utf-8-sig")
 README = (HERE / "README.md").read_text(encoding="utf-8")
+LAUNCHER = (HERE.parent / "app" / "Alex Collect.bat").read_text(
+    encoding="utf-8-sig")
 
 VERSION = "3.13.16"
 INSTALLER = "python-3.13.16-amd64.exe"
@@ -16,6 +18,8 @@ assert '#define PythonInstaller "%s"' % INSTALLER in ISS
 assert 'Source: "{#PythonInstaller}"; DestDir: "{tmp}"' in ISS
 assert 'Filename: "{tmp}\\{#PythonInstaller}"' in ISS
 assert 'TargetDir=""{app}\\runtime\\python-embed""' in ISS
+assert 'if exist "%~dp0..\\runtime\\python-embed\\pythonw.exe" goto bundled_parent_start' in LAUNCHER
+assert 'start "Alex Collect" "%~dp0..\\runtime\\python-embed\\pythonw.exe" "%GUI%"' in LAUNCHER
 assert 'set "PYVER=%s"' % VERSION in BATCH
 assert 'set "PYEXE=python-%PYVER%-amd64.exe"' in BATCH
 assert 'set "PYSHA=%s"' % SHA256 in BATCH

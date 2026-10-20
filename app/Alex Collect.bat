@@ -23,6 +23,8 @@ if not defined GUI goto no_gui
 
 REM ---- the bundled runtime (zero-prerequisite install) wins when present ----
 if exist "%~dp0runtime\python-embed\pythonw.exe" goto bundled_start
+REM The bundled Inno Setup installs runtime beside the app folder, one level up.
+if exist "%~dp0..\runtime\python-embed\pythonw.exe" goto bundled_parent_start
 
 REM ---- 1. is there a REAL Python here? (the Store alias is not one) ----
 set "PY="
@@ -61,6 +63,14 @@ if "%~1"=="" (
     start "Alex Collect" "%~dp0runtime\python-embed\pythonw.exe" "%GUI%"
 ) else (
     start "Alex Collect" "%~dp0runtime\python-embed\pythonw.exe" "%GUI%" %*
+)
+exit /b 0
+
+:bundled_parent_start
+if "%~1"=="" (
+    start "Alex Collect" "%~dp0..\runtime\python-embed\pythonw.exe" "%GUI%"
+) else (
+    start "Alex Collect" "%~dp0..\runtime\python-embed\pythonw.exe" "%GUI%" %*
 )
 exit /b 0
 

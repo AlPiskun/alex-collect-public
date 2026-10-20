@@ -25,8 +25,10 @@ Compile it on a Windows machine with Inno Setup 6. Output:
 ## B. `alexcollect-bundled.iss` — install a private Python runtime
 
 This is the easier-to-share option for a Windows PC without Python. The
-installer includes Python 3.13.16 x64 under the app's install directory, so
-it does not alter the system PATH or another Python installation. It also
+installer includes Python 3.13.16 x64 at
+`%LOCALAPPDATA%\\AlexCollect\\runtime\\python-embed`, beside the app folder.
+The launcher prefers this private runtime, so it does not alter the system PATH
+or another Python installation. It also
 installs this project's dependencies from `requirements.txt` during setup.
 Internet is required on the target PC for pip to download those packages.
 
