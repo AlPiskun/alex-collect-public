@@ -8,6 +8,12 @@ Root:
   install-linux.sh                Linux user install helper
   start-alexcollect.sh            Linux launcher
 
+installer/:
+  alexcollect.iss                 Inno Setup installer; Python prerequisite
+  alexcollect-bundled.iss         Inno Setup installer with private Python
+  build-bundled.bat               downloads/verifies the official Python installer
+  README.md                       Windows build and install instructions
+
 app/:
   gui.py                          Tkinter control panel
   plugin_manager.py               local ZIP plugin manager

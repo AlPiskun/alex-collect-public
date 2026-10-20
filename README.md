@@ -16,9 +16,12 @@ The core continues to work without any plugins. The CanadianShopper integration 
 
 ### Windows
 
-1. Install Python 3 from [python.org](https://www.python.org/downloads/); include Tcl/Tk and add Python to PATH.
-2. In this folder, install the dependency with `python -m pip install -r requirements.txt`.
-3. Double-click `START Alex Collect.bat`.
+You can install from source or build an Inno Setup installer:
+
+- **Run from source:** Install Python 3 with Tcl/Tk, run `python -m pip install -r requirements.txt`, then double-click `START Alex Collect.bat`.
+- **Inno Setup:** See [`installer/README.md`](installer/README.md). It documents a small setup for PCs with Python and a separate setup that installs a private Python runtime. The bundled setup still needs internet during installation to download Python packages.
+
+Both installers package only the public core. CanadianShopper remains a separate plugin ZIP and is installed from the Plugins panel.
 
 ### Linux
 
