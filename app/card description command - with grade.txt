@@ -1,0 +1,60 @@
+I am listing 9 single trading cards on my e-commerce site Alex Collect. I need high-conversion, SEO-friendly product listings based on images of 9-card sheets. Do not use bulleted lists or — in the output.
+I'm uploading two images of the same 3x3 sheet of trading cards in a protective sleeve:
+1. FRONT of all 9 cards
+2. BACK of all 9 cards (same 9 cards, sheet flipped horizontally like a page)
+
+GRID NUMBERING (based on the FRONT image):
+[1][2][3]
+[4][5][6]
+[7][8][9]
+
+Position 1 = top-left, reading left-to-right then top-to-bottom, like English text.
+
+MAPPING BACK IMAGE TO FRONT POSITIONS:
+Because the sheet is flipped horizontally (like a page turn), each row stays in the same row, but the column order reverses:
+- Left column on BACK = Right column on FRONT
+- Middle column on BACK = Middle column on FRONT
+- Right column on BACK = Left column on FRONT
+
+So: BACK position 1 → FRONT position 3, BACK position 2 → FRONT position 2, BACK position 3 → FRONT position 1, BACK position 4 → FRONT position 6, BACK position 5 → FRONT position 5, BACK position 6 → FRONT position 4, BACK position 7 → FRONT position 9, BACK position 8 → FRONT position 8, BACK position 9 → FRONT position 7.
+
+WAIT until both images are uploaded before responding.
+
+Once both images are provided, output results in FRONT position order (1 through 9), using this format for each:
+
+Position [X] [card details] 
+SEO Image titles (must be unique):
+[Manufactures Card #]-[Player Name]-[Year(s)]-[Brand]-front-[grade]
+[Manufactures Card #]-[Player Name]-[Year(s)]-[Brand]-back-[grade]
+
+SEO Title: (Format: 
+[Year] [Brand] [Player/Character Name] #[Card #] [Key Rookie/Insert Info] [Team/Series]) Product Description: (400+ words. Write a seamless, paragraph-only narrative with a hook intro, historical context, specific pop-culture or sporting achievements, and a 'Condition Report' section detailing the exact corner wear, edge chipping, and centering seen in the photos. Explicitly state if it is a Canadian O-Pee-Chee bilingual back or puzzle back. Include a conservative grade estimate explanation). 
+
+Grade Estimate: 
+(Carefully analyse for creases, wrinkles and marks. Provide a conservative raw grade estimate based on photos e.g., EX-MT 6). Price 
+
+Recommendation: 
+(Single price rounded up to the nearest Canadian dollar based on current market value of RAW grade). 
+
+Primary SEO Keyword: 
+(Best high-volume search phrase, matching the title exactly and woven naturally into the description). 
+
+WooCommerce Tag Bundle: 
+(A comma-separated string of exactly 8 relevant tags).
+
+STRICT OUTPUT FORMAT — DO NOT DEVIATE: This output gets parsed automatically by a script, so the seven headers below must appear EXACTLY as written, character-for-character, every time, with no variation across cards or across responses:
+
+SEO Image titles: SEO Title: Product Description: Grade Estimate: Price Recommendation: Primary SEO Keyword: WooCommerce Tag Bundle:
+
+Follow these rules with no exceptions:
+
+Use these exact seven header strings, spelled and worded exactly as shown above. Never rename, reword, or paraphrase a header (for example, never write "Raw Grade Estimate:" instead of "Grade Estimate:", and never split "SEO Image titles:" into separate "Front SEO Image Title:" / "Back SEO Image Title:" headers).
+Each header goes on its own line, followed immediately by a colon and nothing else on that line — no parenthetical notes, no asides, no instructions repeated back (for example, never write "SEO Image titles (must be unique):").
+Do not bold, italicize, or otherwise wrap any header in markdown (no Grade Estimate:).
+"SEO Image titles:" is always followed by exactly two lines: the front filename, then the back filename, in that order, with no blank line between them and nothing else on those lines.
+The "Condition Report" sentence inside the Product Description must begin with the literal words "Condition Report:" (with the colon) so it can be identified within the paragraph, but it stays embedded in the Product Description narrative as instructed above — do not give it its own top-level header.
+The content under "Grade Estimate:" should lead with the short letter/number grade itself (e.g. "EX 5" or "VG-EX 4") before any explanatory sentence, so the grade is the very first thing after the header.
+The content under "Price Recommendation:" should be a single price only, formatted as "C$" followed by a whole number (e.g. "C$9"), with no extra words like "Canadian dollars."
+Do not insert any other headers, section titles, or labels anywhere in the output beyond the seven listed above.
+
+The first image (attached) is the FRONT, please wait for the BACK image to follow.

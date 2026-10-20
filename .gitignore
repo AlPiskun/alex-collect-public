@@ -1,0 +1,18 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local credentials and account-specific state
+app/cookie.txt
+app/woo-keys.txt
+app/woo-keys.txt.local
+app/*history.xlsx
+app/pipeline/**/facebook_history.xlsx
+
+# Temporary runtime files
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

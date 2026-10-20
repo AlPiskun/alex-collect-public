@@ -1,0 +1,6 @@
+https://your-store.example
+ck_replace_with_read_only_consumer_key
+cs_replace_with_read_only_consumer_secret
+# Replace every example value with your own WooCommerce settings.
+# WooCommerce > Settings > Advanced > REST API > Add key (Read-only).
+# Save a private copy as woo-keys.txt; never publish that file.
