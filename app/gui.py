@@ -647,9 +647,9 @@ invalidates the copy."""
 DOCS["folders"] = """\
 Two folders the tools should know about:
 
-* Batch folder - where this batch's card scans and generated import files
-  are kept. The included workflow already knows its normal location; change
-  this only if you keep your batches somewhere else.
+* Batch folder - where card_pipeline.py and this month's
+  canadianshopper_import_*.csv files live. The GUI found it next to
+  the tools folder; change it only if you keep the pipeline elsewhere.
 
 * Scan folder - where your scanner drops files (on Windows the
   ControlCenter4\\Scan folder; set yours under Folders). The "card
@@ -669,11 +669,11 @@ published, the workflow can refresh your Facebook feed. If the CanadianShopper
 plugin is enabled, its photo-staging actions are available too."""
 
 DOCS["combine"] = """\
-Marketplace imports have size limits. If several batches have piled up,
-this combines them into import-sized files (up to 500 rows / 2 MB each),
-skips titles already present in an earlier file, and keeps the originals.
-Preview the proposed files first; combine only when you have multiple
-batches waiting."""
+card_pipeline writes up to 500 cards per CSV, and the CanadianShopper
+importer refuses bigger files. If several batches have piled up, this
+merges them into import-sized files (500 rows / 2 MB each), skipping
+titles that are already in an earlier file, so you never import the
+same card twice. The originals are kept."""
 
 DOCS["stage"] = """\
 The importer can only set ONE photo per card and cannot create the
@@ -720,16 +720,15 @@ it uploads NOTHING. It is the same one click as rerun.bat and it is
 safe to run any time; Dry-run shows the plan first."""
 
 DOCS["sold"] = """\
-Choose where the sale happened. The checklist then covers the other channels
-where that card is still listed. eBay and Facebook remain manual follow-ups.
-CanadianShopper is a source choice like the others; without the plugin, any
-CanadianShopper stock task stays on the checklist for you to handle manually.
-Enter the number of copies sold—or mark the last copy—so the follow-up says
-whether to reduce quantity or end a listing.
+A card sold. Choose where it sold; the checklist covers the other places the
+card is advertised. CanadianShopper is one of the source choices. Your cards
+often exist as several copies, so enter the quantity sold—or mark the last
+copy—to get the right follow-up (reduce quantity versus end the listing).
 
-When the plugin is enabled, a separate checkbox lets you preview and approve
-a CanadianShopper stock update. That checkbox is independent of the sale-source
-choice, and no stock change is made without your confirmation."""
+The checklist is the reminder for manual follow-ups. eBay and Facebook get
+links, not automation. Without the CanadianShopper plugin, its stock task
+stays manual. When the plugin is enabled, a separate checkbox lets you preview
+and approve a stock update; it is independent of the sale-source choice."""
 
 DOCS["checklist"] = """\
 The checklist (tools\\sold-cards-checklist.csv) is the memory of what
@@ -763,9 +762,9 @@ DOCS_CORE = {
     "cookie": """\
 The tools keep everything in two folders:
 
-* Batch folder - where this batch's card scans and generated import files
-  are kept. The included workflow already knows its normal location; change
-  this only if you keep your batches somewhere else.
+* Batch folder - where card_pipeline.py and this month's
+  canadianshopper_import_*.csv files live. The GUI found it next to
+  the tools folder; change it only if you keep the pipeline elsewhere.
 
 * Scan folder - where your Brother scanner drops files
   (ControlCenter4\\Scan). The "card needs new photos" tool opens it
@@ -777,9 +776,10 @@ arrives with the CanadianShopper add-on - see its own panel.""",
 Use this for a new batch of cards. Choose the FRONT scan and optional BACK
 scan, send the matching prompt and scans to your AI chat, then copy the full
 card descriptions back. Alex Collect matches descriptions to images and
-prepares the listing files in your batch folder. You review and import them
-manually; nothing is published automatically. Without the plugin, photo
-staging and back-photo wiring remain manual.""",
+prepares the WooCommerce and CanadianShopper import files and Facebook feed
+in your batch folder. Review them and import manually; nothing is published
+automatically. Without the plugin, photo staging and back-photo wiring remain
+manual.""",
     "importpanel": """\
 Now the actual import happens on the website - the one step that always
 runs behind your login in the browser (with or without the add-on):
@@ -793,9 +793,11 @@ runs behind your login in the browser (with or without the add-on):
 Photo staging and the back-photo wiring are the CanadianShopper
 add-on's job - without it, square photos by hand with SquareImages.""",
     "sold": """\
-Choose where the sale happened; the checklist covers the other places the card
-is listed. CanadianShopper is one of the source choices. Without its plugin,
-CanadianShopper stock updates remain manual checklist tasks.""",
+A card sold. Choose where it sold; the checklist covers every other place the
+card is advertised. Your cards can exist as several copies, so enter the
+quantity sold—or mark the last copy—to get the right follow-up. eBay and
+Facebook get links, not automation. Without the CanadianShopper plugin, its
+stock update stays a manual checklist task.""",
 }
 
 DOCS["logs"] = """\
@@ -1146,8 +1148,8 @@ class App(tk.Tk):
         script = find_pipeline_script(self.settings)
         if script is None:
             self.console_line(
-                "Scans received, but the card workflow was not found. Open the "
-                "pipeline panel and check the batch folder.", "err")
+                "Scans received, but card_pipeline.py was not found - open "
+                "the pipeline panel and browse for it once.", "err")
             self.show_mode("menu")
             return
 
@@ -1502,7 +1504,7 @@ def build_cookie(parent, app):
     app._pipeline_var = tk.StringVar(master=box, value=app.settings.get("pipeline_dir", ""))
     app._scan_var = tk.StringVar(master=box, value=app.settings.get("scan_dir", ""))
     for r, (label, var) in enumerate((
-            ("Batch folder:", app._pipeline_var),
+            ("Batch folder (card_pipeline.py):", app._pipeline_var),
             ("Scanner folder (ControlCenter4\\Scan):", app._scan_var))):
         ttk.Label(grid, text=label).grid(row=r, column=0, sticky="w")
         ttk.Entry(grid, textvariable=var, width=58).grid(row=r, column=1,
@@ -1545,7 +1547,7 @@ def build_pipeline(parent, app):
 
     def browse_for_pipeline():
         f = filedialog.askopenfilename(
-            title="Find the card workflow",
+            title="Find card_pipeline.py",
             initialdir=app.settings.get("pipeline_dir") or str(BASE))
         if not f:
             return None
@@ -1553,7 +1555,7 @@ def build_pipeline(parent, app):
         if f.name != "card_pipeline.py":
             messagebox.showwarning(
                 "Wrong file",
-                "Please choose the Alex Collect card workflow file, not %s."
+                "That is %s - I need the file named card_pipeline.py."
                 % f.name)
             return None
         app.set_setting("pipeline_dir", str(f.parent))
@@ -1564,8 +1566,8 @@ def build_pipeline(parent, app):
         script = find_pipeline_script(app.settings)
         if script is None:
             if messagebox.askyesno(
-                    "Card workflow not found",
-                    "I could not find the card workflow in the batch "
+                    "card_pipeline.py not found",
+                    "I could not find card_pipeline.py in the batch "
                     "folder\n%s\n\nBrowse for it now?"
                     % app.settings.get("pipeline_dir", "")):
                 script = browse_for_pipeline()
@@ -1908,10 +1910,13 @@ def build_sold(parent, app):
                      cwd=app.settings.get("pipeline_dir", str(WORK)))
 
     ttk.Label(box,
-              text="Choose the sale source above; the checklist will cover the other "
-                   "channels. For a typed sale, enter one card per line, save "
-                   "the list, then add it to the checklist. The separate "
-                   "CanadianShopper stock option appears only with its plugin.",
+              text="Typed-sale flow: enter the cards, save the list, then add it to "
+                   "the checklist. Choose the sale source above; the checklist "
+                   "covers the other channels. One typed card opens the remaining "
+                   "listing pages in Edge; WooCommerce opens the orders list and "
+                   "the title is copied for eBay/Facebook. The plugin-only "
+                   "CanadianShopper stock checkbox is independent; no listing is "
+                   "changed automatically.",
               style="Dim.TLabel", wraplength=680, justify="left").pack(
                   anchor="w", pady=(4, 0))
 
@@ -1937,7 +1942,7 @@ def build_sold(parent, app):
 
     ttk.Button(row3, text="Type the cards...", command=type_cards).pack(
         side="left")
-    ttk.Button(row3, text="Add to the checklist",
+    ttk.Button(row3, text="Add to the checklist (and fix CS if ticked)",
                style="Task.TButton", command=add_rows).pack(side="left", padx=8)
     if app.cs_addon:
         row4 = ttk.Frame(box)
@@ -2609,8 +2614,8 @@ class PipelineDialog(tk.Toplevel):
                 def listing_done(rc2):
                     if rc2 == 0:
                         self.app.console_line(
-                            "Your listing and import files are ready in the batch folder (%s). "
-                            "Review them before importing."
+                            "listing finished. The Woo + CanadianShopper "
+                            "CSVs are in the pipeline folder (%s)."
                             % self.script.parent)
                         self.app.console_line(
                             "No Facebook delta xlsx? That step only runs "
@@ -2932,11 +2937,11 @@ class WizardFrame(ttk.Frame):
             ttk.Label(self.content, text="You are set.", style="H1.TLabel"
                       ).pack(anchor="w", pady=(6, 6))
             sale_summary = (
-                "  a sale:     choose the source; optionally preview and "
-                "approve a separate CanadianShopper stock update; follow up "
-                "on the other listings\n" if self.app.cs_addon else
-                "  a sale:     choose the source; follow up on the other "
-                "listings, with CanadianShopper stock handled manually\n")
+                "  a sale:     A card sold -> CanadianShopper can be fixed "
+                "after preview; other listings go on the checklist and stay "
+                "there until ticked\n" if self.app.cs_addon else
+                "  a sale:     choose the source -> other listings go on the "
+                "checklist; CanadianShopper stock stays manual\n")
             ttk.Label(self.content, text=(
                 "That is the whole loop:\n\n"
                 "  new cards:  prepare files -> review -> import and publish\n" +
@@ -3025,13 +3030,13 @@ class WizardFrame(ttk.Frame):
                       text="Step 3 - when a card sells",
                       style="H1.TLabel").pack(anchor="w", pady=(6, 6))
             sale_intro = (
-                "Choose where the sale happened. The checklist covers the "
-                "other channels. A separate CanadianShopper option lets you "
-                "preview and approve a stock update; it is independent of "
-                "the sale-source choice." if self.app.cs_addon else
-                "Choose where the sale happened. The checklist covers the "
-                "other channels, including a manual CanadianShopper stock "
-                "task when appropriate.")
+                "Choose the sale source; the checklist covers the other listings. "
+                "Enter the quantity sold or mark the last copy. A separate "
+                "CanadianShopper option lets you preview and approve a stock "
+                "update; it is independent of the source choice." if self.app.cs_addon else
+                "Choose the sale source; the checklist covers the other listings. "
+                "Enter the quantity sold or mark the last copy. CanadianShopper "
+                "stock updates are manual without the plugin.")
             ttk.Label(self.content, text=sale_intro, wraplength=880,
                       justify="left").pack(anchor="w")
             PANEL_BUILDERS["sold"](self.content, self.app)
