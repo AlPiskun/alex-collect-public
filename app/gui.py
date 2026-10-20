@@ -1928,9 +1928,11 @@ def build_sold(parent, app):
         if not got:
             return
         _se, sc = got
-        args = sc + ["--cookie-file", str(CS_COOKIE_FILE)]
+        # Preview mode is read-only but should still offer the interactive
+        # title matcher when a sale title is fuzzy/unmatched.
+        args = sc + ["--cookie-file", str(CS_COOKIE_FILE), "--gui-dialogs"]
         if apply:
-            args.extend(["--apply", "--gui-dialogs"])
+            args.append("--apply")
         app.run_tool("sold-cards.py", args,
                      "CanadianShopper stock - " + ("APPLY" if apply else
                                                    "preview"),

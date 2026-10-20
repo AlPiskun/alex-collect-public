@@ -296,16 +296,18 @@ def main():
         find_button(app, "CanadianShopper only: preview the stock change"
                     ).invoke()
         a = cap.last
-        check("CS-only preview uses sold-cards.py without --apply",
+        check("CS-only preview enables matching dialogs but never --apply",
               a["script"] == gui.TOOL("sold-cards.py") and
               a["args"] == ["--list", str(gui.BASE / "sold-cards.txt"),
-                            "--cookie-file", str(gui.CS_COOKIE_FILE)],
+                            "--cookie-file", str(gui.CS_COOKIE_FILE),
+                            "--gui-dialogs"] and
+              "--apply" not in a["args"],
               str(a["args"]))
         find_button(app, "Apply the previewed change").invoke()
         check("CS-only apply requests preview and dialog",
               cap.last["args"] == ["--list", str(gui.BASE / "sold-cards.txt"),
                                    "--cookie-file", str(gui.CS_COOKIE_FILE),
-                                   "--apply", "--gui-dialogs"] and
+                                   "--gui-dialogs", "--apply"] and
               cap.last["confirm"] is None, str(cap.last))
 
         # Browser follow-ups must not wait for the optional CS process to finish
