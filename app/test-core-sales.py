@@ -25,7 +25,7 @@ def main():
         check("fixture excludes CanadianShopper implementation",
               not (work / "sold-cards.py").exists())
         (work / "typed.txt").write_text(
-            "Card Alpha #1, 2\nCard Beta #2 @facebook\n", encoding="utf-8")
+            "#254 Terry O'Reilly, 2\nCard Beta #2 @facebook\n", encoding="utf-8")
         checklist = work / "checklist.csv"
         result = subprocess.run(
             [sys.executable, str(work / "sold-everywhere.py"),
@@ -39,6 +39,9 @@ def main():
               len(typed_rows) == 6 and
               {r["channel"] for r in typed_rows} ==
               {"canadianshopper", "ebay", "facebook", "website"}, typed_rows)
+        check("leading card-number hash is kept as part of the sale title",
+              any(r["card"] == "#254 Terry O'Reilly" for r in typed_rows),
+              typed_rows)
 
         cs_typed = work / "cs-sold.txt"
         cs_typed.write_text("Card Sold on CS #5, 1\\n", encoding="utf-8")

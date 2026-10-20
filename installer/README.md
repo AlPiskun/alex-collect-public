@@ -25,20 +25,23 @@ Compile it on a Windows machine with Inno Setup 6. Output:
 ## B. `alexcollect-bundled.iss` — install a private Python runtime
 
 This is the easier-to-share option for a Windows PC without Python. The
-installer includes Python 3.14.8 x64 under the app's install directory, so
-it does not alter the system PATH or another Python installation. It also
+installer includes Python 3.13.16 x64 at
+`%LOCALAPPDATA%\\AlexCollect\\runtime\\python-embed`, beside the app folder.
+The launcher prefers this private runtime, so it does not alter the system PATH
+or another Python installation. It also
 installs this project's dependencies from `requirements.txt` during setup.
 Internet is required on the target PC for pip to download those packages.
 
-1. Run `build-bundled.bat`. It downloads the official Python 3.14.8 Windows
+1. Run `build-bundled.bat`. It downloads the official Python 3.13.16 Windows
    installer from python.org and verifies its SHA-256 before continuing.
-2. Open `alexcollect-bundled.iss` and compile it with Inno Setup 6.
-3. Output: `Output\AlexCollect-Setup-bundled-2.21.exe`.
+2. Run `python test-bundled-config.py` to check the version/filename/checksum pins.
+3. Open `alexcollect-bundled.iss` and compile it with Inno Setup 6.
+4. Output: `Output\AlexCollect-Setup-bundled-2.21.exe`.
 
 The downloaded Python installer is intentionally not stored in Git. It is
 ignored by `.gitignore`; rerun `build-bundled.bat` when needed. The pinned
 release and checksum are documented at
-[python.org](https://www.python.org/downloads/release/python-3148/).
+[python.org](https://www.python.org/downloads/release/python-31316/).
 
 ## Upgrade and uninstall behavior
 

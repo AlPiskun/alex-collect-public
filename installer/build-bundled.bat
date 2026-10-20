@@ -2,9 +2,9 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 
-set "PYVER=3.14.8"
+set "PYVER=3.13.16"
 set "PYEXE=python-%PYVER%-amd64.exe"
-set "PYSHA=759be887b96e736a3ca886daf8d575f18fcae1a09efab6902f42d59e8999f8ef"
+set "PYSHA=fb4f9f5d438b2396da0086dc70b935c530cb578e37adc6d354f7ad2037fee83b"
 set "PYURL=https://www.python.org/ftp/python/%PYVER%/%PYEXE%"
 
 if not exist "%PYEXE%" goto download
@@ -39,6 +39,6 @@ exit /b 1
 :failed
 echo.
 echo Download failed. Check the connection and run this script again.
-echo Official release page: https://www.python.org/downloads/release/python-3148/
+echo Official release page: https://www.python.org/downloads/release/python-31316/
 pause
 exit /b 1

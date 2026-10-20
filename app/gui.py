@@ -145,10 +145,16 @@ def open_edge_urls(urls, edge_path=None):
     return "the default browser"
 
 
+def is_sale_comment(line):
+    """Keep leading card numbers like #254; ignore ordinary # comments."""
+    stripped = (line or "").lstrip()
+    return stripped.startswith("#") and not re.match(r"^#\s*\d", stripped)
+
+
 def typed_sale_title(text):
     """Return one typed title without the quantity/channel suffix, else None."""
     lines = [line.strip() for line in text.splitlines()
-             if line.strip() and not line.lstrip().startswith("#")]
+             if line.strip() and not is_sale_comment(line)]
     if len(lines) != 1:
         return None
     title = re.sub(r"\s+@(website|web|site|canadianshopper|cs|ebay|facebook|fb|inperson|person)$",
@@ -1806,6 +1812,13 @@ def build_sold(parent, app):
             box, variable=do_cs,
             text="Also fix CanadianShopper now (separate from the sale source; "
                  "preview and approve before writing)").pack(anchor="w", pady=(6, 2))
+        ttk.Label(
+            box,
+            text="The match picker appears only after a valid session is loaded "
+                 "and a title is unmatched or ambiguous. Check the console for "
+                 "cookie/session errors or the preview details.",
+            style="Dim.TLabel", wraplength=640, justify="left").pack(
+                anchor="w", pady=(0, 2))
     else:
         ttk.Label(box, text="Without the plugin, CanadianShopper stock changes "
                   "remain manual checklist tasks.", style="Dim.TLabel",
@@ -1880,43 +1893,46 @@ def build_sold(parent, app):
             except Exception as exc:
                 log("could not read typed sale list: %s" % exc)
 
-        def after_sale(rc):
-            if rc != 0 or not source_was_typed:
-                return
+        started = app.run_tool("sold-everywhere.py", args,
+                               "Mark the sale(s) everywhere",
+                               cwd=app.settings.get("pipeline_dir", str(WORK)))
+        # Launch search/follow-up pages as soon as the sale command starts,
+        # independently of the optional plugin run. The CS leg can be waiting
+        # for a cookie, a match choice, or explicit approval; don't make that
+        # delay suppress the other follow-up channels.
+        if started and source_was_typed:
             title = typed_sale_title(typed_text)
             if not title:
                 app.console_line(
                     "Several cards were entered; use the checklist links one "
                     "card at a time to avoid opening many Edge tabs.", "dim")
-                return
-            try:
-                app.clipboard_clear()
-                app.clipboard_append(title)
-                app.update_idletasks()
-            except Exception as exc:
-                log("could not copy sale title: %s" % exc)
-            browser = open_edge_urls(sale_followup_urls(title, sale_channel))
-            app.console_line(
-                "Opened the follow-up pages in %s. WooCommerce opens the orders list. "
-                "Paste the copied title into the CanadianShopper store search "
-                "and eBay/Facebook manually; no listings were changed. If "
-                "enabled, the separate "
-                "CanadianShopper checkbox can preview a stock update." %
-                browser, "ok")
-
-        app.run_tool("sold-everywhere.py", args,
-                     "Mark the sale(s) everywhere",
-                     cwd=app.settings.get("pipeline_dir", str(WORK)),
-                     on_done=after_sale)
+            else:
+                try:
+                    app.clipboard_clear()
+                    app.clipboard_append(title)
+                    app.update_idletasks()
+                except Exception as exc:
+                    log("could not copy sale title: %s" % exc)
+                browser = open_edge_urls(
+                    sale_followup_urls(title, sale_channel))
+                app.console_line(
+                    "Opened the follow-up pages in %s. WooCommerce opens the "
+                    "orders list. Paste the copied title into the "
+                    "CanadianShopper store search and eBay/Facebook manually. "
+                    "The optional CanadianShopper stock preview/approval runs "
+                    "separately; no listing was changed by opening these pages." %
+                    browser, "ok")
 
     def fix_cs(apply):
         got = source_args()
         if not got:
             return
         _se, sc = got
-        args = sc + ["--cookie-file", str(CS_COOKIE_FILE)]
+        # Preview mode is read-only but should still offer the interactive
+        # title matcher when a sale title is fuzzy/unmatched.
+        args = sc + ["--cookie-file", str(CS_COOKIE_FILE), "--gui-dialogs"]
         if apply:
-            args.extend(["--apply", "--gui-dialogs"])
+            args.append("--apply")
         app.run_tool("sold-cards.py", args,
                      "CanadianShopper stock - " + ("APPLY" if apply else
                                                    "preview"),
@@ -1946,7 +1962,8 @@ def build_sold(parent, app):
                     "  Card title @facebook sold on Facebook\n"
                     "  Card title @cs       sold on CanadianShopper\n"
                     "  Card title @ebay     sold on eBay\n"
-                    "  Card title @inperson sold in person",
+                    "  Card title @inperson sold in person\n"
+                    "A card number such as #254 is part of the title; use ## for comments.",
                initial="",
                save_to=BASE / "sold-cards.txt",
                save_label="Save title",
