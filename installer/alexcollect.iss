@@ -4,7 +4,7 @@
 ; alexcollect-bundled.iss instead.
 
 #define MyAppName "Alex Collect Control Panel"
-#define MyAppVersion "2.21"
+#define MyAppVersion "2.28"
 #define MyAppPublisher "Alex Collect"
 #define MyAppExe "START Alex Collect.bat"
 
@@ -26,7 +26,7 @@ WizardStyle=modern
 SetupIconFile=..\app\alexcollect.ico
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:";
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: checkedonce
 Name: "installdeps"; Description: "Install or update the Python packages (requires internet)"; GroupDescription: "Python packages:"; Flags: checkedonce
 
 [Files]
@@ -41,7 +41,7 @@ Source: "..\START Alex Collect.bat"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{group}\Alex Collect"; Filename: "{app}\{#MyAppExe}"; WorkingDir: "{app}"; IconFilename: "{app}\app\alexcollect.ico"
 Name: "{group}\Uninstall Alex Collect"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\Alex Collect"; Filename: "{app}\{#MyAppExe}"; WorkingDir: "{app}"; IconFilename: "{app}\app\alexcollect.ico"; Tasks: desktopicon
+Name: "{userdesktop}\Alex Collect"; Filename: "{app}\{#MyAppExe}"; WorkingDir: "{app}"; IconFilename: "{app}\app\alexcollect.ico"; Tasks: desktopicon
 
 [Code]
 function CommandSucceeds(const Params: String): Boolean;

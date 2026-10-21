@@ -1,4 +1,4 @@
-Alex Collect — public core package
+Alex Collect 2.28 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -8,6 +8,10 @@ Root:
   install-linux.sh                Linux user install helper
   start-alexcollect.sh            Linux launcher
 
+docs/:
+  facebook-feed-settings.md       Facebook workbook settings and template guide
+  ebay-quicklist.md               eBay Quick List settings and manual workflow
+
 installer/:
   alexcollect.iss                 Inno Setup installer; Python prerequisite
   alexcollect-bundled.iss         Inno Setup installer with private Python
@@ -16,6 +20,10 @@ installer/:
 
 app/:
   gui.py                          Tkinter control panel
+  user_settings.py                shared local preferences for the GUI and tools
+  browser_utils.py                installed-browser detection and page launching
+  facebook-feed-settings.example.json
+                                  starter values for the Facebook workbook fields
   plugin_manager.py               local ZIP plugin manager
   sale_inputs.py                   generic WooCommerce input readers
   sold-everywhere.py              sale checklist workflow
@@ -26,4 +34,5 @@ app/:
   test-*.py                       core tests
 
 Plugins are separate packages. No CanadianShopper plugin implementation,
-cookie, credentials, or user-generated listing/order data is included here.
+cookie, credentials, local user settings, or user-generated listing/order data
+is included here.

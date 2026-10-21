@@ -153,7 +153,7 @@ def main():
 examples
 --------
   python3 make-square.py front.webp back.webp
-  python3 make-square.py "C:/Users/Owner/Pictures/ControlCenter4/Scan/output"
+  python3 make-square.py "/path/to/your/scan/output"
   python3 make-square.py card.jpg --size 1000 --format jpeg
   python3 make-square.py card.png --format png --keep-alpha
 """)

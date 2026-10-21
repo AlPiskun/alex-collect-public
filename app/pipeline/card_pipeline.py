@@ -36,6 +36,7 @@ Category / sub-category:
 
 import argparse
 import csv
+import html
 import math
 import os
 import re
@@ -46,7 +47,6 @@ import textwrap
 import time
 import urllib.error
 import urllib.request
-import webbrowser
 from urllib.parse import quote, urlsplit
 from datetime import datetime
 from io import BytesIO
@@ -62,6 +62,14 @@ except ImportError:
 #  CONFIGURATION
 # =====================================================================
 SCRIPT_DIR = Path(__file__).resolve().parent
+APP_DIR = SCRIPT_DIR.parent
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+from browser_utils import available_browsers, browser_label, open_urls as launch_urls
+from user_settings import (load_user_settings, save_user_settings,
+                           site_admin_url, site_url, feed_urls)
+
+USER_SETTINGS = load_user_settings(APP_DIR / "gui-settings.json")
 OUTPUT_DIR = SCRIPT_DIR / "output"
 
 GRID_COLS = 3
@@ -79,7 +87,7 @@ MAX_QUALITY = 100
 QUALITY_TOLERANCE = 5    # +/- KB acceptable range
 # -----------------------------
 
-SITE_URL = "https://store.piskun.ca"
+SITE_URL = site_url(USER_SETTINGS)
 
 # =====================================================================
 #  STEP 1 — SPLIT SCANS  (original parameters)
@@ -1173,8 +1181,7 @@ def apply_renames(ops, copy=False):
 # =====================================================================
 #  FACEBOOK FEED
 # =====================================================================
-FEED_REFRESH_URL = "https://store.piskun.ca/?force_facebook_feed=1"
-FEED_URL = "https://store.piskun.ca/feed/facebook.xml"
+FEED_REFRESH_URL, FEED_URL = feed_urls(USER_SETTINGS)
 BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
@@ -1206,56 +1213,64 @@ def feed_is_live(feed_url, timeout=60, cookie=None):
         return False
 
 
-def open_in_browser(url, browser="edge"):
-    browser = (browser or "").strip().lower()
-
-    if browser in ("", "default"):
-        try:
-            webbrowser.open(url)
-            return "default browser"
-        except Exception:
-            return None
-
-    if browser == "edge":
-        if sys.platform.startswith("win"):
-            try:
-                os.startfile(f"microsoft-edge:{url}")
-                return "Microsoft Edge"
-            except Exception:
-                pass
-        candidates = [
-            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-            shutil.which("msedge"),
-            "/usr/bin/microsoft-edge",
-            "/usr/bin/microsoft-edge-stable",
-        ]
-        for exe in candidates:
-            if exe and os.path.exists(exe):
-                try:
-                    webbrowser.register(
-                        "edge", None, webbrowser.BackgroundBrowser(exe)
-                    )
-                    webbrowser.get("edge").open(url)
-                    return "Microsoft Edge"
-                except Exception:
-                    continue
+def choose_browser_cli():
+    """Ask once in an interactive terminal when no browser is saved."""
+    choices = available_browsers()
+    if not sys.stdin or not sys.stdin.isatty():
+        return "system"
+    print("\nChoose the browser Alex Collect should use for web pages:")
+    for index, (_key, label) in enumerate(choices, 1):
+        print("  %d. %s" % (index, label))
+    try:
+        answer = input("Browser number [1]: ").strip()
+    except (EOFError, OSError):
+        answer = ""
+    if not answer:
+        selected = choices[0]
     else:
         try:
-            webbrowser.get(browser).open(url)
-            return browser
-        except Exception:
-            pass
+            selected = choices[int(answer) - 1]
+        except (ValueError, IndexError):
+            selected = choices[0]
+    USER_SETTINGS["browser_name"] = selected[0]
+    save_user_settings(USER_SETTINGS, APP_DIR / "gui-settings.json")
+    return selected[0]
 
+
+def open_in_browser(url, browser=None):
+    """Open a URL in the saved/selected browser, prompting only on first use."""
+    browser = (browser or USER_SETTINGS.get("browser_name", "") or "").strip()
+    if not browser:
+        browser = choose_browser_cli()
+    return launch_urls([url], browser or "system") or None
+
+
+def open_path(path):
+    """Open a local file or folder with the operating system's default app."""
+    path = Path(path)
+    if not path.exists():
+        return False
     try:
-        webbrowser.open(url)
-        return "default browser (fallback)"
-    except Exception:
-        return None
+        if sys.platform == "win32":
+            os.startfile(str(path))  # noqa: S606 - user's chosen local file
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+        return True
+    except Exception as exc:
+        print("Could not open %s: %s" % (path, exc), file=sys.stderr)
+        return False
+
+
+def open_folder(path):
+    """Open an existing folder in the operating system's file manager."""
+    path = Path(path)
+    return open_path(path) if path.is_dir() else False
 
 
 def refresh_facebook_feed(refresh_url, feed_url, timeout=60, wait=5,
-                          cookie=None, allow_browser=True, browser="edge"):
+                          cookie=None, allow_browser=True, browser=None):
     print(f"\nRefreshing Facebook feed: {refresh_url}")
 
     triggered = False
@@ -1382,6 +1397,36 @@ def run_facebook_export_script():
     return False
 
 
+def open_facebook_delivery():
+    """Open the newly generated Facebook workbook, its folder, and review page."""
+    export_dir = SCRIPT_DIR / "facebook_merchant_products"
+    candidates = []
+    for pattern in ("facebook_delta_*.xlsx", "facebook_batch_*.xlsx"):
+        candidates.extend(export_dir.glob(pattern))
+    latest = max(candidates, key=lambda path: path.stat().st_mtime) if candidates else None
+    if latest:
+        if open_path(latest):
+            print("Opened the Facebook export workbook: %s" % latest)
+        else:
+            print("Could not open the Facebook workbook automatically: %s" % latest)
+    if open_folder(export_dir):
+        print("Opened the Facebook export folder: %s" % export_dir)
+    page_url = str(USER_SETTINGS.get("facebook_selling_url", "") or "").strip()
+    if page_url:
+        try:
+            browser_used = open_in_browser(page_url)
+            print("Opened the configured Facebook review/listing page in %s: %s" %
+                  (browser_used or "your browser", page_url))
+        except Exception as exc:
+            print("Could not open the Facebook page: %s" % exc)
+    else:
+        print("Set a Facebook listing/review page URL in User Settings to open it.")
+    try:
+        input("Review the Facebook workbook/page, then press Enter to continue to the next stage...")
+    except EOFError:
+        pass
+
+
 def maybe_run_facebook(args):
     """Prompt for WooCommerce upload, then refresh feed and run exports."""
     if not getattr(args, "facebook", False):
@@ -1390,17 +1435,28 @@ def maybe_run_facebook(args):
     print("\n" + "=" * 58)
     print("  FACEBOOK MARKETPLACE EXPORT")
     print("=" * 58)
-    print("\nBefore the feed can be refreshed, publish the new cards:")
-    print("  1. Import the CSV into WooCommerce using WP All Import.")
-    print("  2. Upload the renamed media files (images in output folder).")
-    print("  3. Confirm the products are live on store.piskun.ca.")
-    print("\nThe Facebook feed only includes products already published,")
-    print("so this must be done first.")
+    print("\nBefore the feed can be refreshed, finish the WooCommerce upload:")
+    print("  1. Import the CSV with your WooCommerce importer (this creates products).")
+    print("  2. Upload the renamed media files from the output folder.")
+    print("  3. Confirm the products are published/live on your store.")
+    print("\nThe Facebook feed only includes products already published.")
+    media_url = site_admin_url("wp-admin/media-new.php", USER_SETTINGS)
+    if media_url and not getattr(args, "no_browser", False):
+        try:
+            browser_used = open_in_browser(media_url)
+            print("Opened the WordPress media upload page in %s: %s" %
+                  (browser_used or "your browser", media_url))
+        except Exception as exc:
+            print("Could not open the media upload page: %s" % exc)
+        if open_folder(OUTPUT_DIR):
+            print("Opened the image output folder: %s" % OUTPUT_DIR)
+    elif not media_url:
+        print("Set your WooCommerce site URL in User settings to open its media page.")
 
     while True:
         try:
             answer = input(
-                "\nHave you finished the WP All Import and media upload? "
+                "\nHave you finished the WP All Import, uploaded the media, and created/published the products? "
                 "Type 'y' to refresh the feed, or 'n' to stop: "
             ).strip().lower()
         except EOFError:
@@ -1411,6 +1467,11 @@ def maybe_run_facebook(args):
             print("Stopped before the Facebook step. Your CSV and renamed "
                   "images are ready; re-run with --facebook when done.")
             return
+
+    if not FEED_URL or not FEED_REFRESH_URL:
+        print("Set your WooCommerce site/feed URLs in User settings before "
+              "running the Facebook feed step.", file=sys.stderr)
+        return
 
     ok = refresh_facebook_feed(
         FEED_REFRESH_URL, FEED_URL,
@@ -1427,12 +1488,19 @@ def maybe_run_facebook(args):
         return
 
     print("\n-- Running Facebook feed history tracker... --")
-    run_facebook_feed_script()
+    if not run_facebook_feed_script():
+        print("  Facebook workbook handoff skipped because feed export failed.",
+              file=sys.stderr)
+        return
 
     print("\n-- Running Marketplace xlsx export... --")
-    run_facebook_export_script()
+    if not run_facebook_export_script():
+        print("  Facebook workbook handoff skipped because the export failed.",
+              file=sys.stderr)
+        return
 
     print("\n-- Facebook export steps complete. --")
+    open_facebook_delivery()
 
 
 # =====================================================================
@@ -1445,17 +1513,26 @@ CANADIANSHOPPER_FIELDNAMES = [
     "sizes", "colors",
 ]
 
-CANADIANSHOPPER_CATEGORY = "Antiques & Collectibles"
-CANADIANSHOPPER_PROVINCE = "ON"
-CANADIANSHOPPER_FLAT_SHIPPING = "4.00"
-CANADIANSHOPPER_FREE_SHIPPING = "false"
-CANADIANSHOPPER_HANDLING_DAYS = "2"
-CANADIANSHOPPER_TRANSIT_DAYS = "5"
+CANADIANSHOPPER_CATEGORY = str(USER_SETTINGS.get(
+    "canadianshopper_category", "Antiques & Collectibles"))
+CANADIANSHOPPER_PROVINCE = str(USER_SETTINGS.get(
+    "canadianshopper_ship_from_province", "ON"))
+CANADIANSHOPPER_FLAT_SHIPPING = str(USER_SETTINGS.get(
+    "canadianshopper_shipping_flat", "4.00"))
+CANADIANSHOPPER_FREE_SHIPPING = (
+    "true" if USER_SETTINGS.get("canadianshopper_free_shipping", False)
+    else "false")
+CANADIANSHOPPER_HANDLING_DAYS = str(USER_SETTINGS.get(
+    "canadianshopper_handling_days", 2))
+CANADIANSHOPPER_TRANSIT_DAYS = str(USER_SETTINGS.get(
+    "canadianshopper_transit_days", 5))
 CANADIANSHOPPER_BATCH_SIZE = 500
 
 
 def default_canadianshopper_image_base_url():
-    """Assume renamed images are uploaded to the current WP uploads month."""
+    """Assume renamed images are uploaded to the configured WP uploads month."""
+    if not SITE_URL:
+        return ""
     return f"{SITE_URL}/wp-content/uploads/{datetime.now():%Y/%m}"
 
 
@@ -1604,8 +1681,25 @@ def _find_cs_stage_hook():
     return next((candidate for candidate in legacy if candidate.is_file()), None)
 
 
+def canadianshopper_import_folder(output_paths, stage_hook=None):
+    """Find the folder containing the final CS import CSVs."""
+    if not stage_hook:
+        return Path(output_paths[0]).parent if output_paths else SCRIPT_DIR
+    candidates = [Path(stage_hook).parent / "cs-ready"]
+    candidates.extend((SCRIPT_DIR / "cs-ready",
+                       SCRIPT_DIR.parent / "cs-ready",
+                       Path(USER_SETTINGS.get("pipeline_dir", "")) / "cs-ready"))
+    for folder in candidates:
+        try:
+            if folder.is_dir() and any(folder.glob("canadianshopper_import*.csv")):
+                return folder
+        except OSError:
+            pass
+    return Path(output_paths[0]).parent if output_paths else SCRIPT_DIR
+
+
 def maybe_run_canadianshopper(args, cards_parsed):
-    """Build CanadianShopper CSV batch(es) and show the manual upload steps."""
+    """Build CanadianShopper CSV batches and hand them to an installed plugin."""
     # --facebook now automatically continues into this stage; --canadianshopper
     # also allows generating this CSV without running the Facebook workflow.
     if not (
@@ -1618,9 +1712,12 @@ def maybe_run_canadianshopper(args, cards_parsed):
     print("  CANADIANSHOPPER UPLOAD")
     print("=" * 58)
     print(
-        "The CSV uses category 'Antiques & Collectibles', ON origin, $4.00 "
-        "flat shipping, 1 handling day, and 5 transit days."
-    )
+        "The CSV uses your configured category, ship-from region, and shipping "
+        "defaults: %s; %s; flat %s; free shipping %s; handling %s day(s); "
+        "transit %s day(s)." % (
+            CANADIANSHOPPER_CATEGORY, CANADIANSHOPPER_PROVINCE,
+            CANADIANSHOPPER_FLAT_SHIPPING, CANADIANSHOPPER_FREE_SHIPPING,
+            CANADIANSHOPPER_HANDLING_DAYS, CANADIANSHOPPER_TRANSIT_DAYS))
 
     image_base_url = get_canadianshopper_image_base_url(args)
     if not image_base_url:
@@ -1640,8 +1737,9 @@ def maybe_run_canadianshopper(args, cards_parsed):
     print(f"\nImage URL base: {image_base_url}")
     print("Next steps:")
     print("  1. Confirm the renamed images are publicly available under that folder.")
-    print("  2. Sign in to CanadianShopper and import each generated CSV.")
-    print("  3. Review the preview, category, and shipping fields before confirming.")
+    print("  2. If the CanadianShopper plugin is installed, it stages the photos")
+    print("     and offers to import the CSVs as unpublished drafts.")
+    print("  3. Without the plugin, import the CSVs manually and review each draft.")
     # ---- Optional CanadianShopper photo stage: square front + back gallery
     _cs_hook = _find_cs_stage_hook()
     if _cs_hook is not None:
@@ -1656,6 +1754,8 @@ def maybe_run_canadianshopper(args, cards_parsed):
         kwargs = {"tools_dir": str(_cs_hook.parent)}
         if "cookie_file" in params:
             kwargs["cookie_file"] = str(SCRIPT_DIR.parent / "cookie.txt")
+        if "browser_name" in params:
+            kwargs["browser_name"] = USER_SETTINGS.get("browser_name", "")
         _mod.run_stage(output_paths, args, SCRIPT_DIR, OUTPUT_DIR, **kwargs)
     else:
         print("  ! CanadianShopper photo stage not installed.")
@@ -1663,11 +1763,256 @@ def maybe_run_canadianshopper(args, cards_parsed):
         print("    can import it by hand; the photos are just not staged.")
         print("    Install the CanadianShopper add-on from the Plugins tab,")
         print("    then re-run the listing.")
+        import_folder = canadianshopper_import_folder(output_paths)
+        if open_folder(import_folder):
+            print("Opened the CanadianShopper import folder: %s" % import_folder)
+
+def _ebay_quicklist_sport(card):
+    """Map the card's detected category/content to the attached script's sport templates."""
+    text = " ".join(str(card.get(key, "")) for key in (
+        "category", "subcategory", "seo_title", "keyword", "tags",
+        "full_description")).casefold()
+    for sport in ("hockey", "baseball", "basketball", "football"):
+        if sport in text:
+            return sport
+    return "sports"
+
+
+def _ebay_quicklist_values(card):
+    """Build item-specific values using the attached Quick List heuristics and saved defaults."""
+    settings = USER_SETTINGS
+    tags = [tag.strip() for tag in str(card.get("tags", "")).split(",") if tag.strip()]
+    brand = str(card.get("brand") or "").strip()
+    if not brand:
+        brand = next((tag for tag in tags
+                      if re.search(r"O-Pee-Chee|Topps|Upper Deck", tag, re.I)), "")
+    condition = next((tag for tag in tags
+                      if re.search(r"Mint|NM|VG|Good", tag, re.I)), "")
+    set_name = next((tag for tag in tags
+                     if re.search(r"O-Pee-Chee|Topps", tag, re.I)), "")
+    if not set_name:
+        set_name = tags[0] if tags else ""
+    try:
+        price = math.ceil(float(card.get("price") or 0))
+    except (TypeError, ValueError, OverflowError):
+        price = 0
+    return {
+        "title": str(card.get("seo_title") or "").strip(),
+        "price": ("%.2f" % price) if price else "",
+        "sport": ("Sports Cards" if _ebay_quicklist_sport(card) == "sports"
+                  else _ebay_quicklist_sport(card).title()),
+        "year": str(card.get("year") or settings.get("ebay_default_year", "Unknown")),
+        "manufacturer": brand or settings.get("ebay_default_manufacturer", "Unknown"),
+        "card_number": str(card.get("card_num") or settings.get("ebay_default_card_number", "N/A")),
+        "player": str(card.get("player") or settings.get("ebay_default_player", "Unknown")),
+        "set": set_name or settings.get("ebay_default_set", "Vintage"),
+        "condition": condition or settings.get("ebay_default_condition", "Mint"),
+        "grade": str(card.get("grade") or settings.get("ebay_default_grade", "")),
+        "autographed": settings.get("ebay_default_autographed", "No"),
+        "description": str(card.get("full_description") or settings.get(
+            "ebay_default_description", "")),
+        "front_image": str(card.get("front_img") or ""),
+        "back_image": str(card.get("back_img") or ""),
+    }
+
+
+def _ebay_image_base_url():
+    """Resolve the configured public image URL base for the current uploads month."""
+    now = datetime.now()
+    base = str(USER_SETTINGS.get("ebay_image_base_url", "") or "").strip()
+    if not base:
+        base = default_canadianshopper_image_base_url()
+    return (base.replace("{year}", now.strftime("%Y"))
+                .replace("{month}", now.strftime("%m"))
+                .rstrip("/"))
+
+
+def _ebay_image_url(filename, base_url):
+    if not filename:
+        return ""
+    if str(filename).lower().startswith(("http://", "https://")):
+        return str(filename)
+    return canadianshopper_image_url(filename, base_url) if base_url else ""
+
+
+def _render_ebay_quicklist(cards):
+    """Create a self-contained copy/drag helper from the cards in this run."""
+    image_base = _ebay_image_base_url()
+    cards_html = []
+    template_urls = []
+    for index, card in enumerate(cards, 1):
+        values = _ebay_quicklist_values(card)
+        sport_key = _ebay_quicklist_sport(card)
+        template = str(USER_SETTINGS.get(
+            "ebay_template_%s_url" % sport_key, "") or "").strip()
+        if not template:
+            template = str(USER_SETTINGS.get("ebay_template_default_url", "") or "").strip()
+        if template:
+            template_urls.append(template)
+        fields = [
+            ("Title", values["title"]), ("Buy It Now price (CAD)", values["price"]),
+            ("Sport / Game", values["sport"]), ("Year", values["year"]),
+            ("Manufacturer", values["manufacturer"]), ("Card Number", values["card_number"]),
+            ("Player", values["player"]), ("Set", values["set"]),
+            ("Condition", values["condition"]), ("Grade", values["grade"]),
+            ("Autographed", values["autographed"]),
+        ]
+        snippets = []
+        for label, value in fields:
+            escaped_value = html.escape(str(value), quote=True)
+            snippets.append(
+                '<button class="snippet" draggable="true" data-value="%s" '
+                'title="Drag to eBay or click to copy"><b>%s</b><br>%s</button>' %
+                (escaped_value, html.escape(label), escaped_value or "(blank)"))
+        description = html.escape(values["description"], quote=True)
+        image_cards = []
+        for label, filename in (("Front", values["front_image"]),
+                                ("Back", values["back_image"])):
+            url = _ebay_image_url(filename, image_base)
+            if not (filename or url):
+                continue
+            local_path = OUTPUT_DIR / Path(filename).name if filename else None
+            local_link = (local_path.resolve().as_uri()
+                          if local_path and local_path.is_file() else "")
+            image_source = url or local_link
+            image_cards.append(
+                '<div class="image">%s%s%s'
+                '<button class="snippet" draggable="true" data-value="%s" '
+                'title="Drag image URL to eBay or click to copy">%s image URL<br>%s</button>'
+                '<small>%s</small></div>' % (
+                    ('<a href="%s" target="_blank" rel="noopener">' % html.escape(image_source, quote=True)
+                     if image_source else ""),
+                    ('<img src="%s" alt="%s image">' %
+                     (html.escape(image_source, quote=True), label)
+                     if image_source else ""),
+                    "</a>" if image_source else "",
+                    html.escape(url or local_link, quote=True), label,
+                    html.escape(url or local_link),
+                    html.escape(Path(filename).name if filename else "")))
+        template_link = (
+            '<a class="template" href="%s" target="_blank" rel="noopener">Open %s eBay template</a>'
+            % (html.escape(template, quote=True), html.escape(values["sport"]))
+            if template else '<span class="template missing">Set a default eBay template URL in User Settings</span>')
+        cards_html.append(
+            '<article><h2>%d. %s</h2><p class="price">$%s CAD</p>%s'
+            '<div class="snippets">%s</div><h3>Description (drag or click to copy)</h3>'
+            '<pre class="description snippet" draggable="true" data-value="%s" '
+            'title="Drag to eBay or click to copy">%s</pre><div class="images">%s</div>%s</article>' % (
+                index, html.escape(values["title"]), html.escape(values["price"]),
+                '<p class="sport">Sport template: %s</p>' % html.escape(values["sport"]),
+                "".join(snippets), description, description,
+                "".join(image_cards), template_link))
+    page = """<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Alex Collect — eBay Quick List</title>
+<style>
+:root{color-scheme:light;font:15px/1.5 system-ui,sans-serif;color:#172033;background:#eef2f7}body{max-width:1100px;margin:24px auto;padding:0 16px}h1{color:#183153}article{background:white;border:1px solid #d7dfeb;border-radius:12px;padding:20px;margin:18px 0;box-shadow:0 4px 18px #1b365010}h2{margin:0;color:#183153}.price{font-size:1.35rem;color:#08652c;font-weight:700}.sport{color:#52627a}.snippets{display:flex;flex-wrap:wrap;gap:8px}.snippet{font:13px/1.4 ui-monospace,monospace;text-align:left;color:#183153;background:#f5f8fc;border:1px solid #cdd8e6;border-radius:8px;padding:9px 12px;cursor:grab;max-width:100%;overflow-wrap:anywhere}.snippet:hover{background:#e9f1fb}.description{white-space:pre-wrap;max-height:260px;overflow:auto;background:#fafbfd;border:1px solid #e1e6ee;border-radius:8px;padding:12px}.images{display:flex;flex-wrap:wrap;gap:14px;margin:14px 0}.image{display:flex;flex-direction:column;gap:6px;max-width:280px}.image img{max-width:260px;max-height:190px;object-fit:contain;background:#f5f5f5;border:1px solid #ddd;border-radius:8px}.image small{color:#65738a;overflow-wrap:anywhere}.template{display:inline-block;margin-top:14px;background:#e53238;color:#fff;text-decoration:none;padding:10px 16px;border-radius:8px;font-weight:700}.missing{color:#9b3c00}.note{background:#fff7e8;border:1px solid #f0d29d;border-radius:8px;padding:12px}.status{color:#087044;font-weight:600}
+</style>
+<body><h1>⚡ Alex Collect — eBay Quick List</h1>
+<p class="note">Use the buttons as draggable snippets or click to copy. Images and URLs are gathered from this card batch. Opened eBay templates do not submit listings; sign in, review each field, and submit manually.</p>
+<p class="status">Click a field to copy it. Drag a field onto the matching eBay form field.</p>
+__CARD_SECTIONS__
+<script>
+document.querySelectorAll('.snippet').forEach(function(btn){btn.addEventListener('dragstart',function(e){e.dataTransfer.setData('text/plain',btn.dataset.value||'');e.dataTransfer.effectAllowed='copy'});btn.addEventListener('click',async function(){var value=btn.dataset.value||'';try{await navigator.clipboard.writeText(value)}catch(_){var box=document.createElement('textarea');box.value=value;document.body.appendChild(box);box.select();document.execCommand('copy');box.remove()}var old=btn.innerHTML;btn.innerHTML='Copied';setTimeout(function(){btn.innerHTML=old},900)})});
+</script></body></html>"""
+    page = page.replace("__CARD_SECTIONS__", "".join(cards_html))
+    return page, template_urls
+
+
+def _parse_ebay_card_selection(answer, count):
+    answer = (answer or "").strip().casefold()
+    if answer in {"all", "a", "*"}:
+        return list(range(count))
+    if answer in {"", "n", "no", "none", "q", "quit"}:
+        return []
+    selected = []
+    for token in re.split(r"[,;\s]+", answer):
+        if not token:
+            continue
+        if "-" in token:
+            left, right = token.split("-", 1)
+            if not (left.isdigit() and right.isdigit()):
+                raise ValueError("Use card numbers such as 1,3 or 2-4.")
+            values = range(int(left), int(right) + 1)
+        elif token.isdigit():
+            values = (int(token),)
+        else:
+            raise ValueError("Use card numbers such as 1,3 or 2-4.")
+        for value in values:
+            if value < 1 or value > count:
+                raise ValueError("Card number %d is outside this batch." % value)
+            if value - 1 not in selected:
+                selected.append(value - 1)
+    return selected
+
+
+def maybe_run_ebay_quicklist(cards_parsed):
+    """Ask which cards to prepare for manual eBay listing and open template tabs."""
+    if not USER_SETTINGS.get("ebay_quicklist_enabled", True) or not cards_parsed:
+        return
+    print("\n" + "=" * 58)
+    print("  eBAY QUICK LIST")
+    print("=" * 58)
+    try:
+        answer = input("Would you like to prepare any of these cards for eBay? [y/N] ").strip().lower()
+    except (EOFError, OSError):
+        return
+    if answer not in ("y", "yes"):
+        print("  eBay Quick List skipped.")
+        return
+    print("\nChoose cards to prepare (comma-separated numbers, ranges, or 'all'):")
+    for index, card in enumerate(cards_parsed, 1):
+        values = _ebay_quicklist_values(card)
+        print("  %d. %s  —  $%s CAD  —  %s" % (
+            index, values["title"], values["price"], values["sport"]))
+    while True:
+        try:
+            selection = input("Cards [e.g. 1,3 or 2-4; Enter to cancel]: ")
+            selected = _parse_ebay_card_selection(selection, len(cards_parsed))
+            break
+        except (ValueError, EOFError, OSError) as exc:
+            if isinstance(exc, (EOFError, OSError)):
+                return
+            print("  %s" % exc)
+    if not selected:
+        print("  No eBay cards selected.")
+        return
+    chosen = [cards_parsed[index] for index in selected]
+    page, template_urls = _render_ebay_quicklist(chosen)
+    output = SCRIPT_DIR / ("ebay_quick_list_%s.html" % datetime.now().strftime("%Y%m%d_%H%M%S"))
+    try:
+        output.write_text(page, encoding="utf-8")
+    except OSError as exc:
+        print("  !! Could not create the eBay Quick List page: %s" % exc,
+              file=sys.stderr)
+        return
+    browser = USER_SETTINGS.get("browser_name", "") or ""
+    if not browser:
+        browser = choose_browser_cli()
+    try:
+        launch_urls([output.resolve().as_uri()], browser or "system")
+        if template_urls:
+            launch_urls(template_urls, browser or "system")
+        if open_folder(OUTPUT_DIR):
+            print("  Opened the renamed image folder: %s" % OUTPUT_DIR)
+        print("  Opened the Quick List page and %d eBay template tab(s) in %s." % (
+            len(template_urls), browser_label(browser or "system")))
+        print("  Details are available for copy/drag-and-drop; review and submit on eBay manually.")
+        try:
+            input("  Press Enter when finished with this eBay Quick List to continue...")
+        except EOFError:
+            pass
+    except (OSError, RuntimeError) as exc:
+        print("  !! Could not open the eBay Quick List in the configured browser: %s" % exc,
+              file=sys.stderr)
+    print("  Quick List page: %s" % output)
+
 
 def run_post_listing_uploads(args, cards_parsed):
-    """Run marketplace sections in order: Facebook first, then CanadianShopper."""
+    """Run Facebook, CanadianShopper, and optional eBay Quick List stages."""
     maybe_run_facebook(args)
     maybe_run_canadianshopper(args, cards_parsed)
+    maybe_run_ebay_quicklist(cards_parsed)
 
 
 # =====================================================================
@@ -1847,7 +2192,7 @@ def main():
 
               # CanadianShopper only (without Facebook):
               python card_pipeline.py listing --input card_input.txt --canadianshopper \
-                  --canadianshopper-image-base-url "https://store.piskun.ca/wp-content/uploads/2026/10"
+                  --canadianshopper-image-base-url "https://your-store.example/wp-content/uploads/YYYY/MM"
         """),
     )
 
@@ -1925,7 +2270,7 @@ def main():
     p_list.add_argument(
         "--canadianshopper-image-base-url", default=None,
         help="Public URL folder for uploaded images, e.g. "
-             "https://store.piskun.ca/wp-content/uploads/2026/10"
+             "https://your-store.example/wp-content/uploads/YYYY/MM"
     )
     p_list.add_argument(
         "--feed-wait", type=int, default=5,
@@ -1940,8 +2285,8 @@ def main():
         help="Don't open refresh URL in browser"
     )
     p_list.add_argument(
-        "--browser", default="edge",
-        help="Browser for refresh URL (default: edge)"
+        "--browser", default=None,
+        help="Override the saved browser for the refresh URL"
     )
 
     args = parser.parse_args()

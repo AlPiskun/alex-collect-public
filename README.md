@@ -1,4 +1,4 @@
-# Alex Collect
+# Alex Collect 2.28
 
 Alex Collect is a local desktop control panel for organizing a small trading-card selling workflow. It brings together the card pipeline, WooCommerce order inputs, a sale checklist, photo utilities, and optional plugins.
 
@@ -6,6 +6,10 @@ Alex Collect is a local desktop control panel for organizing a small trading-car
 
 - Run the card pipeline from a Tkinter desktop window.
 - Prepare WooCommerce sale checklists from a typed list or an orders CSV.
+- Configure the store URL, AI page, preferred browser, prompt preferences, seller links, output/scanner folders, Facebook workbook fields, and eBay Quick List templates/defaults in **User Settings** (also available between **View** and **Help**).
+- See `docs/facebook-feed-settings.md` for the Facebook workbook field templates and placeholder reference.
+- Open the configured WordPress media upload page during the listing pipeline, then open the Facebook workbook, its folder, and the configured Facebook review page after export.
+- Optionally prepare selected cards for eBay with a local copy/drag-and-drop Quick List page and sport-template tabs. eBay submission stays manual; the core does not change live eBay listings.
 - Open the relevant seller pages after a sale; the core does not automatically change eBay or Facebook listings.
 - Square card photos for manual uploads.
 - Install optional plugins from a local ZIP using the **Plugins** panel.
@@ -46,9 +50,12 @@ From the `app` directory:
 
 ```sh
 python test-gui.py
+python test-ai-agent-flow.py
+python test-user-settings.py
 python test-plugin-manager.py
 python test-core-sales.py
 python test-facebook-feed.py
+python test-ebay-quicklist.py
 ```
 
 The GUI test needs a working desktop display (or Xvfb on headless Linux).

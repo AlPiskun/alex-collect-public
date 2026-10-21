@@ -109,8 +109,16 @@ class Capture:
 def main():
     ensure_display()
     import tkinter.messagebox as mb
-    answers = {"askyesno": True, "shown": []}
+    answers = {"askyesno": True, "shown": [],
+               "ai_url": "https://ai.example/chat", "opened_urls": [],
+               "next_choice": None, "next_prompts": []}
     mb.askyesno = lambda *a, **k: answers["askyesno"]
+    mb.askyesnocancel = lambda *a, **k: (
+        answers["next_prompts"].append((a, k)) or answers["next_choice"])
+    gui.simpledialog.askstring = lambda *a, **k: answers["ai_url"]
+    gui.launch_urls = lambda urls, browser_id="system", new_window=False: (
+        answers["opened_urls"].extend((url, 2) for url in urls) or
+        "Test browser")
     mb.showinfo = lambda *a, **k: answers["shown"].append(("info", a))
     mb.showwarning = lambda *a, **k: answers["shown"].append(("warn", a))
     mb.showerror = lambda *a, **k: answers["shown"].append(("error", a))
@@ -122,6 +130,7 @@ def main():
     # Preserve any runtime state already present beside the source tree.
     preserved = {}
     for path in (gui.CHECKLIST, gui.SETTINGS_FILE, gui.LOG_FILE,
+                 gui.CS_COOKIE_FILE, gui.BASE / "woo-keys.txt",
                  gui.BASE / "sold-cards.txt", gui.BASE / "needs-photos.txt"):
         preserved[path] = path.read_bytes() if path.is_file() else None
 
@@ -161,6 +170,7 @@ def main():
 
     print("== 1. construction and registry ==")
     app = gui.App()
+    app.settings["browser_name"] = "system"  # avoid modal first-use chooser in tests
     app.withdraw()
     app.update()
     check("window builds", app.winfo_exists())
@@ -316,18 +326,19 @@ def main():
             "1992 Skybox Larry Card\n", encoding="utf-8")
         urls_opened = []
         copied = []
-        old_open_urls = gui.open_edge_urls
+        old_open_urls = app.open_webpages
         old_clipboard_clear = app.clipboard_clear
         old_clipboard_append = app.clipboard_append
         try:
-            gui.open_edge_urls = lambda urls: (urls_opened.extend(urls) or "Test browser")
+            app.open_webpages = lambda urls, **k: (
+                urls_opened.extend(urls) or "Test browser")
             app.clipboard_clear = lambda: None
             app.clipboard_append = lambda title: copied.append(title)
             find_button(app, "eBay", exact=True).invoke()
             cs_box.invoke()
             find_button(app, "Add to the checklist", exact=False).invoke()
         finally:
-            gui.open_edge_urls = old_open_urls
+            app.open_webpages = old_open_urls
             app.clipboard_clear = old_clipboard_clear
             app.clipboard_append = old_clipboard_append
         check("typed sale opens follow-up pages immediately when CS is ticked",
@@ -389,13 +400,13 @@ def main():
     check("declining 'tick everything' writes nothing", len(cap.calls) == n)
     answers["askyesno"] = True
     opened = []
-    old_open_edge_urls = gui.open_edge_urls
-    gui.open_edge_urls = lambda urls, **k: (opened.extend(urls) or "Microsoft Edge")
+    old_open_webpages = app.open_webpages
+    app.open_webpages = lambda urls, **k: (opened.extend(urls) or "Test browser")
     try:
         viewer.vars["2"].set(True)
         viewer.open_link()
     finally:
-        gui.open_edge_urls = old_open_edge_urls
+        app.open_webpages = old_open_webpages
     check("row link opens the eBay page",
           any("ebay.ca" in u for u in opened), str(opened))
     viewer.destroy()
@@ -426,15 +437,42 @@ def main():
     print("== 9. settings ==")
     app.show_mode("menu")
     app.update()
+    menubar = app.nametowidget(app.cget("menu"))
+    menu_labels = [menubar.entrycget(i, "label")
+                   for i in range(menubar.index("end") + 1)]
+    check("User Settings menu is between View and Help",
+          menu_labels == ["View", "User Settings", "Help"], str(menu_labels))
     tasks_frame(app).show_panel("cookie")
     app.update()
+    setting_labels = [w.cget("text") for w in walk(app)
+                      if isinstance(w, gui.ttk.Label)]
+    check("User Settings centralizes store, AI, and folder settings",
+          all(label in setting_labels for label in
+              ("WooCommerce site URL:", "AI chat page URL:",
+               "Browser for webpages opened by Alex Collect:",
+               "Title template:", "Price template:", "Condition:",
+               "Description template:", "Category:",
+               "Product ID template:", "Image URL template:",
+               "Batch folder (card_pipeline.py):", "Scanner folder:")))
     app._pipeline_var.set(str(TMP / "pipeline-test"))
     app._scan_var.set(str(TMP / "scan-test"))
-    find_button(app, "Save folders").invoke()
+    app._user_setting_vars["woo_site_url"].set("https://shop.example")
+    app._user_setting_vars["facebook_feed_condition"].set("Used - Good")
+    feed_description = app._user_setting_vars[
+        "facebook_feed_description_template"]
+    feed_description.delete("1.0", "end")
+    feed_description.insert(
+        "1.0", "Trading Card\\n\\nView and purchase here: {product_url}\\n\\n"
+        "See the store listing for current payment and shipping details.")
+    find_button(app, "Save user settings").invoke()
     s = gui.load_settings()
     check("folders saved to settings",
           s["pipeline_dir"] == str(TMP / "pipeline-test") and
           s["scan_dir"] == str(TMP / "scan-test"), str(s))
+    check("Facebook field settings and multiline description are saved",
+          s["facebook_feed_condition"] == "Used - Good" and
+          "{product_url}" in s["facebook_feed_description_template"] and
+          "See the store listing" in s["facebook_feed_description_template"])
     app.settings.update(s)
     check("startup mode default is the task menu",
           app.settings.get("startup_mode", "menu") == "menu")
@@ -512,6 +550,7 @@ def main():
     back_scan = tmpdir / "back-sheet.png"
     front_scan.write_bytes(b"png"); back_scan.write_bytes(b"png")
     app.settings["pipeline_dir"] = str(tmpdir)
+    app.settings["ai_agent_url"] = ""
     panel("pipeline")
     find_button(app, "Run the card pipeline", exact=False).invoke()
     app.update()
@@ -520,6 +559,10 @@ def main():
                 w.title().lower()), None)
     check("the pipeline dialog appears (prompt reminder included)",
           dlg is not None)
+    check("missing AI URL is prompted, saved, and opened",
+          app.settings.get("ai_agent_url") == "https://ai.example/chat" and
+          ("https://ai.example/chat", 2) in answers["opened_urls"],
+          str(answers["opened_urls"]))
     if dlg:
         find_button(dlg, "Multiple grades", exact=False).invoke()
         try:
@@ -530,12 +573,19 @@ def main():
               "SEO Image titles" in clip and "-[grade]" in clip,
               clip[:60])
         entries = [w for w in walk(dlg) if isinstance(w, gui.ttk.Entry)]
-        check("FRONT and BACK scan rows exist", len(entries) == 2,
+        check("FRONT and BACK scan entries exist", len(entries) == 2,
               str(len(entries)))
         entries[0].delete(0, "end"); entries[0].insert(0, str(front_scan))
         entries[1].delete(0, "end"); entries[1].insert(0, str(back_scan))
         long_answer = "SEO Image titles:\n" + "x" * 220
+        prior_questions = len(answers["next_prompts"])
         app.clipboard_clear(); app.clipboard_append(long_answer); app.update()
+        dlg.refresh_clip()
+        app.update()
+        check("copied AI answer is detected and prompts for the next pipeline step",
+              len(answers["next_prompts"]) == prior_questions + 1 and
+              "build the CSV" in answers["next_prompts"][-1][0][1],
+              str(answers["next_prompts"][-1:] ))
         find_button(dlg, "Split the scans", exact=False).invoke()
         app.update()
         a = cap.last
@@ -631,6 +681,16 @@ def main():
     app.show_mode("wizard")
     app.update()
     w = app._mode_frame.inner.winfo_children()[0]
+    w.page = 1
+    w.render()
+    app.update()
+    app._user_setting_vars["store_name"].set("Wizard auto-save test")
+    find_button(w, "Next step ->").invoke()
+    app.update()
+    saved_by_next = gui.load_settings().get("store_name")
+    check("wizard Next saves settings before advancing",
+          w.page == 2 and saved_by_next == "Wizard auto-save test",
+          "page=%s, store_name=%r" % (w.page, saved_by_next))
     w.page = 1
     w.render()
     app.update()
@@ -1105,39 +1165,57 @@ def main():
     check("leading card-number hash is not mistaken for a comment",
           gui.typed_sale_title("#254 Terry O'Reilly\n") ==
           "#254 Terry O'Reilly")
-    check("Woo follow-up opens the orders list",
-          gui.WOO_ORDERS_ADMIN in
-          gui.sale_followup_urls("Arnie Brown #144", "facebook") and
-          not any("post_type=product" in url
-                  for url in gui.sale_followup_urls("Arnie Brown #144", "facebook")))
-    followups = gui.sale_followup_urls("Arnie Brown #144", "website")
+    seller_settings = {
+        "woo_site_url": "https://shop.example",
+        "ebay_selling_url": "https://www.ebay.example/selling",
+        "facebook_selling_url": "https://social.example/selling",
+        "canadianshopper_store_url": "https://canadianshopper.ca/vendors/test-shop",
+    }
+    woo_orders = "https://shop.example/wp-admin/admin.php?page=wc-orders"
+    cs_store = seller_settings["canadianshopper_store_url"]
+    ebay_page = seller_settings["ebay_selling_url"]
+    fb_page = seller_settings["facebook_selling_url"]
+    check("Woo follow-up uses the configured store URL",
+          woo_orders in gui.sale_followup_urls(
+              "Arnie Brown #144", "facebook", seller_settings))
+    followups = gui.sale_followup_urls(
+        "Arnie Brown #144", "website", seller_settings)
     check("sold-on channel is excluded from browser follow-ups",
-          len(followups) == 3 and gui.WOO_ORDERS_ADMIN not in followups and
-          gui.EBAY_ACTIVE in followups and gui.FB_SELLING in followups and
-          gui.CS_VENDOR_STORE in followups)
-    inperson_followups = gui.sale_followup_urls("Arnie Brown #144", "inperson")
-    check("in-person sale opens CanadianShopper and other follow-up pages",
-          len(inperson_followups) == 4 and
-          gui.CS_VENDOR_STORE in inperson_followups and
-          gui.WOO_ORDERS_ADMIN in inperson_followups and
-          gui.EBAY_ACTIVE in inperson_followups and gui.FB_SELLING in inperson_followups)
-    cs_followups = gui.sale_followup_urls("Arnie Brown #144", "canadianshopper")
-    check("CanadianShopper sale opens follow-ups for the other sources",
-          len(cs_followups) == 3 and gui.WOO_ORDERS_ADMIN in cs_followups and
-          gui.EBAY_ACTIVE in cs_followups and gui.FB_SELLING in cs_followups and
-          gui.CS_VENDOR_STORE not in cs_followups)
-    edge_calls = []
-    old_popen = gui.subprocess.Popen
+          len(followups) == 3 and woo_orders not in followups and
+          ebay_page in followups and fb_page in followups and cs_store in followups)
+    inperson_followups = gui.sale_followup_urls(
+        "Arnie Brown #144", "inperson", seller_settings)
+    check("in-person sale opens configured follow-up pages",
+          len(inperson_followups) == 4 and cs_store in inperson_followups and
+          woo_orders in inperson_followups and ebay_page in inperson_followups and
+          fb_page in inperson_followups)
+    cs_followups = gui.sale_followup_urls(
+        "Arnie Brown #144", "canadianshopper", seller_settings)
+    check("CanadianShopper sale opens the other configured channels",
+          len(cs_followups) == 3 and woo_orders in cs_followups and
+          ebay_page in cs_followups and fb_page in cs_followups and
+          cs_store not in cs_followups)
+    browser_calls = []
+    old_launch_urls = gui.launch_urls
+    old_browser_name = app.settings.get("browser_name")
     try:
-        gui.subprocess.Popen = lambda command: edge_calls.append(command)
-        picked = gui.open_edge_urls(["https://store.example/", "https://ebay.example/"],
-                                    edge_path=str(TMP / "msedge.exe"))
+        app.settings["browser_name"] = "chrome"
+        gui.launch_urls = lambda urls, browser_id="system", new_window=False: (
+            browser_calls.append((list(urls), browser_id, new_window)) or
+            "Google Chrome")
+        picked = app.open_webpages(
+            ["https://store.example/", "https://ebay.example/"],
+            new_window=True)
     finally:
-        gui.subprocess.Popen = old_popen
-    check("Edge opens all follow-up pages in one new window",
-          picked == "Microsoft Edge" and edge_calls == [[
-              str(TMP / "msedge.exe"), "--new-window", "https://store.example/",
-              "https://ebay.example/"]])
+        gui.launch_urls = old_launch_urls
+        if old_browser_name is None:
+            app.settings.pop("browser_name", None)
+        else:
+            app.settings["browser_name"] = old_browser_name
+    check("selected browser opens every follow-up page",
+          picked == "Google Chrome" and browser_calls == [(
+              ["https://store.example/", "https://ebay.example/"],
+              "chrome", True)])
     # Tool confirmations/match pickers use a private stream protocol so a
     # nested CanadianShopper tool can request a real Tk dialog before writes.
     runner = gui.Runner(app)
@@ -1187,9 +1265,10 @@ def main():
     shipped_pipe = gui.BASE / "pipeline" / "card_pipeline.py"
     stub_hook = (
         "def run_stage(output_paths, args=None, script_dir=None, "
-        "output_dir=None, tools_dir=None, cookie_file=None):\n"
+        "output_dir=None, tools_dir=None, cookie_file=None, browser_name=None):\n"
         "    print('STAGE-RAN tools=%s' % tools_dir)\n"
         "    print('STAGE-COOKIE=%s' % cookie_file)\n"
+        "    print('STAGE-BROWSER=%s' % browser_name)\n"
         "    print('STAGE-N=%d' % len(list(output_paths)))\n")
     inp_txt = "SEO Image titles:\n" + "x" * 220
 
@@ -1200,6 +1279,11 @@ def main():
         (d / "pipeline" / "canadianshopper" / "tools").mkdir(parents=True)
         shutil.copyfile(shipped_pipe, d / "pipeline" / "card_pipeline.py")
         shutil.copyfile(HERE / "plugin_manager.py", d / "plugin_manager.py")
+        shutil.copyfile(HERE / "browser_utils.py", d / "browser_utils.py")
+        shutil.copyfile(HERE / "user_settings.py", d / "user_settings.py")
+        (d / "gui-settings.json").write_text(json.dumps({
+            "browser_name": "test-browser",
+            "woo_site_url": "https://shop.example"}), encoding="utf-8")
         isolated_env = os.environ.copy()
         if os.name == "nt":
             isolated_env["LOCALAPPDATA"] = str(d / "local-app-data")
@@ -1281,6 +1365,8 @@ def main():
     check("the core cookie path is passed to the plugin hook",
           "STAGE-COOKIE=" + str(plugin_base / "cookie.txt") in r.stdout,
           r.stdout[-260:])
+    check("the configured browser is passed to the plugin hook",
+          "STAGE-BROWSER=test-browser" in r.stdout, r.stdout[-260:])
     r = sandbox("gui-v221-plugin-disabled", install_root=True,
                 plugin=True, plugin_enabled=False)
     check("disabled managed plugin does not fall through to stale legacy tools",
@@ -1389,6 +1475,19 @@ def main():
         _Img.new("RGB", (60, 60), "white").save(dfront)
         _Img.new("RGB", (60, 60), "black").save(dback)
     dlg = app.open_pipeline_with_scans([str(dfront), str(dback)])
+    old_scan_picker = gui.filedialog.askopenfilename
+    picker_call = {}
+    gui.filedialog.askopenfilename = lambda **kwargs: (
+        picker_call.update(kwargs) or str(dfront))
+    try:
+        find_button(dlg, "Browse...").invoke()
+        app.update()
+        check("scan chooser is parented to the pipeline dialog",
+              picker_call.get("parent") is dlg)
+        check("pipeline dialog remains open after choosing a scan",
+              dlg.winfo_exists() and dlg.state() != "iconic")
+    finally:
+        gui.filedialog.askopenfilename = old_scan_picker
     check("the drop pre-fills FRONT and BACK",
           dlg.front_var.get() == str(dfront) and
           dlg.back_var.get() == str(dback))

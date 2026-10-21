@@ -6,6 +6,7 @@ Uses a fake requests module and a tiny synthetic Google product feed; no
 network requests or seller credentials are involved.
 """
 import csv
+import json
 import os
 import shutil
 import subprocess
@@ -40,6 +41,9 @@ def make_sandbox(parent, batch_names):
     feed_dir = pipeline / "facebook_merchant_products"
     feed_dir.mkdir(parents=True)
     shutil.copyfile(FEED_SCRIPT, feed_dir / "facebook_feed.py")
+    shutil.copyfile(APP / "user_settings.py", parent / "user_settings.py")
+    (parent / "gui-settings.json").write_text(
+        '{"woo_site_url":"https://example.test"}', encoding="utf-8")
 
     entries = [
         ("1001", "Older live card"),
@@ -106,20 +110,63 @@ def test_first_run_delta_and_baseline(root):
     history_path = feed_dir / "facebook_history.xlsx"
     delta_ids = set()
     history_ids = set()
+    delta_frame = pd.DataFrame()
     if deltas and history_path.is_file():
-        delta_ids = set(pd.read_excel(deltas[-1], dtype={"id": str})["id"])
+        delta_frame = pd.read_excel(deltas[-1], dtype={"id": str})
+        delta_ids = set(delta_frame["id"])
         history_ids = set(pd.read_excel(history_path, dtype={"id": str})["id"])
     check("first run exits successfully under cp1252", result.returncode == 0,
           output[-1200:])
     check("first-run delta is exactly the current two-row Woo batch",
           len(deltas) == 1 and delta_ids == {"1002", "1003"},
           "delta ids=%r; output tail=%s" % (delta_ids, output[-800:]))
+    check("Facebook workbook includes the requested condition",
+          "CONDITION" in delta_frame and
+          set(delta_frame["CONDITION"].dropna()) == {"Used - Good"},
+          str(delta_frame.get("CONDITION", "missing").tolist()))
+    check("Facebook workbook description uses the configurable template",
+          "DESCRIPTION" in delta_frame and
+          "Trading Card\\n\\nView and purchase here: "
+          "https://example.test/product/1002" in
+          str(delta_frame.iloc[0].get("DESCRIPTION", "")),
+          str(delta_frame.iloc[0].get("DESCRIPTION", "") if not delta_frame.empty else "empty"))
     check("first-run history baselines all live feed products",
           history_ids == {"1001", "1002", "1003"},
           "history ids=%r" % history_ids)
     check("preview identifies the selected Woo CSV and two-product delta",
           "woocommerce_import_20261019_120000.csv" in output and
           "New products: 2" in output and "2426" not in output,
+          output[-1000:])
+
+
+def test_saved_feed_field_overrides_are_applied(root):
+    feed_dir = make_sandbox(root / "custom-fields", ["Fresh batch alpha"])
+    settings_path = feed_dir.parents[1] / "gui-settings.json"
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    settings.update({
+        "facebook_feed_title_template": "{title} - Test Edition",
+        "facebook_feed_price_template": "{price:.2f}",
+        "facebook_feed_condition": "Used - Good",
+        "facebook_feed_description_template": (
+            "Custom: {description} / {product_url}"),
+        "facebook_feed_category": "Test Cards",
+        "facebook_feed_id_template": "SKU-{id}",
+        "facebook_feed_image_link_template": "https://images.example/{id}.jpg",
+    })
+    settings_path.write_text(json.dumps(settings), encoding="utf-8")
+    result, output = run_script(feed_dir, "\n")
+    deltas = list(feed_dir.glob("facebook_delta_*.xlsx"))
+    frame = pd.read_excel(deltas[-1], dtype={"id": str}) if deltas else pd.DataFrame()
+    check("custom Facebook field settings reach the generated workbook",
+          result.returncode == 0 and not frame.empty and
+          frame.iloc[0]["TITLE"] == "Fresh batch alpha - Test Edition" and
+          float(frame.iloc[0]["PRICE"]) == 4.0 and
+          frame.iloc[0]["CONDITION"] == "Used - Good" and
+          frame.iloc[0]["CATEGORY"] == "Test Cards" and
+          frame.iloc[0]["id"] == "SKU-1002" and
+          frame.iloc[0]["image_link"] == "https://images.example/1002.jpg" and
+          frame.iloc[0]["DESCRIPTION"] ==
+          "Custom: Test listing / https://example.test/product/1002",
           output[-1000:])
 
 
@@ -170,6 +217,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="alexcollect-feed-test-") as tmp:
         root = Path(tmp)
         test_first_run_delta_and_baseline(root)
+        test_saved_feed_field_overrides_are_applied(root)
         test_ambiguous_or_missing_batch_fails_closed(root)
         test_nested_gui_python_uses_console_interpreter(root)
     print("ALL CHECKS PASSED (%d)" % PASS if not FAIL else

@@ -20,7 +20,7 @@ def check(label, ok, detail=""):
 def main():
     with tempfile.TemporaryDirectory(prefix="alexcollect-core-sales-") as td:
         work = Path(td)
-        for name in ("sold-everywhere.py", "sale_inputs.py"):
+        for name in ("sold-everywhere.py", "sale_inputs.py", "user_settings.py"):
             shutil.copyfile(APP / name, work / name)
         check("fixture excludes CanadianShopper implementation",
               not (work / "sold-cards.py").exists())

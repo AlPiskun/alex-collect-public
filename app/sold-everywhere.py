@@ -7,15 +7,15 @@ WHY
     A vintage card is one unique copy, but it is advertised in up to four
     places at once:
 
-        your website (store.piskun.ca)   <- where the order came from
+        your WooCommerce site           <- where the order came from
         CanadianShopper                  <- never reduces stock by itself
-        eBay                             <- 250 free listings a month
-        Facebook Marketplace             <- personal account: one tap each
+        eBay                             <- seller page configured in User Settings
+        Facebook Marketplace             <- seller page configured in User Settings
 
     Whichever one sells, the other three keep advertising the card, and the
     customer who gets there first is a double sale. CanadianShopper can be
-    changed for you (sold-cards.py). eBay and Facebook have no bulk tools for a
-    personal account, so what they need is a checklist that (a) names every card
+    changed for you (sold-cards.py). eBay and Facebook updates are manual, so
+    what they need is a checklist that (a) names every card
     still advertised somewhere, (b) links straight to the listing pages, and
     (c) keeps telling you until it is done.
 
@@ -53,6 +53,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+from user_settings import default_scan_dir, load_user_settings, site_admin_url
+
+USER_SETTINGS = load_user_settings(HERE / "gui-settings.json")
 
 CHECKLIST_COLUMNS = ["num", "done", "card", "channel", "what to do", "link",
                      "added", "ref"]
@@ -64,10 +67,10 @@ CHANNEL_LABEL = {
     "facebook": "Facebook",
     "photos": "photos",
 }
-EBAY_LINK = "https://www.ebay.ca/sh/lst/active"
-FB_LINK = "https://www.facebook.com/marketplace/you/selling"
-SITE_LINK = "https://store.piskun.ca/wp-admin/edit.php?post_type=product"
-DEFAULT_SCAN_DIR = r"C:\Users\Owner\Pictures\ControlCenter4\Scan"
+EBAY_LINK = USER_SETTINGS.get("ebay_selling_url", "")
+FB_LINK = USER_SETTINGS.get("facebook_selling_url", "")
+SITE_LINK = site_admin_url("wp-admin/edit.php?post_type=product", USER_SETTINGS)
+DEFAULT_SCAN_DIR = USER_SETTINGS.get("scan_dir") or default_scan_dir()
 
 
 # --------------------------------------------------------------------------- helpers
@@ -188,9 +191,11 @@ def make_row(card, channel, action, link, ref):
 def channel_rows(card, qty, last_left, sold_on, ref, scan_dir):
     rows = []
     if sold_on != "website":
+        woo_link = (SITE_LINK + "&s=" + urllib.parse.quote_plus(card[:60])
+                    if SITE_LINK else "")
         rows.append(make_row(card, "website",
                              action_for("website", qty, last_left, scan_dir),
-                             SITE_LINK + "&s=" + urllib.parse.quote_plus(card[:60]), ref))
+                             woo_link, ref))
     if sold_on != "canadianshopper":
         rows.append(make_row(
             card, "canadianshopper",

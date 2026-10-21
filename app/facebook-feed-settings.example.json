@@ -1,0 +1,9 @@
+{
+  "facebook_feed_title_template": "{title} Trading Card",
+  "facebook_feed_price_template": "{price}",
+  "facebook_feed_condition": "Used - Good",
+  "facebook_feed_description_template": "Trading Card\n\nView and purchase here: {product_url}\n\nSee the store listing for current payment and shipping details.",
+  "facebook_feed_category": "Antiques & Collectibles",
+  "facebook_feed_id_template": "{id}",
+  "facebook_feed_image_link_template": "{image_link}"
+}

@@ -28,25 +28,26 @@ import os
 import queue
 import re
 import shutil
+import string
 import subprocess
 import sys
 import threading
 import time
-import webbrowser
 from datetime import datetime
 from pathlib import Path
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from browser_utils import available_browsers, browser_label, open_urls as launch_urls
 from plugin_manager import PluginError, PluginManager
+from user_settings import (default_scan_dir, load_user_settings,
+                           normalize_web_url, site_admin_url,
+                           sync_site_url_to_woo_keys)
 
-VERSION = "2.21"
+VERSION = "2.28"
 
-if sys.platform == "win32":
-    DEFAULT_SCAN_DIR = r"C:\Users\Owner\Pictures\ControlCenter4\Scan"
-else:
-    DEFAULT_SCAN_DIR = str(Path.home() / "Pictures" / "Scan")
+DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
 
 BASE = Path(__file__).resolve().parent          # the tools folder
@@ -103,46 +104,8 @@ LOG_FILE = BASE / "gui-log.txt"
 CHECKLIST = BASE / "sold-cards-checklist.csv"
 CS_COOKIE_FILE = BASE / "cookie.txt"
 CS_HOME = "https://canadianshopper.ca"
-CS_VENDOR_STORE = "https://canadianshopper.ca/vendors/alex-collect"
-EBAY_ACTIVE = "https://www.ebay.ca/sh/lst/active"
-FB_SELLING = "https://www.facebook.com/marketplace/you/selling"
-WOO_ORDERS_ADMIN = "https://store.piskun.ca/wp-admin/admin.php?page=wc-orders"
 _TOOL_DIALOG_START = "\x1eALEX_COLLECT_DIALOG:"
 _TOOL_DIALOG_END = "\x1f"
-
-
-def find_edge_executable():
-    """Find the installed Microsoft Edge executable, or return empty."""
-    found = shutil.which("msedge.exe") or shutil.which("msedge")
-    if found:
-        return found
-    candidates = []
-    for env_name in ("PROGRAMFILES(X86)", "PROGRAMFILES", "LOCALAPPDATA"):
-        root = os.environ.get(env_name)
-        if root:
-            candidates.append(Path(root) / "Microsoft" / "Edge" /
-                              "Application" / "msedge.exe")
-    for candidate in candidates:
-        if candidate.is_file():
-            return str(candidate)
-    return ""
-
-
-def open_edge_urls(urls, edge_path=None):
-    """Open URLs in one new Edge window; fall back to the default browser."""
-    urls = [str(url) for url in urls if str(url).strip()]
-    if not urls:
-        return ""
-    edge = edge_path or find_edge_executable()
-    if edge:
-        try:
-            subprocess.Popen([str(edge), "--new-window"] + urls)
-            return "Microsoft Edge"
-        except Exception as exc:
-            log("Edge launch failed: %s" % exc)
-    for url in urls:
-        webbrowser.open_new_tab(url)
-    return "the default browser"
 
 
 def is_sale_comment(line):
@@ -164,17 +127,20 @@ def typed_sale_title(text):
     return title or None
 
 
-def sale_followup_urls(title, sold_on):
-    """Known seller pages for channels other than the one the sale came from."""
+def sale_followup_urls(title, sold_on, settings=None):
+    """Seller pages for other channels, using the user's saved URLs."""
+    settings = settings or load_settings()
     urls = []
-    if sold_on != "website":
-        urls.append(WOO_ORDERS_ADMIN)
-    if sold_on != "ebay":
-        urls.append(EBAY_ACTIVE)
-    if sold_on != "facebook":
-        urls.append(FB_SELLING)
-    if sold_on != "canadianshopper":
-        urls.append(CS_VENDOR_STORE)
+    woo_orders = site_admin_url("wp-admin/admin.php?page=wc-orders", settings)
+    if sold_on != "website" and woo_orders:
+        urls.append(woo_orders)
+    if sold_on != "ebay" and settings.get("ebay_selling_url"):
+        urls.append(settings["ebay_selling_url"])
+    if sold_on != "facebook" and settings.get("facebook_selling_url"):
+        urls.append(settings["facebook_selling_url"])
+    if (sold_on != "canadianshopper" and
+            settings.get("canadianshopper_store_url")):
+        urls.append(settings["canadianshopper_store_url"])
     return urls
 
 
@@ -182,17 +148,10 @@ def sale_followup_urls(title, sold_on):
 
 # ---------------------------------------------------------------- settings
 def load_settings():
-    s = {
-        "startup_mode": "menu",       # wizard | menu | tabs  (after first run)
-        "seen_wizard": False,
-        "pipeline_dir": str(WORK),
-        "scan_dir": DEFAULT_SCAN_DIR,
-    }
-    try:
-        s.update(json.loads(SETTINGS_FILE.read_text(encoding="utf-8")))
-    except Exception:
-        pass
-    # a stale saved folder (e.g. the folder moved) must not hide the pipeline
+    s = load_user_settings(SETTINGS_FILE)
+    if not s.get("pipeline_dir"):
+        s["pipeline_dir"] = str(WORK)
+    # A stale saved folder (e.g. the folder moved) must not hide the pipeline.
     if not (Path(s["pipeline_dir"]) / "card_pipeline.py").exists() and \
             (WORK / "card_pipeline.py").exists():
         s["pipeline_dir"] = str(WORK)
@@ -337,8 +296,8 @@ def urllib_request(url, headers=None, timeout=15):
 #  headers the card pipeline eats. Editable: the .txt files next to gui.py
 #  win over these embedded copies.
 PROMPT_FALLBACKS = {
-    "multi": 'I am listing 9 single trading cards on my e-commerce site Alex Collect. I need high-conversion, SEO-friendly product listings based on images of 9-card sheets. Do not use bulleted lists or — in the output.\nI\'m uploading two images of the same 3x3 sheet of trading cards in a protective sleeve:\n1. FRONT of all 9 cards\n2. BACK of all 9 cards (same 9 cards, sheet flipped horizontally like a page)\n\nGRID NUMBERING (based on the FRONT image):\n[1][2][3]\n[4][5][6]\n[7][8][9]\n\nPosition 1 = top-left, reading left-to-right then top-to-bottom, like English text.\n\nMAPPING BACK IMAGE TO FRONT POSITIONS:\nBecause the sheet is flipped horizontally (like a page turn), each row stays in the same row, but the column order reverses:\n- Left column on BACK = Right column on FRONT\n- Middle column on BACK = Middle column on FRONT\n- Right column on BACK = Left column on FRONT\n\nSo: BACK position 1 → FRONT position 3, BACK position 2 → FRONT position 2, BACK position 3 → FRONT position 1, BACK position 4 → FRONT position 6, BACK position 5 → FRONT position 5, BACK position 6 → FRONT position 4, BACK position 7 → FRONT position 9, BACK position 8 → FRONT position 8, BACK position 9 → FRONT position 7.\n\nWAIT until both images are uploaded before responding.\n\nOnce both images are provided, output results in FRONT position order (1 through 9), using this format for each:\n\nPosition [X] [card details] \nSEO Image titles (must be unique):\n[Manufactures Card #]-[Player Name]-[Year(s)]-[Brand]-front-[grade]\n[Manufactures Card #]-[Player Name]-[Year(s)]-[Brand]-back-[grade]\n\nSEO Title: (Format: \n[Year] [Brand] [Player/Character Name] #[Card #] [Key Rookie/Insert Info] [Team/Series]) Product Description: (400+ words. Write a seamless, paragraph-only narrative with a hook intro, historical context, specific pop-culture or sporting achievements, and a \'Condition Report\' section detailing the exact corner wear, edge chipping, and centering seen in the photos. Explicitly state if it is a Canadian O-Pee-Chee bilingual back or puzzle back. Include a conservative grade estimate explanation). \n\nGrade Estimate: \n(Carefully analyse for creases, wrinkles and marks. Provide a conservative raw grade estimate based on photos e.g., EX-MT 6). Price \n\nRecommendation: \n(Single price rounded up to the nearest Canadian dollar based on current market value of RAW grade). \n\nPrimary SEO Keyword: \n(Best high-volume search phrase, matching the title exactly and woven naturally into the description). \n\nWooCommerce Tag Bundle: \n(A comma-separated string of exactly 8 relevant tags).\n\nSTRICT OUTPUT FORMAT — DO NOT DEVIATE: This output gets parsed automatically by a script, so the seven headers below must appear EXACTLY as written, character-for-character, every time, with no variation across cards or across responses:\n\nSEO Image titles: SEO Title: Product Description: Grade Estimate: Price Recommendation: Primary SEO Keyword: WooCommerce Tag Bundle:\n\nFollow these rules with no exceptions:\n\nUse these exact seven header strings, spelled and worded exactly as shown above. Never rename, reword, or paraphrase a header (for example, never write "Raw Grade Estimate:" instead of "Grade Estimate:", and never split "SEO Image titles:" into separate "Front SEO Image Title:" / "Back SEO Image Title:" headers).\nEach header goes on its own line, followed immediately by a colon and nothing else on that line — no parenthetical notes, no asides, no instructions repeated back (for example, never write "SEO Image titles (must be unique):").\nDo not bold, italicize, or otherwise wrap any header in markdown (no Grade Estimate:).\n"SEO Image titles:" is always followed by exactly two lines: the front filename, then the back filename, in that order, with no blank line between them and nothing else on those lines.\nThe "Condition Report" sentence inside the Product Description must begin with the literal words "Condition Report:" (with the colon) so it can be identified within the paragraph, but it stays embedded in the Product Description narrative as instructed above — do not give it its own top-level header.\nThe content under "Grade Estimate:" should lead with the short letter/number grade itself (e.g. "EX 5" or "VG-EX 4") before any explanatory sentence, so the grade is the very first thing after the header.\nThe content under "Price Recommendation:" should be a single price only, formatted as "C$" followed by a whole number (e.g. "C$9"), with no extra words like "Canadian dollars."\nDo not insert any other headers, section titles, or labels anywhere in the output beyond the seven listed above.\n\nThe first image (attached) is the FRONT, please wait for the BACK image to follow.',
-    "single": 'I am listing 9 single trading cards on my e-commerce site Alex Collect. I need high-conversion, SEO-friendly product listings based on images of 9-card sheets. Do not use bulleted lists or — in the output.\nI\'m uploading two images of the same 3x3 sheet of trading cards in a protective sleeve:\n1. FRONT of all 9 cards\n2. BACK of all 9 cards (same 9 cards, sheet flipped horizontally like a page)\n\nGRID NUMBERING (based on the FRONT image):\n[1][2][3]\n[4][5][6]\n[7][8][9]\n\nPosition 1 = top-left, reading left-to-right then top-to-bottom, like English text.\n\nMAPPING BACK IMAGE TO FRONT POSITIONS:\nBecause the sheet is flipped horizontally (like a page turn), each row stays in the same row, but the column order reverses:\n- Left column on BACK = Right column on FRONT\n- Middle column on BACK = Middle column on FRONT\n- Right column on BACK = Left column on FRONT\n\nSo: BACK position 1 → FRONT position 3, BACK position 2 → FRONT position 2, BACK position 3 → FRONT position 1, BACK position 4 → FRONT position 6, BACK position 5 → FRONT position 5, BACK position 6 → FRONT position 4, BACK position 7 → FRONT position 9, BACK position 8 → FRONT position 8, BACK position 9 → FRONT position 7.\n\nWAIT until both images are uploaded before responding.\n\nOnce both images are provided, output results in FRONT position order (1 through 9), using this format for each:\n\nPosition [X] [card details] \nSEO Image titles: \n[Manufactures Card #]-[Player/Character Name]-[Year(s)]-[Brand]-front \n[Manufactures Card #]-[Player/Character Name]-[Year(s)]-[Brand]-back\n \nSEO Title: (Format: \n[Year] [Brand] [Player/Character Name] #[Card #] [Key Rookie/Insert Info] [Team/Series]) Product Description: (400+ words. Write a seamless, paragraph-only narrative with a hook intro, historical context, specific pop-culture or sporting achievements, and a \'Condition Report\' section detailing the exact corner wear, edge chipping, and centering seen in the photos. Explicitly state if it is a Canadian O-Pee-Chee bilingual back or puzzle back. Include a conservative grade estimate explanation). \n\nGrade Estimate: \n(Carefully analyse for creases, wrinkles and marks. Provide a conservative raw grade estimate based on photos e.g., EX-MT 6). Price \n\nRecommendation: \n(Single price rounded up to the nearest Canadian dollar based on current market value of RAW grade). \n\nPrimary SEO Keyword: \n(Best high-volume search phrase, matching the title exactly and woven naturally into the description). \n\nWooCommerce Tag Bundle: \n(A comma-separated string of exactly 8 relevant tags).\n\nSTRICT OUTPUT FORMAT — DO NOT DEVIATE: This output gets parsed automatically by a script, so the seven headers below must appear EXACTLY as written, character-for-character, every time, with no variation across cards or across responses:\n\nSEO Image titles: SEO Title: Product Description: Grade Estimate: Price Recommendation: Primary SEO Keyword: WooCommerce Tag Bundle:\n\nFollow these rules with no exceptions:\n\nUse these exact seven header strings, spelled and worded exactly as shown above. Never rename, reword, or paraphrase a header (for example, never write "Raw Grade Estimate:" instead of "Grade Estimate:", and never split "SEO Image titles:" into separate "Front SEO Image Title:" / "Back SEO Image Title:" headers).\nEach header goes on its own line, followed immediately by a colon and nothing else on that line — no parenthetical notes, no asides, no instructions repeated back (for example, never write "SEO Image titles (must be unique):").\nDo not bold, italicize, or otherwise wrap any header in markdown (no Grade Estimate:).\n"SEO Image titles:" is always followed by exactly two lines: the front filename, then the back filename, in that order, with no blank line between them and nothing else on those lines.\nThe "Condition Report" sentence inside the Product Description must begin with the literal words "Condition Report:" (with the colon) so it can be identified within the paragraph, but it stays embedded in the Product Description narrative as instructed above — do not give it its own top-level header.\nThe content under "Grade Estimate:" should lead with the short letter/number grade itself (e.g. "EX 5" or "VG-EX 4") before any explanatory sentence, so the grade is the very first thing after the header.\nThe content under "Price Recommendation:" should be a single price only, formatted as "C$" followed by a whole number (e.g. "C$9"), with no extra words like "Canadian dollars."\nDo not insert any other headers, section titles, or labels anywhere in the output beyond the seven listed above.\n\nThe first image (attached) is the FRONT, please wait for the BACK image to follow.',
+    "multi": 'I am listing 9 single trading cards for {{STORE_NAME}}. I need high-conversion, SEO-friendly product listings based on images of 9-card sheets. Do not use bulleted lists or — in the output.\nI\'m uploading two images of the same 3x3 sheet of trading cards in a protective sleeve:\n1. FRONT of all 9 cards\n2. BACK of all 9 cards (same 9 cards, sheet flipped horizontally like a page)\n\nGRID NUMBERING (based on the FRONT image):\n[1][2][3]\n[4][5][6]\n[7][8][9]\n\nPosition 1 = top-left, reading left-to-right then top-to-bottom, like English text.\n\nMAPPING BACK IMAGE TO FRONT POSITIONS:\nBecause the sheet is flipped horizontally (like a page turn), each row stays in the same row, but the column order reverses:\n- Left column on BACK = Right column on FRONT\n- Middle column on BACK = Middle column on FRONT\n- Right column on BACK = Left column on FRONT\n\nSo: BACK position 1 → FRONT position 3, BACK position 2 → FRONT position 2, BACK position 3 → FRONT position 1, BACK position 4 → FRONT position 6, BACK position 5 → FRONT position 5, BACK position 6 → FRONT position 4, BACK position 7 → FRONT position 9, BACK position 8 → FRONT position 8, BACK position 9 → FRONT position 7.\n\nWAIT until both images are uploaded before responding.\n\nOnce both images are provided, output results in FRONT position order (1 through 9), using this format for each:\n\nPosition [X] [card details] \nSEO Image titles (must be unique):\n[Manufactures Card #]-[Player Name]-[Year(s)]-[Brand]-front-[grade]\n[Manufactures Card #]-[Player Name]-[Year(s)]-[Brand]-back-[grade]\n\nSEO Title: (Format: \n[Year] [Brand] [Player/Character Name] #[Card #] [Key Rookie/Insert Info] [Team/Series]) Product Description: ({{DESCRIPTION_MIN_WORDS}}+ words. Write a seamless, paragraph-only narrative with a hook intro, historical context, specific pop-culture or sporting achievements, and a \'Condition Report\' section detailing the exact corner wear, edge chipping, and centering seen in the photos. {{LISTING_CONTEXT}} Include a conservative grade estimate explanation). \n\nGrade Estimate: \n(Carefully analyse for creases, wrinkles and marks. Provide a conservative raw grade estimate based on photos e.g., EX-MT 6). Price \n\nRecommendation: \n(Single price rounded up to the nearest {{CURRENCY_NAME}} based on current market value of RAW grade). \n\nPrimary SEO Keyword: \n(Best high-volume search phrase, matching the title exactly and woven naturally into the description). \n\nWooCommerce Tag Bundle: \n(A comma-separated string of exactly {{TAG_COUNT}} relevant tags).\n\nSTRICT OUTPUT FORMAT — DO NOT DEVIATE: This output gets parsed automatically by a script, so the seven headers below must appear EXACTLY as written, character-for-character, every time, with no variation across cards or across responses:\n\nSEO Image titles: SEO Title: Product Description: Grade Estimate: Price Recommendation: Primary SEO Keyword: WooCommerce Tag Bundle:\n\nFollow these rules with no exceptions:\n\nUse these exact seven header strings, spelled and worded exactly as shown above. Never rename, reword, or paraphrase a header (for example, never write "Raw Grade Estimate:" instead of "Grade Estimate:", and never split "SEO Image titles:" into separate "Front SEO Image Title:" / "Back SEO Image Title:" headers).\nEach header goes on its own line, followed immediately by a colon and nothing else on that line — no parenthetical notes, no asides, no instructions repeated back (for example, never write "SEO Image titles (must be unique):").\nDo not bold, italicize, or otherwise wrap any header in markdown (no Grade Estimate:).\n"SEO Image titles:" is always followed by exactly two lines: the front filename, then the back filename, in that order, with no blank line between them and nothing else on those lines.\nThe "Condition Report" sentence inside the Product Description must begin with the literal words "Condition Report:" (with the colon) so it can be identified within the paragraph, but it stays embedded in the Product Description narrative as instructed above — do not give it its own top-level header.\nThe content under "Grade Estimate:" should lead with the short letter/number grade itself (e.g. "EX 5" or "VG-EX 4") before any explanatory sentence, so the grade is the very first thing after the header.\nThe content under "Price Recommendation:" should be a single price only, formatted as "{{CURRENCY_PREFIX}}" followed by a whole number (e.g. "{{CURRENCY_PREFIX}}9"), with no extra words.\nDo not insert any other headers, section titles, or labels anywhere in the output beyond the seven listed above.',
+    "single": 'I am listing 9 single trading cards for {{STORE_NAME}}. I need high-conversion, SEO-friendly product listings based on images of 9-card sheets. Do not use bulleted lists or — in the output.\nI\'m uploading two images of the same 3x3 sheet of trading cards in a protective sleeve:\n1. FRONT of all 9 cards\n2. BACK of all 9 cards (same 9 cards, sheet flipped horizontally like a page)\n\nGRID NUMBERING (based on the FRONT image):\n[1][2][3]\n[4][5][6]\n[7][8][9]\n\nPosition 1 = top-left, reading left-to-right then top-to-bottom, like English text.\n\nMAPPING BACK IMAGE TO FRONT POSITIONS:\nBecause the sheet is flipped horizontally (like a page turn), each row stays in the same row, but the column order reverses:\n- Left column on BACK = Right column on FRONT\n- Middle column on BACK = Middle column on FRONT\n- Right column on BACK = Left column on FRONT\n\nSo: BACK position 1 → FRONT position 3, BACK position 2 → FRONT position 2, BACK position 3 → FRONT position 1, BACK position 4 → FRONT position 6, BACK position 5 → FRONT position 5, BACK position 6 → FRONT position 4, BACK position 7 → FRONT position 9, BACK position 8 → FRONT position 8, BACK position 9 → FRONT position 7.\n\nWAIT until both images are uploaded before responding.\n\nOnce both images are provided, output results in FRONT position order (1 through 9), using this format for each:\n\nPosition [X] [card details] \nSEO Image titles: \n[Manufactures Card #]-[Player/Character Name]-[Year(s)]-[Brand]-front \n[Manufactures Card #]-[Player/Character Name]-[Year(s)]-[Brand]-back\n \nSEO Title: (Format: \n[Year] [Brand] [Player/Character Name] #[Card #] [Key Rookie/Insert Info] [Team/Series]) Product Description: ({{DESCRIPTION_MIN_WORDS}}+ words. Write a seamless, paragraph-only narrative with a hook intro, historical context, specific pop-culture or sporting achievements, and a \'Condition Report\' section detailing the exact corner wear, edge chipping, and centering seen in the photos. {{LISTING_CONTEXT}} Include a conservative grade estimate explanation). \n\nGrade Estimate: \n(Carefully analyse for creases, wrinkles and marks. Provide a conservative raw grade estimate based on photos e.g., EX-MT 6). Price \n\nRecommendation: \n(Single price rounded up to the nearest {{CURRENCY_NAME}} based on current market value of RAW grade). \n\nPrimary SEO Keyword: \n(Best high-volume search phrase, matching the title exactly and woven naturally into the description). \n\nWooCommerce Tag Bundle: \n(A comma-separated string of exactly {{TAG_COUNT}} relevant tags).\n\nSTRICT OUTPUT FORMAT — DO NOT DEVIATE: This output gets parsed automatically by a script, so the seven headers below must appear EXACTLY as written, character-for-character, every time, with no variation across cards or across responses:\n\nSEO Image titles: SEO Title: Product Description: Grade Estimate: Price Recommendation: Primary SEO Keyword: WooCommerce Tag Bundle:\n\nFollow these rules with no exceptions:\n\nUse these exact seven header strings, spelled and worded exactly as shown above. Never rename, reword, or paraphrase a header (for example, never write "Raw Grade Estimate:" instead of "Grade Estimate:", and never split "SEO Image titles:" into separate "Front SEO Image Title:" / "Back SEO Image Title:" headers).\nEach header goes on its own line, followed immediately by a colon and nothing else on that line — no parenthetical notes, no asides, no instructions repeated back (for example, never write "SEO Image titles (must be unique):").\nDo not bold, italicize, or otherwise wrap any header in markdown (no Grade Estimate:).\n"SEO Image titles:" is always followed by exactly two lines: the front filename, then the back filename, in that order, with no blank line between them and nothing else on those lines.\nThe "Condition Report" sentence inside the Product Description must begin with the literal words "Condition Report:" (with the colon) so it can be identified within the paragraph, but it stays embedded in the Product Description narrative as instructed above — do not give it its own top-level header.\nThe content under "Grade Estimate:" should lead with the short letter/number grade itself (e.g. "EX 5" or "VG-EX 4") before any explanatory sentence, so the grade is the very first thing after the header.\nThe content under "Price Recommendation:" should be a single price only, formatted as "{{CURRENCY_PREFIX}}" followed by a whole number (e.g. "{{CURRENCY_PREFIX}}9"), with no extra words.\nDo not insert any other headers, section titles, or labels anywhere in the output beyond the seven listed above.',
 }
 PROMPT_FILES = {
     "multi": "card description command - with grade.txt",
@@ -356,9 +315,23 @@ def load_prompt(kind):
     p = BASE / PROMPT_FILES[kind]
     try:
         t = p.read_text(encoding="utf-8").replace("\r\n", "\n").strip()
-        return t if t else PROMPT_FALLBACKS[kind]
+        if not t:
+            t = PROMPT_FALLBACKS[kind]
     except Exception:
-        return PROMPT_FALLBACKS[kind]
+        t = PROMPT_FALLBACKS[kind]
+    settings = load_settings()
+    store_name = str(settings.get("store_name", "")).strip() or "my online store"
+    currency_prefix = str(settings.get("currency_prefix", "C$")).strip() or "$"
+    currency_name = str(settings.get("currency_name", "Canadian dollars")).strip() or "your currency"
+    description_words = str(settings.get("description_min_words", 400))
+    tag_count = str(settings.get("tag_count", 8))
+    listing_context = str(settings.get("listing_context", "")).strip()
+    return (t.replace("{{STORE_NAME}}", store_name)
+             .replace("{{CURRENCY_PREFIX}}", currency_prefix)
+             .replace("{{CURRENCY_NAME}}", currency_name)
+             .replace("{{DESCRIPTION_MIN_WORDS}}", description_words)
+             .replace("{{TAG_COUNT}}", tag_count)
+             .replace("{{LISTING_CONTEXT}}", listing_context))
 
 
 def classify_clipboard(text):
@@ -623,7 +596,7 @@ DOCS = {}
 
 DOCS["welcome"] = """\
 You sell each card in up to FOUR places: your own website
-(store.piskun.ca), CanadianShopper, eBay and Facebook Marketplace.
+your store, CanadianShopper, eBay and Facebook Marketplace.
 Whichever one sells, the others keep offering it - so after every sale
 the other listings have to be fixed, and after every new scan the
 photos have to be updated everywhere.
@@ -638,44 +611,38 @@ Two safety rules, everywhere:
     tool is running and exactly what it printed."""
 
 DOCS["cookie"] = """\
-The cookie is your login for the tools, the same login your browser
-uses for canadianshopper.ca. The tools need it to upload photos and to
-update listings. It expires every so often; when a tool says
-"Authentication required", paste a fresh one here.
+This is the central place for your store connection, AI page, preferred browser,
+marketplace pages, Facebook workbook fields/templates, listing prompt preferences,
+marketplace defaults, and working folders. Save changes here; URLs and folder
+paths are used across the GUI and command-line tools. If no browser is saved,
+Alex Collect asks the first time it needs to open a webpage.
 
-How to get it: log in to canadianshopper.ca in Firefox or Chrome, press
-F12, Application (Firefox: Storage), Cookies, canadianshopper.ca, and
-click the row named __Secure-better-auth.session_token. Copy the whole
-Value column (it looks like token.signature with a dot in the middle)
-- you can paste the ENTIRE table row, the tools clean it up.
-
-cookie.txt is a live login. Never email it or paste it in chats, and
-when you are done working, log out and back in on the site once - that
-invalidates the copy."""
+WooCommerce REST API credentials stay in the private, git-ignored
+woo-keys.txt file. The CanadianShopper session cookie (if its plugin is
+installed) is a live login; do not share it, and refresh it when the plugin
+reports that authentication has expired."""
 
 DOCS["folders"] = """\
 Two folders the tools should know about:
 
-* Batch folder - where card_pipeline.py and this month's
-  canadianshopper_import_*.csv files live. The GUI found it next to
-  the tools folder; change it only if you keep the pipeline elsewhere.
+* Batch folder - where card_pipeline.py and generated CSVs live. It is
+  detected beside the tools by default; change it if your files are elsewhere.
 
-* Scan folder - where your scanner drops files (on Windows the
-  ControlCenter4\\Scan folder; set yours under Folders). The "card
-  needs new photos" tool opens it after writing the reminder list."""
+* Scan folder - where your scanner drops files. Choose it here; the "card
+  needs new photos" tool opens the folder after writing the reminder list."""
 
 DOCS["pipeline"] = """\
 Use this for a new batch of cards. Choose the FRONT scan and, if you have
-one, the BACK scan. Select the prompt that matches the sheet, send that
-prompt and the scans to your AI chat, then copy the complete card details
-back to the clipboard.
-
-Alex Collect checks the copied text, splits the sheet into card images,
-matches the descriptions to the images, and prepares the import files and
-photos in your batch folder. Nothing is uploaded or published by this step;
-you review the files and do the website import yourself. After products are
-published, the workflow can refresh your Facebook feed. If the CanadianShopper
-plugin is enabled, its photo-staging actions are available too."""
+one, the BACK scan. The saved AI chat page opens in your selected browser
+(or Alex Collect asks you to choose a browser the first time). Select one of
+the two prompts; it is copied to the clipboard. Upload the scans and paste the prompt into the AI page manually.
+When you copy the complete AI reply, the app detects it and asks whether to
+split and build or split only. Alex Collect matches descriptions to images
+and prepares the import files and photos in your batch folder. Nothing is
+uploaded or published by this step; review the files and do the website import
+yourself. After products are published, the workflow can refresh your Facebook
+feed. If the CanadianShopper plugin is enabled, its photo-staging actions are
+available too."""
 
 DOCS["combine"] = """\
 card_pipeline writes up to 500 cards per CSV, and the CanadianShopper
@@ -704,7 +671,8 @@ cannot do for you, because it runs behind your login in the browser:
   1. Open CanadianShopper (button below) and log in.
   2. Vendor dashboard -> Products -> upload / import the CSV.
   3. Use the newest file from the cs-ready folder - the name starts
-     with canadianshopper_import_ and ends _01_of_NN.csv.
+     with canadianshopper_import_ and ends _01_of_NN.csv. The pipeline
+     opens the folder containing the generated import file for you.
   4. Keep each file under 500 rows (that is what Combine ensures).
   5. When the import shows the products, publish them.
 
@@ -735,9 +703,9 @@ often exist as several copies, so enter the quantity sold—or mark the last
 copy—to get the right follow-up (reduce quantity versus end the listing).
 
 The checklist is the reminder for manual follow-ups. For one typed card, the
-remaining seller pages open in Edge; the CanadianShopper store search, eBay and
-Facebook still need the title pasted into their search fields. The title is
-copied for you. Without the CanadianShopper plugin, its stock task stays manual.
+remaining seller pages open in your selected browser; the CanadianShopper store
+search, eBay and Facebook still need the title pasted into their search fields.
+The title is copied for you. Without the CanadianShopper plugin, its stock task stays manual.
 When the plugin is enabled, a separate checkbox lets you preview and approve a
 stock update; it is independent of the sale-source choice."""
 
@@ -771,24 +739,18 @@ CanadianShopper (WirePhotos), and on eBay and Facebook."""
 
 DOCS_CORE = {
     "cookie": """\
-The tools keep everything in two folders:
-
-* Batch folder - where card_pipeline.py and this month's
-  canadianshopper_import_*.csv files live. The GUI found it next to
-  the tools folder; change it only if you keep the pipeline elsewhere.
-
-* Scan folder - where your Brother scanner drops files
-  (ControlCenter4\\Scan). The "card needs new photos" tool opens it
-  for you after it writes the reminder list.
-
-The CanadianShopper connection panel (session cookie, Test button)
-arrives with the CanadianShopper add-on - see its own panel.""",
+Set your store URL, marketplace page links, AI page URL, store name, batch
+folder, and scanner folder here. The scanner folder is user-selectable and
+opens automatically for photo reminders. WooCommerce credentials stay in the
+private woo-keys.txt file. CanadianShopper connection controls appear when its
+optional plugin is installed.""",
     "pipeline": """\
-Use this for a new batch of cards. Choose the FRONT scan and optional BACK
-scan, send the matching prompt and scans to your AI chat, then copy the full
-card descriptions back. Alex Collect matches descriptions to images and
-prepares the WooCommerce and CanadianShopper import files and Facebook feed
-in your batch folder. Review them and import manually; nothing is published
+Use this for a new batch of cards. Alex Collect remembers and opens your AI
+chat page URL. Choose the matching prompt, upload the FRONT and optional
+BACK scans, and paste the prompt manually. When you copy the full AI reply, the app detects
+it and asks whether to split and build or split only. Alex Collect matches
+descriptions to images and prepares import files and the Facebook feed in your
+batch folder. Review them and import manually; nothing is published
 automatically. Without the plugin, photo staging and back-photo wiring remain
 manual.""",
     "importpanel": """\
@@ -848,8 +810,10 @@ class ScrollFrame(ttk.Frame):
             try:
                 w = self.winfo_containing(e.x_root, e.y_root)
                 while w is not None:
+                    if w is self.canvas:
+                        break
                     if isinstance(w, (tk.Text, tk.Listbox, tk.Canvas)):
-                        return      # let those scroll themselves
+                        return      # let nested text/list/canvas widgets scroll
                     w = w.master
             except Exception:
                 pass
@@ -950,6 +914,7 @@ class App(tk.Tk):
         view.add_command(label="Task menu", command=lambda: self.show_mode("menu"))
         view.add_command(label="Tabs", command=lambda: self.show_mode("tabs"))
         m.add_cascade(label="View", menu=view)
+        m.add_command(label="User Settings", command=self.show_user_settings)
         help = tk.Menu(m, tearoff=0)
         help.add_command(label="Open README.md",
                          command=lambda: open_path(BASE / "README.md"))
@@ -967,6 +932,16 @@ class App(tk.Tk):
     def _save_startup(self):
         self.settings["startup_mode"] = self._mode_var.get()
         save_settings(self.settings)
+
+    def show_user_settings(self):
+        """Open the central settings panel from any view."""
+        self.show_mode("menu")
+        self.update_idletasks()
+        try:
+            tasks = self._mode_frame.inner.winfo_children()[0]
+            tasks.show_panel("cookie")
+        except (AttributeError, IndexError, tk.TclError):
+            log("could not open User Settings panel")
 
     def _build_topbar(self):
         bar = ttk.Frame(self, padding=(10, 8, 10, 4))
@@ -1345,6 +1320,64 @@ class App(tk.Tk):
         self.settings[key] = value
         save_settings(self.settings)
 
+    def _choose_browser(self):
+        """Ask once, on first use, which installed browser should open URLs."""
+        choices = available_browsers()
+        labels = [label for _key, label in choices]
+        top = tk.Toplevel(self)
+        top.title("Choose a browser")
+        top.transient(self)
+        top.resizable(False, False)
+        ttk.Label(top, text="Which browser should Alex Collect use for web pages?",
+                  wraplength=380, justify="left").pack(
+                      anchor="w", padx=14, pady=(14, 8))
+        labels.insert(0, "Ask me again next time")
+        label_var = tk.StringVar(master=top, value=(
+            labels[1] if len(labels) > 1 else labels[0]))
+        ttk.Combobox(top, textvariable=label_var, values=labels,
+                     state="readonly", width=34).pack(
+                         fill="x", padx=14, pady=4)
+        result = {"browser": None}
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=14, pady=(8, 14))
+
+        def choose():
+            label = label_var.get()
+            if label != "Ask me again next time":
+                result["browser"] = next(
+                    (key for key, name in choices if name == label), "system")
+            top.destroy()
+
+        ttk.Button(buttons, text="Use this browser", command=choose).pack(
+            side="right")
+        ttk.Button(buttons, text="Cancel", command=top.destroy).pack(
+            side="right", padx=(0, 8))
+        top.protocol("WM_DELETE_WINDOW", top.destroy)
+        top.grab_set()
+        self.wait_window(top)
+        return result["browser"]
+
+    def open_webpages(self, urls, new_window=False):
+        """Open one or more URLs using the saved browser preference."""
+        urls = [str(url).strip() for url in urls if str(url).strip()]
+        if not urls:
+            return ""
+        browser = self.settings.get("browser_name", "")
+        if not browser:
+            browser = self._choose_browser()
+            if browser:
+                self.settings["browser_name"] = browser
+                save_settings(self.settings)
+                field = getattr(self, "_user_setting_vars", {}).get(
+                    "browser_name")
+                if field is not None:
+                    field.set(browser_label(browser))
+            else:
+                # Cancel leaves the setting unset and uses the OS default for
+                # this one launch; the preference prompt will appear next time.
+                browser = "system"
+        return launch_urls(urls, browser, new_window=new_window)
+
 
 # ----------------------------------------------------------------- panels
 #  A panel = title + doc + controls. The same builder is used by the task
@@ -1352,7 +1385,7 @@ class App(tk.Tk):
 PANEL_ORDER = ["cookie", "pipeline", "combine", "stage", "importpanel",
                "wire", "rerun", "sold", "checklist", "zerostock", "square",
                "newphotos", "logs", "plugins"]
-GROUPS_FULL = [("Connection & folders", ["cookie"]),
+GROUPS_FULL = [("User settings", ["cookie"]),
                ("Sell a new batch", ["pipeline", "combine", "stage",
                                      "importpanel", "wire"]),
                ("After a sale", ["sold", "checklist", "zerostock",
@@ -1369,14 +1402,14 @@ def groups_for(has_cs):
     the browser, and the checklist carries the manual steps."""
     if has_cs:
         return GROUPS_FULL
-    return [("Connection & folders", ["cookie"]),
+    return [("User settings", ["cookie"]),
             ("Sell a new batch", ["pipeline", "combine", "importpanel"]),
             ("After a sale", ["sold", "checklist", "newphotos"]),
             ("Photos", ["square"]),
             ("Plugins", ["plugins"]),
             ("Logs & reports", ["logs"])]
 TITLES = {
-    "cookie": "Connection (session cookie) & folders",
+    "cookie": "User settings",
     "pipeline": "Run the card pipeline (new batch)",
     "combine": "Combine CSVs into import batches",
     "stage": "Stage the photos for the batch",
@@ -1392,7 +1425,7 @@ TITLES = {
     "logs": "Logs and reports",
 }
 MENU_LABELS = {
-    "cookie": "Connection & folders",
+    "cookie": "User settings",
     "pipeline": "Run the card pipeline",
     "combine": "Combine CSVs",
     "stage": "Stage the photos",
@@ -1408,7 +1441,7 @@ MENU_LABELS = {
     "plugins": "Plugins",
 }
 BLURBS = {
-    "cookie": "Paste the session cookie, test it, set the folders.",
+    "cookie": "Set your store, AI, marketplace, and folder preferences; manage connections.",
     "pipeline": "Turn card scans and AI descriptions into listing files.",
     "combine": "Merge the month's CSVs into 500-row import files.",
     "stage": "Square + host fronts and backs, rewrite the CSVs into cs-ready.",
@@ -1428,7 +1461,7 @@ BLURBS = {
 def panel_header(parent, app, pid, with_doc=True):
     """Title + doc text shared by every panel view (core-aware)."""
     core = not getattr(app, "cs_addon", True)
-    titles = {**TITLES, **({"cookie": "Folders & settings"} if core else {})}
+    titles = TITLES
     docs = {**DOCS, **(DOCS_CORE if core else {})}
     top = ttk.Frame(parent)
     top.pack(fill="x", pady=(0, 6))
@@ -1448,105 +1481,425 @@ def panel_header(parent, app, pid, with_doc=True):
 
 def build_cookie(parent, app):
     panel_header(parent, app, "cookie")
-    box = ttk.Frame(parent)
-    box.pack(fill="x")
-    ttk.Label(box, text="1) Paste the cookie row (or just the value):"
-              ).pack(anchor="w")
+    scroller = ScrollFrame(parent)
+    scroller.pack(fill="both", expand=True)
+    box = ttk.Frame(scroller.inner)
+    box.pack(fill="x", expand=True)
+
+    fields = {}
+    app._user_setting_vars = fields
+    def field_row(container, row, label, key, width=68, hint=None):
+        ttk.Label(container, text=label).grid(row=row, column=0, sticky="w",
+                                              padx=(0, 6), pady=2)
+        var = tk.StringVar(master=container,
+                           value=str(app.settings.get(key, "")))
+        fields[key] = var
+        ttk.Entry(container, textvariable=var, width=width).grid(
+            row=row, column=1, sticky="ew", padx=3, pady=2)
+        if hint:
+            ttk.Label(container, text=hint, style="Dim.TLabel").grid(
+                row=row + 1, column=1, sticky="w", padx=3, pady=(0, 3))
+        return var
+
+    startup_var = tk.StringVar(
+        master=box, value=app.settings.get("startup_mode", "menu"))
+    startup_row = ttk.Frame(box)
+    startup_row.pack(fill="x", pady=(0, 4))
+    ttk.Label(startup_row, text="Startup view:").pack(side="left")
+    ttk.Combobox(startup_row, textvariable=startup_var, state="readonly",
+                 values=("menu", "tabs", "wizard"), width=14).pack(
+                     side="left", padx=6)
+
+    ttk.Label(box, text="Store and AI", style="H2.TLabel").pack(anchor="w")
+    general = ttk.Frame(box)
+    general.pack(fill="x", pady=(2, 6))
+    general.columnconfigure(1, weight=1)
+    store_var = field_row(general, 0, "Store name (used in AI prompts):",
+                          "store_name")
+    currency_prefix_var = field_row(general, 1, "Price currency prefix:",
+                                    "currency_prefix", width=18)
+    currency_name_var = field_row(general, 2, "Currency name:",
+                                  "currency_name")
+    description_words_var = field_row(
+        general, 3, "Minimum AI description words:", "description_min_words",
+        width=12)
+    tag_count_var = field_row(general, 4, "AI tags per product:",
+                              "tag_count", width=12)
+    listing_context_var = field_row(
+        general, 5, "AI listing-specific notes:", "listing_context")
+    woo_var = field_row(general, 6, "WooCommerce site URL:", "woo_site_url",
+                        hint="Example: https://shop.example.com")
+    ai_var = field_row(general, 8, "AI chat page URL:", "ai_agent_url")
+    browser_row = ttk.Frame(general)
+    browser_row.grid(row=9, column=0, columnspan=2, sticky="ew", pady=2)
+    ttk.Label(browser_row, text="Browser for webpages opened by Alex Collect:").pack(
+        side="left")
+    browser_choices = available_browsers()
+    browser_labels = [label for _key, label in browser_choices]
+    browser_labels.insert(0, "Ask me the first time")
+    saved_browser = app.settings.get("browser_name", "")
+    browser_value = (browser_label(saved_browser) if saved_browser else
+                     "Ask me the first time")
+    browser_var = tk.StringVar(master=browser_row, value=browser_value)
+    ttk.Combobox(browser_row, textvariable=browser_var,
+                 values=browser_labels, state="readonly", width=26).pack(
+                     side="left", padx=6)
+    fields["browser_name"] = browser_var
+    feed_var = field_row(general, 11, "Product feed URL (optional override):",
+                         "woo_feed_url")
+    refresh_var = field_row(general, 12, "Feed refresh URL (optional override):",
+                            "woo_feed_refresh_url")
+
+    row = ttk.Frame(box)
+    row.pack(fill="x", pady=(0, 8))
+    def open_media_page():
+        if not save_user_settings():
+            return
+        url = site_admin_url("wp-admin/media-new.php", app.settings)
+        if not url:
+            messagebox.showinfo("WooCommerce site URL needed",
+                                "Set and save your WooCommerce site URL first.")
+            return
+        app.open_webpages([url])
+        output_dir = Path(app.settings.get("pipeline_dir") or str(WORK)) / "output"
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            open_path(output_dir)
+        except OSError as exc:
+            log("could not open output image folder %s: %s" % (output_dir, exc))
+    def open_ai_page():
+        if not save_user_settings():
+            return
+        url = normalize_web_url(app.settings.get("ai_agent_url", ""))
+        if not url:
+            messagebox.showinfo("AI page URL needed",
+                                "Set and save your AI chat page URL first.")
+            return
+        app.open_webpages([url])
+    ttk.Button(row, text="Open WordPress media upload",
+               command=open_media_page).pack(side="left")
+    ttk.Button(row, text="Save & open AI page",
+               command=open_ai_page).pack(side="left", padx=(6, 0))
+    ttk.Button(row, text="Open WooCommerce API keys",
+               command=lambda: open_woo_keys_file(app, fields["woo_site_url"].get())
+               ).pack(side="left", padx=(6, 0))
+
+    ttk.Label(box, text="Marketplace pages", style="H2.TLabel").pack(
+        anchor="w", pady=(4, 0))
+    market = ttk.Frame(box)
+    market.pack(fill="x", pady=(2, 8))
+    market.columnconfigure(1, weight=1)
+    field_row(market, 0, "eBay active listings URL:", "ebay_selling_url")
+    field_row(market, 1, "Facebook listing/review page URL:",
+              "facebook_selling_url")
+    field_row(market, 2, "CanadianShopper vendor page URL:",
+              "canadianshopper_store_url")
+
+    ttk.Label(box, text="eBay Quick List handoff", style="H2.TLabel").pack(
+        anchor="w", pady=(4, 0))
+    ebay_box = ttk.Frame(box)
+    ebay_box.pack(fill="x", pady=(2, 8))
+    ebay_box.columnconfigure(1, weight=1)
+    ebay_quicklist_var = tk.BooleanVar(
+        master=ebay_box,
+        value=bool(app.settings.get("ebay_quicklist_enabled", True)))
+    ttk.Checkbutton(
+        ebay_box,
+        text="Ask which cards to prepare for eBay after each card-listing run",
+        variable=ebay_quicklist_var).grid(
+            row=0, column=1, sticky="w", padx=3, pady=2)
+    field_row(ebay_box, 1, "Football template URL:", "ebay_template_football_url")
+    field_row(ebay_box, 2, "Baseball template URL:", "ebay_template_baseball_url")
+    field_row(ebay_box, 3, "Hockey template URL:", "ebay_template_hockey_url")
+    field_row(ebay_box, 4, "Basketball template URL (optional):",
+              "ebay_template_basketball_url")
+    field_row(ebay_box, 5, "Default template URL:", "ebay_template_default_url")
+    field_row(ebay_box, 6, "Image URL base (optional):", "ebay_image_base_url")
+    field_row(ebay_box, 7, "Default condition:", "ebay_default_condition")
+    field_row(ebay_box, 8, "Default year:", "ebay_default_year")
+    field_row(ebay_box, 9, "Default manufacturer:", "ebay_default_manufacturer")
+    field_row(ebay_box, 10, "Default card number:", "ebay_default_card_number")
+    field_row(ebay_box, 11, "Default player:", "ebay_default_player")
+    field_row(ebay_box, 12, "Default set:", "ebay_default_set")
+    field_row(ebay_box, 13, "Default grade:", "ebay_default_grade")
+    field_row(ebay_box, 14, "Default autographed value:",
+              "ebay_default_autographed")
+    field_row(ebay_box, 15, "Fallback description:", "ebay_default_description")
+    ttk.Label(ebay_box, text=(
+        "The eBay helper gathers copyable/draggable listing details and opens "
+        "the selected sport template(s). It does not submit or publish listings."),
+        style="Dim.TLabel", wraplength=720, justify="left").grid(
+            row=16, column=1, sticky="w", padx=3, pady=(0, 4))
+
+    ttk.Label(box, text="Facebook Marketplace export fields",
+              style="H2.TLabel").pack(anchor="w", pady=(4, 0))
+    facebook_box = ttk.Frame(box)
+    facebook_box.pack(fill="x", pady=(2, 8))
+    facebook_box.columnconfigure(1, weight=1)
+    field_row(facebook_box, 0, "Title template:",
+              "facebook_feed_title_template")
+    field_row(facebook_box, 1, "Price template:",
+              "facebook_feed_price_template", width=28)
+    field_row(facebook_box, 2, "Condition:", "facebook_feed_condition",
+              width=28)
+    field_row(facebook_box, 3, "Category:", "facebook_feed_category")
+    field_row(facebook_box, 4, "Product ID template:",
+              "facebook_feed_id_template", width=40)
+    field_row(facebook_box, 5, "Image URL template:",
+              "facebook_feed_image_link_template", width=60)
+    ttk.Label(facebook_box, text="Description template:").grid(
+        row=6, column=0, sticky="nw", padx=(0, 6), pady=2)
+    description_template = tk.Text(facebook_box, height=5, wrap="word")
+    description_template.grid(row=6, column=1, sticky="ew", padx=3, pady=2)
+    description_template.insert(
+        "1.0", str(app.settings.get("facebook_feed_description_template", "")))
+    fields["facebook_feed_description_template"] = description_template
+    ttk.Label(facebook_box, text=(
+        "Placeholders: {title}, {description}, {product_url}, {price}, {id}, "
+        "{image_link}. Leave Price template as {price} to use the live-feed "
+        "price."), style="Dim.TLabel",
+        wraplength=720, justify="left").grid(
+            row=7, column=1, sticky="w", padx=3, pady=(0, 4))
+
+    ttk.Label(box, text="CanadianShopper CSV defaults", style="H2.TLabel").pack(
+        anchor="w", pady=(4, 0))
+    cs_config = ttk.Frame(box)
+    cs_config.pack(fill="x", pady=(2, 8))
+    cs_config.columnconfigure(1, weight=1)
+    field_row(cs_config, 0, "Category:", "canadianshopper_category")
+    field_row(cs_config, 1, "Ship-from province/region:",
+              "canadianshopper_ship_from_province", width=16)
+    field_row(cs_config, 2, "Flat shipping amount:",
+              "canadianshopper_shipping_flat", width=16)
+    cs_free_var = tk.BooleanVar(
+        master=cs_config,
+        value=bool(app.settings.get("canadianshopper_free_shipping", False)))
+    ttk.Checkbutton(cs_config, text="Offer free shipping by default",
+                    variable=cs_free_var).grid(row=3, column=1, sticky="w",
+                                               padx=3, pady=2)
+    field_row(cs_config, 4, "Handling days:",
+              "canadianshopper_handling_days", width=16)
+    field_row(cs_config, 5, "Transit days:",
+              "canadianshopper_transit_days", width=16)
+
+    ttk.Label(box, text="Working folders", style="H2.TLabel").pack(
+        anchor="w", pady=(4, 0))
+    grid = ttk.Frame(box)
+    grid.pack(fill="x", pady=(2, 6))
+    grid.columnconfigure(1, weight=1)
+    app._pipeline_var = tk.StringVar(
+        master=grid, value=app.settings.get("pipeline_dir", str(WORK)))
+    app._scan_var = tk.StringVar(
+        master=grid, value=app.settings.get("scan_dir", DEFAULT_SCAN_DIR))
+    fields["pipeline_dir"] = app._pipeline_var
+    fields["scan_dir"] = app._scan_var
+    for r, (label, var) in enumerate((
+            ("Batch folder (card_pipeline.py):", app._pipeline_var),
+            ("Scanner folder:", app._scan_var))):
+        ttk.Label(grid, text=label).grid(row=r, column=0, sticky="w",
+                                         padx=(0, 6), pady=2)
+        ttk.Entry(grid, textvariable=var).grid(row=r, column=1, sticky="ew",
+                                               padx=3, pady=2)
+        def browse_dir(v=var, initial=WORK if r == 0 else Path.home()):
+            directory = filedialog.askdirectory(initialdir=v.get() or str(initial))
+            if directory:
+                v.set(directory)
+        ttk.Button(grid, text="Browse...", command=browse_dir).grid(
+            row=r, column=2, padx=(3, 0))
+
+    def setting_value(key):
+        widget = fields[key]
+        if isinstance(widget, tk.Text):
+            return widget.get("1.0", "end-1c").strip()
+        return widget.get().strip()
+
+    def save_user_settings():
+        template_keys = (
+            "facebook_feed_title_template", "facebook_feed_price_template",
+            "facebook_feed_description_template", "facebook_feed_id_template",
+            "facebook_feed_image_link_template")
+        allowed_placeholders = {
+            "title", "description", "product_url", "price", "id", "image_link"
+        }
+        for key in template_keys:
+            template = setting_value(key)
+            try:
+                found = {
+                    field.split(".", 1)[0].split("[", 1)[0]
+                    for _literal, field, _format, _conversion
+                    in string.Formatter().parse(template) if field
+                }
+            except ValueError:
+                found = {"<invalid>"}
+            unknown = found - allowed_placeholders
+            if unknown:
+                messagebox.showwarning(
+                    "Invalid Facebook feed template",
+                    "%s uses unsupported placeholder(s): %s.\n\nUse only: "
+                    "{title}, {description}, {product_url}, {price}, {id}, "
+                    "{image_link}." % (key, ", ".join(sorted(unknown)))
+                )
+                return False
+
+        url_keys = ("woo_site_url", "ai_agent_url", "woo_feed_url",
+                    "woo_feed_refresh_url", "ebay_selling_url",
+                    "ebay_template_football_url", "ebay_template_baseball_url",
+                    "ebay_template_hockey_url", "ebay_template_basketball_url",
+                    "ebay_template_default_url", "ebay_image_base_url",
+                    "facebook_selling_url", "canadianshopper_store_url")
+        normalized = {}
+        for key in url_keys:
+            value = fields[key].get().strip()
+            if value:
+                value = normalize_web_url(value)
+                if not value:
+                    messagebox.showwarning(
+                        "Invalid URL", "Check the URL in the %s field. "
+                        "Use an http:// or https:// web address." % key.replace(
+                            "_", " "))
+                    return False
+            normalized[key] = value
+        for key, value in normalized.items():
+            app.settings[key] = value
+        app.settings["startup_mode"] = startup_var.get()
+        browser_display = setting_value("browser_name")
+        app.settings["browser_name"] = next(
+            (key for key, label in available_browsers()
+             if label == browser_display), "")
+        for key in (
+                "facebook_feed_title_template", "facebook_feed_price_template",
+                "facebook_feed_condition", "facebook_feed_description_template",
+                "facebook_feed_category", "facebook_feed_id_template",
+                "facebook_feed_image_link_template"):
+            app.settings[key] = setting_value(key)
+        for key in (
+                "ebay_default_condition", "ebay_default_year",
+                "ebay_default_manufacturer", "ebay_default_card_number",
+                "ebay_default_player", "ebay_default_set",
+                "ebay_default_grade", "ebay_default_autographed",
+                "ebay_default_description"):
+            app.settings[key] = setting_value(key)
+        app.settings["ebay_quicklist_enabled"] = ebay_quicklist_var.get()
+        if hasattr(app, "_mode_var"):
+            app._mode_var.set(startup_var.get())
+        app.settings["store_name"] = store_var.get().strip()
+        app.settings["currency_prefix"] = currency_prefix_var.get().strip() or "$"
+        app.settings["currency_name"] = currency_name_var.get().strip() or "your currency"
+        try:
+            description_words = int(description_words_var.get().strip())
+            tag_count = int(tag_count_var.get().strip())
+            if description_words <= 0 or tag_count <= 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning(
+                "Invalid AI prompt settings",
+                "Description word count and tag count must be positive whole numbers.")
+            return False
+        app.settings["description_min_words"] = description_words
+        app.settings["tag_count"] = tag_count
+        app.settings["listing_context"] = listing_context_var.get().strip()
+        try:
+            shipping = float(fields["canadianshopper_shipping_flat"].get().strip())
+            handling = int(fields["canadianshopper_handling_days"].get().strip())
+            transit = int(fields["canadianshopper_transit_days"].get().strip())
+            if shipping < 0 or handling < 0 or transit < 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning(
+                "Invalid shipping defaults",
+                "Shipping must be a non-negative amount; handling and transit "
+                "days must be non-negative whole numbers.")
+            return False
+        app.settings["canadianshopper_shipping_flat"] = "%.2f" % shipping
+        app.settings["canadianshopper_handling_days"] = handling
+        app.settings["canadianshopper_transit_days"] = transit
+        app.settings["canadianshopper_free_shipping"] = cs_free_var.get()
+        app.settings["canadianshopper_category"] = fields[
+            "canadianshopper_category"].get().strip()
+        app.settings["canadianshopper_ship_from_province"] = fields[
+            "canadianshopper_ship_from_province"].get().strip()
+        app.settings["pipeline_dir"] = app._pipeline_var.get().strip() or str(WORK)
+        app.settings["scan_dir"] = app._scan_var.get().strip() or DEFAULT_SCAN_DIR
+        save_settings(app.settings)
+        sync_site_url_to_woo_keys(app.settings["woo_site_url"])
+        app.console_line("User settings saved.", "ok")
+        return True
+
+    app._save_user_settings_callback = save_user_settings
+    ttk.Button(box, text="Save user settings", command=save_user_settings).pack(
+        anchor="w", pady=(2, 8))
+
     if app.cs_addon:
-        txt = tk.Text(box, height=4, wrap="char", font=("Consolas", 9))
+        ttk.Separator(box).pack(fill="x", pady=(2, 6))
+        ttk.Label(box, text="CanadianShopper connection",
+                  style="H2.TLabel").pack(anchor="w")
+        ttk.Label(box, text="Session cookie (private login; stored locally):"
+                  ).pack(anchor="w", pady=(2, 0))
+        txt = tk.Text(box, height=3, wrap="char", font=("Consolas", 9))
         txt.pack(fill="x", pady=4)
 
-        def save_cookie():
-            raw = txt.get("1.0", "end").strip()
-            if not raw:
-                messagebox.showinfo("Nothing pasted",
-                                    "Paste the cookie value or the whole row "
-                                    "first.")
-                return
-            cookie = clean_cookie_row(raw)
-            if not cookie or len(cookie) < 20:
-                messagebox.showwarning(
-                    "Does not look like a cookie",
-                    "That does not look like the session token (it should be "
-                    "long, with a dot in the middle). Copy the Value column of "
-                    "the row __Secure-better-auth.session_token.")
-                return
-            CS_COOKIE_FILE.write_text(cookie + "\n", encoding="utf-8")
-            log("cookie.txt saved (%d chars)" % len(cookie))
-            app.console_line("cookie.txt saved in %s" % CS_COOKIE_FILE.parent, "ok")
-            txt.delete("1.0", "end")
-            test_cookie()
-
         def test_cookie():
-            app.console_line("Testing the connection...", "cmd")
-
+            app.console_line("Testing the CanadianShopper connection...", "cmd")
             def work():
                 ok, msg = test_connection()
                 try:
                     app.after(0, lambda: (
                         app.console_line(msg, "ok" if ok else "err"),
-                        show_continue() if ok else messagebox.showwarning(
-                            "Connection", msg)))
+                        messagebox.showinfo("Connection", msg) if ok else
+                        messagebox.showwarning("Connection", msg)))
                 except RuntimeError:
-                    # the window closed before the test finished - just log it
                     log("connection test finished (%s): %s" %
                         ("ok" if ok else "failed", msg))
             threading.Thread(target=work, daemon=True).start()
 
-        row = ttk.Frame(box)
-        row.pack(fill="x", pady=(0, 8))
-        ttk.Button(row, text="Save to cookie.txt", command=save_cookie).pack(
+        def save_cookie():
+            raw = txt.get("1.0", "end").strip()
+            if not raw:
+                messagebox.showinfo("Nothing pasted",
+                                    "Paste the cookie value or whole row first.")
+                return
+            cookie = clean_cookie_row(raw)
+            if not cookie or len(cookie) < 20:
+                messagebox.showwarning(
+                    "Does not look like a cookie",
+                    "Copy the Value of __Secure-better-auth.session_token.")
+                return
+            CS_COOKIE_FILE.write_text(cookie + "\n", encoding="utf-8")
+            log("cookie.txt saved (%d chars)" % len(cookie))
+            txt.delete("1.0", "end")
+            test_cookie()
+
+        cookie_row = ttk.Frame(box)
+        cookie_row.pack(fill="x", pady=(0, 6))
+        ttk.Button(cookie_row, text="Save cookie", command=save_cookie).pack(
             side="left")
-        ttk.Button(row, text="Test the connection", command=test_cookie).pack(
-            side="left", padx=8)
+        ttk.Button(cookie_row, text="Test connection", command=test_cookie).pack(
+            side="left", padx=6)
+    else:
+        ttk.Label(box, text="CanadianShopper cookie controls appear when the "
+                  "optional plugin is installed.", style="Dim.TLabel").pack(
+                      anchor="w", pady=(4, 8))
 
-        def next_wizard():
-            w = getattr(app, "_current_wizard", None)
-            if w is not None:
-                w.next_page()
-        cont = ttk.Button(box, text="Connection works - continue to the next "
-                          "step ->", style="Task.TButton", command=next_wizard)
 
-        def show_continue():
-            if getattr(app, "_current_wizard", None) is not None:
-                cont.pack(anchor="w", pady=(6, 2))
-    ttk.Label(box, text="Folders:").pack(anchor="w")
-    grid = ttk.Frame(box)
-    grid.pack(fill="x", pady=2)
-    app._pipeline_var = tk.StringVar(master=box, value=app.settings.get("pipeline_dir", ""))
-    app._scan_var = tk.StringVar(master=box, value=app.settings.get("scan_dir", ""))
-    for r, (label, var) in enumerate((
-            ("Batch folder (card_pipeline.py):", app._pipeline_var),
-            ("Scanner folder (ControlCenter4\\Scan):", app._scan_var))):
-        ttk.Label(grid, text=label).grid(row=r, column=0, sticky="w")
-        ttk.Entry(grid, textvariable=var, width=58).grid(row=r, column=1,
-                                                         padx=6, pady=2)
-        if r == 0:
-            def browse_dir():
-                d = filedialog.askdirectory(initialdir=app._pipeline_var.get()
-                                            or str(WORK))
-                if d:
-                    app._pipeline_var.set(d.replace("/", os.sep)
-                                          if os.sep == "\\" else d)
-            ttk.Button(grid, text="Browse...", command=browse_dir).grid(
-                row=r, column=2)
+def open_woo_keys_file(app, current_site_url=""):
+    """Create/open the local Woo REST-key file without exposing keys in GUI."""
+    path = BASE / "woo-keys.txt"
+    if not path.exists():
+        example = BASE / "woo-keys.txt.example"
+        if example.exists():
+            text = example.read_text(encoding="utf-8")
+            site = normalize_web_url(current_site_url)
+            if site:
+                text = text.replace("https://your-store.example", site, 1)
+            path.write_text(text, encoding="utf-8")
         else:
-            def browse_scan():
-                d = filedialog.askdirectory(initialdir=app._scan_var.get() or
-                                            str(BASE))
-                if d:
-                    app._scan_var.set(d.replace("/", os.sep)
-                                      if os.sep == "\\" else d)
-            ttk.Button(grid, text="Browse...", command=browse_scan).grid(
-                row=r, column=2)
-
-    def save_folders():
-        app.set_setting("pipeline_dir", app._pipeline_var.get().strip())
-        app.set_setting("scan_dir", app._scan_var.get().strip())
-        app.console_line("Folders saved.", "ok")
-
-    ttk.Button(box, text="Save folders", command=save_folders).pack(
-        anchor="w", pady=(2, 6))
+            path.write_text((normalize_web_url(current_site_url) or "") +
+                            "\nck_replace_with_read_only_consumer_key\n"
+                            "cs_replace_with_read_only_consumer_secret\n",
+                            encoding="utf-8")
+    open_path(path)
+    app.console_line("Opened private WooCommerce credentials file; keep it "
+                     "out of public repos and messages.", "dim")
 
 
 def build_pipeline(parent, app):
@@ -1620,11 +1973,11 @@ def build_pipeline(parent, app):
                style="Dim.TLabel", wraplength=680,
                justify="left").pack(anchor="w")
     ttk.Label(box, text="For a new batch: choose the FRONT scan and optional "
-               "BACK scan, select the prompt for mixed or single grades, "
-               "send the prompt and images to your AI chat, then copy the "
-               "complete reply. Alex Collect splits the scans, matches the "
-               "descriptions to the cards, and prepares import files. Review "
-               "them before importing; this step does not publish listings.",
+               "BACK scan. Alex Collect opens your saved AI page and copies "
+               "the selected prompt; upload the scans and paste it manually. "
+               "When you copy the complete reply, the app asks whether to "
+               "split and build or split only. Review the prepared import files "
+               "before importing; this step does not publish listings.",
                style="Dim.TLabel", wraplength=680, justify="left").pack(
                    anchor="w")
     next_steps = ("Next: combine pending batches if needed, stage the photos, "
@@ -1699,7 +2052,7 @@ def build_importpanel(parent, app):
     row = ttk.Frame(box)
     row.pack(anchor="w", pady=4)
     ttk.Button(row, text="Open canadianshopper.ca",
-               command=lambda: webbrowser.open(CS_HOME)).pack(side="left")
+               command=lambda: app.open_webpages([CS_HOME])).pack(side="left")
     ttk.Button(row, text="Open the cs-ready folder",
                command=lambda: open_path(
                    first_existing(BASE / "cs-ready", WORK / "cs-ready") or
@@ -1859,8 +2212,8 @@ def build_sold(parent, app):
                     "in?\nIt holds your website's address and a READ-ONLY "
                     "REST key (WooCommerce -> Settings -> Advanced -> REST "
                     "API -> Add key)."):
-                shutil.copyfile(ex, kf)
-                open_path(kf)
+                open_woo_keys_file(
+                    app, app.settings.get("woo_site_url", ""))
             else:
                 messagebox.showinfo("Needed",
                                     "Save your website's url + ck_.../cs_... "
@@ -1913,8 +2266,9 @@ def build_sold(parent, app):
                     app.update_idletasks()
                 except Exception as exc:
                     log("could not copy sale title: %s" % exc)
-                browser = open_edge_urls(
-                    sale_followup_urls(title, sale_channel))
+                browser = app.open_webpages(
+                    sale_followup_urls(title, sale_channel, app.settings),
+                    new_window=True)
                 app.console_line(
                     "Opened the follow-up pages in %s. WooCommerce opens the "
                     "orders list. Paste the copied title into the "
@@ -2304,14 +2658,14 @@ class PipelineDialog(tk.Toplevel):
     """The card-pipeline runner. Mirrors the working .bat exactly:
       1. the FRONT scan (required) and the BACK scan (optional) -
          drag-and-drop on the .bat becomes two Browse rows here;
-      2. the right AI command for the sheet (mixed grades -> grade in the
-         titles; one grade -> no grade) copied to the clipboard;
-      3. the AI's answer captured (the box, or the clipboard) into
-         _card_input.txt - at least 200 characters, like the .bat;
-      4. `card_pipeline.py split --front ... [--back ...]` then
+      2. the saved AI page opens; the right command for the sheet (mixed
+         grades -> grade in the titles; one grade -> no grade) is copied;
+      3. the user uploads scans and pastes the command manually, then copies
+         the AI answer; the clipboard monitor asks how to continue;
+      4. `card_pipeline.py split --front ... [--back ...]` then optionally
          `card_pipeline.py listing --input _card_input.txt --facebook`.
-         "Split the scans only" runs the split ALONE (no AI answer
-         needed); the dialog stays open for the AI steps afterwards.
+         "Split the scans only" runs the split ALONE (no answer needed) and
+         keeps the dialog open for the remaining steps.
     """
 
     def __init__(self, app, script, on_run, front="", back=""):
@@ -2364,6 +2718,7 @@ class PipelineDialog(tk.Toplevel):
 
             def browse(v=var):
                 f = filedialog.askopenfilename(
+                    parent=self,
                     title="Choose the scan",
                     initialdir=self.app.settings.get("scan_dir", "")
                     or str(BASE),
@@ -2373,6 +2728,15 @@ class PipelineDialog(tk.Toplevel):
                     v.set(f)
                     self.app.set_setting("scan_dir", str(Path(f).parent))
                 self.scan_note()
+                # A native file chooser may leave the owner behind the main
+                # window on Windows. Restore the pipeline dialog after it closes.
+                try:
+                    if self.winfo_exists():
+                        self.deiconify()
+                        self.lift()
+                        self.focus_force()
+                except tk.TclError:
+                    pass
             ttk.Entry(row, textvariable=var).pack(side="left", fill="x",
                                                   expand=True, padx=6)
             ttk.Button(row, text="Browse...", command=browse).pack(
@@ -2389,9 +2753,10 @@ class PipelineDialog(tk.Toplevel):
         ttk.Label(box, text="2) The AI command for today's sheet",
                   style="H2.TLabel").pack(anchor="w")
         ttk.Label(box, text=(
-            "Pick the one that matches - it is copied to your clipboard. "
-            "Paste it into your AI chat together with the FRONT and BACK "
-            "sheet images (wait for both to upload)."),
+            "The saved AI page opens when this dialog starts. Choose the "
+            "command that matches the sheet; it is copied to your clipboard. "
+            "Upload the FRONT and BACK images to the AI page and paste the "
+            "command there manually."),
             wraplength=740, justify="left").pack(anchor="w")
         row = ttk.Frame(box)
         row.pack(fill="x", pady=4)
@@ -2400,6 +2765,12 @@ class PipelineDialog(tk.Toplevel):
                        width=40,
                        command=lambda k=kind: self.pick(k)).pack(
                            side="left", padx=(0, 10))
+        self.ai_url_status = ttk.Label(
+            box, text="The AI page URL is in User settings. Upload the scans "
+                     "and paste the prompt manually; the clipboard monitor "
+                     "will detect a copied reply.",
+            style="Dim.TLabel", wraplength=740, justify="left")
+        self.ai_url_status.pack(fill="x", pady=(2, 0))
         self.status = ttk.Label(box, text="", foreground="#1b5e20",
                                 wraplength=740, justify="left")
         self.status.pack(fill="x")
@@ -2408,27 +2779,42 @@ class PipelineDialog(tk.Toplevel):
         ttk.Label(box, text="3) The AI's answer", style="H2.TLabel").pack(
             anchor="w")
         ttk.Label(box, text=(
-            "There is no separate paste box or saved copy: the button reads your "
-            "clipboard at the moment you press it. Copy the "
-            "whole AI reply (all nine cards) any time before that - the "
-            "line below updates by itself so you can see exactly what "
-            "will be used."),
+            "When the AI finishes, use its Copy button (or select and copy "
+            "the full reply). Alex Collect detects the copied answer, holds it "
+            "for this run, and asks whether to split and build or split only."),
             wraplength=740, justify="left").pack(anchor="w")
         self._our_clip = ""           # the prompt WE put on the clipboard
+        self._last_clipboard_text = None
+        self._captured_answer = ""
+        self._answer_choice_active = False
         self.clip_label = ttk.Label(box, text="", wraplength=740,
                                     justify="left")
         self.clip_label.pack(fill="x", pady=(3, 0))
-        self.refresh_clip()           # right now, not on the first tick
+        self.refresh_clip(initial=True)
         self._clip_job = self.after(400, self._clip_tick)
+        # Give the dialog a chance to finish building before showing a URL prompt.
+        self.after_idle(self._open_saved_ai_page_or_ask)
 
-    def refresh_clip(self):
+    def refresh_clip(self, initial=False):
         """Show what the clipboard holds RIGHT NOW - this is exactly what
         the button will use."""
         try:
             text = self.app.clipboard_get()
         except Exception:
             text = ""
+        previous = self._last_clipboard_text
+        self._last_clipboard_text = text
         kind, verdict = classify_clipboard(text)
+        if not initial and previous is not None and text.strip() != previous.strip():
+            if kind == "answer":
+                self._captured_answer = text.strip()
+                if not self._answer_choice_active:
+                    self._answer_choice_active = True
+                    self.after_idle(
+                        lambda answer=self._captured_answer:
+                        self._ask_after_ai_answer(answer))
+            else:
+                self._captured_answer = ""
         shown = " ".join(text[:72].split())
         if self._our_clip and text.strip() == self._our_clip.strip():
             self.clip_label.config(
@@ -2464,6 +2850,60 @@ class PipelineDialog(tk.Toplevel):
                      "if that is not the AI's reply, copy it now."
                      % (shown, verdict, "{:,}".format(len(text))),
                 foreground="#555555")
+
+    def _open_saved_ai_page_or_ask(self):
+        """Open the saved AI page, or ask once for its URL and remember it."""
+        if not self.winfo_exists():
+            return
+        self.open_ai_page()
+
+    def open_ai_page(self):
+        url = normalize_web_url(self.app.settings.get("ai_agent_url", ""))
+        if not url:
+            entered = simpledialog.askstring(
+                "AI agent page",
+                "Enter the URL of the AI chat page you use. Set it later in "
+                "User settings if you need to change it.", parent=self)
+            if entered is None:
+                return
+            url = normalize_web_url(entered)
+        if not url:
+            messagebox.showwarning(
+                "Invalid AI page URL",
+                "Enter a web URL such as https://chatgpt.com.", parent=self)
+            return
+        self.app.set_setting("ai_agent_url", url)
+        try:
+            opened = self.app.open_webpages([url])
+        except Exception as exc:
+            opened = False
+            log("could not open AI page %s: %s" % (url, exc))
+        self.ai_url_status.config(
+            text=("Opened the saved AI page. Upload scans and paste the "
+                  "chosen prompt manually." if opened else
+                  "AI page URL saved, but the browser did not confirm opening: "
+                  "%s" % url),
+            foreground="#1b5e20" if opened else "#b26a00")
+
+    def _ask_after_ai_answer(self, answer):
+        """After the user copies a recognizable AI reply, ask which path to run."""
+        try:
+            if not self.winfo_exists():
+                return
+            choice = messagebox.askyesnocancel(
+                "AI answer copied",
+                "The clipboard now contains what looks like the AI's full "
+                "answer (%s characters).\n\n"
+                "Yes: split the scans and build the CSV.\n"
+                "No: split the scans only and keep this dialog open.\n"
+                "Cancel: do nothing for now." % "{:,}".format(len(answer)),
+                parent=self)
+            if choice is True:
+                self.run(answer_override=answer)
+            elif choice is False:
+                self.run_split_only()
+        finally:
+            self._answer_choice_active = False
 
     def _clip_tick(self):
         if not self.winfo_exists():
@@ -2592,15 +3032,18 @@ class PipelineDialog(tk.Toplevel):
             self.app.console_line(
                 "The split did not start - read the message above.", "err")
 
-    def run(self):
+    def run(self, answer_override=None):
         args, scans = self._scan_args()
         if args is None:
             return
         front, back = scans
-        try:
-            answer = self.app.clipboard_get().strip()
-        except Exception:
-            answer = ""
+        if answer_override is not None:
+            answer = answer_override.strip()
+        else:
+            try:
+                answer = self.app.clipboard_get().strip()
+            except Exception:
+                answer = ""
         kind, verdict = classify_clipboard(answer)
         if kind in ("short", "empty"):
             messagebox.showwarning(
@@ -2655,7 +3098,9 @@ class PipelineDialog(tk.Toplevel):
                             "went live afterwards, use the Facebook feed "
                             "updater button on the pipeline panel - the "
                             "xlsx lands in app\\pipeline\\"
-                            "facebook_merchant_products.", "ok")
+                            "facebook_merchant_products. After export, Alex "
+                            "Collect opens the workbook, output folder, and "
+                            "configured Facebook page for review.", "ok")
 
                 self.on_run(["listing", "--input", str(input_file),
                              "--facebook"],
@@ -2833,7 +3278,7 @@ class ChecklistViewer(tk.Toplevel):
                 ttk.Label(line, text="  link", foreground="#2255aa",
                           cursor="hand2").pack(side="right")
                 def openit(ev, u=link):
-                    open_edge_urls([u])
+                    self.app.open_webpages([u])
                 lbls = [w for w in line.winfo_children()
                         if isinstance(w, ttk.Label)][-1]
                 lbls.bind("<Button-1>", openit)
@@ -2872,7 +3317,7 @@ class ChecklistViewer(tk.Toplevel):
         nums = set(self._selected_nums())
         for r in self.rows:
             if r["num"] in nums and r["link"]:
-                open_edge_urls([r["link"]])
+                self.app.open_webpages([r["link"]])
                 return
         messagebox.showinfo("No link",
                             "Tick a row that has a link (eBay rows link to "
@@ -2900,8 +3345,6 @@ class TasksFrame(ttk.Frame):
                 cell.grid(row=0, column=c, sticky="nsew", padx=(0, 10))
                 grid.columnconfigure(c, weight=1)
                 label = MENU_LABELS[pid]
-                if not self.app.cs_addon and pid == "cookie":
-                    label = "Folders & settings"
                 ttk.Button(cell, text=label, width=22,
                            command=lambda p=pid: self.show_panel(p)).pack(
                                anchor="w")
@@ -2953,7 +3396,7 @@ class WizardFrame(ttk.Frame):
         ttk.Button(nav, text="Next step ->", command=self.next_page).pack(
             side="left", padx=8)
         ttk.Button(nav, text="Skip the wizard (task menu)",
-                   command=lambda: app.show_mode("menu")).pack(side="right")
+                   command=self.skip_wizard).pack(side="right")
         self.dots = ttk.Label(nav, text="")
         self.dots.pack(side="right", padx=12)
         self.render()
@@ -3006,14 +3449,16 @@ class WizardFrame(ttk.Frame):
             row = ttk.Frame(self.content)
             row.pack(anchor="w", pady=10)
             ttk.Button(row, text="Open canadianshopper.ca",
-                       command=lambda: webbrowser.open(CS_HOME)).pack(
+                       command=lambda: self.app.open_webpages([CS_HOME])).pack(
                            side="left")
             ttk.Button(row, text="Your eBay listings",
-                       command=lambda: webbrowser.open(EBAY_ACTIVE)).pack(
-                           side="left", padx=8)
+                       command=lambda: self.app.open_webpages([
+                           self.app.settings.get("ebay_selling_url", "")])).pack(
+                               side="left", padx=8)
             ttk.Button(row, text="Your Facebook listings",
-                       command=lambda: webbrowser.open(FB_SELLING)).pack(
-                           side="left")
+                       command=lambda: self.app.open_webpages([
+                           self.app.settings.get("facebook_selling_url", "")])).pack(
+                               side="left")
             return
         if pid == "cookie":
             ttk.Label(self.content,
@@ -3074,9 +3519,20 @@ class WizardFrame(ttk.Frame):
             return
 
     def next_page(self):
+        if WIZARD_PAGES[self.page] == "cookie":
+            save = getattr(self.app, "_save_user_settings_callback", None)
+            if save and not save():
+                return
         if self.page < len(WIZARD_PAGES) - 1:
             self.page += 1
             self.render()
+
+    def skip_wizard(self):
+        if WIZARD_PAGES[self.page] == "cookie":
+            save = getattr(self.app, "_save_user_settings_callback", None)
+            if save and not save():
+                return
+        self.app.show_mode("menu")
 
     def back(self):
         if self.page > 0:

@@ -10,9 +10,8 @@ REM  offering the card until someone changes them - and that is a double sale
 REM  waiting to happen.
 REM
 REM    * CanadianShopper can be changed FOR you (the tool does it).
-REM    * eBay and Facebook have no bulk tools for a personal account, so this
-REM      tool keeps a tick-off checklist and keeps reminding you, with a link
-REM      straight to the listing pages.
+REM    * eBay and Facebook listing actions are handled with a tick-off
+REM      checklist and links to the seller pages configured in User Settings.
 REM
 REM  It never touches eBay or Facebook by itself. The only thing it can change
 REM  on a website is the CanadianShopper stock number, and only if you answer
@@ -34,7 +33,7 @@ set "LISTTXT=%TOOLS%\sold-cards.txt"
 set "PHOTOS=%TOOLS%\needs-photos.txt"
 set "KEYS=%TOOLS%\woo-keys.txt"
 set "COOKIE=%TOOLS%\cookie.txt"
-set "SCANDIR=C:\Users\Owner\Pictures\ControlCenter4\Scan"
+set "SCANDIR=%USERPROFILE%\Pictures\Scan"
 
 >"%LOG%" echo SoldEverywhere.bat
 >>"%LOG%" echo Started: %DATE% %TIME%
@@ -367,7 +366,7 @@ echo       Permissions: Read   ^(Read is enough - this never writes to your site
 echo   Copy the ck_... and cs_... values ^(the secret shows once^) into the file
 echo   being opened now, on their own lines, save it.
 echo.
->"%KEYS%" echo https://store.piskun.ca
+>"%KEYS%" echo https://your-store.example
 >>"%KEYS%" echo ck_PASTE_THE_CONSUMER_KEY_HERE
 >>"%KEYS%" echo cs_PASTE_THE_CONSUMER_SECRET_HERE
 start /wait notepad "%KEYS%"
