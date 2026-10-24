@@ -4,7 +4,7 @@
 ; checked into Git. Package installation needs internet on the target PC.
 
 #define MyAppName "Alex Collect Control Panel"
-#define MyAppVersion "2.21"
+#define MyAppVersion "2.29"
 #define MyAppPublisher "Alex Collect"
 #define MyAppExe "START Alex Collect.bat"
 #define PythonInstaller "python-3.13.16-amd64.exe"
@@ -28,7 +28,7 @@ SetupIconFile=..\app\alexcollect.ico
 ArchitecturesAllowed=x64
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:";
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: checkedonce
 
 [Files]
 Source: "{#PythonInstaller}"; DestDir: "{tmp}"; Flags: ignoreversion
@@ -43,7 +43,7 @@ Source: "..\START Alex Collect.bat"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{group}\Alex Collect"; Filename: "{app}\{#MyAppExe}"; WorkingDir: "{app}"; IconFilename: "{app}\app\alexcollect.ico"
 Name: "{group}\Uninstall Alex Collect"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\Alex Collect"; Filename: "{app}\{#MyAppExe}"; WorkingDir: "{app}"; IconFilename: "{app}\app\alexcollect.ico"; Tasks: desktopicon
+Name: "{userdesktop}\Alex Collect"; Filename: "{app}\{#MyAppExe}"; WorkingDir: "{app}"; IconFilename: "{app}\app\alexcollect.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{tmp}\{#PythonInstaller}"; Parameters: "/quiet InstallAllUsers=0 TargetDir=""{app}\runtime\python-embed"" Include_launcher=0 Include_tcltk=1 Include_pip=1 Include_test=0 PrependPath=0"; StatusMsg: "Installing Alex Collect's private Python runtime..."; Flags: waituntilterminated

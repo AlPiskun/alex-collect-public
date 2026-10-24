@@ -3,12 +3,20 @@ import glob
 import csv
 import unicodedata
 from pathlib import Path
-import pandas as pd
-import requests
+import sys
 import xml.etree.ElementTree as ET
 import re
-import sys
 from datetime import datetime
+import pandas as pd
+import requests
+
+APP_DIR = Path(__file__).resolve().parents[2]
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+from user_settings import feed_urls, load_user_settings
+
+USER_SETTINGS = load_user_settings(APP_DIR / "gui-settings.json")
+_, _configured_feed_url = feed_urls(USER_SETTINGS)
 
 # Windows often starts redirected Python output with cp1252 (e.g. the GUI's
 # pipe or PowerShell Tee-Object). This script prints Unicode symbols; force
@@ -23,7 +31,7 @@ for _stream in (sys.stdout, sys.stderr):
 # CONFIG
 # -------------------------
 NS = {"g": "http://base.google.com/ns/1.0"}
-FEED_URL = "https://store.piskun.ca/feed/facebook.xml"
+FEED_URL = _configured_feed_url
 
 # Optional diagnostic: put WooCommerce product IDs here to have the
 # diagnostic block below confirm whether each one is present in the
@@ -38,6 +46,29 @@ def parse_price_to_int(price_text: str) -> int:
         return 0
     m = re.search(r"\d+(\.\d+)?", price_text)
     return int(float(m.group(0))) if m else 0
+
+
+def format_feed_value(template_key, default_template, values):
+    """Render a saved feed-field template, falling back safely if malformed."""
+    template = str(USER_SETTINGS.get(template_key, default_template) or
+                   default_template)
+    try:
+        return template.format_map(values)
+    except (KeyError, ValueError, IndexError):
+        return default_template.format_map(values)
+
+
+def format_feed_price(values):
+    """Keep the default numeric price; allow a user template override."""
+    template = str(USER_SETTINGS.get("facebook_feed_price_template", "{price}")
+                   or "{price}")
+    if template.strip() == "{price}":
+        return values["price"]
+    try:
+        rendered = template.format_map(values).strip()
+        return float(rendered) if "." in rendered else int(rendered)
+    except (KeyError, ValueError, IndexError):
+        return values["price"]
 
 
 def parse_feed():
@@ -106,22 +137,30 @@ def parse_feed():
         price_value = parse_price_to_int(price_text)
         if not title or not product_url:
             continue
-        row = {
-            "TITLE": f"{title} Trading Card"[:150],
-            "PRICE": price_value,
-            "CONDITION": "Used - Like New",
-            "DESCRIPTION": (
-                f"{description} Trading Card\n\nView and purchase here: {product_url}\n\n"
-                "e-Transfer, PayPal, Credit Card, Cheque. Cash On Delivery option is available for Pickup orders only.\n"
-                "Free shipping over $99 CAD."
-                if description
-                else f"Trading Card\n\nView and purchase here: {product_url}\n\n"
-                "e-Transfer, PayPal, Credit Card, Cheque. Cash On Delivery option is available for Pickup orders only.\n"
-                "Free shipping over $99 CAD."
-            ),
-            "CATEGORY": "Antiques & Collectibles",
-            "id": str(pid),
+        values = {
+            "id": str(pid), "title": title, "description": description,
+            "product_url": product_url, "price": price_value,
             "image_link": image_link,
+        }
+        row = {
+            "_SOURCE_TITLE": title,
+            "TITLE": str(format_feed_value(
+                "facebook_feed_title_template", "{title} Trading Card", values
+            ))[:150],
+            "PRICE": format_feed_price(values),
+            "CONDITION": str(USER_SETTINGS.get(
+                "facebook_feed_condition", "Used - Good") or "Used - Good"),
+            "DESCRIPTION": str(format_feed_value(
+                "facebook_feed_description_template",
+                "Trading Card\n\nView and purchase here: {product_url}\n\n"
+                "See the store listing for current payment and shipping details.",
+                values)),
+            "CATEGORY": str(USER_SETTINGS.get(
+                "facebook_feed_category", "Antiques & Collectibles") or ""),
+            "id": str(format_feed_value(
+                "facebook_feed_id_template", "{id}", values)),
+            "image_link": str(format_feed_value(
+                "facebook_feed_image_link_template", "{image_link}", values)),
         }
         rows.append(row)
     return pd.DataFrame(rows)
@@ -178,10 +217,14 @@ def match_latest_woo_batch(feed_df):
     older live products. The newest generated Woo CSV is the batch marker.
     Fail closed if it is missing or any name is absent/ambiguous in the feed.
     """
-    candidates = list(Path(PIPELINE_DIR).glob(
+    pipeline_root = Path(PIPELINE_DIR)
+    candidates = list((pipeline_root / "woocommerce_products").glob(
         "woocommerce_import_*.csv"))
+    # Keep legacy root-level files readable during the one-time organization.
+    candidates.extend(pipeline_root.glob("woocommerce_import_*.csv"))
     if not candidates:
-        raise ValueError("No woocommerce_import_*.csv found in " + PIPELINE_DIR)
+        raise ValueError("No woocommerce_import_*.csv found in " +
+                         str(pipeline_root / "woocommerce_products"))
     source = max(candidates, key=lambda path: path.stat().st_mtime)
 
     with source.open("r", encoding="utf-8-sig", newline="") as f:
@@ -194,7 +237,9 @@ def match_latest_woo_batch(feed_df):
         raise ValueError("Latest Woo CSV contains no product names: " + source.name)
 
     by_title = {}
-    for index, title in feed_df["TITLE"].items():
+    source_titles = (feed_df["_SOURCE_TITLE"] if "_SOURCE_TITLE" in feed_df
+                     else feed_df["TITLE"])
+    for index, title in source_titles.items():
         by_title.setdefault(normalize_title(title), []).append(index)
 
     selected = []
@@ -218,6 +263,9 @@ def match_latest_woo_batch(feed_df):
 # MAIN
 # -------------------------
 today = datetime.today().strftime("%Y-%m-%d")
+if not FEED_URL:
+    raise SystemExit("Set the WooCommerce site or product feed URL in User Settings.")
+
 new_df = parse_feed()
 history_df = load_history()
 
@@ -250,7 +298,7 @@ if first_run:
     except Exception as e:
         print("!! Safe first-run bootstrap stopped: %s" % e, file=sys.stderr)
         print("   No delta or history was written. Confirm the latest Woo CSV "
-              "is in the pipeline folder and its products are live.")
+              "is in pipeline/woocommerce_products and its products are live.")
         sys.exit(2)
     print("First-run batch source: %s" % batch_csv.name)
     print("Matched %d batch product(s) from the CSV; baseline will contain "
@@ -291,7 +339,8 @@ if confirm.strip():
 out_new = None
 if not new_products.empty:
     out_new = f"facebook_delta_{today}.xlsx"
-    new_products.to_excel(out_new, index=False)
+    export_products = new_products.drop(columns=["_SOURCE_TITLE"], errors="ignore")
+    export_products.to_excel(out_new, index=False)
     print(f"✅ New file saved: {out_new}")
 
 # -------------------------
@@ -303,6 +352,7 @@ updated_history = (new_df.copy() if first_run else
                    pd.concat([history_df, new_products], ignore_index=True))
 if not updated_history.empty:
     updated_history = updated_history.drop_duplicates(subset="id", keep="last")
+updated_history = updated_history.drop(columns=["_SOURCE_TITLE"], errors="ignore")
 updated_history.to_excel(HISTORY_FILE, index=False)
 print(f"📚 Master history updated: {HISTORY_FILE} ({len(updated_history)} total products)")
 

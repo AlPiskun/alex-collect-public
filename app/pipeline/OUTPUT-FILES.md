@@ -1,0 +1,36 @@
+# Pipeline result-file map and retention audit
+
+The configured pipeline folder now separates marketplace artifacts. Each current batch stays as a normal file until the next output run for that marketplace. At that next run, older files are consolidated into the history shown below; individual older files are removed only after the history has been written successfully. A failed read/write leaves the originals in place.
+
+| Folder | Current outputs | Next-run history / cleanup |
+|---|---|---|
+| `woocommerce_products/` | `woocommerce_import_*.csv` | `woocommerce_history.csv`, keyed by SKU. Older Woo CSVs are rolled up after a newer Woo CSV is written. The Facebook feed bootstrap reads the current Woo CSV here; it can still read legacy root files during migration. |
+| `canadianshopper_products/` | `canadianshopper_import_*.csv` | `canadianshopper_history.csv`, keyed by title, after a newer CS batch is written. |
+| `canadianshopper_products/cs-ready/` | Current import-ready staged CSVs, `back-map.json`, `cs-image-report.csv` in the parent, and the image reuse cache in the parent | `canadianshopper_staged_history.csv` records superseded staged CSV rows after a successful newer stage. Only the current staged batch is sent to the importer. Older `tools/cs-ready` CSVs from plugin 1.0.5 are migrated on the next stage. |
+| `ebay_quick_list/` | The current `ebay_quick_list_*.html` handoff page and matching JSON metadata | `ebay_quick_list_history.json` records older pages on the next eBay stage, including the page HTML and listing metadata. Individual old HTML/sidecar files are then removed only after history is safely written. |
+| `facebook_merchant_products/` | Current `facebook_delta_*.xlsx`, daily run log, and diagnostic file if a fetch fails | Existing `facebook_history.xlsx` is the consolidated feed history. Older delta/batch exports are cleaned by the next feed run. Dated `facebook_runlog_*.txt` files remain as an audit trail. |
+
+## One-time root-file organization
+
+Use **Logs & reports → Preview old pipeline files** first. If the destinations look right, choose **Move old files into folders** and confirm. The organizer recognizes old Woo, CanadianShopper, eBay Quick List, Facebook, and root-level `cs-ready` outputs. It never deletes or overwrites; a name collision gets a `.migrated-...` suffix. Unrecognized files, input files, credentials, and the image `output/` folder are left alone.
+
+Command-line equivalent from the installed core:
+
+```text
+python app/pipeline/organize_pipeline_outputs.py --pipeline-dir "<your pipeline folder>"
+python app/pipeline/organize_pipeline_outputs.py --pipeline-dir "<your pipeline folder>" --apply
+```
+
+## Other files reviewed
+
+These are outside the marketplace result rollups and may grow or persist by design:
+
+- `output/` contains renamed/split WebP card photos. It is a user-facing image workspace and is **not** automatically cleaned; review it periodically if it gets large.
+- `canadianshopper_products/cs-image-cache.json` grows as images are uploaded. It prevents duplicate uploads, so do not delete it casually. The older plugin-side cache is moved here if needed.
+- `facebook_runlog_YYYY-MM-DD.txt` accumulates one run log per day; `feed_debug_response.txt` is only written on feed-fetch failure and is overwritten on the next such failure.
+- `gui-log.txt` is append-only and can grow over time.
+- `sold-cards-ledger.json` and `sold-cards-checklist.csv` are persistent workflow state, not disposable output. `sold-cards-report.csv` is refreshed by runs.
+- `needs-photos.txt` is the current editable reminder list. `_card_input.txt` is an intermediate file overwritten for each pipeline run.
+- `canadianshopper_products/cs-ready/back-map.json` and `cs-image-report.csv` are refreshed during staging. The staged history CSV is preserved separately from the import-ready current batch.
+
+No other core pipeline result file was found that creates a dated, unbounded series in the pipeline root. The GUI log, Facebook daily logs, and image workspace are the main remaining accumulation points.
