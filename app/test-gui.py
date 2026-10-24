@@ -1224,16 +1224,24 @@ def main():
     check("hint: enter for the excel files",
           gui._prompt_hint_for(
               "Press Enter to generate Excel/log files") is not None)
+    draft_hint = gui._prompt_hint_for(
+        "  Drafts: v = view, y = publish ready drafts, n = skip [v/y/N]: ")
+    check("hint: direct pipeline draft choices",
+          draft_hint is not None and "read-only" in draft_hint and
+          "PUBLISH" in draft_hint and "Photo wiring continues" in draft_hint)
     check("no hint for random text",
           gui._prompt_hint_for("hello world") is None)
     panel("pipeline")
     pipeline_docs = " ".join(
         w.get("1.0", "end") for w in walk(app._mode_frame.inner)
         if isinstance(w, gui.tk.Text))
-    check("pipeline help explains scans, AI copy-back, and manual publishing",
+    check("pipeline help explains scans, AI copy-back, and direct draft choices",
           "Choose the FRONT scan" in pipeline_docs and
           "AI chat" in pipeline_docs and
-          "Nothing is uploaded or published" in pipeline_docs and
+          "preparation does not upload or publish anything" in pipeline_docs and
+          "v previews drafts" in pipeline_docs and
+          "n (or Enter) skips draft review" in pipeline_docs and
+          "without another Enter prompt" in pipeline_docs and
           "card_pipeline.py" not in pipeline_docs, pipeline_docs[:220])
     find_button(app, "Run the Facebook feed updater",
                 exact=False).invoke()

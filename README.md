@@ -1,4 +1,4 @@
-# Alex Collect 2.34
+# Alex Collect 2.35
 
 Alex Collect is a local desktop control panel for organizing a small trading-card selling workflow. It brings together the card pipeline, WooCommerce order inputs, a sale checklist, photo utilities, and optional plugins.
 
@@ -16,7 +16,7 @@ Alex Collect is a local desktop control panel for organizing a small trading-car
 - Optionally prepare selected cards for eBay with a local copy/drag-and-drop Quick List page and sport-template tabs. eBay submission stays manual; the core does not change live eBay listings.
 - Open the relevant seller pages after a sale; the core does not automatically change eBay or Facebook listings.
 - Square card photos for manual uploads.
-- The optional CanadianShopper plugin adds **Preview drafts** and **Publish ready drafts** controls directly to the card pipeline panel (also available in Import / publish drafts). Preview lists ready/blocked products without changes; publishing requires the app confirmation and typing `PUBLISH`. No bookmarklet is needed.
+- The optional CanadianShopper plugin adds draft actions directly to the running pipeline: `v` previews all vendor drafts without changes and returns to the choices, `y` publishes ready drafts after the same `PUBLISH` confirmation used by the app, and `n` (or Enter) skips draft review/publishing. Photo wiring then continues without an extra post-import Enter prompt. The same **Preview drafts** and **Publish ready drafts** buttons remain in the card-pipeline and **Import / publish drafts** panels; the app button also requires its confirmation dialog. No bookmarklet is needed.
 - Install optional plugins from a local ZIP using **Plugins** in the menu bar.
 
 The core continues to work without any plugins. The CanadianShopper integration is maintained separately and is **not included** in this repository or the core download.
@@ -56,6 +56,7 @@ From the `app` directory:
 ```sh
 python test-gui.py
 python test-gui-ergonomics.py
+python test-linux-packaging.py
 python test-ai-agent-flow.py
 python test-user-settings.py
 python test-plugin-manager.py

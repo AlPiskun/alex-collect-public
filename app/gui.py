@@ -46,7 +46,7 @@ from user_settings import (default_scan_dir, load_user_settings,
                            normalize_web_url, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.34"
+VERSION = "2.35"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -451,6 +451,12 @@ PIPELINE_PROMPT_HINTS = [
      "The pipeline is confirming the stock quantities read from the "
      "listing text. Send Enter accepts (Y); type n and Send if you want "
      "to edit one - it asks for a card number."),
+    ("Drafts: v = view",
+     "Type v and Send for a read-only ready/blocked draft preview; the "
+     "choices return afterwards. Type y and Send to publish ready drafts, "
+     "then type PUBLISH at the publisher's confirmation. Type n (or send an "
+     "empty reply) to skip draft review. Photo wiring continues without an "
+     "extra Enter prompt."),
     ("photo stage not installed",
      "The CanadianShopper CSV was still written and can be imported by "
      "hand - only the automatic photo staging was skipped. Install the "
@@ -696,12 +702,14 @@ commands you added in User Settings); it is copied to the clipboard. Upload
 the scans and paste the command into the AI page manually.
 When you copy the complete AI reply, the app detects it and asks whether to
 split and build or split only. Alex Collect matches descriptions to images
-and prepares the import files and photos in your batch folder. Nothing is
-uploaded or published by this step; review the files and import the staged CSV
-yourself. Then use Preview drafts and Publish ready drafts in this pipeline
-panel to activate only listings that pass the checks. After products are
-published, the workflow can refresh your Facebook feed. If the CanadianShopper
-plugin is enabled, its photo-staging actions are available too."""
+and prepares the import files and photos in your batch folder. File
+preparation does not upload or publish anything. With the CanadianShopper
+plugin enabled, confirm the draft import, then use the pipeline console:
+v previews drafts without changes and returns to the choices, y publishes
+ready drafts after you type PUBLISH, and n (or Enter) skips draft review.
+Photo wiring continues without another Enter prompt. The same Preview drafts
+and Publish ready drafts controls are below and in Import / publish drafts.
+After products are published, the workflow can refresh your Facebook feed."""
 
 DOCS["combine"] = """\
 card_pipeline writes up to 500 cards per CSV, and the CanadianShopper
@@ -734,11 +742,14 @@ inside Alex Collect - no bookmarklet is required for publishing:
      with canadianshopper_import_ and ends _01_of_NN.csv.
   4. Choose Preview drafts. It lists ready and blocked drafts and writes
      a report without changing any products.
-  5. For each ready draft, choose Publish ready drafts, accept the app's
-     confirmation, then type PUBLISH in the output console. Blocked drafts
-     remain drafts; use the report's edit links to fix them.
+  5. Choose Publish ready drafts, accept the app's confirmation, then type
+     PUBLISH in the output console to activate every ready draft. Blocked
+     drafts remain drafts; use the report's edit links to fix them.
 
-After import, press "Wire the photos" to attach the hosted front and back."""
+The running card pipeline offers the same actions after its draft import:
+v = preview, y = publish ready drafts, n = skip. Its photo wiring continues
+without a separate Enter prompt. For a manual import, press "Wire the photos"
+to attach the hosted front and back."""
 
 DOCS["wire"] = """\
 After the import, this step attaches what the importer could not:
@@ -2243,8 +2254,8 @@ def build_pipeline(parent, app):
                style="Dim.TLabel", wraplength=680, justify="left").pack(
                    anchor="w")
     next_steps = ("Next: combine pending batches if needed, stage the photos, "
-                  "import the CSV on CanadianShopper, then use Preview drafts "
-                  "and Publish ready drafts above." if app.cs_addon else
+                  "confirm the CanadianShopper draft import, then answer the "
+                  "pipeline's v/y/n draft prompt (or use the controls above)." if app.cs_addon else
                   "Next: combine pending batches if needed, then review and "
                   "manually import and publish the files. Photo staging and "
                   "back-photo wiring require the CanadianShopper plugin.")
