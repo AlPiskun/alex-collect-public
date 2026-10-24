@@ -1,4 +1,4 @@
-Alex Collect 2.34 — public core package
+Alex Collect 2.35 — public core package
 
 Root:
   LICENSE                         MIT license for the core

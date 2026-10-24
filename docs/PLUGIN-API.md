@@ -60,6 +60,7 @@ screens. The current core recognizes the following action IDs:
 - `batch.photo_wire`
 - `batch.photo_cache_repair`
 - `batch.pipeline_stage`
+- `marketplace.publish_drafts`
 
 The core invokes a tool only when a user selects the relevant action. For
 `batch.pipeline_stage`, the hook may define `run_stage(output_paths, args,
