@@ -28,6 +28,7 @@ def main():
             encoding="utf-8")
         settings = load_user_settings(settings_path)
         assert settings["browser_name"] == ""
+        assert settings["custom_ai_commands"] == []
         assert settings["facebook_feed_condition"] == "Used - Good"
         assert "{product_url}" in settings["facebook_feed_description_template"]
         assert settings["ebay_quicklist_enabled"] is True
@@ -43,9 +44,14 @@ def main():
         settings_path.write_text(
             '{"woo_site_url":"https://new.example",'
             '"woo_feed_url":"https://cdn.example/products.xml",'
-            '"woo_feed_refresh_url":"https://new.example/rebuild"}',
+            '"woo_feed_refresh_url":"https://new.example/rebuild",'
+            '"custom_ai_commands":[{"id":"test","name":"Test button",'
+            '"tooltip":"hover","prompt":"Write a test prompt."}]}',
             encoding="utf-8")
         settings = load_user_settings(settings_path)
+        assert settings["custom_ai_commands"] == [{
+            "id": "test", "name": "Test button", "tooltip": "hover",
+            "prompt": "Write a test prompt."}]
         assert feed_urls(settings) == (
             "https://new.example/rebuild", "https://cdn.example/products.xml")
         assert sync_site_url_to_woo_keys(

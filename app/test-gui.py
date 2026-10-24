@@ -196,6 +196,11 @@ def main():
           "What do you want to do today?" in task_text and
           "User settings" not in task_text and "Plugins" not in task_text and
           "Logs & reports" not in task_text, str(task_text))
+    task_sections = [w.cget("text") for w in walk(tasks_frame(app))
+                     if isinstance(w, gui.ttk.LabelFrame)]
+    check("tasks are visually separated into Sell, After, and Photos sections",
+          task_sections == ["Sell a new batch", "After a sale", "Photos"],
+          str(task_sections))
 
     print("== 3. every panel builds from the task menu ==")
     for pid in gui.PANEL_ORDER:
@@ -265,19 +270,27 @@ def main():
           cap.last["confirm"], str(cap.last["confirm"]))
 
     panel("rerun")
-    expected = ["--mode", "upload", "--images", "front,back",
+    cs_results = gui.canadianshopper_results_dir(app)
+    expected = ["--mode", "upload", "--repoint-cache", "--images", "front,back",
                 "--cookie-file", str(gui.CS_COOKIE_FILE),
-                "--cache", str(gui.BASE / "image-cache.json"),
-                "--report", str(gui.BASE / "reports" /
-                                "image-sync-latest.csv")]
-    find_button(app, "Dry-run (writes nothing)").invoke()
-    check("rerun dry-run = rerun.bat + --dry-run",
+                "--cache", str(gui.canadianshopper_cache_path(app)),
+                "--report", str(cs_results / "cs-repoint-report.csv")]
+    find_button(app, "Preview cached changes").invoke()
+    check("re-point preview uses CS cache and report paths",
           cap.last["args"] == expected + ["--dry-run"], str(cap.last["args"]))
-    find_button(app, "Re-point for real").invoke()
-    check("rerun real = rerun.bat", cap.last["args"] == expected,
+    apply_repoint = find_button(app, "Re-point photos")
+    check("repair apply button has the short requested label",
+          apply_repoint is not None)
+    apply_repoint.invoke()
+    check("re-point apply uses cached URLs only", cap.last["args"] == expected,
           str(cap.last["args"]))
-    check("rerun runs from the tools folder",
-          cap.last["cwd"] == str(gui.BASE), cap.last["cwd"])
+    check("re-point is a CanadianShopper plugin action",
+          "canadianshopper" in cap.last["script"].lower() or
+          "canadianshopper" in str(gui.TOOL("pad-and-upload.py")).lower(),
+          cap.last["script"])
+    check("re-point runs from the configured pipeline folder",
+          cap.last["cwd"] == app.settings.get("pipeline_dir", str(gui.WORK)),
+          cap.last["cwd"])
 
     panel("zerostock")
     find_button(app, "Preview: what sits at 0?").invoke()
@@ -472,7 +485,6 @@ def main():
     menubar = app.nametowidget(app.cget("menu"))
     menu_labels = [menubar.entrycget(i, "label")
                    for i in range(menubar.index("end") + 1)]
-<<<<<<< HEAD
     check("settings, plugins, and logs are menu commands",
           menu_labels == ["View", "User Settings", "Plugins",
                           "Logs & reports", "Help"], str(menu_labels))
@@ -486,12 +498,6 @@ def main():
           find_button(app, "Open the GUI log (gui-log.txt)") is not None)
     menubar.invoke(menu_labels.index("User Settings"))
     app.update()
-=======
-    check("User Settings menu is between View and Help",
-          menu_labels == ["View", "User Settings", "Help"], str(menu_labels))
-    tasks_frame(app).show_panel("cookie")
-    app.update()
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     setting_labels = [w.cget("text") for w in walk(app)
                       if isinstance(w, gui.ttk.Label)]
     check("User Settings centralizes store, AI, and folder settings",
@@ -572,6 +578,45 @@ def main():
     gui.CHECKLIST.unlink()
 
     print("== 12. the pipeline dialog (mirrors the user's .bat) ==")
+    panel("cookie")
+    app.update()
+    custom_editor = app._custom_ai_editor
+    custom_editor["name"].set("My custom prompt")
+    custom_editor["tooltip"].set("A short custom hover note.")
+    custom_editor["prompt"].insert("1.0", "Write a custom listing note for {{STORE_NAME}}.")
+    custom_editor["add"]()
+    check("custom AI command can be added in User Settings",
+          any(item["name"] == "My custom prompt"
+              for item in app._custom_ai_editor["items"]))
+    check("custom AI command persists when settings are saved",
+          app._save_user_settings_callback() and
+          any(item["name"] == "My custom prompt"
+              for item in app.settings.get("custom_ai_commands", [])))
+    custom_editor["list"].selection_set(0)
+    custom_editor["name"].set("Updated custom prompt")
+    custom_editor["prompt"].delete("1.0", "end")
+    custom_editor["prompt"].insert("1.0", "Updated prompt for {{STORE_NAME}}.")
+    custom_editor["add"]()
+    check("selected custom AI command can be edited",
+          custom_editor["items"][0]["name"] == "Updated custom prompt" and
+          "Updated prompt" in custom_editor["items"][0]["prompt"])
+    check("custom AI command edits persist",
+          app._save_user_settings_callback() and
+          app.settings["custom_ai_commands"][0]["name"] == "Updated custom prompt")
+    custom_editor["list"].selection_set(0)
+    custom_editor["remove"]()
+    check("custom AI command can be removed and saved",
+          app._save_user_settings_callback() and
+          app.settings.get("custom_ai_commands") == [])
+    custom_editor["name"].set("My custom prompt")
+    custom_editor["tooltip"].set("A short custom hover note.")
+    custom_editor["prompt"].delete("1.0", "end")
+    custom_editor["prompt"].insert("1.0", "Write a custom listing note for {{STORE_NAME}}.")
+    custom_editor["add"]()
+    check("custom AI command can be recreated after removal",
+          app._save_user_settings_callback() and
+          app.settings["custom_ai_commands"][0]["name"] == "My custom prompt")
+
     cap2 = Capture()
     app.runner.start = cap2          # section 10 restored the real runner
     cap = cap2
@@ -612,7 +657,7 @@ def main():
           ("https://ai.example/chat", 2) in answers["opened_urls"],
           str(answers["opened_urls"]))
     if dlg:
-        find_button(dlg, "Multiple grades", exact=False).invoke()
+        find_button(dlg, "Add grades to titles", exact=True).invoke()
         try:
             clip = app.clipboard_get()
         except Exception as e:
@@ -620,6 +665,16 @@ def main():
         check("multi-grade prompt landed on the clipboard",
               "SEO Image titles" in clip and "-[grade]" in clip,
               clip[:60])
+        custom_button = find_button(dlg, "My custom prompt", exact=True)
+        check("custom AI command appears as a pipeline button",
+              custom_button is not None)
+        if custom_button:
+            custom_button.invoke()
+        custom_clip = app.clipboard_get()
+        store_name = str(app.settings.get("store_name", "")).strip() or "my online store"
+        check("custom AI button copies its saved command",
+              "custom listing note" in custom_clip and store_name in custom_clip,
+              custom_clip[:80])
         entries = [w for w in walk(dlg) if isinstance(w, gui.ttk.Entry)]
         check("FRONT and BACK scan entries exist", len(entries) == 2,
               str(len(entries)))
@@ -998,7 +1053,7 @@ def main():
     app.clipboard_clear(); app.clipboard_append(answer_text); app.update()
     dlg.refresh_clip()
     answers["askyesno"] = False          # decline the replace
-    find_button(dlg, "Multiple grades", exact=False).invoke()
+    find_button(dlg, "Add grades to titles", exact=True).invoke()
     app.update()
     try:
         now = app.clipboard_get()
@@ -1006,7 +1061,7 @@ def main():
         now = ""
     check("declining keeps the answer on the clipboard", now == answer_text)
     answers["askyesno"] = True
-    find_button(dlg, "Multiple grades", exact=False).invoke()
+    find_button(dlg, "Add grades to titles", exact=True).invoke()
     app.update()
     now = app.clipboard_get()
     check("accepting puts the prompt on the clipboard",
@@ -1081,7 +1136,7 @@ def main():
             pass
     check("no staging/wiring/zero-stock tasks in the core menu",
           not ({"Stage the photos", "Wire the photos",
-                "Archive listings at 0", "Re-point photos (repair)"} &
+                "Archive listings at 0", "Re-point photos"} &
                labels))
     core_menu = app3.nametowidget(app3.cget("menu"))
     core_menu_labels = [core_menu.entrycget(i, "label")

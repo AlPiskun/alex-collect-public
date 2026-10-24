@@ -1,8 +1,4 @@
-<<<<<<< HEAD
-# Alex Collect 2.29
-=======
-# Alex Collect 2.28
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
+# Alex Collect 2.31
 
 Alex Collect is a local desktop control panel for organizing a small trading-card selling workflow. It brings together the card pipeline, WooCommerce order inputs, a sale checklist, photo utilities, and optional plugins.
 
@@ -10,13 +6,11 @@ Alex Collect is a local desktop control panel for organizing a small trading-car
 
 - Run the card pipeline from a Tkinter desktop window.
 - Prepare WooCommerce sale checklists from a typed list or an orders CSV.
-<<<<<<< HEAD
-- Configure the store URL, AI page, preferred browser, prompt preferences, seller links, output/scanner folders, Facebook workbook fields, and eBay Quick List templates/defaults from **User Settings** in the menu bar.
-- Use the compact task launcher; Plugins and Logs & reports are direct menu items. Hover task buttons for short tips. The larger output pane preserves your scroll position while new output arrives.
+- Configure the store URL, AI page, preferred browser, prompt preferences, custom AI commands, seller links, output/scanner folders, Facebook workbook fields, and eBay Quick List templates/defaults from **User Settings** in the menu bar.
+- Copy the built-in **Add grades to titles** and **No grades in titles** prompts, or create, edit, and remove custom AI command buttons in User Settings; hover notes clarify each command’s purpose.
+- Review the initial nine-card category plan in compact one-row-per-card output; the larger, screen-adaptive console keeps the confirmation visible without scrolling.
+- Use the compact task launcher with clearly separated Sell, After a sale, and Photos sections; Plugins and Logs & reports are direct menu items. Hover task buttons for short tips. The larger output pane preserves your scroll position while new output arrives.
 - Marketplace results are separated into Facebook, WooCommerce, CanadianShopper, and eBay folders. Woo/CS CSVs and eBay Quick List pages roll older batches into history on their next output run. Use Logs & reports to preview/move existing root-level files. See `app/pipeline/OUTPUT-FILES.md` for the accumulation audit.
-=======
-- Configure the store URL, AI page, preferred browser, prompt preferences, seller links, output/scanner folders, Facebook workbook fields, and eBay Quick List templates/defaults in **User Settings** (also available between **View** and **Help**).
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
 - See `docs/facebook-feed-settings.md` for the Facebook workbook field templates and placeholder reference.
 - Open the configured WordPress media upload page during the listing pipeline, then open the Facebook workbook, its folder, and the configured Facebook review page after export.
 - Optionally prepare selected cards for eBay with a local copy/drag-and-drop Quick List page and sport-template tabs. eBay submission stays manual; the core does not change live eBay listings.
@@ -35,11 +29,7 @@ You can install from source or build an Inno Setup installer:
 - **Run from source:** Install Python 3 with Tcl/Tk, run `python -m pip install -r requirements.txt`, then double-click `START Alex Collect.bat`.
 - **Inno Setup:** See [`installer/README.md`](installer/README.md). It documents a small setup for PCs with Python and a separate setup that installs a private Python runtime. The bundled setup still needs internet during installation to download Python packages.
 
-<<<<<<< HEAD
 Both installers package only the public core. CanadianShopper remains a separate plugin ZIP and is installed from the Plugins menu item.
-=======
-Both installers package only the public core. CanadianShopper remains a separate plugin ZIP and is installed from the Plugins panel.
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
 
 ### Linux
 
@@ -64,22 +54,18 @@ From the `app` directory:
 
 ```sh
 python test-gui.py
-<<<<<<< HEAD
 python test-gui-ergonomics.py
-=======
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
 python test-ai-agent-flow.py
 python test-user-settings.py
 python test-plugin-manager.py
 python test-core-sales.py
 python test-facebook-feed.py
-<<<<<<< HEAD
 python test-facebook-delivery.py
 python test-ebay-quicklist.py
 python test-pipeline-output-organization.py
-=======
-python test-ebay-quicklist.py
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
+python test-category-plan.py
+python test-custom-ai-commands.py
+python ../installer/test-bundled-config.py
 ```
 
 The GUI test needs a working desktop display (or Xvfb on headless Linux).

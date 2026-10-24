@@ -33,6 +33,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -45,11 +46,7 @@ from user_settings import (default_scan_dir, load_user_settings,
                            normalize_web_url, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-<<<<<<< HEAD
-VERSION = "2.29"
-=======
-VERSION = "2.28"
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
+VERSION = "2.31"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -308,29 +305,59 @@ PROMPT_FILES = {
     "single": "card description command.txt",
 }
 PROMPT_TITLES = {
-    "multi": ("Multiple grades on the sheet\n"
-              "(the grade goes into the image titles)"),
-    "single": ("One grade for the whole sheet\n"
-               "(titles stay without the grade)"),
+    "multi": "Add grades to titles",
+    "single": "No grades in titles",
+}
+PROMPT_TOOLTIPS = {
+    "multi": ("If products on this sheet have multiple grades, this command "
+              "adds each card's grade to the end of its title."),
+    "single": ("If this is one product or the copies share one grade, this "
+               "command leaves the grade out of the product title."),
 }
 
 
-def load_prompt(kind):
-    p = BASE / PROMPT_FILES[kind]
-    try:
-        t = p.read_text(encoding="utf-8").replace("\r\n", "\n").strip()
-        if not t:
-            t = PROMPT_FALLBACKS[kind]
-    except Exception:
-        t = PROMPT_FALLBACKS[kind]
-    settings = load_settings()
+def custom_ai_commands(settings=None):
+    """Return sanitized custom commands with stable button IDs."""
+    settings = load_settings() if settings is None else settings
+    raw = settings.get("custom_ai_commands", [])
+    if not isinstance(raw, list):
+        return []
+    commands = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        prompt = str(item.get("prompt", "")).strip()
+        if not name or not prompt:
+            continue
+        commands.append({
+            "id": str(item.get("id") or ("legacy-%d" % index)),
+            "name": name,
+            "tooltip": str(item.get("tooltip", "")).strip() or
+                       "Custom AI command. Copies this command to the clipboard.",
+            "prompt": prompt,
+        })
+    return commands
+
+
+def ai_prompt_buttons(settings=None):
+    """(id, label, hover-help) for the default and user-created commands."""
+    settings = load_settings() if settings is None else settings
+    choices = [(kind, PROMPT_TITLES[kind], PROMPT_TOOLTIPS[kind])
+               for kind in ("multi", "single")]
+    choices.extend(("custom_" + item["id"], item["name"], item["tooltip"])
+                   for item in custom_ai_commands(settings))
+    return choices
+
+
+def _render_prompt(text, settings):
     store_name = str(settings.get("store_name", "")).strip() or "my online store"
     currency_prefix = str(settings.get("currency_prefix", "C$")).strip() or "$"
     currency_name = str(settings.get("currency_name", "Canadian dollars")).strip() or "your currency"
     description_words = str(settings.get("description_min_words", 400))
     tag_count = str(settings.get("tag_count", 8))
     listing_context = str(settings.get("listing_context", "")).strip()
-    return (t.replace("{{STORE_NAME}}", store_name)
+    return (text.replace("{{STORE_NAME}}", store_name)
              .replace("{{CURRENCY_PREFIX}}", currency_prefix)
              .replace("{{CURRENCY_NAME}}", currency_name)
              .replace("{{DESCRIPTION_MIN_WORDS}}", description_words)
@@ -338,15 +365,39 @@ def load_prompt(kind):
              .replace("{{LISTING_CONTEXT}}", listing_context))
 
 
-def classify_clipboard(text):
+def load_prompt(kind, settings=None):
+    settings = load_settings() if settings is None else settings
+    if kind.startswith("custom_"):
+        custom_id = kind[len("custom_"):]
+        for item in custom_ai_commands(settings):
+            if item["id"] == custom_id:
+                return _render_prompt(item["prompt"], settings)
+        raise KeyError("Custom AI command is no longer available: %s" % kind)
+    if kind not in PROMPT_FILES:
+        raise KeyError("Unknown AI command: %s" % kind)
+    p = BASE / PROMPT_FILES[kind]
+    try:
+        text = p.read_text(encoding="utf-8").replace("\r\n", "\n").strip()
+        if not text:
+            text = PROMPT_FALLBACKS[kind]
+    except Exception:
+        text = PROMPT_FALLBACKS[kind]
+    return _render_prompt(text, settings)
+
+
+def classify_clipboard(text, settings=None):
     """(kind, verdict) for whatever the clipboard holds:
     short / prompt / answer / other."""
     t = (text or "").strip()
+    if not t:
+        return "short", "clipboard is empty"
+    settings = load_settings() if settings is None else settings
+    for kind, _label, _tip in ai_prompt_buttons(settings):
+        prompt = load_prompt(kind, settings)
+        if prompt and t.startswith(prompt[:min(60, len(prompt))]):
+            return "prompt", "still the PROMPT you copied for the AI chat"
     if len(t) < 200:
         return "short", "too short to be the full answer"
-    for k in ("multi", "single"):
-        if t.startswith(load_prompt(k)[:60]):
-            return "prompt", "still the PROMPT you copied for the AI chat"
     if t.startswith("SEO Image titles") or "Grade Estimate:" in t:
         return "answer", "looks like the AI's answer"
     return "other", "some other text"
@@ -639,7 +690,9 @@ DOCS["pipeline"] = """\
 Use this for a new batch of cards. Choose the FRONT scan and, if you have
 one, the BACK scan. The saved AI chat page opens in your selected browser
 (or Alex Collect asks you to choose a browser the first time). Select one of
-the two prompts; it is copied to the clipboard. Upload the scans and paste the prompt into the AI page manually.
+the available AI command buttons (two built-in options plus any custom
+commands you added in User Settings); it is copied to the clipboard. Upload
+the scans and paste the command into the AI page manually.
 When you copy the complete AI reply, the app detects it and asks whether to
 split and build or split only. Alex Collect matches descriptions to images
 and prepares the import files and photos in your batch folder. Nothing is
@@ -695,11 +748,11 @@ card ok / skip / unmatched / no-back, and nothing is changed. When the
 dry run looks right, press Wire for real."""
 
 DOCS["rerun"] = """\
-The repair button. If a fresh CSV import has replaced your photos with
-the original portrait files again, this re-points EVERY Alex Collect
-listing at the square front + back gallery - using the URL cache, so
-it uploads NOTHING. It is the same one click as rerun.bat and it is
-safe to run any time; Dry-run shows the plan first."""
+CanadianShopper plugin repair. If a fresh CSV import has replaced photos,
+this re-points listings covered by the hosted-image cache at their square
+front and back gallery URLs. It uses the cached URLs directly: no WooCommerce
+export is needed and no images are downloaded or uploaded. Run Dry-run first,
+then review the report before applying the changes."""
 
 DOCS["sold"] = """\
 A card sold. Choose where it sold; the checklist covers the other places the
@@ -917,8 +970,12 @@ class App(tk.Tk):
             self.iconphoto(True, self._icon_img)
         except Exception:
             pass
-        self.geometry("1020x760")
-        self.minsize(880, 620)
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        width = min(1160, max(940, screen_width - 80))
+        height = min(920, max(660, screen_height - 80))
+        self.geometry("%dx%d" % (width, height))
+        self.minsize(min(880, width), min(680, height))
         self.runner = Runner(self)
         self._saw_dangling_prompt = False
         self._hinted = set()
@@ -958,6 +1015,12 @@ class App(tk.Tk):
         st.configure("H2.TLabel", font=("TkDefaultFont", 10, "bold"))
         st.configure("Dim.TLabel", foreground="#666666")
         st.configure("Task.TButton", padding=(7, 3))
+        st.configure("TaskGroup.TLabelframe", padding=(10, 7),
+                     borderwidth=2, relief="groove")
+        st.configure("TaskGroup.TLabelframe.Label",
+                     font=("TkDefaultFont", 10, "bold"),
+                     foreground="#24476b")
+        st.configure("TaskMenu.TButton", padding=(9, 6), width=25)
         st.configure("TNotebook.Tab", padding=(8, 3))
         st.configure("TLabelframe", padding=4)
         try:
@@ -984,12 +1047,9 @@ class App(tk.Tk):
         view.add_command(label="Tabs", command=lambda: self.show_mode("tabs"))
         m.add_cascade(label="View", menu=view)
         m.add_command(label="User Settings", command=self.show_user_settings)
-<<<<<<< HEAD
         m.add_command(label="Plugins", command=lambda: self.show_panel("plugins"))
         m.add_command(label="Logs & reports",
                       command=lambda: self.show_panel("logs"))
-=======
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
         help = tk.Menu(m, tearoff=0)
         help.add_command(label="Open README.md",
                          command=lambda: open_path(BASE / "README.md"))
@@ -1006,18 +1066,12 @@ class App(tk.Tk):
         self.settings["startup_mode"] = self._mode_var.get()
         save_settings(self.settings)
 
-<<<<<<< HEAD
     def show_panel(self, panel_id):
         """Open a panel from the menu bar, regardless of current view."""
-=======
-    def show_user_settings(self):
-        """Open the central settings panel from any view."""
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
         self.show_mode("menu")
         self.update_idletasks()
         try:
             tasks = self._mode_frame.inner.winfo_children()[0]
-<<<<<<< HEAD
             tasks.show_panel(panel_id)
         except (AttributeError, IndexError, tk.TclError):
             log("could not open %s panel" % panel_id)
@@ -1025,11 +1079,6 @@ class App(tk.Tk):
     def show_user_settings(self):
         """Open the central settings panel from the menu bar."""
         self.show_panel("cookie")
-=======
-            tasks.show_panel("cookie")
-        except (AttributeError, IndexError, tk.TclError):
-            log("could not open User Settings panel")
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
 
     def _build_topbar(self):
         bar = ttk.Frame(self, padding=(8, 3, 8, 2))
@@ -1055,7 +1104,7 @@ class App(tk.Tk):
                              padding=(4, 2))
         box.pack(fill="x", side="bottom", padx=6, pady=(1, 2))
         self.console = tk.Text(
-            box, height=16, state="disabled", wrap="word", bg="#141414",
+            box, height=20, state="disabled", wrap="word", bg="#141414",
             fg="#e8e8e8", insertbackground="#e8e8e8",
             font=("Consolas", 9) if sys.platform == "win32"
                  else "TkFixedFont")
@@ -1437,27 +1486,16 @@ class App(tk.Tk):
         top.resizable(False, False)
         ttk.Label(top, text="Which browser should Alex Collect use for web pages?",
                   wraplength=380, justify="left").pack(
-<<<<<<< HEAD
                       anchor="w", padx=10, pady=(10, 5))
-=======
-                      anchor="w", padx=14, pady=(14, 8))
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
         labels.insert(0, "Ask me again next time")
         label_var = tk.StringVar(master=top, value=(
             labels[1] if len(labels) > 1 else labels[0]))
         ttk.Combobox(top, textvariable=label_var, values=labels,
                      state="readonly", width=34).pack(
-<<<<<<< HEAD
                          fill="x", padx=10, pady=3)
         result = {"browser": None}
         buttons = ttk.Frame(top)
         buttons.pack(fill="x", padx=10, pady=(5, 10))
-=======
-                         fill="x", padx=14, pady=4)
-        result = {"browser": None}
-        buttons = ttk.Frame(top)
-        buttons.pack(fill="x", padx=14, pady=(8, 14))
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
 
         def choose():
             label = label_var.get()
@@ -1503,12 +1541,7 @@ class App(tk.Tk):
 PANEL_ORDER = ["cookie", "pipeline", "combine", "stage", "importpanel",
                "wire", "rerun", "sold", "checklist", "zerostock", "square",
                "newphotos", "logs", "plugins"]
-<<<<<<< HEAD
 GROUPS_FULL = [("Sell a new batch", ["pipeline", "combine", "stage",
-=======
-GROUPS_FULL = [("User settings", ["cookie"]),
-               ("Sell a new batch", ["pipeline", "combine", "stage",
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
                                      "importpanel", "wire"]),
                ("After a sale", ["sold", "checklist", "zerostock",
                                  "newphotos"]),
@@ -1523,12 +1556,7 @@ def groups_for(has_cs):
     """
     if has_cs:
         return GROUPS_FULL
-<<<<<<< HEAD
     return [("Sell a new batch", ["pipeline", "combine", "importpanel"]),
-=======
-    return [("User settings", ["cookie"]),
-            ("Sell a new batch", ["pipeline", "combine", "importpanel"]),
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
             ("After a sale", ["sold", "checklist", "newphotos"]),
             ("Photos", ["square"])]
 TITLES = {
@@ -1538,7 +1566,7 @@ TITLES = {
     "stage": "Stage the photos for the batch",
     "importpanel": "Import & publish (on the website)",
     "wire": "Wire the photos (after the import)",
-    "rerun": "Re-point every listing from the cache (repair)",
+    "rerun": "Re-point photos",
     "sold": "A card sold - mark it everywhere",
     "checklist": "The tick-off checklist",
     "zerostock": "Archive CanadianShopper listings already at 0",
@@ -1554,7 +1582,7 @@ MENU_LABELS = {
     "stage": "Stage the photos",
     "importpanel": "Import & publish",
     "wire": "Wire the photos",
-    "rerun": "Re-point photos (repair)",
+    "rerun": "Re-point photos",
     "sold": "A card sold",
     "checklist": "The checklist",
     "zerostock": "Archive listings at 0",
@@ -1570,7 +1598,7 @@ BLURBS = {
     "stage": "Square + host fronts and backs, rewrite the CSVs into cs-ready.",
     "importpanel": "The one step on the website: upload the CSV, publish.",
     "wire": "Attach the back photos and fix the main images after an import.",
-    "rerun": "Import clobbered the photos? Re-point everything, zero uploads.",
+    "rerun": "CanadianShopper plugin: restore cached front/back photos after an import. No Woo export or image uploads needed; preview before applying.",
     "sold": "Record where the sale happened and follow up on the other listings.",
     "checklist": "See what is still outstanding and tick it off.",
     "zerostock": "Sweep: archive everything sitting at quantity 0.",
@@ -1609,36 +1637,21 @@ def build_cookie(parent, app):
     app._user_setting_vars = fields
     def field_row(container, row, label, key, width=68, hint=None):
         ttk.Label(container, text=label).grid(row=row, column=0, sticky="w",
-<<<<<<< HEAD
                                               padx=(0, 5), pady=1)
-=======
-                                              padx=(0, 6), pady=2)
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
         var = tk.StringVar(master=container,
                            value=str(app.settings.get(key, "")))
         fields[key] = var
         ttk.Entry(container, textvariable=var, width=width).grid(
-<<<<<<< HEAD
             row=row, column=1, sticky="ew", padx=2, pady=1)
         if hint:
             ttk.Label(container, text=hint, style="Dim.TLabel").grid(
                 row=row + 1, column=1, sticky="w", padx=2, pady=(0, 2))
-=======
-            row=row, column=1, sticky="ew", padx=3, pady=2)
-        if hint:
-            ttk.Label(container, text=hint, style="Dim.TLabel").grid(
-                row=row + 1, column=1, sticky="w", padx=3, pady=(0, 3))
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
         return var
 
     startup_var = tk.StringVar(
         master=box, value=app.settings.get("startup_mode", "menu"))
     startup_row = ttk.Frame(box)
-<<<<<<< HEAD
     startup_row.pack(fill="x", pady=(0, 3))
-=======
-    startup_row.pack(fill="x", pady=(0, 4))
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     ttk.Label(startup_row, text="Startup view:").pack(side="left")
     ttk.Combobox(startup_row, textvariable=startup_var, state="readonly",
                  values=("menu", "tabs", "wizard"), width=14).pack(
@@ -1646,11 +1659,7 @@ def build_cookie(parent, app):
 
     ttk.Label(box, text="Store and AI", style="H2.TLabel").pack(anchor="w")
     general = ttk.Frame(box)
-<<<<<<< HEAD
     general.pack(fill="x", pady=(1, 4))
-=======
-    general.pack(fill="x", pady=(2, 6))
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     general.columnconfigure(1, weight=1)
     store_var = field_row(general, 0, "Store name (used in AI prompts):",
                           "store_name")
@@ -1689,11 +1698,7 @@ def build_cookie(parent, app):
                             "woo_feed_refresh_url")
 
     row = ttk.Frame(box)
-<<<<<<< HEAD
     row.pack(fill="x", pady=(0, 4))
-=======
-    row.pack(fill="x", pady=(0, 8))
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     def open_media_page():
         if not save_user_settings():
             return
@@ -1726,16 +1731,127 @@ def build_cookie(parent, app):
                command=lambda: open_woo_keys_file(app, fields["woo_site_url"].get())
                ).pack(side="left", padx=(6, 0))
 
+    ttk.Label(box, text="Custom AI commands", style="H2.TLabel").pack(
+        anchor="w", pady=(4, 0))
+    ttk.Label(box, text=(
+        "Create extra copy-to-clipboard buttons for the pipeline dialog. "
+        "Commands can use the same {{STORE_NAME}}, {{CURRENCY_PREFIX}}, "
+        "{{CURRENCY_NAME}}, {{DESCRIPTION_MIN_WORDS}}, {{TAG_COUNT}}, and "
+        "{{LISTING_CONTEXT}} placeholders. Save User Settings after editing."),
+        style="Dim.TLabel", wraplength=760, justify="left").pack(
+            anchor="w", pady=(0, 3))
+    custom_frame = ttk.Frame(box)
+    custom_frame.pack(fill="x", pady=(0, 6))
+    custom_frame.columnconfigure(1, weight=1)
+    custom_items = [dict(item) for item in custom_ai_commands(app.settings)]
+    custom_list = tk.Listbox(custom_frame, height=5, width=28,
+                             exportselection=False)
+    custom_list.grid(row=0, column=0, rowspan=5, sticky="nsw", padx=(0, 8))
+    custom_name_var = tk.StringVar(master=custom_frame)
+    custom_tip_var = tk.StringVar(master=custom_frame)
+    ttk.Label(custom_frame, text="Button name:").grid(
+        row=0, column=1, sticky="w")
+    custom_name_entry = ttk.Entry(custom_frame, textvariable=custom_name_var)
+    custom_name_entry.grid(row=0, column=2, sticky="ew", padx=3, pady=1)
+    ttk.Label(custom_frame, text="Hover note:").grid(
+        row=1, column=1, sticky="w")
+    ttk.Entry(custom_frame, textvariable=custom_tip_var).grid(
+        row=1, column=2, sticky="ew", padx=3, pady=1)
+    ttk.Label(custom_frame, text="AI command:").grid(
+        row=2, column=1, sticky="nw")
+    custom_prompt_text = tk.Text(custom_frame, height=6, wrap="word")
+    custom_prompt_text.grid(row=2, column=2, sticky="ew", padx=3, pady=1)
+    custom_frame.columnconfigure(2, weight=1)
+
+    def refresh_custom_list(selected=None):
+        custom_list.delete(0, "end")
+        for item in custom_items:
+            custom_list.insert("end", item["name"])
+        if selected is not None and 0 <= selected < len(custom_items):
+            custom_list.selection_set(selected)
+            custom_list.activate(selected)
+            custom_list.see(selected)
+            load_custom_item()
+
+    def load_custom_item(_event=None):
+        selection = custom_list.curselection()
+        if not selection:
+            return
+        item = custom_items[selection[0]]
+        custom_name_var.set(item["name"])
+        custom_tip_var.set(item.get("tooltip", ""))
+        custom_prompt_text.delete("1.0", "end")
+        custom_prompt_text.insert("1.0", item["prompt"])
+
+    def clear_custom_fields():
+        custom_list.selection_clear(0, "end")
+        custom_name_var.set("")
+        custom_tip_var.set("")
+        custom_prompt_text.delete("1.0", "end")
+        custom_name_entry.focus_set()
+
+    def save_custom_item():
+        name = custom_name_var.get().strip()
+        tooltip_text = custom_tip_var.get().strip()
+        prompt_text = custom_prompt_text.get("1.0", "end-1c").strip()
+        if not name or not prompt_text:
+            messagebox.showwarning(
+                "Custom command needs a name and prompt",
+                "Enter a button name and the AI command text.", parent=app)
+            return
+        selected = custom_list.curselection()
+        index = selected[0] if selected else None
+        for i, item in enumerate(custom_items):
+            if i != index and item["name"].casefold() == name.casefold():
+                messagebox.showwarning(
+                    "Duplicate command name",
+                    "Each custom AI button needs a different name.", parent=app)
+                return
+        record = {"id": custom_items[index]["id"] if index is not None else
+                         uuid.uuid4().hex,
+                  "name": name,
+                  "tooltip": tooltip_text or
+                             "Custom AI command. Copies this command to the clipboard.",
+                  "prompt": prompt_text}
+        if index is None:
+            custom_items.append(record)
+            index = len(custom_items) - 1
+        else:
+            custom_items[index] = record
+        refresh_custom_list(index)
+
+    def remove_custom_item():
+        selected = custom_list.curselection()
+        if not selected:
+            return
+        index = selected[0]
+        custom_items.pop(index)
+        refresh_custom_list(min(index, len(custom_items) - 1)
+                            if custom_items else None)
+        if not custom_items:
+            clear_custom_fields()
+
+    ttk.Button(custom_frame, text="New command", command=clear_custom_fields).grid(
+        row=3, column=1, sticky="w", padx=2, pady=3)
+    ttk.Button(custom_frame, text="Add / update button",
+               command=save_custom_item).grid(row=3, column=2, sticky="w",
+                                               padx=3, pady=3)
+    ttk.Button(custom_frame, text="Remove selected",
+               command=remove_custom_item).grid(row=4, column=1, sticky="w",
+                                                 padx=2, pady=1)
+    custom_list.bind("<<ListboxSelect>>", load_custom_item)
+    refresh_custom_list()
+    app._custom_ai_editor = {
+        "items": custom_items, "list": custom_list,
+        "name": custom_name_var, "tooltip": custom_tip_var,
+        "prompt": custom_prompt_text, "add": save_custom_item,
+        "remove": remove_custom_item,
+    }
+
     ttk.Label(box, text="Marketplace pages", style="H2.TLabel").pack(
-<<<<<<< HEAD
         anchor="w", pady=(2, 0))
     market = ttk.Frame(box)
     market.pack(fill="x", pady=(1, 4))
-=======
-        anchor="w", pady=(4, 0))
-    market = ttk.Frame(box)
-    market.pack(fill="x", pady=(2, 8))
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     market.columnconfigure(1, weight=1)
     field_row(market, 0, "eBay active listings URL:", "ebay_selling_url")
     field_row(market, 1, "Facebook listing/review page URL:",
@@ -1744,15 +1860,9 @@ def build_cookie(parent, app):
               "canadianshopper_store_url")
 
     ttk.Label(box, text="eBay Quick List handoff", style="H2.TLabel").pack(
-<<<<<<< HEAD
         anchor="w", pady=(2, 0))
     ebay_box = ttk.Frame(box)
     ebay_box.pack(fill="x", pady=(1, 4))
-=======
-        anchor="w", pady=(4, 0))
-    ebay_box = ttk.Frame(box)
-    ebay_box.pack(fill="x", pady=(2, 8))
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     ebay_box.columnconfigure(1, weight=1)
     ebay_quicklist_var = tk.BooleanVar(
         master=ebay_box,
@@ -1783,21 +1893,12 @@ def build_cookie(parent, app):
         "The eBay helper gathers copyable/draggable listing details and opens "
         "the selected sport template(s). It does not submit or publish listings."),
         style="Dim.TLabel", wraplength=720, justify="left").grid(
-<<<<<<< HEAD
             row=16, column=1, sticky="w", padx=3, pady=(0, 3))
 
     ttk.Label(box, text="Facebook Marketplace export fields",
               style="H2.TLabel").pack(anchor="w", pady=(2, 0))
     facebook_box = ttk.Frame(box)
     facebook_box.pack(fill="x", pady=(1, 4))
-=======
-            row=16, column=1, sticky="w", padx=3, pady=(0, 4))
-
-    ttk.Label(box, text="Facebook Marketplace export fields",
-              style="H2.TLabel").pack(anchor="w", pady=(4, 0))
-    facebook_box = ttk.Frame(box)
-    facebook_box.pack(fill="x", pady=(2, 8))
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     facebook_box.columnconfigure(1, weight=1)
     field_row(facebook_box, 0, "Title template:",
               "facebook_feed_title_template")
@@ -1812,11 +1913,7 @@ def build_cookie(parent, app):
               "facebook_feed_image_link_template", width=60)
     ttk.Label(facebook_box, text="Description template:").grid(
         row=6, column=0, sticky="nw", padx=(0, 6), pady=2)
-<<<<<<< HEAD
     description_template = tk.Text(facebook_box, height=4, wrap="word")
-=======
-    description_template = tk.Text(facebook_box, height=5, wrap="word")
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     description_template.grid(row=6, column=1, sticky="ew", padx=3, pady=2)
     description_template.insert(
         "1.0", str(app.settings.get("facebook_feed_description_template", "")))
@@ -1826,21 +1923,12 @@ def build_cookie(parent, app):
         "{image_link}. Leave Price template as {price} to use the live-feed "
         "price."), style="Dim.TLabel",
         wraplength=720, justify="left").grid(
-<<<<<<< HEAD
             row=7, column=1, sticky="w", padx=3, pady=(0, 3))
 
     ttk.Label(box, text="CanadianShopper CSV defaults", style="H2.TLabel").pack(
         anchor="w", pady=(2, 0))
     cs_config = ttk.Frame(box)
     cs_config.pack(fill="x", pady=(1, 4))
-=======
-            row=7, column=1, sticky="w", padx=3, pady=(0, 4))
-
-    ttk.Label(box, text="CanadianShopper CSV defaults", style="H2.TLabel").pack(
-        anchor="w", pady=(4, 0))
-    cs_config = ttk.Frame(box)
-    cs_config.pack(fill="x", pady=(2, 8))
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     cs_config.columnconfigure(1, weight=1)
     field_row(cs_config, 0, "Category:", "canadianshopper_category")
     field_row(cs_config, 1, "Ship-from province/region:",
@@ -1859,15 +1947,9 @@ def build_cookie(parent, app):
               "canadianshopper_transit_days", width=16)
 
     ttk.Label(box, text="Working folders", style="H2.TLabel").pack(
-<<<<<<< HEAD
         anchor="w", pady=(2, 0))
     grid = ttk.Frame(box)
     grid.pack(fill="x", pady=(1, 4))
-=======
-        anchor="w", pady=(4, 0))
-    grid = ttk.Frame(box)
-    grid.pack(fill="x", pady=(2, 6))
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     grid.columnconfigure(1, weight=1)
     app._pipeline_var = tk.StringVar(
         master=grid, value=app.settings.get("pipeline_dir", str(WORK)))
@@ -1980,6 +2062,8 @@ def build_cookie(parent, app):
         app.settings["description_min_words"] = description_words
         app.settings["tag_count"] = tag_count
         app.settings["listing_context"] = listing_context_var.get().strip()
+        app.settings["custom_ai_commands"] = [dict(item)
+                                              for item in custom_items]
         try:
             shipping = float(fields["canadianshopper_shipping_flat"].get().strip())
             handling = int(fields["canadianshopper_handling_days"].get().strip())
@@ -2009,17 +2093,10 @@ def build_cookie(parent, app):
 
     app._save_user_settings_callback = save_user_settings
     ttk.Button(box, text="Save user settings", command=save_user_settings).pack(
-<<<<<<< HEAD
         anchor="w", pady=(1, 4))
 
     if app.cs_addon:
         ttk.Separator(box).pack(fill="x", pady=(1, 4))
-=======
-        anchor="w", pady=(2, 8))
-
-    if app.cs_addon:
-        ttk.Separator(box).pack(fill="x", pady=(2, 6))
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
         ttk.Label(box, text="CanadianShopper connection",
                   style="H2.TLabel").pack(anchor="w")
         ttk.Label(box, text="Session cookie (private login; stored locally):"
@@ -2348,27 +2425,35 @@ def build_rerun(parent, app):
     box.pack(fill="x")
 
     def go(dry):
-        args = ["--mode", "upload", "--images", "front,back",
+        results = canadianshopper_results_dir(app)
+        args = ["--mode", "upload", "--repoint-cache", "--images", "front,back",
                 "--cookie-file", str(CS_COOKIE_FILE),
-                "--cache", str(BASE / "image-cache.json"),
-                "--report", str(BASE / "reports" / "image-sync-latest.csv")]
+                "--cache", str(canadianshopper_cache_path(app)),
+                "--report", str(results / "cs-repoint-report.csv")]
         if dry:
             args.append("--dry-run")
         app.run_tool("pad-and-upload.py", args,
-                     "Re-point listings from the cache" +
+                     "CanadianShopper: Re-point photos" +
                      (" - DRY RUN" if dry else ""),
-                     cwd=str(BASE),
+                     cwd=app.settings.get("pipeline_dir", str(WORK)),
                      confirm=None if dry else
-                     "Re-point every Alex Collect listing at the cached "
-                     "square front + back gallery?\n\nNo photos are "
-                     "uploaded - they are already hosted.")
+                     "Re-point cached CanadianShopper listings to their "
+                     "square front + back gallery photos?\n\nThe tool uses "
+                     "the hosted URLs in the image cache; it needs no Woo "
+                     "export and uploads no images. Review the dry-run first.")
 
     row = ttk.Frame(box)
     row.pack(anchor="w", pady=4)
-    ttk.Button(row, text="Dry-run (writes nothing)", command=lambda: go(True)
-               ).pack(side="left")
-    ttk.Button(row, text="Re-point for real", command=lambda: go(False)).pack(
-        side="left", padx=8)
+    dry_button = ttk.Button(row, text="Preview cached changes",
+                            command=lambda: go(True))
+    dry_button.pack(side="left")
+    add_tooltip(dry_button,
+                "CanadianShopper plugin: create a review report; no listing changes or image uploads are made.")
+    apply_button = ttk.Button(row, text="Re-point photos",
+                              command=lambda: go(False))
+    apply_button.pack(side="left", padx=8)
+    add_tooltip(apply_button,
+                "CanadianShopper plugin: apply the cached front/back photo URLs to matched listings.")
 
 
 def build_sold(parent, app):
@@ -3039,36 +3124,28 @@ class PipelineDialog(tk.Toplevel):
         ttk.Label(box, text="2) The AI command for today's sheet",
                   style="H2.TLabel").pack(anchor="w")
         ttk.Label(box, text=(
-<<<<<<< HEAD
             "Choose the matching prompt below; it is copied. Upload the scans "
             "to the saved AI page and paste the prompt there."),
             wraplength=700, justify="left").pack(anchor="w")
-=======
-            "The saved AI page opens when this dialog starts. Choose the "
-            "command that matches the sheet; it is copied to your clipboard. "
-            "Upload the FRONT and BACK images to the AI page and paste the "
-            "command there manually."),
-            wraplength=740, justify="left").pack(anchor="w")
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
+        ttk.Label(box, text=(
+            "Add your own copy-to-clipboard buttons in User Settings. "
+            "Commands used to build listings should request the same "
+            "structured card output."), style="Dim.TLabel",
+            wraplength=700, justify="left").pack(anchor="w", pady=(2, 0))
         row = ttk.Frame(box)
         row.pack(fill="x", pady=4)
-        for kind in ("multi", "single"):
-            ttk.Button(row, text=PROMPT_TITLES[kind], style="Task.TButton",
-                       width=40,
-                       command=lambda k=kind: self.pick(k)).pack(
-<<<<<<< HEAD
-                           side="left", padx=(0, 6))
+        for index, (kind, title, tip) in enumerate(
+                ai_prompt_buttons(self.app.settings)):
+            button = ttk.Button(
+                row, text=title, style="Task.TButton",
+                command=lambda k=kind: self.pick(k))
+            button.grid(row=index // 2, column=index % 2, sticky="ew",
+                        padx=(0, 6), pady=2)
+            row.columnconfigure(index % 2, weight=1)
+            add_tooltip(button, tip)
         self.ai_url_status = ttk.Label(
             box, text="The saved AI page opens automatically; copy its full reply when done.",
             style="Dim.TLabel", wraplength=700, justify="left")
-=======
-                           side="left", padx=(0, 10))
-        self.ai_url_status = ttk.Label(
-            box, text="The AI page URL is in User settings. Upload the scans "
-                     "and paste the prompt manually; the clipboard monitor "
-                     "will detect a copied reply.",
-            style="Dim.TLabel", wraplength=740, justify="left")
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
         self.ai_url_status.pack(fill="x", pady=(2, 0))
         self.status = ttk.Label(box, text="", foreground="#1b5e20",
                                 wraplength=740, justify="left")
@@ -3078,16 +3155,9 @@ class PipelineDialog(tk.Toplevel):
         ttk.Label(box, text="3) The AI's answer", style="H2.TLabel").pack(
             anchor="w")
         ttk.Label(box, text=(
-<<<<<<< HEAD
             "Copy the complete AI response. Alex Collect detects it and asks "
             "whether to build listings or split only."),
             wraplength=700, justify="left").pack(anchor="w")
-=======
-            "When the AI finishes, use its Copy button (or select and copy "
-            "the full reply). Alex Collect detects the copied answer, holds it "
-            "for this run, and asks whether to split and build or split only."),
-            wraplength=740, justify="left").pack(anchor="w")
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
         self._our_clip = ""           # the prompt WE put on the clipboard
         self._last_clipboard_text = None
         self._captured_answer = ""
@@ -3109,7 +3179,7 @@ class PipelineDialog(tk.Toplevel):
             text = ""
         previous = self._last_clipboard_text
         self._last_clipboard_text = text
-        kind, verdict = classify_clipboard(text)
+        kind, verdict = classify_clipboard(text, self.app.settings)
         if not initial and previous is not None and text.strip() != previous.strip():
             if kind == "answer":
                 self._captured_answer = text.strip()
@@ -3247,13 +3317,13 @@ class PipelineDialog(tk.Toplevel):
                      "when ready.", foreground="#1b5e20")
 
     def pick(self, kind):
-        text = load_prompt(kind)
+        text = load_prompt(kind, self.app.settings)
         try:
             current = self.app.clipboard_get()
         except Exception:
             current = ""
         if current.strip() and current.strip() != text.strip() and \
-                classify_clipboard(current)[0] == "answer" and \
+                classify_clipboard(current, self.app.settings)[0] == "answer" and \
                 not messagebox.askyesno(
                     "Replace the answer on the clipboard?",
                     "The clipboard holds the AI's answer (%s characters)."
@@ -3269,8 +3339,9 @@ class PipelineDialog(tk.Toplevel):
                   "your AI chat with the FRONT and BACK sheet images. "
                   "When the AI replies, copy the reply: the line under "
                   "step 3 follows it, and the button uses it." if ok else
-                  "Could not reach the clipboard - open %s and copy the "
-                  "text by hand." % (BASE / PROMPT_FILES[kind])))
+                  "Could not reach the clipboard - open %s in User Settings "
+                  "and copy the text by hand." % PROMPT_FILES.get(
+                      kind, "Custom AI commands")))
         self.refresh_clip()
 
     def _scan_args(self):
@@ -3349,7 +3420,7 @@ class PipelineDialog(tk.Toplevel):
                 answer = self.app.clipboard_get().strip()
             except Exception:
                 answer = ""
-        kind, verdict = classify_clipboard(answer)
+        kind, verdict = classify_clipboard(answer, self.app.settings)
         if kind in ("short", "empty"):
             messagebox.showwarning(
                 "No listing text yet",
@@ -3639,29 +3710,18 @@ class TasksFrame(ttk.Frame):
         ttk.Label(self.menu, text="What do you want to do today?",
                   style="H1.TLabel").pack(anchor="w", pady=(2, 4))
         for group, ids in groups_for(self.app.cs_addon):
-            ttk.Label(self.menu, text=group, style="H2.TLabel").pack(
-                anchor="w", pady=(5, 1))
-            grid = ttk.Frame(self.menu)
-            grid.pack(fill="x")
-            for c, pid in enumerate(ids):
-                cell = ttk.Frame(grid)
-                cell.grid(row=0, column=c, sticky="nsew", padx=(0, 6))
-                grid.columnconfigure(c, weight=1)
-<<<<<<< HEAD
+            section = ttk.LabelFrame(self.menu, text=group,
+                                     style="TaskGroup.TLabelframe")
+            section.pack(fill="x", pady=(5, 1))
+            for index, pid in enumerate(ids):
+                row, column = divmod(index, 2)
                 button = ttk.Button(
-                    cell, text=MENU_LABELS[pid], width=20,
+                    section, text=MENU_LABELS[pid], style="TaskMenu.TButton",
                     command=lambda p=pid: self.show_panel(p))
-                button.pack(anchor="w")
+                button.grid(row=row, column=column, sticky="ew",
+                            padx=(0, 8 if column == 0 else 0), pady=3)
+                section.columnconfigure(column, weight=1)
                 add_tooltip(button, BLURBS[pid])
-=======
-                label = MENU_LABELS[pid]
-                ttk.Button(cell, text=label, width=22,
-                           command=lambda p=pid: self.show_panel(p)).pack(
-                               anchor="w")
-                ttk.Label(cell, text=BLURBS[pid], style="Dim.TLabel",
-                          wraplength=150, justify="left").pack(
-                              anchor="w", pady=(2, 0))
->>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
 
     def show_panel(self, pid):
         self.menu.destroy()
@@ -3866,7 +3926,6 @@ def screenshot_mode(outdir):
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     app = App()
-    app.geometry("1020x760+0+0")
 
     def shot(name):
         app.update_idletasks()

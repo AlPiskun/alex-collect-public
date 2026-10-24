@@ -37,7 +37,22 @@ def main():
     core_ids = {pid for _group, ids in gui.groups_for(False) for pid in ids}
     check("core task menu omits plugin-only tasks",
           not ({"stage", "wire", "zerostock"} & core_ids))
+    check("task sections are Sell, After a sale, and Photos",
+          [name for name, _ids in gui.groups_for(True)] ==
+          ["Sell a new batch", "After a sale", "Photos"])
+    check("CanadianShopper repair has a short label and plugin-aware tooltip",
+          gui.MENU_LABELS["rerun"] == "Re-point photos" and
+          "CanadianShopper plugin" in gui.BLURBS["rerun"])
     check("hover-tooltip helper is present", hasattr(gui, "ToolTip"))
+    check("built-in AI action names are clear",
+          gui.PROMPT_TITLES == {"multi": "Add grades to titles",
+                                "single": "No grades in titles"})
+    check("built-in AI actions explain grade inclusion or omission",
+          "multiple grades" in gui.PROMPT_TOOLTIPS["multi"] and
+          "one grade" in gui.PROMPT_TOOLTIPS["single"])
+    source = (HERE / "gui.py").read_text(encoding="utf-8")
+    check("category console has room for at least twenty rows",
+          "height=20" in source)
 
 
 if __name__ == "__main__":

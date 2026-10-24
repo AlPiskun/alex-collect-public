@@ -57,6 +57,7 @@ def load_user_settings(path: Path = SETTINGS_FILE) -> dict:
         "description_min_words": 400,
         "tag_count": 8,
         "listing_context": "When relevant, identify Canadian O-Pee-Chee bilingual backs or puzzle backs.",
+        "custom_ai_commands": [],
         "woo_site_url": str(site_url or "").rstrip("/"),
         "woo_feed_url": "",
         "woo_feed_refresh_url": "",
