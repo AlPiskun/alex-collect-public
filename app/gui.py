@@ -46,7 +46,7 @@ from user_settings import (default_scan_dir, load_user_settings,
                            normalize_web_url, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.31"
+VERSION = "2.34"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -61,6 +61,7 @@ CS_TOOL_ACTIONS = {
     "sold-cards.py": "after_sale.stock_update",
     "cs-image-sync.py": "batch.photo_stage",
     "pad-and-upload.py": "batch.photo_cache_repair",
+    "cs-publish-drafts.py": "marketplace.publish_drafts",
 }
 CS_ADDON_TOOLS = tuple(CS_TOOL_ACTIONS)
 
@@ -696,10 +697,11 @@ the scans and paste the command into the AI page manually.
 When you copy the complete AI reply, the app detects it and asks whether to
 split and build or split only. Alex Collect matches descriptions to images
 and prepares the import files and photos in your batch folder. Nothing is
-uploaded or published by this step; review the files and do the website import
-yourself. After products are published, the workflow can refresh your Facebook
-feed. If the CanadianShopper plugin is enabled, its photo-staging actions are
-available too."""
+uploaded or published by this step; review the files and import the staged CSV
+yourself. Then use Preview drafts and Publish ready drafts in this pipeline
+panel to activate only listings that pass the checks. After products are
+published, the workflow can refresh your Facebook feed. If the CanadianShopper
+plugin is enabled, its photo-staging actions are available too."""
 
 DOCS["combine"] = """\
 card_pipeline writes up to 500 cards per CSV, and the CanadianShopper
@@ -723,19 +725,20 @@ it has already uploaded - image-cache.json - so a re-run uploads
 nothing new."""
 
 DOCS["importpanel"] = """\
-Now the actual import happens on the website - the one step the tools
-cannot do for you, because it runs behind your login in the browser:
+Import the staged CSV on CanadianShopper, then manage draft activation here
+inside Alex Collect - no bookmarklet is required for publishing:
 
   1. Open CanadianShopper (button below) and log in.
   2. Vendor dashboard -> Products -> upload / import the CSV.
   3. Use the newest file from the cs-ready folder - the name starts
-     with canadianshopper_import_ and ends _01_of_NN.csv. The pipeline
-     opens the folder containing the generated import file for you.
-  4. Keep each file under 500 rows (that is what Combine ensures).
-  5. When the import shows the products, publish them.
+     with canadianshopper_import_ and ends _01_of_NN.csv.
+  4. Choose Preview drafts. It lists ready and blocked drafts and writes
+     a report without changing any products.
+  5. For each ready draft, choose Publish ready drafts, accept the app's
+     confirmation, then type PUBLISH in the output console. Blocked drafts
+     remain drafts; use the report's edit links to fix them.
 
-Then come back and press "Wire the photos" - that is what puts the
-back of each card behind the front."""
+After import, press "Wire the photos" to attach the hosted front and back."""
 
 DOCS["wire"] = """\
 After the import, this step attaches what the importer could not:
@@ -1113,7 +1116,7 @@ class App(tk.Tk):
         self.console.bind("<Control-End>", self._console_scroll_end)
         self.console.grid(row=0, column=0, sticky="nsew")
         ysb.grid(row=0, column=1, sticky="ns")
-        add_tooltip(ysb, "Scroll the output history. New output won't pull you back down after you scroll up.")
+        add_tooltip(ysb, "Scroll the output history; new output and entered replies stay visible at the bottom.")
         box.columnconfigure(0, weight=1)
         box.rowconfigure(0, weight=1)
         self.console.tag_configure("cmd", foreground="#9fd0ff")
@@ -1160,24 +1163,14 @@ class App(tk.Tk):
         self.console.see("end")
         return "break"
 
-    def _console_following_tail(self):
-        """Keep following new output only while the user is already at the end."""
-        try:
-            return self.console.yview()[1] >= 0.98
-        except (tk.TclError, IndexError):
-            return True
-
     def console_write(self, chunk):
-        """Insert tool output without yanking the view away from scrollback."""
-        follow = self._console_following_tail()
+        """Insert tool output and keep the newest prompt/reply in view."""
         self.console.config(state="normal")
         self.console.insert("end", chunk)
         self.console.config(state="disabled")
-        if follow:
-            self.console.see("end")
+        self.console.see("end")
 
     def console_line(self, text, tag=None):
-        follow = self._console_following_tail()
         self.console.config(state="normal")
         self.console.insert("end", text + "\n", tag or ())
         # colour obvious problems
@@ -1189,8 +1182,7 @@ class App(tk.Tk):
             elif low.startswith(("ok ", "done", "session ok", "all checks")):
                 self.console.tag_add("ok", "end-2linestart", "end-1linestart")
         self.console.config(state="disabled")
-        if follow:
-            self.console.see("end")
+        self.console.see("end")
 
     def _send_input(self):
         text = self.inp.get().strip()
@@ -1564,7 +1556,7 @@ TITLES = {
     "pipeline": "Run the card pipeline (new batch)",
     "combine": "Combine CSVs into import batches",
     "stage": "Stage the photos for the batch",
-    "importpanel": "Import & publish (on the website)",
+    "importpanel": "Import drafts / publish ready items",
     "wire": "Wire the photos (after the import)",
     "rerun": "Re-point photos",
     "sold": "A card sold - mark it everywhere",
@@ -1580,7 +1572,7 @@ MENU_LABELS = {
     "pipeline": "Run the card pipeline",
     "combine": "Combine CSVs",
     "stage": "Stage the photos",
-    "importpanel": "Import & publish",
+    "importpanel": "Import / publish drafts",
     "wire": "Wire the photos",
     "rerun": "Re-point photos",
     "sold": "A card sold",
@@ -1596,7 +1588,7 @@ BLURBS = {
     "pipeline": "Turn card scans and AI descriptions into listing files.",
     "combine": "Merge the month's CSVs into 500-row import files.",
     "stage": "Square + host fronts and backs, rewrite the CSVs into cs-ready.",
-    "importpanel": "The one step on the website: upload the CSV, publish.",
+    "importpanel": "Import the staged CSV on CanadianShopper, then preview drafts and publish ready items directly from Alex Collect.",
     "wire": "Attach the back photos and fix the main images after an import.",
     "rerun": "CanadianShopper plugin: restore cached front/back photos after an import. No Woo export or image uploads needed; preview before applying.",
     "sold": "Record where the sale happened and follow up on the other listings.",
@@ -2212,6 +2204,10 @@ def build_pipeline(parent, app):
 
     ttk.Button(box, text="Run the card pipeline", style="Task.TButton",
                command=run_pipeline).pack(anchor="w", pady=4)
+    if app.cs_addon:
+        ttk.Label(box, text="CanadianShopper drafts", style="H2.TLabel").pack(
+            anchor="w", pady=(6, 1))
+        _build_draft_publisher_controls(box, app)
 
     def run_feed_updater():
         feed = BASE / "pipeline" / "facebook_merchant_products" / \
@@ -2247,7 +2243,8 @@ def build_pipeline(parent, app):
                style="Dim.TLabel", wraplength=680, justify="left").pack(
                    anchor="w")
     next_steps = ("Next: combine pending batches if needed, stage the photos, "
-                  "then import and publish on your website." if app.cs_addon else
+                  "import the CSV on CanadianShopper, then use Preview drafts "
+                  "and Publish ready drafts above." if app.cs_addon else
                   "Next: combine pending batches if needed, then review and "
                   "manually import and publish the files. Photo staging and "
                   "back-photo wiring require the CanadianShopper plugin.")
@@ -2287,6 +2284,46 @@ def canadianshopper_ready_dir(app):
 
 def canadianshopper_cache_path(app):
     return canadianshopper_results_dir(app) / "cs-image-cache.json"
+
+
+def _build_draft_publisher_controls(parent, app):
+    """Embed the preview/apply controls wherever the CS pipeline is shown."""
+    report = canadianshopper_results_dir(app) / "cs-publish-report.csv"
+
+    def run_publisher(apply=False):
+        args = ["--cookie-file", str(CS_COOKIE_FILE), "--report", str(report)]
+        confirm = None
+        title = "Preview CanadianShopper drafts"
+        if apply:
+            args.append("--apply")
+            title = "Publish ready CanadianShopper drafts"
+            confirm = (
+                "Scan your CanadianShopper drafts and offer to activate only "
+                "products that pass all readiness checks?\n\nNothing is "
+                "activated unless you also type PUBLISH in the output console.")
+        app.run_tool("cs-publish-drafts.py", args, title,
+                     cwd=app.settings.get("pipeline_dir", str(WORK)),
+                     confirm=confirm)
+
+    publish_row = ttk.Frame(parent)
+    publish_row.pack(anchor="w", pady=(2, 2))
+    preview_button = ttk.Button(
+        publish_row, text="Preview drafts",
+        command=lambda: run_publisher(False))
+    preview_button.pack(side="left")
+    add_tooltip(preview_button,
+                "Read the vendor's drafts and write a readiness report; no products change.")
+    publish_button = ttk.Button(
+        publish_row, text="Publish ready drafts",
+        command=lambda: run_publisher(True))
+    publish_button.pack(side="left", padx=(6, 0))
+    add_tooltip(publish_button,
+                "Two confirmations are required. Only drafts passing every readiness check are activated.")
+    ttk.Button(parent, text="Open the publish report",
+               command=lambda: open_path(report) if report.is_file() else
+               messagebox.showinfo("No report yet",
+                                   "Preview drafts first to create the report.",
+                                   parent=app)).pack(anchor="w", pady=(1, 0))
 
 
 def consolidate_cs_staged_history(ready_dir, current_csvs, app):
@@ -2373,11 +2410,18 @@ def build_importpanel(parent, app):
     ttk.Button(row, text="Open the cs-ready folder",
                command=lambda: open_path(canadianshopper_ready_dir(app))).pack(
                    side="left", padx=8)
-    if not getattr(app, "cs_addon", True):
-        ttk.Label(box, text="Photo staging and the back-photo wiring are "
-                  "the CanadianShopper add-on's job - until it is "
-                  "installed, square photos by hand (Photos -> Square up "
-                  "a photo) and upload them in the dashboard.",
+    if getattr(app, "cs_addon", True):
+        _build_draft_publisher_controls(box, app)
+        ttk.Label(box, text=(
+            "Preview changes nothing. Publishing uses the saved "
+            "CanadianShopper cookie and requires the app confirmation plus "
+            "typing PUBLISH in the console."),
+            style="Dim.TLabel", wraplength=700, justify="left").pack(
+                anchor="w", pady=(4, 0))
+    else:
+        ttk.Label(box, text="Photo staging and back-photo wiring are "
+                  "provided by the CanadianShopper add-on. Until it is "
+                  "installed, upload CSVs and photos in the website dashboard.",
                   style="Dim.TLabel", wraplength=640,
                   justify="left").pack(anchor="w", pady=(6, 0))
 
@@ -3707,8 +3751,6 @@ class TasksFrame(ttk.Frame):
         self.app = app
         self.menu = ttk.Frame(self)
         self.menu.pack(fill="both", expand=True)
-        ttk.Label(self.menu, text="What do you want to do today?",
-                  style="H1.TLabel").pack(anchor="w", pady=(2, 4))
         for group, ids in groups_for(self.app.cs_addon):
             section = ttk.LabelFrame(self.menu, text=group,
                                      style="TaskGroup.TLabelframe")
@@ -3718,9 +3760,8 @@ class TasksFrame(ttk.Frame):
                 button = ttk.Button(
                     section, text=MENU_LABELS[pid], style="TaskMenu.TButton",
                     command=lambda p=pid: self.show_panel(p))
-                button.grid(row=row, column=column, sticky="ew",
+                button.grid(row=row, column=column, sticky="w",
                             padx=(0, 8 if column == 0 else 0), pady=3)
-                section.columnconfigure(column, weight=1)
                 add_tooltip(button, BLURBS[pid])
 
     def show_panel(self, pid):

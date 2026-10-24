@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Headless checks for compact task navigation and output scrollback behavior."""
+"""Headless checks for task layout and always-visible console replies."""
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -15,22 +15,31 @@ def check(name, condition):
     print("PASS", name)
 
 
-class YView:
-    def __init__(self, last):
-        self.last = last
+class Console:
+    def __init__(self):
+        self.last_insert = ""
+        self.last_scroll = None
 
-    def yview(self):
-        return (0.0, self.last)
+    def config(self, **_kwargs):
+        pass
+
+    def insert(self, _index, text, *_tags):
+        self.last_insert = text
+
+    def see(self, index):
+        self.last_scroll = index
 
 
 def main():
-    # New output should follow the tail only until the user scrolls up.
-    check("output auto-follows at the bottom",
-          gui.App._console_following_tail(
-              SimpleNamespace(console=YView(1.0))))
-    check("output preserves an earlier scroll position",
-          not gui.App._console_following_tail(
-              SimpleNamespace(console=YView(0.65))))
+    console = Console()
+    app = SimpleNamespace(console=console)
+    gui.App.console_write(app, "tool output")
+    gui.App.console_line(app, "> typed reply", "cmd")
+    check("new output and typed replies always scroll into view",
+          console.last_insert == "> typed reply\n" and
+          console.last_scroll == "end" and
+          not hasattr(gui.App, "_console_following_tail"))
+
     task_ids = {pid for _group, ids in gui.groups_for(True) for pid in ids}
     check("settings, plugins, and logs are removed from task buttons",
           not ({"cookie", "plugins", "logs"} & task_ids))
@@ -44,6 +53,9 @@ def main():
           gui.MENU_LABELS["rerun"] == "Re-point photos" and
           "CanadianShopper plugin" in gui.BLURBS["rerun"])
     check("hover-tooltip helper is present", hasattr(gui, "ToolTip"))
+    check("CanadianShopper draft publisher is a plugin-provided app tool",
+          gui.CS_TOOL_ACTIONS.get("cs-publish-drafts.py") ==
+          "marketplace.publish_drafts")
     check("built-in AI action names are clear",
           gui.PROMPT_TITLES == {"multi": "Add grades to titles",
                                 "single": "No grades in titles"})
@@ -51,8 +63,22 @@ def main():
           "multiple grades" in gui.PROMPT_TOOLTIPS["multi"] and
           "one grade" in gui.PROMPT_TOOLTIPS["single"])
     source = (HERE / "gui.py").read_text(encoding="utf-8")
+    pipeline = source.split("def build_pipeline", 1)[1].split(
+        "def build_combine", 1)[0]
+    check("draft preview/apply controls are embedded in the pipeline panel",
+          "_build_draft_publisher_controls(box, app)" in pipeline)
+    check("draft publisher panel offers preview and confirmed apply",
+          'text="Preview drafts"' in source and
+          'text="Publish ready drafts"' in source and
+          'args.append("--apply")' in source and
+          'typing PUBLISH' in source)
     check("category console has room for at least twenty rows",
           "height=20" in source)
+    task_ui = source.split("# ------------------------------------------------------------ task menu", 1)[1].split(
+        "# --------------------------------------------------------------- tabs", 1)[0]
+    check("task view has no headline and buttons do not stretch",
+          'text="What do you want to do today?"' not in task_ui and
+          'sticky="w"' in task_ui and 'sticky="ew"' not in task_ui)
 
 
 if __name__ == "__main__":

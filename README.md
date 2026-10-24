@@ -1,4 +1,4 @@
-# Alex Collect 2.31
+# Alex Collect 2.34
 
 Alex Collect is a local desktop control panel for organizing a small trading-card selling workflow. It brings together the card pipeline, WooCommerce order inputs, a sale checklist, photo utilities, and optional plugins.
 
@@ -9,13 +9,14 @@ Alex Collect is a local desktop control panel for organizing a small trading-car
 - Configure the store URL, AI page, preferred browser, prompt preferences, custom AI commands, seller links, output/scanner folders, Facebook workbook fields, and eBay Quick List templates/defaults from **User Settings** in the menu bar.
 - Copy the built-in **Add grades to titles** and **No grades in titles** prompts, or create, edit, and remove custom AI command buttons in User Settings; hover notes clarify each command’s purpose.
 - Review the initial nine-card category plan in compact one-row-per-card output; the larger, screen-adaptive console keeps the confirmation visible without scrolling.
-- Use the compact task launcher with clearly separated Sell, After a sale, and Photos sections; Plugins and Logs & reports are direct menu items. Hover task buttons for short tips. The larger output pane preserves your scroll position while new output arrives.
+- Use the compact task launcher with fixed-width buttons in clearly separated Sell, After a sale, and Photos sections; there is no extra headline above the buttons. Plugins and Logs & reports are direct menu items. Hover task buttons for short tips. The output pane always follows new output and entered replies so prompts remain visible.
 - Marketplace results are separated into Facebook, WooCommerce, CanadianShopper, and eBay folders. Woo/CS CSVs and eBay Quick List pages roll older batches into history on their next output run. Use Logs & reports to preview/move existing root-level files. See `app/pipeline/OUTPUT-FILES.md` for the accumulation audit.
 - See `docs/facebook-feed-settings.md` for the Facebook workbook field templates and placeholder reference.
 - Open the configured WordPress media upload page during the listing pipeline, then open the Facebook workbook, its folder, and the configured Facebook review page after export.
 - Optionally prepare selected cards for eBay with a local copy/drag-and-drop Quick List page and sport-template tabs. eBay submission stays manual; the core does not change live eBay listings.
 - Open the relevant seller pages after a sale; the core does not automatically change eBay or Facebook listings.
 - Square card photos for manual uploads.
+- The optional CanadianShopper plugin adds **Preview drafts** and **Publish ready drafts** controls directly to the card pipeline panel (also available in Import / publish drafts). Preview lists ready/blocked products without changes; publishing requires the app confirmation and typing `PUBLISH`. No bookmarklet is needed.
 - Install optional plugins from a local ZIP using **Plugins** in the menu bar.
 
 The core continues to work without any plugins. The CanadianShopper integration is maintained separately and is **not included** in this repository or the core download.

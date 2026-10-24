@@ -192,10 +192,18 @@ def main():
     app.update()
     task_text = [str(w.cget("text")) for w in walk(tasks_frame(app))
                  if hasattr(w, "cget")]
-    check("task launcher has the restored heading and omits utility cards",
-          "What do you want to do today?" in task_text and
+    check("task launcher omits the removed heading and utility cards",
+          "What do you want to do today?" not in task_text and
           "User settings" not in task_text and "Plugins" not in task_text and
           "Logs & reports" not in task_text, str(task_text))
+    task_buttons = [w for w in walk(tasks_frame(app))
+                    if isinstance(w, gui.ttk.Button) and
+                    w.cget("style") == "TaskMenu.TButton"]
+    check("task buttons keep a reasonable fixed width instead of stretching",
+          bool(task_buttons) and
+          all(w.grid_info().get("sticky") in ("w", "west")
+              for w in task_buttons) and
+          18 <= int(gui.ttk.Style(app).lookup("TaskMenu.TButton", "width")) <= 30)
     task_sections = [w.cget("text") for w in walk(tasks_frame(app))
                      if isinstance(w, gui.ttk.LabelFrame)]
     check("tasks are visually separated into Sell, After, and Photos sections",
@@ -219,6 +227,33 @@ def main():
         app.update()
         tasks_frame(app).show_panel(pid)
         app.update()
+
+    original_cs_addon = app.cs_addon
+    app.cs_addon = True
+    panel("importpanel")
+    find_button(app, "Preview drafts", exact=True).invoke()
+    publish_report = gui.canadianshopper_results_dir(app) / "cs-publish-report.csv"
+    check("draft preview launches the in-app plugin tool without apply",
+          cap.last["script"].endswith("cs-publish-drafts.py") and
+          cap.last["args"] == ["--cookie-file", str(gui.CS_COOKIE_FILE),
+                               "--report", str(publish_report)] and
+          not cap.last["confirm"], str(cap.last))
+    find_button(app, "Publish ready drafts", exact=True).invoke()
+    check("draft activation requires app confirmation and typed PUBLISH",
+          "--apply" in cap.last["args"] and
+          cap.last["confirm"] and "type PUBLISH" in cap.last["confirm"],
+          str(cap.last))
+    panel("pipeline")
+    find_button(app, "Preview drafts", exact=True).invoke()
+    check("the pipeline panel also launches draft preview",
+          cap.last["args"] == ["--cookie-file", str(gui.CS_COOKIE_FILE),
+                               "--report", str(publish_report)],
+          str(cap.last))
+    find_button(app, "Publish ready drafts", exact=True).invoke()
+    check("the pipeline panel also offers confirmed draft publishing",
+          "--apply" in cap.last["args"] and "type PUBLISH" in
+          cap.last["confirm"], str(cap.last))
+    app.cs_addon = original_cs_addon
 
     panel("combine")
     find_button(app, "Preview (--dry-run)").invoke()
