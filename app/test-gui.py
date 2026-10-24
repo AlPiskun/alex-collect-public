@@ -472,6 +472,7 @@ def main():
     menubar = app.nametowidget(app.cget("menu"))
     menu_labels = [menubar.entrycget(i, "label")
                    for i in range(menubar.index("end") + 1)]
+<<<<<<< HEAD
     check("settings, plugins, and logs are menu commands",
           menu_labels == ["View", "User Settings", "Plugins",
                           "Logs & reports", "Help"], str(menu_labels))
@@ -485,6 +486,12 @@ def main():
           find_button(app, "Open the GUI log (gui-log.txt)") is not None)
     menubar.invoke(menu_labels.index("User Settings"))
     app.update()
+=======
+    check("User Settings menu is between View and Help",
+          menu_labels == ["View", "User Settings", "Help"], str(menu_labels))
+    tasks_frame(app).show_panel("cookie")
+    app.update()
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     setting_labels = [w.cget("text") for w in walk(app)
                       if isinstance(w, gui.ttk.Label)]
     check("User Settings centralizes store, AI, and folder settings",

@@ -26,7 +26,10 @@ def main():
     old_settings = pipeline.USER_SETTINGS
     old_script_dir = pipeline.SCRIPT_DIR
     old_output_dir = pipeline.OUTPUT_DIR
+<<<<<<< HEAD
     old_ebay_dir = pipeline.EBAY_QUICKLIST_DIR
+=======
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     old_launch = pipeline.launch_urls
     old_open_folder = pipeline.open_folder
     opened = []
@@ -39,10 +42,13 @@ def main():
             (output_dir / "card-back.webp").write_bytes(b"image")
             pipeline.SCRIPT_DIR = root
             pipeline.OUTPUT_DIR = output_dir
+<<<<<<< HEAD
             pipeline.EBAY_QUICKLIST_DIR = root / "ebay_quick_list"
             pipeline.EBAY_QUICKLIST_DIR.mkdir()
             legacy_page = pipeline.EBAY_QUICKLIST_DIR / "ebay_quick_list_legacy.html"
             legacy_page.write_text("<h2>Prior listing</h2>", encoding="utf-8")
+=======
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
             pipeline.USER_SETTINGS = {
                 "ebay_quicklist_enabled": True,
                 "browser_name": "system",
@@ -82,6 +88,7 @@ def main():
             pipeline.open_folder = lambda _path: True
             with patch.object(builtins, "input", side_effect=["y", "1", ""]):
                 pipeline.maybe_run_ebay_quicklist([card])
+<<<<<<< HEAD
             html_files = list((root / "ebay_quick_list").glob(
                 "ebay_quick_list_*.html"))
             sidecars = [path for path in (root / "ebay_quick_list").glob(
@@ -91,6 +98,10 @@ def main():
             history = pipeline.EBAY_QUICKLIST_DIR / "ebay_quick_list_history.json"
             assert history.is_file() and not legacy_page.exists()
             assert "Prior listing" in history.read_text(encoding="utf-8")
+=======
+            html_files = list(root.glob("ebay_quick_list_*.html"))
+            assert len(html_files) == 1
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
             assert opened[0][0][0].startswith("file:")
             assert opened[1][0] == ["https://ebay.example/hockey-template"]
             print("PASS eBay selection, mapped fields, image URLs, HTML drag/copy page, and template tabs")
@@ -98,7 +109,10 @@ def main():
         pipeline.USER_SETTINGS = old_settings
         pipeline.SCRIPT_DIR = old_script_dir
         pipeline.OUTPUT_DIR = old_output_dir
+<<<<<<< HEAD
         pipeline.EBAY_QUICKLIST_DIR = old_ebay_dir
+=======
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
         pipeline.launch_urls = old_launch
         pipeline.open_folder = old_open_folder
 

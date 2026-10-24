@@ -3,7 +3,11 @@
 This directory contains two Windows installers for the **public core only**.
 Neither installer includes the private CanadianShopper plugin or any live
 credentials, cookie, or user-generated runtime data. The plugin remains a
+<<<<<<< HEAD
 separate ZIP installed from the app's Plugins menu item.
+=======
+separate ZIP installed from the app's Plugins panel.
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
 
 Install Inno Setup 6 from [jrsoftware.org/isdl.php](https://jrsoftware.org/isdl.php).
 Open the selected `.iss` file in Inno Setup Compiler and press **Compile**.
@@ -20,7 +24,11 @@ by-default task to install the packages in the repository's
 packages are already installed.
 
 Compile it on a Windows machine with Inno Setup 6. Output:
+<<<<<<< HEAD
 `Output\AlexCollect-Setup-2.29.exe`.
+=======
+`Output\AlexCollect-Setup-2.28.exe`.
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
 
 ## B. `alexcollect-bundled.iss` — install a private Python runtime
 
@@ -36,7 +44,11 @@ Internet is required on the target PC for pip to download those packages.
    installer from python.org and verifies its SHA-256 before continuing.
 2. Run `python test-bundled-config.py` to check the version/filename/checksum pins.
 3. Open `alexcollect-bundled.iss` and compile it with Inno Setup 6.
+<<<<<<< HEAD
 4. Output: `Output\AlexCollect-Setup-bundled-2.29.exe`.
+=======
+4. Output: `Output\AlexCollect-Setup-bundled-2.28.exe`.
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
 
 The downloaded Python installer is intentionally not stored in Git. It is
 ignored by `.gitignore`; rerun `build-bundled.bat` when needed. The pinned

@@ -63,12 +63,18 @@ except ImportError:
 # =====================================================================
 SCRIPT_DIR = Path(__file__).resolve().parent
 APP_DIR = SCRIPT_DIR.parent
+<<<<<<< HEAD
 for _module_dir in (str(APP_DIR), str(SCRIPT_DIR)):
     if _module_dir not in sys.path:
         sys.path.insert(0, _module_dir)
 from browser_utils import available_browsers, browser_label, open_urls as launch_urls
 from output_history import (consolidate_csv_history,
                             consolidate_ebay_history, write_ebay_sidecar)
+=======
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+from browser_utils import available_browsers, browser_label, open_urls as launch_urls
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
 from user_settings import (load_user_settings, save_user_settings,
                            site_admin_url, site_url, feed_urls)
 
@@ -1729,9 +1735,14 @@ def canadianshopper_import_folder(output_paths, stage_hook=None):
     """Find the folder containing the final CS import CSVs."""
     if not stage_hook:
         return Path(output_paths[0]).parent if output_paths else SCRIPT_DIR
+<<<<<<< HEAD
     candidates = [SCRIPT_DIR / "canadianshopper_products" / "cs-ready"]
     candidates.extend((Path(stage_hook).parent / "cs-ready",
                        SCRIPT_DIR / "cs-ready",
+=======
+    candidates = [Path(stage_hook).parent / "cs-ready"]
+    candidates.extend((SCRIPT_DIR / "cs-ready",
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
                        SCRIPT_DIR.parent / "cs-ready",
                        Path(USER_SETTINGS.get("pipeline_dir", "")) / "cs-ready"))
     for folder in candidates:
@@ -1995,10 +2006,13 @@ def maybe_run_ebay_quicklist(cards_parsed):
     """Ask which cards to prepare for manual eBay listing and open template tabs."""
     if not USER_SETTINGS.get("ebay_quicklist_enabled", True) or not cards_parsed:
         return
+<<<<<<< HEAD
     EBAY_QUICKLIST_DIR.mkdir(parents=True, exist_ok=True)
     # Older pages are now durable in one history file; leave only this run's
     # current page in the active folder.
     _roll_ebay_history()
+=======
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     print("\n" + "=" * 58)
     print("  eBAY QUICK LIST")
     print("=" * 58)
@@ -2028,6 +2042,7 @@ def maybe_run_ebay_quicklist(cards_parsed):
         return
     chosen = [cards_parsed[index] for index in selected]
     page, template_urls = _render_ebay_quicklist(chosen)
+<<<<<<< HEAD
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output = EBAY_QUICKLIST_DIR / ("ebay_quick_list_%s.html" % timestamp)
     sidecar = output.with_suffix(".json")
@@ -2043,6 +2058,13 @@ def maybe_run_ebay_quicklist(cards_parsed):
         })
     except OSError as exc:
         print("  !! Could not create the eBay Quick List file(s): %s" % exc,
+=======
+    output = SCRIPT_DIR / ("ebay_quick_list_%s.html" % datetime.now().strftime("%Y%m%d_%H%M%S"))
+    try:
+        output.write_text(page, encoding="utf-8")
+    except OSError as exc:
+        print("  !! Could not create the eBay Quick List page: %s" % exc,
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
               file=sys.stderr)
         return
     browser = USER_SETTINGS.get("browser_name", "") or ""

@@ -4,7 +4,11 @@
 ; checked into Git. Package installation needs internet on the target PC.
 
 #define MyAppName "Alex Collect Control Panel"
+<<<<<<< HEAD
 #define MyAppVersion "2.29"
+=======
+#define MyAppVersion "2.28"
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
 #define MyAppPublisher "Alex Collect"
 #define MyAppExe "START Alex Collect.bat"
 #define PythonInstaller "python-3.13.16-amd64.exe"

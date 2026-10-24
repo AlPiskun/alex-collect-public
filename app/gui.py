@@ -45,7 +45,11 @@ from user_settings import (default_scan_dir, load_user_settings,
                            normalize_web_url, site_admin_url,
                            sync_site_url_to_woo_keys)
 
+<<<<<<< HEAD
 VERSION = "2.29"
+=======
+VERSION = "2.28"
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -980,9 +984,12 @@ class App(tk.Tk):
         view.add_command(label="Tabs", command=lambda: self.show_mode("tabs"))
         m.add_cascade(label="View", menu=view)
         m.add_command(label="User Settings", command=self.show_user_settings)
+<<<<<<< HEAD
         m.add_command(label="Plugins", command=lambda: self.show_panel("plugins"))
         m.add_command(label="Logs & reports",
                       command=lambda: self.show_panel("logs"))
+=======
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
         help = tk.Menu(m, tearoff=0)
         help.add_command(label="Open README.md",
                          command=lambda: open_path(BASE / "README.md"))
@@ -999,12 +1006,18 @@ class App(tk.Tk):
         self.settings["startup_mode"] = self._mode_var.get()
         save_settings(self.settings)
 
+<<<<<<< HEAD
     def show_panel(self, panel_id):
         """Open a panel from the menu bar, regardless of current view."""
+=======
+    def show_user_settings(self):
+        """Open the central settings panel from any view."""
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
         self.show_mode("menu")
         self.update_idletasks()
         try:
             tasks = self._mode_frame.inner.winfo_children()[0]
+<<<<<<< HEAD
             tasks.show_panel(panel_id)
         except (AttributeError, IndexError, tk.TclError):
             log("could not open %s panel" % panel_id)
@@ -1012,6 +1025,11 @@ class App(tk.Tk):
     def show_user_settings(self):
         """Open the central settings panel from the menu bar."""
         self.show_panel("cookie")
+=======
+            tasks.show_panel("cookie")
+        except (AttributeError, IndexError, tk.TclError):
+            log("could not open User Settings panel")
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
 
     def _build_topbar(self):
         bar = ttk.Frame(self, padding=(8, 3, 8, 2))
@@ -1419,16 +1437,27 @@ class App(tk.Tk):
         top.resizable(False, False)
         ttk.Label(top, text="Which browser should Alex Collect use for web pages?",
                   wraplength=380, justify="left").pack(
+<<<<<<< HEAD
                       anchor="w", padx=10, pady=(10, 5))
+=======
+                      anchor="w", padx=14, pady=(14, 8))
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
         labels.insert(0, "Ask me again next time")
         label_var = tk.StringVar(master=top, value=(
             labels[1] if len(labels) > 1 else labels[0]))
         ttk.Combobox(top, textvariable=label_var, values=labels,
                      state="readonly", width=34).pack(
+<<<<<<< HEAD
                          fill="x", padx=10, pady=3)
         result = {"browser": None}
         buttons = ttk.Frame(top)
         buttons.pack(fill="x", padx=10, pady=(5, 10))
+=======
+                         fill="x", padx=14, pady=4)
+        result = {"browser": None}
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=14, pady=(8, 14))
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
 
         def choose():
             label = label_var.get()
@@ -1474,7 +1503,12 @@ class App(tk.Tk):
 PANEL_ORDER = ["cookie", "pipeline", "combine", "stage", "importpanel",
                "wire", "rerun", "sold", "checklist", "zerostock", "square",
                "newphotos", "logs", "plugins"]
+<<<<<<< HEAD
 GROUPS_FULL = [("Sell a new batch", ["pipeline", "combine", "stage",
+=======
+GROUPS_FULL = [("User settings", ["cookie"]),
+               ("Sell a new batch", ["pipeline", "combine", "stage",
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
                                      "importpanel", "wire"]),
                ("After a sale", ["sold", "checklist", "zerostock",
                                  "newphotos"]),
@@ -1489,7 +1523,12 @@ def groups_for(has_cs):
     """
     if has_cs:
         return GROUPS_FULL
+<<<<<<< HEAD
     return [("Sell a new batch", ["pipeline", "combine", "importpanel"]),
+=======
+    return [("User settings", ["cookie"]),
+            ("Sell a new batch", ["pipeline", "combine", "importpanel"]),
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
             ("After a sale", ["sold", "checklist", "newphotos"]),
             ("Photos", ["square"])]
 TITLES = {
@@ -1570,21 +1609,36 @@ def build_cookie(parent, app):
     app._user_setting_vars = fields
     def field_row(container, row, label, key, width=68, hint=None):
         ttk.Label(container, text=label).grid(row=row, column=0, sticky="w",
+<<<<<<< HEAD
                                               padx=(0, 5), pady=1)
+=======
+                                              padx=(0, 6), pady=2)
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
         var = tk.StringVar(master=container,
                            value=str(app.settings.get(key, "")))
         fields[key] = var
         ttk.Entry(container, textvariable=var, width=width).grid(
+<<<<<<< HEAD
             row=row, column=1, sticky="ew", padx=2, pady=1)
         if hint:
             ttk.Label(container, text=hint, style="Dim.TLabel").grid(
                 row=row + 1, column=1, sticky="w", padx=2, pady=(0, 2))
+=======
+            row=row, column=1, sticky="ew", padx=3, pady=2)
+        if hint:
+            ttk.Label(container, text=hint, style="Dim.TLabel").grid(
+                row=row + 1, column=1, sticky="w", padx=3, pady=(0, 3))
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
         return var
 
     startup_var = tk.StringVar(
         master=box, value=app.settings.get("startup_mode", "menu"))
     startup_row = ttk.Frame(box)
+<<<<<<< HEAD
     startup_row.pack(fill="x", pady=(0, 3))
+=======
+    startup_row.pack(fill="x", pady=(0, 4))
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     ttk.Label(startup_row, text="Startup view:").pack(side="left")
     ttk.Combobox(startup_row, textvariable=startup_var, state="readonly",
                  values=("menu", "tabs", "wizard"), width=14).pack(
@@ -1592,7 +1646,11 @@ def build_cookie(parent, app):
 
     ttk.Label(box, text="Store and AI", style="H2.TLabel").pack(anchor="w")
     general = ttk.Frame(box)
+<<<<<<< HEAD
     general.pack(fill="x", pady=(1, 4))
+=======
+    general.pack(fill="x", pady=(2, 6))
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     general.columnconfigure(1, weight=1)
     store_var = field_row(general, 0, "Store name (used in AI prompts):",
                           "store_name")
@@ -1631,7 +1689,11 @@ def build_cookie(parent, app):
                             "woo_feed_refresh_url")
 
     row = ttk.Frame(box)
+<<<<<<< HEAD
     row.pack(fill="x", pady=(0, 4))
+=======
+    row.pack(fill="x", pady=(0, 8))
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     def open_media_page():
         if not save_user_settings():
             return
@@ -1665,9 +1727,15 @@ def build_cookie(parent, app):
                ).pack(side="left", padx=(6, 0))
 
     ttk.Label(box, text="Marketplace pages", style="H2.TLabel").pack(
+<<<<<<< HEAD
         anchor="w", pady=(2, 0))
     market = ttk.Frame(box)
     market.pack(fill="x", pady=(1, 4))
+=======
+        anchor="w", pady=(4, 0))
+    market = ttk.Frame(box)
+    market.pack(fill="x", pady=(2, 8))
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     market.columnconfigure(1, weight=1)
     field_row(market, 0, "eBay active listings URL:", "ebay_selling_url")
     field_row(market, 1, "Facebook listing/review page URL:",
@@ -1676,9 +1744,15 @@ def build_cookie(parent, app):
               "canadianshopper_store_url")
 
     ttk.Label(box, text="eBay Quick List handoff", style="H2.TLabel").pack(
+<<<<<<< HEAD
         anchor="w", pady=(2, 0))
     ebay_box = ttk.Frame(box)
     ebay_box.pack(fill="x", pady=(1, 4))
+=======
+        anchor="w", pady=(4, 0))
+    ebay_box = ttk.Frame(box)
+    ebay_box.pack(fill="x", pady=(2, 8))
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     ebay_box.columnconfigure(1, weight=1)
     ebay_quicklist_var = tk.BooleanVar(
         master=ebay_box,
@@ -1709,12 +1783,21 @@ def build_cookie(parent, app):
         "The eBay helper gathers copyable/draggable listing details and opens "
         "the selected sport template(s). It does not submit or publish listings."),
         style="Dim.TLabel", wraplength=720, justify="left").grid(
+<<<<<<< HEAD
             row=16, column=1, sticky="w", padx=3, pady=(0, 3))
 
     ttk.Label(box, text="Facebook Marketplace export fields",
               style="H2.TLabel").pack(anchor="w", pady=(2, 0))
     facebook_box = ttk.Frame(box)
     facebook_box.pack(fill="x", pady=(1, 4))
+=======
+            row=16, column=1, sticky="w", padx=3, pady=(0, 4))
+
+    ttk.Label(box, text="Facebook Marketplace export fields",
+              style="H2.TLabel").pack(anchor="w", pady=(4, 0))
+    facebook_box = ttk.Frame(box)
+    facebook_box.pack(fill="x", pady=(2, 8))
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     facebook_box.columnconfigure(1, weight=1)
     field_row(facebook_box, 0, "Title template:",
               "facebook_feed_title_template")
@@ -1729,7 +1812,11 @@ def build_cookie(parent, app):
               "facebook_feed_image_link_template", width=60)
     ttk.Label(facebook_box, text="Description template:").grid(
         row=6, column=0, sticky="nw", padx=(0, 6), pady=2)
+<<<<<<< HEAD
     description_template = tk.Text(facebook_box, height=4, wrap="word")
+=======
+    description_template = tk.Text(facebook_box, height=5, wrap="word")
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     description_template.grid(row=6, column=1, sticky="ew", padx=3, pady=2)
     description_template.insert(
         "1.0", str(app.settings.get("facebook_feed_description_template", "")))
@@ -1739,12 +1826,21 @@ def build_cookie(parent, app):
         "{image_link}. Leave Price template as {price} to use the live-feed "
         "price."), style="Dim.TLabel",
         wraplength=720, justify="left").grid(
+<<<<<<< HEAD
             row=7, column=1, sticky="w", padx=3, pady=(0, 3))
 
     ttk.Label(box, text="CanadianShopper CSV defaults", style="H2.TLabel").pack(
         anchor="w", pady=(2, 0))
     cs_config = ttk.Frame(box)
     cs_config.pack(fill="x", pady=(1, 4))
+=======
+            row=7, column=1, sticky="w", padx=3, pady=(0, 4))
+
+    ttk.Label(box, text="CanadianShopper CSV defaults", style="H2.TLabel").pack(
+        anchor="w", pady=(4, 0))
+    cs_config = ttk.Frame(box)
+    cs_config.pack(fill="x", pady=(2, 8))
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     cs_config.columnconfigure(1, weight=1)
     field_row(cs_config, 0, "Category:", "canadianshopper_category")
     field_row(cs_config, 1, "Ship-from province/region:",
@@ -1763,9 +1859,15 @@ def build_cookie(parent, app):
               "canadianshopper_transit_days", width=16)
 
     ttk.Label(box, text="Working folders", style="H2.TLabel").pack(
+<<<<<<< HEAD
         anchor="w", pady=(2, 0))
     grid = ttk.Frame(box)
     grid.pack(fill="x", pady=(1, 4))
+=======
+        anchor="w", pady=(4, 0))
+    grid = ttk.Frame(box)
+    grid.pack(fill="x", pady=(2, 6))
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
     grid.columnconfigure(1, weight=1)
     app._pipeline_var = tk.StringVar(
         master=grid, value=app.settings.get("pipeline_dir", str(WORK)))
@@ -1907,10 +2009,17 @@ def build_cookie(parent, app):
 
     app._save_user_settings_callback = save_user_settings
     ttk.Button(box, text="Save user settings", command=save_user_settings).pack(
+<<<<<<< HEAD
         anchor="w", pady=(1, 4))
 
     if app.cs_addon:
         ttk.Separator(box).pack(fill="x", pady=(1, 4))
+=======
+        anchor="w", pady=(2, 8))
+
+    if app.cs_addon:
+        ttk.Separator(box).pack(fill="x", pady=(2, 6))
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
         ttk.Label(box, text="CanadianShopper connection",
                   style="H2.TLabel").pack(anchor="w")
         ttk.Label(box, text="Session cookie (private login; stored locally):"
@@ -2930,19 +3039,36 @@ class PipelineDialog(tk.Toplevel):
         ttk.Label(box, text="2) The AI command for today's sheet",
                   style="H2.TLabel").pack(anchor="w")
         ttk.Label(box, text=(
+<<<<<<< HEAD
             "Choose the matching prompt below; it is copied. Upload the scans "
             "to the saved AI page and paste the prompt there."),
             wraplength=700, justify="left").pack(anchor="w")
+=======
+            "The saved AI page opens when this dialog starts. Choose the "
+            "command that matches the sheet; it is copied to your clipboard. "
+            "Upload the FRONT and BACK images to the AI page and paste the "
+            "command there manually."),
+            wraplength=740, justify="left").pack(anchor="w")
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
         row = ttk.Frame(box)
         row.pack(fill="x", pady=4)
         for kind in ("multi", "single"):
             ttk.Button(row, text=PROMPT_TITLES[kind], style="Task.TButton",
                        width=40,
                        command=lambda k=kind: self.pick(k)).pack(
+<<<<<<< HEAD
                            side="left", padx=(0, 6))
         self.ai_url_status = ttk.Label(
             box, text="The saved AI page opens automatically; copy its full reply when done.",
             style="Dim.TLabel", wraplength=700, justify="left")
+=======
+                           side="left", padx=(0, 10))
+        self.ai_url_status = ttk.Label(
+            box, text="The AI page URL is in User settings. Upload the scans "
+                     "and paste the prompt manually; the clipboard monitor "
+                     "will detect a copied reply.",
+            style="Dim.TLabel", wraplength=740, justify="left")
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
         self.ai_url_status.pack(fill="x", pady=(2, 0))
         self.status = ttk.Label(box, text="", foreground="#1b5e20",
                                 wraplength=740, justify="left")
@@ -2952,9 +3078,16 @@ class PipelineDialog(tk.Toplevel):
         ttk.Label(box, text="3) The AI's answer", style="H2.TLabel").pack(
             anchor="w")
         ttk.Label(box, text=(
+<<<<<<< HEAD
             "Copy the complete AI response. Alex Collect detects it and asks "
             "whether to build listings or split only."),
             wraplength=700, justify="left").pack(anchor="w")
+=======
+            "When the AI finishes, use its Copy button (or select and copy "
+            "the full reply). Alex Collect detects the copied answer, holds it "
+            "for this run, and asks whether to split and build or split only."),
+            wraplength=740, justify="left").pack(anchor="w")
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
         self._our_clip = ""           # the prompt WE put on the clipboard
         self._last_clipboard_text = None
         self._captured_answer = ""
@@ -3514,11 +3647,21 @@ class TasksFrame(ttk.Frame):
                 cell = ttk.Frame(grid)
                 cell.grid(row=0, column=c, sticky="nsew", padx=(0, 6))
                 grid.columnconfigure(c, weight=1)
+<<<<<<< HEAD
                 button = ttk.Button(
                     cell, text=MENU_LABELS[pid], width=20,
                     command=lambda p=pid: self.show_panel(p))
                 button.pack(anchor="w")
                 add_tooltip(button, BLURBS[pid])
+=======
+                label = MENU_LABELS[pid]
+                ttk.Button(cell, text=label, width=22,
+                           command=lambda p=pid: self.show_panel(p)).pack(
+                               anchor="w")
+                ttk.Label(cell, text=BLURBS[pid], style="Dim.TLabel",
+                          wraplength=150, justify="left").pack(
+                              anchor="w", pady=(2, 0))
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
 
     def show_panel(self, pid):
         self.menu.destroy()

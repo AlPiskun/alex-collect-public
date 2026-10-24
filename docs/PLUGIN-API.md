@@ -25,7 +25,11 @@ Example manifest:
   "name": "Example plugin",
   "version": "1.0.0",
   "host_api": 1,
+<<<<<<< HEAD
   "min_core_version": "2.29",
+=======
+  "min_core_version": "2.28",
+>>>>>>> 2428534cd1664b6db43d60866dfb26d4d61f9b65
   "description": "A short description shown in the Plugins panel.",
   "capabilities": ["after_sale.stock_update"],
   "actions": {
