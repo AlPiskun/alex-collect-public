@@ -11,6 +11,7 @@
 #  Run:  python test-gui.py
 # ===========================================================================
 
+import atexit
 import json
 import os
 import shutil
@@ -118,6 +119,19 @@ def menu_entry_index(menu, label):
     return None
 
 
+def restore_runtime_files(preserved):
+    """Put the user's runtime files back. Safe to call more than once."""
+    for path, original in preserved.items():
+        try:
+            if original is None:
+                path.unlink()
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(original)
+        except FileNotFoundError:
+            pass
+
+
 def find_button(root, text, exact=True):
     for w in walk(root):
         try:
@@ -179,6 +193,10 @@ def main():
                  gui.CS_COOKIE_FILE, gui.BASE / "woo-keys.txt",
                  gui.BASE / "sold-cards.txt"):
         preserved[path] = path.read_bytes() if path.is_file() else None
+    # The checks write real rows into the real checklist and settings, so a
+    # crash halfway through must not leave the user's own data replaced by
+    # test data. Registering the restore makes it run however main() exits.
+    atexit.register(restore_runtime_files, preserved)
 
     # Use an isolated test plugin directory. The test must not copy files into
     # or remove tools from the user's actual application installation.
@@ -534,6 +552,10 @@ def main():
     app.cs_addon = sold_cs_addon
 
     print("== 6. replacing one card's photos ==")
+    # Later sections keep using the section-4 recorder, so this one gets its
+    # own name and hands `cap` back when it is done.
+    saved_site_url = app.settings.get("woo_site_url", "")
+    photos_cs_addon = app.cs_addon
     app.settings["woo_site_url"] = "https://shop.example"
     panel("newphotos")
     entries = [w for w in walk(tasks_frame(app))
@@ -587,8 +609,9 @@ def main():
           ("https://shop.example/wp-admin/post.php?post=42&action=edit", 2)
           in opened, str(opened))
 
-    cap = Capture()
-    app.runner.start = cap
+    split_cap = Capture()
+    app.runner.start = split_cap
+    app.cs_addon = True          # the plugin turns the wiring offer on
     asked.clear()
 
     def take_split(title, *a, **k):
@@ -598,25 +621,31 @@ def main():
     mb.askyesno = take_split
     gui.filedialog.askdirectory = lambda **k: str(gui.BASE)
     gui.filedialog.askopenfilename = lambda **k: str(gui.BASE / "sheet.jpg")
-    with patch.object(gui, "has_woo_credentials", lambda path=None: False), \
-            patch.object(gui, "find_pipeline_script",
-                         lambda settings: Path("C:/pipe/card_pipeline.py")):
-        find_button(app, "Find the card...").invoke()
-        app.update()
-    check("the 9-card split runs with the front and back scans",
-          cap.last is not None and
-          cap.last["script"].endswith("card_pipeline.py") and
-          cap.last["args"][:1] == ["split"] and
-          "--front" in cap.last["args"] and "--back" in cap.last["args"],
-          str(cap.last))
-    check("the CanadianShopper wiring is offered but not forced",
-          "Wire the CanadianShopper photos?" in asked, str(asked))
-
-    # every other section expects the plain stubs back
-    mb.askyesno = lambda *a, **k: answers["askyesno"]
-    gui.filedialog.askdirectory = lambda **k: ""
-    gui.filedialog.askopenfilename = lambda **k: ""
-    app.runner = gui.Runner(app)
+    try:
+        with patch.object(gui, "has_woo_credentials", lambda path=None: False), \
+                patch.object(gui, "find_pipeline_script",
+                             lambda settings: Path("C:/pipe/card_pipeline.py")):
+            find_button(app, "Find the card...").invoke()
+            app.update()
+        check("the 9-card split runs with the front and back scans",
+              split_cap.last is not None and
+              split_cap.last["script"].endswith("card_pipeline.py") and
+              split_cap.last["args"][:1] == ["split"] and
+              "--front" in split_cap.last["args"] and
+              "--back" in split_cap.last["args"],
+              str(split_cap.last))
+        check("the CanadianShopper wiring is offered but not forced",
+              "Wire the CanadianShopper photos?" in asked, str(asked))
+        check("no CanadianShopper job ran when the offer was declined",
+              not any("cs-image-sync" in str(c.get("script", ""))
+                      for c in split_cap.calls), str(split_cap.calls))
+    finally:
+        app.cs_addon = photos_cs_addon
+        app.settings["woo_site_url"] = saved_site_url
+        mb.askyesno = lambda *a, **k: answers["askyesno"]
+        gui.filedialog.askdirectory = lambda **k: ""
+        gui.filedialog.askopenfilename = lambda **k: ""
+        app.runner.start = cap       # hand the recorder back to section 7
 
     print("== 7. the checklist viewer ==")
     gui.CHECKLIST.write_text(
@@ -1871,15 +1900,7 @@ def main():
 
     # Restore test-owned state only. Never delete an existing tool, credential,
     # setting, log, or plugin from the user's app folder.
-    for path, original in preserved.items():
-        if original is None:
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-        else:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(original)
+    restore_runtime_files(preserved)
     shutil.rmtree(plugin_test_root, ignore_errors=True)
     shutil.rmtree(cs_package, ignore_errors=True)
     shutil.rmtree(ui_package, ignore_errors=True)
