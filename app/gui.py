@@ -50,7 +50,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            product_search_url, read_woo_credentials,
                            site_admin_url, sync_site_url_to_woo_keys)
 
-VERSION = "2.38"
+VERSION = "2.39"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -61,9 +61,18 @@ WORK = BASE.parent if HERE_HAS_PIPELINE else BASE   # where card_pipeline.py + C
 
 PLUGIN_MANAGER = PluginManager(core_version=VERSION)
 CS_PLUGIN_ID = "canadianshopper"
+#  The photo work is three different jobs behind one script, so they are
+#  resolved by action ID rather than by filename: staging prepares images,
+#  photo_wire re-wires the whole staged batch, and photo_replace re-wires the
+#  one card being edited (plugin 1.0.14 and newer).
+CS_PHOTO_STAGE = "batch.photo_stage"
+CS_PHOTO_WIRE = "batch.photo_wire"
+CS_PHOTO_REPLACE = "batch.photo_replace"
 CS_TOOL_ACTIONS = {
     "sold-cards.py": "after_sale.stock_update",
-    "cs-image-sync.py": "batch.photo_stage",
+    # Filename resolution can only name ONE of the photo actions; call sites
+    # that mean a specific one resolve it with TOOL_ACTION() instead.
+    "cs-image-sync.py": CS_PHOTO_STAGE,
     "pad-and-upload.py": "batch.photo_cache_repair",
     "cs-publish-drafts.py": "marketplace.publish_drafts",
 }
@@ -87,6 +96,20 @@ def TOOL(name):
             core_path.is_file()):
         return str(core_path)
     return str(core_path)
+
+
+def TOOL_ACTION(action_id):
+    """Resolve one specific plugin action, or "" when nothing provides it.
+
+    Call sites that need a particular photo action use this instead of a
+    filename, so a single script can back several actions. An empty result
+    means the installed plugin predates the action; the caller decides
+    whether to say so or to fall back to the filename.
+    """
+    try:
+        return str(PLUGIN_MANAGER.resolve_action(action_id))
+    except PluginError:
+        return ""
 
 
 def cs_addon_present():
@@ -879,8 +902,12 @@ slab). Type its name or SKU and press Find.
   pages open too, so every marketplace is one tab away.
 
 With the CanadianShopper plugin installed you can also re-wire the
-staged front/back photos; without it the pages still open and the photo
-upload stays manual."""
+gallery photos. Two separate offers: "Wire this card's photos?" touches
+only the one listing, matched by its full title, and writes nothing
+unless exactly one staged row and one listing match - it needs plugin
+1.0.14 or newer. "Wire the whole staged batch?" is the broader job from
+the Wire the photos panel and is not limited to this card. Without the
+plugin the pages still open and the photo upload stays manual."""
 
 DOCS["markets"] = """\
 Redo ONE marketplace without repeating the AI, split, or image steps.
@@ -2581,7 +2608,8 @@ def build_stage(parent, app):
                 "--report", str(results / "cs-image-report.csv")]
         for source in sources:
             args += ["--csv", str(source)]
-        app.run_tool("cs-image-sync.py", args, "Stage the photos",
+        app.run_tool(TOOL_ACTION(CS_PHOTO_STAGE) or "cs-image-sync.py",
+                     args, "Stage the photos",
                      cwd=app.settings.get("pipeline_dir", str(WORK)),
                      on_done=lambda rc: rc == 0 and _after_stage(sources))
 
@@ -2650,7 +2678,7 @@ def build_wire(parent, app):
                 "--cache", str(canadianshopper_cache_path(app))]
         if dry:
             args.append("--dry-run")
-        app.run_tool("cs-image-sync.py", args,
+        app.run_tool(TOOL_ACTION(CS_PHOTO_WIRE) or "cs-image-sync.py", args,
                      "Wire the photos" + (" - DRY RUN" if dry else ""),
                      cwd=app.settings.get("pipeline_dir", str(WORK)),
                      confirm=None if dry else
@@ -3258,12 +3286,38 @@ def build_newphotos(parent, app):
         return choose_product(rows, query) or False
 
     # -- the photo work -----------------------------------------------------
-    def wire_photos(after=None):
-        """Re-wire the staged front/back photos (CanadianShopper plugin)."""
-        args = ["--mode", "wire", "--cookie-file", str(CS_COOKIE_FILE),
+    def wire_args():
+        """The wire arguments both photo paths share."""
+        return ["--mode", "wire", "--cookie-file", str(CS_COOKIE_FILE),
                 "--ready-dir", str(canadianshopper_ready_dir(app)),
                 "--cache", str(canadianshopper_cache_path(app))]
-        app.run_tool("cs-image-sync.py", args, "Wire the replacement photos",
+
+    def wire_card(product):
+        """Re-wire the one card being edited, matched by its full title.
+
+        Needs the plugin's per-card action. Without it nothing is written and
+        the app says so - it must never quietly widen this into bulk wiring.
+        """
+        script = TOOL_ACTION(CS_PHOTO_REPLACE)
+        if not script:
+            messagebox.showwarning(
+                "Update the CanadianShopper plugin",
+                "Re-wiring a single card's photos needs CanadianShopper plugin "
+                "1.0.14 or newer, and this copy does not offer that action. "
+                "Nothing was changed.\n\nUpdate the plugin in the Plugins "
+                "panel and try again - \"Wire the photos\" still re-wires the "
+                "whole staged batch in the meantime.", parent=app)
+            return False
+        title = str(product.get("name") or "")
+        app.run_tool(script, wire_args() + ["--title", title],
+                     "Wire this card's photos",
+                     cwd=app.settings.get("pipeline_dir", str(WORK)))
+        return True
+
+    def wire_batch(after=None):
+        """Re-wire whatever is staged: the whole batch, not one card."""
+        app.run_tool(TOOL_ACTION(CS_PHOTO_WIRE) or "cs-image-sync.py",
+                     wire_args(), "Wire the replacement photos",
                      cwd=app.settings.get("pipeline_dir", str(WORK)),
                      on_done=after)
 
@@ -3328,20 +3382,54 @@ def build_newphotos(parent, app):
             "The front scan is required and the back is optional. The images "
             "land in the pipeline's output folder.", parent=app)
 
-        do_wire = bool(getattr(app, "cs_addon", True)) and messagebox.askyesno(
-            "Wire the CanadianShopper photos?",
-            "Re-wire the staged front/back gallery photos now?\n\n"
-            "This uses whatever is staged and cached - it is not limited to "
-            "this one card.", parent=app)
+        # Per-card wiring needs BOTH a single product and the plugin's per-card
+        # action; bulk wiring stays a separate, explicit choice. Offering bulk
+        # only after saying the per-card path is unavailable is not a silent
+        # fallback - the two questions are always distinct.
+        bulk_warning = ("Re-wire every staged front/back photo now?\n\n"
+                        "This uses whatever is staged and cached - it is not "
+                        "limited to this one card.")
+        single = bool(isinstance(product, dict) and product.get("id") and
+                      str(product.get("name") or "").strip())
+        per_card = whole_batch = False
+        if getattr(app, "cs_addon", True):
+            if single and TOOL_ACTION(CS_PHOTO_REPLACE):
+                per_card = messagebox.askyesno(
+                    "Wire this card's photos?",
+                    "Re-wire the gallery photos for %s now?\n\n"
+                    "Only this card is touched: the plugin writes nothing "
+                    "unless exactly one staged row and one CanadianShopper "
+                    "listing match that title." % product["name"], parent=app)
+                if not per_card:
+                    whole_batch = messagebox.askyesno(
+                        "Wire the whole staged batch?", bulk_warning, parent=app)
+            elif single:
+                messagebox.showwarning(
+                    "Update the CanadianShopper plugin",
+                    "Re-wiring one card's photos needs CanadianShopper plugin "
+                    "1.0.14 or newer. This copy does not offer that action, so "
+                    "no photos were changed.\n\nYou can still re-wire the "
+                    "whole staged batch.", parent=app)
+                whole_batch = messagebox.askyesno(
+                    "Wire the whole staged batch?", bulk_warning, parent=app)
+            else:
+                whole_batch = messagebox.askyesno(
+                    "Wire the whole staged batch?", bulk_warning, parent=app)
 
         def after_split(rc):
-            if do_wire and rc == 0:
-                wire_photos()
+            if rc != 0:
+                return
+            if per_card:
+                wire_card(product)
+            elif whole_batch:
+                wire_batch()
 
         if do_split:
             split_scan(after_split)
-        elif do_wire:
-            wire_photos()
+        elif per_card:
+            wire_card(product)
+        elif whole_batch:
+            wire_batch()
 
         if urls:
             app.open_webpages(urls)
