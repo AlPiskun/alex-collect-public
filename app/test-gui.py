@@ -395,6 +395,12 @@ def main():
           cap.last["confirm"] is None, str(cap.last))
 
     print("== 5. a card sold - typed list, end to end ==")
+    # The CanadianShopper controls in the sold panel only exist when the
+    # optional plugin is present, and a clean clone has no plugin installed.
+    # Force the plugin-enabled layout for this section (as section 4 does) so
+    # the checks below test the panel instead of the developer's machine.
+    sold_cs_addon = app.cs_addon
+    app.cs_addon = True
     panel("sold")
     find_button(app, "Type the cards...").invoke()
     app.update()
@@ -428,13 +434,16 @@ def main():
                           exact=False) is not None and
               find_button(app, "Apply the previewed change", exact=False) is not None)
         cs_box = find_button(app, "Also fix CanadianShopper", exact=False)
-        cs_box.invoke()
-        find_button(app, "Add to the checklist", exact=False).invoke()
+        if cs_box:
+            cs_box.invoke()
+            find_button(app, "Add to the checklist", exact=False).invoke()
         check("--cs and dialogs forwarded when ticked",
-              "--cs" in cap.last["args"] and
+              cs_box is not None and "--cs" in cap.last["args"] and
               "--gui-dialogs" in cap.last["args"], str(cap.last["args"]))
-        cs_box.invoke()
-        cs_radio.invoke()
+        if cs_box:
+            cs_box.invoke()
+        if cs_radio:
+            cs_radio.invoke()
         find_button(app, "Add to the checklist", exact=False).invoke()
         check("CanadianShopper sale source is passed to the checklist tool",
               "--sold-on" in cap.last["args"] and
@@ -473,7 +482,8 @@ def main():
             app.clipboard_clear = lambda: None
             app.clipboard_append = lambda title: copied.append(title)
             find_button(app, "eBay", exact=True).invoke()
-            cs_box.invoke()
+            if cs_box:
+                cs_box.invoke()
             find_button(app, "Add to the checklist", exact=False).invoke()
         finally:
             app.open_webpages = old_open_urls
@@ -491,6 +501,7 @@ def main():
               copied == ["1992 Skybox Larry Card"], str(copied))
         check("optional CS run no longer gates page opening on completion",
               cap.last["on_done"] is None, str(cap.last))
+    app.cs_addon = sold_cs_addon
 
     print("== 6. a card needs new photos ==")
     panel("newphotos")
