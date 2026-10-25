@@ -46,9 +46,21 @@ def main():
     core_ids = {pid for _group, ids in gui.groups_for(False) for pid in ids}
     check("core task menu omits plugin-only tasks",
           not ({"stage", "wire", "zerostock"} & core_ids))
-    check("task sections are Sell, After a sale, and Photos",
+    check("task sections are Sell, After a sale, Photos, and Re-run",
           [name for name, _ids in gui.groups_for(True)] ==
-          ["Sell a new batch", "After a sale", "Photos"])
+          ["Sell a new batch", "After a sale", "Photos",
+           "Re-run a marketplace"])
+    re_run_group = [ids for name, ids in gui.groups_for(True)
+                    if name == "Re-run a marketplace"]
+    check("the re-run panel is its own task section and tab",
+          re_run_group == [["markets"]] and
+          gui.TITLES["markets"] == "Re-run a marketplace step" and
+          gui.PANEL_BUILDERS["markets"] is gui.build_markets)
+    check("every marketplace can be re-run on its own",
+          list(gui.MARKET_RERUNS) == ["woocommerce", "canadianshopper",
+                                      "facebook", "ebay"] and
+          set(gui.RERUN_NEEDS_CARDS) == {"woocommerce", "canadianshopper",
+                                         "ebay"})
     check("CanadianShopper repair has a short label and plugin-aware tooltip",
           gui.MENU_LABELS["rerun"] == "Re-point photos" and
           "CanadianShopper plugin" in gui.BLURBS["rerun"])

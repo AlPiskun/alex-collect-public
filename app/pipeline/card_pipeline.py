@@ -2080,31 +2080,31 @@ def run_post_listing_uploads(args, cards_parsed):
 # =====================================================================
 #  LISTING SUB-COMMAND
 # =====================================================================
-def cmd_listing(args):
-    """Handle the 'listing' sub-command."""
-    input_path = Path(args.input)
+RERUN_MARKETS = ("woocommerce", "canadianshopper", "facebook", "ebay", "all")
+
+
+def read_listing_text(input_path):
+    """Read the AI reply a step should reuse (exits with a clear message)."""
+    input_path = Path(input_path)
     if not input_path.is_file():
         sys.exit(f"Input file not found: {input_path}")
 
     raw_text = input_path.read_text(encoding="utf-8-sig")
     if not raw_text.strip():
         sys.exit("No input text found. Copy the AI listing text first.")
+    return raw_text
 
-    # -- Parse cards --
-    print("-- Parsing AI listing text... --\n")
+
+def parse_listing_text(raw_text, args):
+    """Split and parse an AI reply into card dictionaries."""
     card_dicts = split_into_cards(raw_text)
-
     default_brand = getattr(args, "brand", "O-Pee-Chee")
     image_ext = getattr(args, "image_ext", IMG_FORMAT)
+    return [parse_card(cd, default_brand, image_ext=image_ext)
+            for cd in card_dicts]
 
-    parsed = [
-        parse_card(cd, default_brand, image_ext=image_ext)
-        for cd in card_dicts
-    ]
 
-    if not parsed:
-        sys.exit("Could not parse any card listings from the input text.")
-
+def print_parsed_cards(parsed):
     print(f"Found {len(parsed)} card(s):\n")
     for i, c in enumerate(parsed, start=1):
         print(f"  {i}. {c['seo_title']}")
@@ -2114,7 +2114,9 @@ def cmd_listing(args):
         print(f"     Back:  {c['back_img']}")
     print()
 
-    # -- Category detection + confirmation --
+
+def confirm_card_metadata(parsed, args):
+    """Confirm categories and quantity; returns the quantity to use."""
     auto_yes = getattr(args, "yes", False)
     forced_category = getattr(args, "category", None)
 
@@ -2128,14 +2130,15 @@ def cmd_listing(args):
     else:
         confirm_categories(parsed, auto_yes=auto_yes)
 
-    # -- Quantity confirmation --
     default_quantity = getattr(args, "quantity", 1)
     for c in parsed:
         c["quantity"] = default_quantity
     confirm_quantities(parsed, auto_yes=auto_yes)
+    return default_quantity
 
-    # -- Build CSV rows --
-    rows = build_rows(parsed, default_quantity)
+
+def write_woocommerce_csv(rows):
+    """Write this run's WooCommerce CSV and roll older ones into history."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     WOOCOMMERCE_DIR.mkdir(parents=True, exist_ok=True)
     out_path = str(WOOCOMMERCE_DIR / f"woocommerce_import_{timestamp}.csv")
@@ -2144,11 +2147,126 @@ def cmd_listing(args):
         WOOCOMMERCE_DIR, "woocommerce_import_*.csv",
         "woocommerce_history.csv", exclude_paths=[out_path],
         key_fields=("SKU",))
+    return out_path
 
+
+def print_woocommerce_rows(rows, out_path):
     print(f"\nParsed {len(rows)} card(s). Wrote CSV: {out_path}")
     for r in rows:
         print(f"  - {r['SKU']}: {r['Name']}  "
               f"(${r['Regular price']})  [{r['Categories']}]")
+
+
+def find_rerun_input(args):
+    """The AI reply a re-run should reuse: explicit path, then the newest
+    _card_input.txt the app wrote beside card_pipeline.py."""
+    explicit = getattr(args, "input", None)
+    if explicit:
+        return Path(explicit)
+
+    seen, candidates = set(), []
+    for folder in (SCRIPT_DIR, Path.cwd()):
+        for pattern in ("_card_input.txt", "*_card_input*.txt"):
+            for path in sorted(folder.glob(pattern),
+                               key=lambda p: _mtime(p), reverse=True):
+                if path not in seen:
+                    seen.add(path)
+                    candidates.append(path)
+    for path in candidates:
+        try:
+            if path.is_file() and path.stat().st_size:
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def _mtime(path):
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _with_flags(args, **overrides):
+    """A copy of the parsed args with stage flags switched on."""
+    merged = vars(args).copy()
+    merged.update(overrides)
+    return argparse.Namespace(**merged)
+
+
+def cmd_rerun(args):
+    """Rebuild one marketplace output from files that already exist.
+
+    Re-runs deliberately never rename or move images: the scans were already
+    matched to the CSV, so only the chosen marketplace output is rebuilt.
+    """
+    market = getattr(args, "market", "all")
+    if market not in RERUN_MARKETS:
+        sys.exit("Unknown --market %r. Choose one of: %s"
+                 % (market, ", ".join(RERUN_MARKETS)))
+
+    print("=" * 58)
+    print("  RE-RUN: %s" % market.upper())
+    print("=" * 58)
+    print("Only this marketplace output is rebuilt. Images are not moved "
+          "or renamed, and other marketplace files are left alone.\n")
+
+    needs_cards = market in ("woocommerce", "canadianshopper", "ebay", "all")
+    parsed = None
+    if needs_cards:
+        input_path = find_rerun_input(args)
+        if input_path is None:
+            sys.exit(
+                "No AI listing text found. Pass --input <file>, or run the "
+                "card pipeline once so _card_input.txt is written beside "
+                "card_pipeline.py.")
+        print("Reusing the AI listing text: %s\n" % input_path)
+        raw_text = read_listing_text(input_path)
+        print("-- Parsing AI listing text... --\n")
+        parsed = parse_listing_text(raw_text, args)
+        if not parsed:
+            sys.exit("Could not parse any card listings from the input text.")
+        print_parsed_cards(parsed)
+        quantity = confirm_card_metadata(parsed, args)
+    else:
+        quantity = getattr(args, "quantity", 1)
+
+    if market in ("woocommerce", "all"):
+        rows = build_rows(parsed, quantity)
+        print_woocommerce_rows(rows, write_woocommerce_csv(rows))
+
+    if market in ("facebook", "all"):
+        maybe_run_facebook(_with_flags(args, facebook=True))
+
+    if market in ("canadianshopper", "all"):
+        maybe_run_canadianshopper(
+            _with_flags(args, canadianshopper=True), parsed)
+
+    if market in ("ebay", "all"):
+        maybe_run_ebay_quicklist(parsed)
+
+    print("\nRe-run finished: %s." % market)
+
+
+def cmd_listing(args):
+    """Handle the 'listing' sub-command."""
+    input_path = Path(args.input)
+    raw_text = read_listing_text(input_path)
+
+    # -- Parse cards --
+    print("-- Parsing AI listing text... --\n")
+    parsed = parse_listing_text(raw_text, args)
+
+    if not parsed:
+        sys.exit("Could not parse any card listings from the input text.")
+
+    print_parsed_cards(parsed)
+
+    # -- Category detection, quantity, and the WooCommerce CSV --
+    default_quantity = confirm_card_metadata(parsed, args)
+    rows = build_rows(parsed, default_quantity)
+    print_woocommerce_rows(rows, write_woocommerce_csv(rows))
 
     # -- Rename images --
     no_images = getattr(args, "no_images", False)
@@ -2165,6 +2283,10 @@ def cmd_listing(args):
 
     front_prefix = getattr(args, "front_prefix", None)
     back_prefix = getattr(args, "back_prefix", None)
+    # parse_listing_text() and confirm_card_metadata() keep their own copies of
+    # these two, so the rename stage below has to bind them again.
+    auto_yes = getattr(args, "yes", False)
+    image_ext = getattr(args, "image_ext", IMG_FORMAT)
 
     if not front_prefix or not back_prefix:
         try:
@@ -2260,6 +2382,12 @@ def main():
               # CanadianShopper only (without Facebook):
               python card_pipeline.py listing --input card_input.txt --canadianshopper \
                   --canadianshopper-image-base-url "https://your-store.example/wp-content/uploads/YYYY/MM"
+
+              # Rebuild ONLY the Facebook feed files from the AI text already used:
+              python card_pipeline.py rerun --market facebook
+
+              # Rebuild ONLY the CanadianShopper CSV (images are not touched):
+              python card_pipeline.py rerun --market canadianshopper --input card_input.txt
         """),
     )
 
@@ -2356,12 +2484,74 @@ def main():
         help="Override the saved browser for the refresh URL"
     )
 
+    # -- rerun --
+    p_rerun = sub.add_parser(
+        "rerun",
+        help="Rebuild one marketplace output (Woo, CanadianShopper, "
+             "Facebook, eBay) from files that already exist"
+    )
+    p_rerun.add_argument(
+        "--market", required=True, choices=RERUN_MARKETS,
+        help="Which marketplace output to rebuild ('all' runs every stage)"
+    )
+    p_rerun.add_argument(
+        "--input", default=None,
+        help="AI listing text to reuse (default: the newest _card_input.txt "
+             "beside card_pipeline.py)"
+    )
+    p_rerun.add_argument(
+        "--brand", default="O-Pee-Chee",
+        help="Fallback brand if none detected (default: O-Pee-Chee)"
+    )
+    p_rerun.add_argument(
+        "--category", default=None,
+        help="Force this top-level category for ALL cards"
+    )
+    p_rerun.add_argument(
+        "--subcategory", default=None,
+        help="Force this sub-category (with --category)"
+    )
+    p_rerun.add_argument(
+        "--quantity", type=int, default=1,
+        help="Stock quantity per item (default: 1)"
+    )
+    p_rerun.add_argument(
+        "--image-ext", default="webp",
+        help="Source scan extension (default: webp)"
+    )
+    p_rerun.add_argument(
+        "-y", "--yes", action="store_true",
+        help="Accept the default categories, quantities, and image folder"
+    )
+    p_rerun.add_argument(
+        "--canadianshopper-image-base-url", default=None,
+        help="Public URL folder for uploaded images"
+    )
+    p_rerun.add_argument(
+        "--feed-wait", type=int, default=5,
+        help="Seconds to wait after feed rebuild (default: 5)"
+    )
+    p_rerun.add_argument(
+        "--feed-cookie", default=None,
+        help="Cookie header for logged-in session"
+    )
+    p_rerun.add_argument(
+        "--no-browser", action="store_true",
+        help="Don't open the refresh URL in a browser"
+    )
+    p_rerun.add_argument(
+        "--browser", default=None,
+        help="Override the saved browser for the refresh URL"
+    )
+
     args = parser.parse_args()
 
     if args.command == "split":
         cmd_split(args)
     elif args.command == "listing":
         cmd_listing(args)
+    elif args.command == "rerun":
+        cmd_rerun(args)
     else:
         parser.print_help()
 
