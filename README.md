@@ -52,6 +52,8 @@ The CanadianShopper plugin is a separate, privately maintained package and is no
 
 ## Development checks
 
+Step-by-step instructions for checking a branch on Windows - including the one-time git setup and the common traps - are in [docs/TESTING.md](docs/TESTING.md).
+
 From the `app` directory:
 
 ```sh
