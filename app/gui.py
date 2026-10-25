@@ -1705,8 +1705,12 @@ def panel_header(parent, app, pid, with_doc=True):
     ttk.Label(top, text=titles[pid], style="H2.TLabel").pack(anchor="w")
     if with_doc:
         text = docs.get(pid, DOCS.get(pid, "")).strip()
-        ttk.Label(top, text=text, style="Dim.TLabel", wraplength=780,
-                  justify="left").pack(fill="x", pady=(1, 4))
+        doc = ttk.Label(top, text=text, style="Dim.TLabel", wraplength=780,
+                        justify="left")
+        doc.pack(fill="x", pady=(1, 4))
+        # The panel help is a Label, not a Text widget; keep a reference so
+        # tests (and anything else) can read what was actually rendered.
+        app._doc_label = doc
     return top
 
 

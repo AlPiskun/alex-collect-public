@@ -1333,9 +1333,10 @@ def main():
     app.cs_addon = True
     panel("pipeline")
     app.cs_addon = docs_cs_addon
-    pipeline_docs = " ".join(
-        w.get("1.0", "end") for w in walk(app._mode_frame.inner)
-        if isinstance(w, gui.tk.Text))
+    # The panel help renders as a ttk.Label (panel_header keeps a reference);
+    # it is not a tk.Text, and the pipeline panel has no Text widget at all.
+    doc_label = getattr(app, "_doc_label", None)
+    pipeline_docs = str(doc_label.cget("text")) if doc_label is not None else ""
     check("pipeline help explains scans, AI copy-back, and direct draft choices",
           "Choose the FRONT scan" in pipeline_docs and
           "AI chat" in pipeline_docs and
