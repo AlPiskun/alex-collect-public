@@ -42,11 +42,15 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from browser_utils import available_browsers, browser_label, open_urls as launch_urls
 from plugin_manager import PluginError, PluginManager
-from user_settings import (default_scan_dir, load_user_settings,
-                           normalize_web_url, site_admin_url,
-                           sync_site_url_to_woo_keys)
+from process_utils import no_window_kwargs
+from sale_inputs import woo_get
+from user_settings import (default_scan_dir, has_woo_credentials,
+                           load_user_settings, marketplace_seller_urls,
+                           normalize_web_url, product_edit_url,
+                           product_search_url, read_woo_credentials,
+                           site_admin_url, sync_site_url_to_woo_keys)
 
-VERSION = "2.37"
+VERSION = "2.38"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -298,7 +302,7 @@ def urllib_request(url, headers=None, timeout=15):
 #  headers the card pipeline eats. Editable: the .txt files next to gui.py
 #  win over these embedded copies.
 PROMPT_FALLBACKS = {
-    "multi": 'I am listing 9 single trading cards for {{STORE_NAME}}. I need high-conversion, SEO-friendly product listings based on images of 9-card sheets. Do not use bulleted lists or — in the output.\nI\'m uploading two images of the same 3x3 sheet of trading cards in a protective sleeve:\n1. FRONT of all 9 cards\n2. BACK of all 9 cards (same 9 cards, sheet flipped horizontally like a page)\n\nGRID NUMBERING (based on the FRONT image):\n[1][2][3]\n[4][5][6]\n[7][8][9]\n\nPosition 1 = top-left, reading left-to-right then top-to-bottom, like English text.\n\nMAPPING BACK IMAGE TO FRONT POSITIONS:\nBecause the sheet is flipped horizontally (like a page turn), each row stays in the same row, but the column order reverses:\n- Left column on BACK = Right column on FRONT\n- Middle column on BACK = Middle column on FRONT\n- Right column on BACK = Left column on FRONT\n\nSo: BACK position 1 → FRONT position 3, BACK position 2 → FRONT position 2, BACK position 3 → FRONT position 1, BACK position 4 → FRONT position 6, BACK position 5 → FRONT position 5, BACK position 6 → FRONT position 4, BACK position 7 → FRONT position 9, BACK position 8 → FRONT position 8, BACK position 9 → FRONT position 7.\n\nWAIT until both images are uploaded before responding.\n\nOnce both images are provided, output results in FRONT position order (1 through 9), using this format for each:\n\nPosition [X] [card details] \nSEO Image titles (must be unique):\n[Manufactures Card #]-[Player Name]-[Year(s)]-[Brand]-front-[grade]\n[Manufactures Card #]-[Player Name]-[Year(s)]-[Brand]-back-[grade]\n\nSEO Title: (Format: \n[Year] [Brand] [Player/Character Name] #[Card #] [Key Rookie/Insert Info] [Team/Series]) Product Description: ({{DESCRIPTION_MIN_WORDS}}+ words. Write a seamless, paragraph-only narrative with a hook intro, historical context, specific pop-culture or sporting achievements, and a \'Condition Report\' section detailing the exact corner wear, edge chipping, and centering seen in the photos. {{LISTING_CONTEXT}} Include a conservative grade estimate explanation). \n\nGrade Estimate: \n(Carefully analyse for creases, wrinkles and marks. Provide a conservative raw grade estimate based on photos e.g., EX-MT 6). Price \n\nRecommendation: \n(Single price rounded up to the nearest {{CURRENCY_NAME}} based on current market value of RAW grade). \n\nPrimary SEO Keyword: \n(Best high-volume search phrase, matching the title exactly and woven naturally into the description). \n\nWooCommerce Tag Bundle: \n(A comma-separated string of exactly {{TAG_COUNT}} relevant tags).\n\nSTRICT OUTPUT FORMAT — DO NOT DEVIATE: This output gets parsed automatically by a script, so the seven headers below must appear EXACTLY as written, character-for-character, every time, with no variation across cards or across responses:\n\nSEO Image titles: SEO Title: Product Description: Grade Estimate: Price Recommendation: Primary SEO Keyword: WooCommerce Tag Bundle:\n\nFollow these rules with no exceptions:\n\nUse these exact seven header strings, spelled and worded exactly as shown above. Never rename, reword, or paraphrase a header (for example, never write "Raw Grade Estimate:" instead of "Grade Estimate:", and never split "SEO Image titles:" into separate "Front SEO Image Title:" / "Back SEO Image Title:" headers).\nEach header goes on its own line, followed immediately by a colon and nothing else on that line — no parenthetical notes, no asides, no instructions repeated back (for example, never write "SEO Image titles (must be unique):").\nDo not bold, italicize, or otherwise wrap any header in markdown (no Grade Estimate:).\n"SEO Image titles:" is always followed by exactly two lines: the front filename, then the back filename, in that order, with no blank line between them and nothing else on those lines.\nThe "Condition Report" sentence inside the Product Description must begin with the literal words "Condition Report:" (with the colon) so it can be identified within the paragraph, but it stays embedded in the Product Description narrative as instructed above — do not give it its own top-level header.\nThe content under "Grade Estimate:" should lead with the short letter/number grade itself (e.g. "EX 5" or "VG-EX 4") before any explanatory sentence, so the grade is the very first thing after the header.\nThe content under "Price Recommendation:" should be a single price only, formatted as "{{CURRENCY_PREFIX}}" followed by a whole number (e.g. "{{CURRENCY_PREFIX}}9"), with no extra words.\nDo not insert any other headers, section titles, or labels anywhere in the output beyond the seven listed above.',
+    "multi": 'I am listing 9 single trading cards for {{STORE_NAME}}. I need high-conversion, SEO-friendly product listings based on images of 9-card sheets. Do not use bulleted lists or — in the output.\nI\'m uploading two images of the same 3x3 sheet of trading cards in a protective sleeve:\n1. FRONT of all 9 cards\n2. BACK of all 9 cards (same 9 cards, sheet flipped horizontally like a page)\n\nGRID NUMBERING (based on the FRONT image):\n[1][2][3]\n[4][5][6]\n[7][8][9]\n\nPosition 1 = top-left, reading left-to-right then top-to-bottom, like English text.\n\nMAPPING BACK IMAGE TO FRONT POSITIONS:\nBecause the sheet is flipped horizontally (like a page turn), each row stays in the same row, but the column order reverses:\n- Left column on BACK = Right column on FRONT\n- Middle column on BACK = Middle column on FRONT\n- Right column on BACK = Left column on FRONT\n\nSo: BACK position 1 → FRONT position 3, BACK position 2 → FRONT position 2, BACK position 3 → FRONT position 1, BACK position 4 → FRONT position 6, BACK position 5 → FRONT position 5, BACK position 6 → FRONT position 4, BACK position 7 → FRONT position 9, BACK position 8 → FRONT position 8, BACK position 9 → FRONT position 7.\n\nWAIT until both images are uploaded before responding.\n\nOnce both images are provided, output results in FRONT position order (1 through 9), using this format for each:\n\nPosition [X] [card details] \nSEO Image titles (must be unique):\n[Manufactures Card #]-[Player Name]-[Year(s)]-[Brand]-front-[grade]\n[Manufactures Card #]-[Player Name]-[Year(s)]-[Brand]-back-[grade]\n\nSEO Title: (Format: \n[Year] [Brand] [Player/Character Name] #[Card #] [Key Rookie/Insert Info] [Team/Series] [grade]) Product Description: ({{DESCRIPTION_MIN_WORDS}}+ words. Write a seamless, paragraph-only narrative with a hook intro, historical context, specific pop-culture or sporting achievements, and a \'Condition Report\' section detailing the exact corner wear, edge chipping, and centering seen in the photos. {{LISTING_CONTEXT}} Include a conservative grade estimate explanation). \n\nGrade Estimate: \n(Carefully analyse for creases, wrinkles and marks. Provide a conservative raw grade estimate based on photos e.g., EX-MT 6). Price \n\nRecommendation: \n(Single price rounded up to the nearest {{CURRENCY_NAME}} based on current market value of RAW grade). \n\nPrimary SEO Keyword: \n(Best high-volume search phrase, matching the title exactly and woven naturally into the description). \n\nWooCommerce Tag Bundle: \n(A comma-separated string of exactly {{TAG_COUNT}} relevant tags).\n\nSTRICT OUTPUT FORMAT — DO NOT DEVIATE: This output gets parsed automatically by a script, so the seven headers below must appear EXACTLY as written, character-for-character, every time, with no variation across cards or across responses:\n\nSEO Image titles: SEO Title: Product Description: Grade Estimate: Price Recommendation: Primary SEO Keyword: WooCommerce Tag Bundle:\n\nFollow these rules with no exceptions:\n\nUse these exact seven header strings, spelled and worded exactly as shown above. Never rename, reword, or paraphrase a header (for example, never write "Raw Grade Estimate:" instead of "Grade Estimate:", and never split "SEO Image titles:" into separate "Front SEO Image Title:" / "Back SEO Image Title:" headers).\nEach header goes on its own line, followed immediately by a colon and nothing else on that line — no parenthetical notes, no asides, no instructions repeated back (for example, never write "SEO Image titles (must be unique):").\nDo not bold, italicize, or otherwise wrap any header in markdown (no Grade Estimate:).\n"SEO Image titles:" is always followed by exactly two lines: the front filename, then the back filename, in that order, with no blank line between them and nothing else on those lines.\nThe "Condition Report" sentence inside the Product Description must begin with the literal words "Condition Report:" (with the colon) so it can be identified within the paragraph, but it stays embedded in the Product Description narrative as instructed above — do not give it its own top-level header.\nThe content under "Grade Estimate:" should lead with the short letter/number grade itself (e.g. "EX 5" or "VG-EX 4") before any explanatory sentence, so the grade is the very first thing after the header.\nThe content under "Price Recommendation:" should be a single price only, formatted as "{{CURRENCY_PREFIX}}" followed by a whole number (e.g. "{{CURRENCY_PREFIX}}9"), with no extra words.\nDo not insert any other headers, section titles, or labels anywhere in the output beyond the seven listed above.',
     "single": 'I am listing 9 single trading cards for {{STORE_NAME}}. I need high-conversion, SEO-friendly product listings based on images of 9-card sheets. Do not use bulleted lists or — in the output.\nI\'m uploading two images of the same 3x3 sheet of trading cards in a protective sleeve:\n1. FRONT of all 9 cards\n2. BACK of all 9 cards (same 9 cards, sheet flipped horizontally like a page)\n\nGRID NUMBERING (based on the FRONT image):\n[1][2][3]\n[4][5][6]\n[7][8][9]\n\nPosition 1 = top-left, reading left-to-right then top-to-bottom, like English text.\n\nMAPPING BACK IMAGE TO FRONT POSITIONS:\nBecause the sheet is flipped horizontally (like a page turn), each row stays in the same row, but the column order reverses:\n- Left column on BACK = Right column on FRONT\n- Middle column on BACK = Middle column on FRONT\n- Right column on BACK = Left column on FRONT\n\nSo: BACK position 1 → FRONT position 3, BACK position 2 → FRONT position 2, BACK position 3 → FRONT position 1, BACK position 4 → FRONT position 6, BACK position 5 → FRONT position 5, BACK position 6 → FRONT position 4, BACK position 7 → FRONT position 9, BACK position 8 → FRONT position 8, BACK position 9 → FRONT position 7.\n\nWAIT until both images are uploaded before responding.\n\nOnce both images are provided, output results in FRONT position order (1 through 9), using this format for each:\n\nPosition [X] [card details] \nSEO Image titles: \n[Manufactures Card #]-[Player/Character Name]-[Year(s)]-[Brand]-front \n[Manufactures Card #]-[Player/Character Name]-[Year(s)]-[Brand]-back\n \nSEO Title: (Format: \n[Year] [Brand] [Player/Character Name] #[Card #] [Key Rookie/Insert Info] [Team/Series]) Product Description: ({{DESCRIPTION_MIN_WORDS}}+ words. Write a seamless, paragraph-only narrative with a hook intro, historical context, specific pop-culture or sporting achievements, and a \'Condition Report\' section detailing the exact corner wear, edge chipping, and centering seen in the photos. {{LISTING_CONTEXT}} Include a conservative grade estimate explanation). \n\nGrade Estimate: \n(Carefully analyse for creases, wrinkles and marks. Provide a conservative raw grade estimate based on photos e.g., EX-MT 6). Price \n\nRecommendation: \n(Single price rounded up to the nearest {{CURRENCY_NAME}} based on current market value of RAW grade). \n\nPrimary SEO Keyword: \n(Best high-volume search phrase, matching the title exactly and woven naturally into the description). \n\nWooCommerce Tag Bundle: \n(A comma-separated string of exactly {{TAG_COUNT}} relevant tags).\n\nSTRICT OUTPUT FORMAT — DO NOT DEVIATE: This output gets parsed automatically by a script, so the seven headers below must appear EXACTLY as written, character-for-character, every time, with no variation across cards or across responses:\n\nSEO Image titles: SEO Title: Product Description: Grade Estimate: Price Recommendation: Primary SEO Keyword: WooCommerce Tag Bundle:\n\nFollow these rules with no exceptions:\n\nUse these exact seven header strings, spelled and worded exactly as shown above. Never rename, reword, or paraphrase a header (for example, never write "Raw Grade Estimate:" instead of "Grade Estimate:", and never split "SEO Image titles:" into separate "Front SEO Image Title:" / "Back SEO Image Title:" headers).\nEach header goes on its own line, followed immediately by a colon and nothing else on that line — no parenthetical notes, no asides, no instructions repeated back (for example, never write "SEO Image titles (must be unique):").\nDo not bold, italicize, or otherwise wrap any header in markdown (no Grade Estimate:).\n"SEO Image titles:" is always followed by exactly two lines: the front filename, then the back filename, in that order, with no blank line between them and nothing else on those lines.\nThe "Condition Report" sentence inside the Product Description must begin with the literal words "Condition Report:" (with the colon) so it can be identified within the paragraph, but it stays embedded in the Product Description narrative as instructed above — do not give it its own top-level header.\nThe content under "Grade Estimate:" should lead with the short letter/number grade itself (e.g. "EX 5" or "VG-EX 4") before any explanatory sentence, so the grade is the very first thing after the header.\nThe content under "Price Recommendation:" should be a single price only, formatted as "{{CURRENCY_PREFIX}}" followed by a whole number (e.g. "{{CURRENCY_PREFIX}}9"), with no extra words.\nDo not insert any other headers, section titles, or labels anywhere in the output beyond the seven listed above.',
 }
 PROMPT_FILES = {
@@ -588,7 +592,7 @@ class Runner:
             self.proc = subprocess.Popen(
                 cmd, cwd=str(cwd), stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                env=env)
+                env=env, **no_window_kwargs())
         except Exception as e:
             messagebox.showerror("Could not start", "%s\n\n%s" % (title, e))
             return False
@@ -749,8 +753,8 @@ Two folders the tools should know about:
 * Batch folder - where card_pipeline.py and generated CSVs live. It is
   detected beside the tools by default; change it if your files are elsewhere.
 
-* Scan folder - where your scanner drops files. Choose it here; the "card
-  needs new photos" tool opens the folder after writing the reminder list."""
+* Scan folder - where your scanner drops files. Choose it here; the
+  photo-replacement tool opens it when you replace a card's photos."""
 
 DOCS["pipeline"] = """\
 Use this for a new batch of cards. Choose the FRONT scan and, if you have
@@ -861,12 +865,22 @@ dashboard instead of through a batch. The square copy is written next
 to the original; the original is never touched. No cookie needed."""
 
 DOCS["newphotos"] = """\
-A card's photo needs replacing (better scan, condition change...).
-Type the card names; the tool writes the reminder rows into the
-checklist - including "scan the replacement into your scan folder"
-- and opens the scan folder so you can start right away. The checklist
-then walks you through updating the photo on the website, on
-CanadianShopper (WirePhotos), and on eBay and Facebook."""
+One card needs better photos (a rescan, a condition change, a cracked
+slab). Type its name or SKU and press Find.
+
+* With your website API keys saved, the card is looked up and its
+  product edit page opens straight away. Without them you get the
+  product list filtered to what you typed - and the app offers to set
+  the keys up, which makes this a one-click job next time.
+* Choose the folder holding the replacement images and it opens for you.
+* If the replacements are a 9-card sheet, the split step cuts it into
+  the nine front (and optional back) images.
+* The CanadianShopper store, eBay active listings, and Facebook selling
+  pages open too, so every marketplace is one tab away.
+
+With the CanadianShopper plugin installed you can also re-wire the
+staged front/back photos; without it the pages still open and the photo
+upload stays manual."""
 
 DOCS["markets"] = """\
 Redo ONE marketplace without repeating the AI, split, or image steps.
@@ -890,8 +904,8 @@ mistyped answer at one step no longer means re-running the whole batch."""
 DOCS_CORE = {
     "cookie": """\
 Set your store URL, marketplace page links, AI page URL, store name, batch
-folder, and scanner folder here. The scanner folder is user-selectable and
-opens automatically for photo reminders. WooCommerce credentials stay in the
+folder, and scanner folder here. The scanner folder is where replacement
+photos land. WooCommerce credentials stay in the
 private woo-keys.txt file. CanadianShopper connection controls appear when its
 optional plugin is installed.""",
     "pipeline": """\
@@ -1624,9 +1638,8 @@ PANEL_ORDER = ["cookie", "pipeline", "combine", "stage", "importpanel",
                "newphotos", "markets", "logs", "plugins"]
 GROUPS_FULL = [("Sell a new batch", ["pipeline", "combine", "stage",
                                      "importpanel", "wire"]),
-               ("After a sale", ["sold", "checklist", "zerostock",
-                                 "newphotos"]),
-               ("Photos", ["square", "rerun"]),
+               ("After a sale", ["sold", "checklist", "zerostock"]),
+               ("Photos", ["square", "rerun", "newphotos"]),
                ("Re-run a marketplace", ["markets"])]
 
 
@@ -1639,8 +1652,8 @@ def groups_for(has_cs):
     if has_cs:
         return GROUPS_FULL
     return [("Sell a new batch", ["pipeline", "combine", "importpanel"]),
-            ("After a sale", ["sold", "checklist", "newphotos"]),
-            ("Photos", ["square"]),
+            ("After a sale", ["sold", "checklist"]),
+            ("Photos", ["square", "newphotos"]),
             ("Re-run a marketplace", ["markets"])]
 TITLES = {
     "cookie": "User settings",
@@ -1655,7 +1668,7 @@ TITLES = {
     "zerostock": "Archive CanadianShopper listings already at 0",
     "square": "Square up a photo (manual upload)",
     "plugins": "Plugins",
-    "newphotos": "A card needs new photos",
+    "newphotos": "Replace a card's photos",
     "markets": "Re-run a marketplace step",
     "logs": "Logs and reports",
 }
@@ -1671,7 +1684,7 @@ MENU_LABELS = {
     "checklist": "The checklist",
     "zerostock": "Archive listings at 0",
     "square": "Square up a photo",
-    "newphotos": "New photos needed",
+    "newphotos": "Replace card photos",
     "markets": "Re-run a marketplace",
     "logs": "Logs & reports",
     "plugins": "Plugins",
@@ -1689,7 +1702,7 @@ BLURBS = {
     "zerostock": "Sweep: archive everything sitting at quantity 0.",
     "square": "Pad a photo onto a white square for a manual dashboard upload.",
     "plugins": "Install and manage optional plugins.",
-    "newphotos": "Reminder rows + opens the scanner folder.",
+    "newphotos": "Find a card, open its replacement images, and refresh its pages.",
     "markets": "Redo just one marketplace (Woo, CanadianShopper, Facebook, eBay) without repeating the AI or image steps.",
     "logs": "Where every run is recorded.",
 }
@@ -3139,36 +3152,235 @@ def build_square(parent, app):
 
 
 def build_newphotos(parent, app):
+    """Replace one card's photos, then put every marketplace page on screen.
+
+    The old version wrote reminder rows into the checklist; it now does the
+    job instead of describing it: find the product, open the folder holding
+    the replacements, offer the 9-card split, and open the WordPress edit page
+    plus the other marketplaces. With the CanadianShopper plugin installed the
+    staged photos can be re-wired too.
+    """
     panel_header(parent, app, "newphotos")
     box = ttk.Frame(parent)
     box.pack(fill="x")
 
-    def remind():
-        Editor(self_toplevel=box, title="Cards that need new photos",
-               hint="One card title per line.",
-               initial="", save_to=BASE / "needs-photos.txt",
-               on_saved=lambda p: app.run_tool(
-                   "sold-everywhere.py",
-                   ["--images-file", str(p), "--scan-dir",
-                    app.settings.get("scan_dir", DEFAULT_SCAN_DIR),
-                    "--checklist", str(CHECKLIST)],
-                   "Write the photo reminders",
-                   cwd=app.settings.get("pipeline_dir", str(WORK))))
+    keys_file = BASE / "woo-keys.txt"
+    term = tk.StringVar(master=box)
+    hint = ttk.Label(box, text="", style="Dim.TLabel", wraplength=760,
+                     justify="left")
+
+    def status(text):
+        hint.configure(text=text)
+
+    # -- finding the product ------------------------------------------------
+    def ask_for_keys():
+        """Offer the API-key setup; True when the user wants it right now."""
+        enter = messagebox.askyesno(
+            "Save your website API keys?",
+            "Alex Collect can look the card up on your website and open its "
+            "product edit page directly.\n\n"
+            "That needs a read-only WooCommerce key pair in woo-keys.txt. It "
+            "is a one-time setup, and every later photo replacement becomes "
+            "one click instead of a search.\n\n"
+            "Enter the keys now?", parent=app)
+        if not enter:
+            return False
+        open_woo_keys_file(app, app.settings.get("woo_site_url", ""))
+        status("Fill in woo-keys.txt, save it, then press Find again.")
+        return True
+
+    def choose_product(rows, query):
+        """Pick one of several matching products; None means cancelled."""
+        top = tk.Toplevel(app)
+        top.title("Which product?")
+        top.transient(app)
+        top.geometry("640x360")
+        top.grab_set()
+        ttk.Label(top, text="Several products match %r. Pick the one whose "
+                  "photos need replacing:" % query, wraplength=600,
+                  justify="left").pack(anchor="w", padx=8, pady=(8, 4))
+        listing = tk.Listbox(top, height=13, exportselection=False)
+        for row in rows:
+            text = row["name"] or "(untitled)"
+            if row["sku"]:
+                text += "   [%s]" % row["sku"]
+            listing.insert("end", text)
+        listing.pack(fill="both", expand=True, padx=8)
+        listing.selection_set(0)
+        chosen = {"row": None}
+
+        def accept(*_event):
+            picked = listing.curselection()
+            if picked:
+                chosen["row"] = rows[picked[0]]
+            top.destroy()
+
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=8, pady=6)
+        ttk.Button(buttons, text="Use this product",
+                   command=accept).pack(side="right")
+        ttk.Button(buttons, text="Cancel",
+                   command=top.destroy).pack(side="right", padx=8)
+        listing.bind("<Double-Button-1>", accept)
+        app.wait_window(top)
+        return chosen["row"]
+
+    def find_product(query):
+        """Product dict, None when no lookup was possible, False if cancelled."""
+        site, key, secret = read_woo_credentials(keys_file)
+        status("Looking for %r on %s ..." % (query, site))
+        try:
+            code, data = woo_get(site, "/wp-json/wc/v3/products",
+                                 {"search": query, "per_page": 20}, key, secret)
+        except Exception as exc:
+            messagebox.showwarning(
+                "Lookup failed",
+                "Could not search your website:\n%s\n\nThe product list will "
+                "open instead - pick the card there." % exc, parent=app)
+            return None
+        if code != 200 or not isinstance(data, list):
+            messagebox.showwarning(
+                "Lookup failed",
+                "Your website answered HTTP %s.\n\nThe product list will open "
+                "instead - pick the card there." % code, parent=app)
+            return None
+        rows = [{"id": p.get("id"), "name": (p.get("name") or "").strip(),
+                 "sku": (p.get("sku") or "").strip()}
+                for p in data if isinstance(p, dict) and p.get("id")]
+        if not rows:
+            messagebox.showinfo(
+                "No product found",
+                "Nothing on your website matches %r.\n\nThe filtered product "
+                "list will open so you can look by hand." % query, parent=app)
+            return None
+        if len(rows) == 1:
+            return rows[0]
+        return choose_product(rows, query) or False
+
+    # -- the photo work -----------------------------------------------------
+    def wire_photos(after=None):
+        """Re-wire the staged front/back photos (CanadianShopper plugin)."""
+        args = ["--mode", "wire", "--cookie-file", str(CS_COOKIE_FILE),
+                "--ready-dir", str(canadianshopper_ready_dir(app)),
+                "--cache", str(canadianshopper_cache_path(app))]
+        app.run_tool("cs-image-sync.py", args, "Wire the replacement photos",
+                     cwd=app.settings.get("pipeline_dir", str(WORK)),
+                     on_done=after)
+
+    def split_scan(on_done):
+        """Cut a 9-card sheet into its nine front (and optional back) images."""
+        images = [("Images", "*.jpg *.jpeg *.png *.tif *.tiff *.bmp *.webp"),
+                  ("All files", "*.*")]
+        front = filedialog.askopenfilename(
+            title="Choose the FRONT scan of the 9-card sheet",
+            initialdir=app.settings.get("scan_dir", str(BASE)),
+            filetypes=images)
+        if not front:
+            return on_done(0)
+        args = ["split", "--front", str(front)]
+        if messagebox.askyesno(
+                "Is there a back scan?",
+                "Do you also have the BACK of this sheet?\n\n"
+                "The split writes the nine back images as well when you "
+                "choose it.", parent=app):
+            back = filedialog.askopenfilename(
+                title="Choose the BACK scan of the same sheet",
+                initialdir=str(Path(front).parent), filetypes=images)
+            if back:
+                args += ["--back", str(back)]
+        script = find_pipeline_script(app.settings)
+        if script is None:
+            messagebox.showwarning(
+                "Pipeline not found",
+                "card_pipeline.py was not found, so the scan cannot be split "
+                "here. Set the batch folder in User settings.", parent=app)
+            return on_done(0)
+        app.run_tool(str(script), args, "Split the replacement scan",
+                     cwd=str(Path(script).parent), on_done=on_done)
+
+    def replace(query, product):
+        """Folder, split, pages, and (with the plugin) the photo wiring."""
+        urls = []
+        if isinstance(product, dict) and product.get("id"):
+            edit = product_edit_url(product["id"], app.settings)
+            if edit:
+                urls.append(edit)
+            status("Editing %s (product ID %s)." %
+                   (product["name"] or query, product["id"]))
+        else:
+            search = product_search_url(query, app.settings)
+            if search:
+                urls.append(search)
+            status("Product list filtered to %r." % query)
+        urls += marketplace_seller_urls(app.settings)
+
+        folder = filedialog.askdirectory(
+            title="Where are the replacement images?",
+            initialdir=app.settings.get("scan_dir", str(BASE)))
+        if folder and not open_path(folder):
+            messagebox.showwarning(
+                "Folder not found", "Could not open:\n%s" % folder,
+                parent=app)
+
+        do_split = bool(folder) and messagebox.askyesno(
+            "Split a 9-card sheet?",
+            "Run the 9-card split on a scan of this card's sheet?\n\n"
+            "The front scan is required and the back is optional. The images "
+            "land in the pipeline's output folder.", parent=app)
+
+        do_wire = bool(getattr(app, "cs_addon", True)) and messagebox.askyesno(
+            "Wire the CanadianShopper photos?",
+            "Re-wire the staged front/back gallery photos now?\n\n"
+            "This uses whatever is staged and cached - it is not limited to "
+            "this one card.", parent=app)
+
+        def after_split(rc):
+            if do_wire and rc == 0:
+                wire_photos()
+
+        if do_split:
+            split_scan(after_split)
+        elif do_wire:
+            wire_photos()
+
+        if urls:
+            app.open_webpages(urls)
+
+    def start():
+        query = term.get().strip()
+        if not query:
+            messagebox.showinfo(
+                "Which card?",
+                "Type the card's name (or SKU) first, then press Find.",
+                parent=app)
+            return
+        if not has_woo_credentials(keys_file):
+            if ask_for_keys():
+                return
+            product = None
+        else:
+            product = find_product(query)
+            if product is False:
+                return
+        replace(query, product)
 
     row = ttk.Frame(box)
     row.pack(anchor="w", pady=4)
-    ttk.Button(row, text="Type the cards...", command=remind).pack(side="left")
+    ttk.Label(row, text="Card name or SKU:").pack(side="left")
+    entry = ttk.Entry(row, textvariable=term, width=42)
+    entry.pack(side="left", padx=6)
+    entry.bind("<Return>", lambda _event: start())
+    ttk.Button(row, text="Find the card...", command=start).pack(side="left")
     ttk.Button(row, text="Open the scanner folder",
                command=lambda: (None if open_path(app.settings.get(
                    "scan_dir", DEFAULT_SCAN_DIR)) else
-                   messagebox.showwarning("Not found",
-                                          "The scan folder does not exist:"
-                                          "\n%s\nSet it in the Connection "
-                                          "panel." %
-                                          app.settings.get(
-                                              "scan_dir",
-                                              DEFAULT_SCAN_DIR)))
+                   messagebox.showwarning(
+                       "Not found",
+                       "The scan folder does not exist:\n%s\nSet it in the "
+                       "Connection panel." %
+                       app.settings.get("scan_dir", DEFAULT_SCAN_DIR)))
                ).pack(side="left", padx=8)
+    hint.pack(anchor="w", pady=(2, 0))
 
 
 def build_logs(parent, app):
@@ -4032,7 +4244,8 @@ class WizardFrame(ttk.Frame):
                 "That is the whole loop:\n\n"
                 "  new cards:  prepare files -> review -> import and publish\n" +
                 sale_summary +
-                "  new photos: scan -> the reminder list -> update everywhere\n\n"
+                "  new photos: find the card -> open the folder -> update "
+                "every page\n\n"
                 "Pick how the window should open from now on:"),
                 wraplength=880, justify="left").pack(anchor="w")
             var = tk.StringVar(master=self.content,

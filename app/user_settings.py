@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_FILE = APP_DIR / "gui-settings.json"
@@ -138,6 +138,76 @@ def site_admin_url(path: str, settings: dict | None = None) -> str:
     if not base:
         return ""
     return base + "/" + path.lstrip("/")
+
+
+PLACEHOLDER_KEY_PREFIXES = ("ck_replace", "cs_replace")
+
+
+def read_woo_credentials(path: Path = WOO_KEYS_FILE) -> tuple[str, str, str]:
+    """Read ``(site, consumer key, consumer secret)`` from the private file.
+
+    The file is one value per line: the site URL, then the read-only key, then
+    the secret, with ``#`` comments ignored. The shipped example's placeholder
+    values are treated as missing so an untouched template never looks like a
+    working key.
+    """
+    values: list[str] = []
+    try:
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
+            value = line.strip()
+            if value and not value.startswith("#"):
+                values.append(value)
+    except (OSError, UnicodeError):
+        return "", "", ""
+
+    site = ""
+    rest: list[str] = []
+    for value in values:
+        if not site and value.lower().startswith(("http://", "https://")):
+            site = value.rstrip("/")
+        elif not value.lower().startswith(("http://", "https://")):
+            rest.append(value)
+    key, secret = (rest + ["", ""])[:2]
+    if key.lower().startswith(PLACEHOLDER_KEY_PREFIXES):
+        key = ""
+    if secret.lower().startswith(PLACEHOLDER_KEY_PREFIXES):
+        secret = ""
+    return site, key, secret
+
+
+def has_woo_credentials(path: Path = WOO_KEYS_FILE) -> bool:
+    """True when a usable site + read-only key pair is already saved."""
+    site, key, secret = read_woo_credentials(path)
+    return bool(site and key and secret)
+
+
+def product_search_url(term: str, settings: dict | None = None) -> str:
+    """The product list filtered by a typed term - the no-API-keys lookup."""
+    base = site_admin_url("wp-admin/edit.php", settings)
+    if not base or not (term or "").strip():
+        return ""
+    return base + "?post_type=product&s=" + quote_plus(term.strip())
+
+
+def product_edit_url(product_id, settings: dict | None = None) -> str:
+    """The dashboard page that edits one product, when its ID is known."""
+    base = site_admin_url("wp-admin/post.php", settings)
+    pid = str(product_id or "").strip()
+    if not base or not pid:
+        return ""
+    return base + "?post=" + quote_plus(pid) + "&action=edit"
+
+
+def marketplace_seller_urls(settings: dict | None = None) -> list:
+    """The saved seller pages for the other marketplaces, in a stable order."""
+    settings = settings if settings is not None else load_user_settings()
+    urls = []
+    for name in ("canadianshopper_store_url", "ebay_selling_url",
+                 "facebook_selling_url"):
+        url = normalize_web_url(settings.get(name, ""))
+        if url and url not in urls:
+            urls.append(url)
+    return urls
 
 
 def feed_urls(settings: dict | None = None) -> tuple[str, str]:

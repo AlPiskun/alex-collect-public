@@ -28,7 +28,7 @@ SEO Image titles (must be unique):
 [Manufactures Card #]-[Player Name]-[Year(s)]-[Brand]-back-[grade]
 
 SEO Title: (Format: 
-[Year] [Brand] [Player/Character Name] #[Card #] [Key Rookie/Insert Info] [Team/Series]) Product Description: ({{DESCRIPTION_MIN_WORDS}}+ words. Write a seamless, paragraph-only narrative with a hook intro, historical context, specific pop-culture or sporting achievements, and a 'Condition Report' section detailing the exact corner wear, edge chipping, and centering seen in the photos. {{LISTING_CONTEXT}} Include a conservative grade estimate explanation).
+[Year] [Brand] [Player/Character Name] #[Card #] [Key Rookie/Insert Info] [Team/Series] [grade]) Product Description: ({{DESCRIPTION_MIN_WORDS}}+ words. Write a seamless, paragraph-only narrative with a hook intro, historical context, specific pop-culture or sporting achievements, and a 'Condition Report' section detailing the exact corner wear, edge chipping, and centering seen in the photos. {{LISTING_CONTEXT}} Include a conservative grade estimate explanation).
 
 Grade Estimate: 
 (Carefully analyse for creases, wrinkles and marks. Provide a conservative raw grade estimate based on photos e.g., EX-MT 6). Price 

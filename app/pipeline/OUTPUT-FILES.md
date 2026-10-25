@@ -30,7 +30,7 @@ These are outside the marketplace result rollups and may grow or persist by desi
 - `facebook_runlog_YYYY-MM-DD.txt` accumulates one run log per day; `feed_debug_response.txt` is only written on feed-fetch failure and is overwritten on the next such failure.
 - `gui-log.txt` is append-only and can grow over time.
 - `sold-cards-ledger.json` and `sold-cards-checklist.csv` are persistent workflow state, not disposable output. `sold-cards-report.csv` is refreshed by runs.
-- `needs-photos.txt` is the current editable reminder list. `_card_input.txt` is an intermediate file overwritten for each pipeline run.
+- `_card_input.txt` is an intermediate file overwritten for each pipeline run.
 - `canadianshopper_products/cs-ready/back-map.json` and `cs-image-report.csv` are refreshed during staging. The staged history CSV is preserved separately from the import-ready current batch.
 
 No other core pipeline result file was found that creates a dated, unbounded series in the pipeline root. The GUI log, Facebook daily logs, and image workspace are the main remaining accumulation points.

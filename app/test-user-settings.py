@@ -12,8 +12,10 @@ APP = Path(__file__).resolve().parent
 sys.path.insert(0, str(APP))
 sys.path.insert(0, str(APP / "pipeline"))
 
-from user_settings import (feed_urls, load_user_settings, site_admin_url,
-                           sync_site_url_to_woo_keys)
+from user_settings import (feed_urls, has_woo_credentials, load_user_settings,
+                           marketplace_seller_urls, product_edit_url,
+                           product_search_url, read_woo_credentials,
+                           site_admin_url, sync_site_url_to_woo_keys)
 import card_pipeline as pipeline
 import browser_utils
 
@@ -110,9 +112,51 @@ def main():
         # Without an installed stage hook, always open this run's CSV folder,
         # never a stale cs-ready folder left from an earlier run.
         assert pipeline.canadianshopper_import_folder([original]) == original.parent
+    # Replacing one card's photos: the lookup uses the private key file, and
+    # every marketplace page comes from the saved settings.
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        keys = root / "woo-keys.txt"
+        keys.write_text("https://shop.example\nck_abc\ncs_secret\n",
+                        encoding="utf-8")
+        assert read_woo_credentials(keys) == ("https://shop.example",
+                                             "ck_abc", "cs_secret")
+        assert has_woo_credentials(keys)
+        # The shipped example must never look like a working key pair.
+        keys.write_text("https://your-store.example\n"
+                        "ck_replace_with_read_only_consumer_key\n"
+                        "cs_replace_with_read_only_consumer_secret\n",
+                        encoding="utf-8")
+        assert read_woo_credentials(keys) == ("https://your-store.example", "", "")
+        assert not has_woo_credentials(keys)
+        absent = root / "no-keys-here.txt"
+        assert read_woo_credentials(absent) == ("", "", "")
+        assert not has_woo_credentials(absent)
+
+    shop = {"woo_site_url": "https://shop.example",
+            "canadianshopper_store_url": "https://canadianshopper.ca/store/mine",
+            "ebay_selling_url": "https://www.ebay.ca/sh/lst/active",
+            "facebook_selling_url":
+                "https://www.facebook.com/marketplace/you/selling"}
+    assert product_edit_url(42, shop) == \
+        "https://shop.example/wp-admin/post.php?post=42&action=edit"
+    assert product_edit_url("", shop) == ""
+    assert product_search_url("1989 Gretzky", shop) == \
+        ("https://shop.example/wp-admin/edit.php?post_type=product"
+         "&s=1989+Gretzky")
+    assert product_search_url("   ", shop) == ""
+    assert marketplace_seller_urls(shop) == [
+        "https://canadianshopper.ca/store/mine",
+        "https://www.ebay.ca/sh/lst/active",
+        "https://www.facebook.com/marketplace/you/selling"]
+    # No site URL means no admin URLs at all - never a bare "/wp-admin".
+    assert product_edit_url(42, {}) == ""
+    assert product_search_url("card", {}) == ""
+
     print("PASS legacy Woo URL migration, media/admin URLs, and feed overrides")
     print("PASS pipeline opens the configured media upload page before asking")
     print("PASS CanadianShopper folder selection prefers staged output, then current CSV")
+    print("PASS photo replacement reads the private keys and the saved seller pages")
 
 
 if __name__ == "__main__":
