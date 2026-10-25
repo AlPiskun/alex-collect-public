@@ -1,4 +1,4 @@
-# Alex Collect 2.38
+# Alex Collect 2.39
 
 Alex Collect is a local desktop control panel for organizing a small trading-card selling workflow. It brings together the card pipeline, WooCommerce order inputs, a sale checklist, photo utilities, and optional plugins.
 
@@ -16,7 +16,7 @@ Alex Collect is a local desktop control panel for organizing a small trading-car
 - Optionally prepare selected cards for eBay with a local copy/drag-and-drop Quick List page and sport-template tabs. eBay submission stays manual; the core does not change live eBay listings.
 - Open the relevant seller pages after a sale; the core does not automatically change eBay or Facebook listings.
 - Square card photos for manual uploads.
-- Replace one card's photos from **Photos**: type the name or SKU, and Alex Collect opens the matching product edit page (with read-only API keys saved) or the filtered product list, opens the folder holding the replacements, offers the 9-card split, and opens the CanadianShopper, eBay, and Facebook seller pages. With the plugin installed the staged photos can be re-wired in the same pass. Without keys the app offers the one-time key setup, which makes later replacements a single click.
+- Replace one card's photos from **Photos**: type the name or SKU, and Alex Collect opens the matching product edit page (with read-only API keys saved) or the filtered product list, opens the folder holding the replacements, offers the 9-card split, and opens the CanadianShopper, eBay, and Facebook seller pages. With the plugin installed (1.0.14 or newer) the same pass can re-wire just that card's gallery photos, matched by its full title; the whole staged batch stays a separate, explicitly chosen offer. Without keys the app offers the one-time key setup, which makes later replacements a single click.
 - The optional CanadianShopper plugin adds draft actions directly to the running pipeline: `v` previews all vendor drafts without changes and returns to the choices, `y` publishes ready drafts after the same `PUBLISH` confirmation used by the app, and `n` (or Enter) skips draft review/publishing. Photo wiring then continues without an extra post-import Enter prompt. The same **Preview drafts** and **Publish ready drafts** buttons remain in the card-pipeline and **Import / publish drafts** panels; the app button also requires its confirmation dialog. No bookmarklet is needed.
 - Re-run one marketplace at a time from **Re-run a marketplace**: rebuild just the WooCommerce CSV, the CanadianShopper CSV, the Facebook feed/export, or the eBay Quick List from the AI reply already on disk. Each button rebuilds only its own output and never moves or renames the images again, so a mistyped answer at one step no longer means repeating the whole batch. If no AI text is found the button asks for the file.
 - Install optional plugins from a local ZIP using **Plugins** in the menu bar.

@@ -208,6 +208,7 @@ def main():
     (cs_package / "tools").mkdir(parents=True)
     (cs_package / "tools" / "sold-cards.py").write_text("# test stub\\n")
     (cs_package / "tools" / "cs-image-sync.py").write_text("# test stub\\n")
+    (cs_package / "tools" / "cs-image-wire.py").write_text("# test stub\\n")
     (cs_package / "tools" / "pad-and-upload.py").write_text("# test stub\\n")
     (cs_package / "tools" / "cs_stage_hook.py").write_text("# test stub\\n")
     (cs_package / "plugin.json").write_text(json.dumps({
@@ -215,15 +216,18 @@ def main():
         "version": "1.0.0", "host_api": 1, "min_core_version": "2.21",
         "description": "GUI test fixture only.",
         "capabilities": ["after_sale.stock_update", "batch.photo_stage",
-                         "batch.photo_wire", "batch.photo_cache_repair",
+                         "batch.photo_wire", "batch.photo_replace",
+                         "batch.photo_cache_repair",
                          "batch.pipeline_stage"],
         "actions": {"after_sale.stock_update": "stock_update",
                     "batch.photo_stage": "photo_sync",
-                    "batch.photo_wire": "photo_sync",
+                    "batch.photo_wire": "photo_wire",
+                    "batch.photo_replace": "photo_sync",
                     "batch.photo_cache_repair": "photo_upload",
                     "batch.pipeline_stage": "pipeline_stage"},
         "tools": {"stock_update": "tools/sold-cards.py",
                   "photo_sync": "tools/cs-image-sync.py",
+                  "photo_wire": "tools/cs-image-wire.py",
                   "photo_upload": "tools/pad-and-upload.py",
                   "pipeline_stage": "tools/cs_stage_hook.py"}
     }), encoding="utf-8")
@@ -390,6 +394,8 @@ def main():
                       str(stage_csv)]
     check("stage args use the CS results folder and current CSV batch",
           cap.last["args"] == expected_stage, str(cap.last["args"]))
+    check("staging resolves batch.photo_stage",
+          cap.last["script"].endswith("cs-image-sync.py"), str(cap.last))
 
     panel("wire")
     find_button(app, "Dry-run (writes nothing)").invoke()
@@ -398,11 +404,15 @@ def main():
               str(stage_results / "cs-ready"), "--cache",
               str(TMP / "cs-image-cache.json"), "--dry-run"],
           str(cap.last["args"]))
+    check("a wire dry-run resolves batch.photo_wire",
+          cap.last["script"].endswith("cs-image-wire.py"), str(cap.last))
     find_button(app, "Wire for real").invoke()
     check("wire real", cap.last["args"] == ["--mode", "wire",
               "--cookie-file", str(gui.CS_COOKIE_FILE), "--ready-dir",
               str(stage_results / "cs-ready"), "--cache",
               str(TMP / "cs-image-cache.json")], str(cap.last["args"]))
+    check("wiring for real resolves batch.photo_wire",
+          cap.last["script"].endswith("cs-image-wire.py"), str(cap.last))
     gui.canadianshopper_results_dir = original_cs_results
     gui.canadianshopper_ready_dir = original_cs_ready
     gui.canadianshopper_cache_path = original_cs_cache
@@ -557,6 +567,7 @@ def main():
     saved_site_url = app.settings.get("woo_site_url", "")
     photos_cs_addon = app.cs_addon
     app.settings["woo_site_url"] = "https://shop.example"
+    app.cs_addon = True          # the plugin turns the wiring offers on
     panel("newphotos")
     entries = [w for w in walk(tasks_frame(app))
                if isinstance(w, gui.ttk.Entry)]
@@ -567,10 +578,28 @@ def main():
     entry = entries[0]
     asked = []
 
+    photos_cap = Capture()
+    app.runner.start = photos_cap
+
     def decline(title, *a, **k):
         asked.append(title)
         return False          # no key setup, no split, no photo re-wiring
 
+    def titles_run(calls):
+        """--title values from the recorded photo jobs."""
+        found = []
+        for call in calls:
+            args = call.get("args") or []
+            if "--title" in args:
+                found.append(args[args.index("--title") + 1])
+        return found
+
+    fake_keys = ("https://shop.example", "ck_abc", "cs_secret")
+    one_product = (200, [{"id": 42,
+                          "name": "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6",
+                          "sku": "SKU-1"}])
+
+    # -- a search-page fallback must never run the per-card action ----------
     mb.askyesno = decline
     opened_before = len(answers["opened_urls"])
     entry.delete(0, "end")
@@ -591,36 +620,99 @@ def main():
     check("the other marketplace seller pages open too",
           any("ebay.ca" in url for url, _ in opened) and
           any("facebook.com" in url for url, _ in opened), str(opened))
+    check("a search-page fallback never asks for or runs per-card wiring",
+          "Wire this card's photos?" not in asked and
+          not titles_run(photos_cap.calls),
+          str((asked, photos_cap.calls)))
 
+    # -- one product selected: per-card is offered first -------------------
     asked.clear()
     opened_before = len(answers["opened_urls"])
-    fake_keys = ("https://shop.example", "ck_abc", "cs_secret")
     with patch.object(gui, "has_woo_credentials", lambda path=None: True), \
             patch.object(gui, "read_woo_credentials",
                          lambda path=None: fake_keys), \
-            patch.object(gui, "woo_get",
-                         lambda *a, **k: (200, [{"id": 42,
-                                                 "name": "1989 Gretzky",
-                                                 "sku": "SKU-1"}])):
+            patch.object(gui, "woo_get", lambda *a, **k: one_product):
         find_button(app, "Find the card...").invoke()
         app.update()
     opened = answers["opened_urls"][opened_before:]
     check("with API keys the product edit page opens directly",
           ("https://shop.example/wp-admin/post.php?post=42&action=edit", 2)
           in opened, str(opened))
+    check("a single product offers the per-card wiring first",
+          asked[:1] == ["Wire this card's photos?"], str(asked))
+    check("declining per-card offers the whole batch as its own choice",
+          "Wire the whole staged batch?" in asked, str(asked))
+    check("declining both offers rewires nothing",
+          not any("cs-image" in str(c.get("script", ""))
+                  for c in photos_cap.calls), str(photos_cap.calls))
 
-    split_cap = Capture()
-    app.runner.start = split_cap
-    app.cs_addon = True          # the plugin turns the wiring offer on
+    # -- accepting per-card passes the full product name -------------------
+    recorded_actions = []
+    real_tool_action = gui.TOOL_ACTION
+
+    def recording(action_id):
+        recorded_actions.append(action_id)
+        return real_tool_action(action_id)
+
+    def take_per_card(title, *a, **k):
+        asked.append(title)
+        return title == "Wire this card's photos?"
+
+    mb.askyesno = take_per_card
     asked.clear()
+    with patch.object(gui, "has_woo_credentials", lambda path=None: True), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: fake_keys), \
+            patch.object(gui, "woo_get", lambda *a, **k: one_product), \
+            patch.object(gui, "TOOL_ACTION", recording):
+        find_button(app, "Find the card...").invoke()
+        app.update()
+    check("per-card wiring resolves batch.photo_replace",
+          "batch.photo_replace" in recorded_actions and
+          "batch.photo_stage" not in recorded_actions,
+          str(recorded_actions))
+    check("per-card wiring passes the full product name, grade and all",
+          titles_run(photos_cap.calls) ==
+          ["1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6"],
+          str(photos_cap.calls))
 
+    # -- an older plugin is told to update, never widened to the batch -----
+    def no_replace(action_id):
+        recorded_actions.append(action_id)
+        return "" if action_id == "batch.photo_replace" else \
+            real_tool_action(action_id)
+
+    mb.askyesno = decline
+    asked.clear()
+    warnings_before = len(answers["shown"])
+    calls_before = len(photos_cap.calls)
+    with patch.object(gui, "has_woo_credentials", lambda path=None: True), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: fake_keys), \
+            patch.object(gui, "woo_get", lambda *a, **k: one_product), \
+            patch.object(gui, "TOOL_ACTION", no_replace):
+        find_button(app, "Find the card...").invoke()
+        app.update()
+    warnings = answers["shown"][warnings_before:]
+    check("a plugin without the replace action is told to update",
+          any(kind == "warn" and "1.0.14" in str(args)
+              for kind, args in warnings), str(warnings))
+    check("the whole batch is still offered, but as a separate choice",
+          "Wire this card's photos?" not in asked and
+          "Wire the whole staged batch?" in asked, str(asked))
+    check("no photo job starts when the replace action is unavailable",
+          len(photos_cap.calls) == calls_before, str(photos_cap.calls))
+
+    # -- after a split the two wiring choices stay distinct ----------------
     def take_split(title, *a, **k):
         asked.append(title)
         return title in ("Split a 9-card sheet?", "Is there a back scan?")
 
     mb.askyesno = take_split
+    asked.clear()
     gui.filedialog.askdirectory = lambda **k: str(gui.BASE)
     gui.filedialog.askopenfilename = lambda **k: str(gui.BASE / "sheet.jpg")
+    calls_before = len(photos_cap.calls)
     try:
         with patch.object(gui, "has_woo_credentials", lambda path=None: False), \
                 patch.object(gui, "find_pipeline_script",
@@ -628,17 +720,16 @@ def main():
             find_button(app, "Find the card...").invoke()
             app.update()
         check("the 9-card split runs with the front and back scans",
-              split_cap.last is not None and
-              split_cap.last["script"].endswith("card_pipeline.py") and
-              split_cap.last["args"][:1] == ["split"] and
-              "--front" in split_cap.last["args"] and
-              "--back" in split_cap.last["args"],
-              str(split_cap.last))
-        check("the CanadianShopper wiring is offered but not forced",
-              "Wire the CanadianShopper photos?" in asked, str(asked))
-        check("no CanadianShopper job ran when the offer was declined",
-              not any("cs-image-sync" in str(c.get("script", ""))
-                      for c in split_cap.calls), str(split_cap.calls))
+              photos_cap.last is not None and
+              photos_cap.last["script"].endswith("card_pipeline.py") and
+              photos_cap.last["args"][:1] == ["split"] and
+              "--front" in photos_cap.last["args"] and
+              "--back" in photos_cap.last["args"],
+              str(photos_cap.last))
+        check("after a split the whole batch is offered separately",
+              "Wire the whole staged batch?" in asked, str(asked))
+        check("no CanadianShopper job ran when both offers were declined",
+              len(photos_cap.calls) == calls_before + 1, str(photos_cap.calls))
     finally:
         app.cs_addon = photos_cs_addon
         app.settings["woo_site_url"] = saved_site_url

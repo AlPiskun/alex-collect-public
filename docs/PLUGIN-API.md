@@ -58,9 +58,28 @@ screens. The current core recognizes the following action IDs:
 - `catalog.zero_stock`
 - `batch.photo_stage`
 - `batch.photo_wire`
+- `batch.photo_replace`
 - `batch.photo_cache_repair`
 - `batch.pipeline_stage`
 - `marketplace.publish_drafts`
+
+The three photo actions are separate jobs even though one script usually
+backs them all, so the core resolves each one by ID rather than by filename:
+
+| Action | When the core calls it | Arguments |
+| --- | --- | --- |
+| `batch.photo_stage` | Preparing a batch (Square + host the photos) | `--mode prepare ...` |
+| `batch.photo_wire` | "Wire the photos", and the whole-batch offer in Replace a card's photos | `--mode wire --cookie-file ... --ready-dir ... --cache ...` |
+| `batch.photo_replace` | "Wire this card's photos?" in Replace a card's photos | the same `--mode wire` arguments plus `--title <full product name>` |
+
+`batch.photo_replace` is the narrow one. The core passes the selected
+product's full name, exactly as returned by the WooCommerce REST API, with no
+stripping of a trailing grade. The plugin must require exactly one staged CSV
+row and exactly one matching CanadianShopper listing, and must exit non-zero
+without writing when the match is missing or ambiguous. The core only offers
+this path when a single product was actually selected; if the action is
+unavailable (a plugin older than 1.0.14) it says so and leaves the whole-batch
+action as a separate, explicit choice rather than silently widening the job.
 
 The core invokes a tool only when a user selects the relevant action. For
 `batch.pipeline_stage`, the hook may define `run_stage(output_paths, args,
