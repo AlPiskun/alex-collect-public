@@ -88,6 +88,35 @@ def widget_texts(root):
     return texts
 
 
+def menu_entry_labels(menu):
+    """Top-level menu labels, skipping entries that have no "label" option.
+
+    A tk.Menu created without tearoff=0 carries an extra unlabelled entry at
+    index 0 (and separators have no label either), so entrycget(i, "label")
+    raises TclError for those.
+    """
+    labels = []
+    for index in range(menu.index("end") + 1):
+        if menu.type(index) in ("tearoff", "separator"):
+            continue
+        try:
+            labels.append(menu.entrycget(index, "label"))
+        except Exception:
+            continue
+    return labels
+
+
+def menu_entry_index(menu, label):
+    """The real index of a menu entry, so invoking it cannot drift."""
+    for index in range(menu.index("end") + 1):
+        try:
+            if menu.entrycget(index, "label") == label:
+                return index
+        except Exception:
+            continue
+    return None
+
+
 def find_button(root, text, exact=True):
     for w in walk(root):
         try:
@@ -590,20 +619,19 @@ def main():
     app.show_mode("menu")
     app.update()
     menubar = app.nametowidget(app.cget("menu"))
-    menu_labels = [menubar.entrycget(i, "label")
-                   for i in range(menubar.index("end") + 1)]
+    menu_labels = menu_entry_labels(menubar)
     check("settings, plugins, and logs are menu commands",
           menu_labels == ["View", "User Settings", "Plugins",
                           "Logs & reports", "Help"], str(menu_labels))
-    menubar.invoke(menu_labels.index("Plugins"))
+    menubar.invoke(menu_entry_index(menubar, "Plugins"))
     app.update()
     check("Plugins opens from its menu item",
           find_button(app, "Install from ZIP...") is not None)
-    menubar.invoke(menu_labels.index("Logs & reports"))
+    menubar.invoke(menu_entry_index(menubar, "Logs & reports"))
     app.update()
     check("Logs & reports opens from its menu item",
           find_button(app, "Open the GUI log (gui-log.txt)") is not None)
-    menubar.invoke(menu_labels.index("User Settings"))
+    menubar.invoke(menu_entry_index(menubar, "User Settings"))
     app.update()
     setting_labels = [w.cget("text") for w in walk(app)
                       if isinstance(w, gui.ttk.Label)]
@@ -1243,8 +1271,7 @@ def main():
                 "Archive listings at 0", "Re-point photos"} &
                labels))
     core_menu = app3.nametowidget(app3.cget("menu"))
-    core_menu_labels = [core_menu.entrycget(i, "label")
-                        for i in range(core_menu.index("end") + 1)]
+    core_menu_labels = menu_entry_labels(core_menu)
     check("Plugins and Logs & reports remain available in the menu",
           "Plugins" in core_menu_labels and "Logs & reports" in core_menu_labels,
           str(core_menu_labels))

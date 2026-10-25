@@ -1121,7 +1121,7 @@ class App(tk.Tk):
             pass
 
     def _build_menu(self):
-        m = tk.Menu(self)
+        m = tk.Menu(self, tearoff=0)
         view = tk.Menu(m, tearoff=0)
         self._mode_var = tk.StringVar(
             value=self.settings.get("startup_mode", "menu"))
