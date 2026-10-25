@@ -11,6 +11,7 @@ Root:
 docs/:
   facebook-feed-settings.md       Facebook workbook settings and template guide
   ebay-quicklist.md               eBay Quick List settings and manual workflow
+  TESTING.md                      how to run the checks on Windows before merging
 
 installer/:
   alexcollect.iss                 Inno Setup installer; Python prerequisite
