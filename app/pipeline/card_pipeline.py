@@ -2283,6 +2283,10 @@ def cmd_listing(args):
 
     front_prefix = getattr(args, "front_prefix", None)
     back_prefix = getattr(args, "back_prefix", None)
+    # parse_listing_text() and confirm_card_metadata() keep their own copies of
+    # these two, so the rename stage below has to bind them again.
+    auto_yes = getattr(args, "yes", False)
+    image_ext = getattr(args, "image_ext", IMG_FORMAT)
 
     if not front_prefix or not back_prefix:
         try:

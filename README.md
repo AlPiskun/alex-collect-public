@@ -68,6 +68,7 @@ python test-ebay-quicklist.py
 python test-pipeline-output-organization.py
 python test-category-plan.py
 python test-market-rerun.py
+python test-pipeline-listing.py
 python test-custom-ai-commands.py
 python ../installer/test-bundled-config.py
 ```

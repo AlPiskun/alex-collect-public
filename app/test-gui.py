@@ -1327,7 +1327,12 @@ def main():
           "PUBLISH" in draft_hint and "Photo wiring continues" in draft_hint)
     check("no hint for random text",
           gui._prompt_hint_for("hello world") is None)
+    # The draft-choice help only ships in the plugin-enabled text (DOCS); a
+    # clean clone has no plugin, so force it for this one panel build.
+    docs_cs_addon = app.cs_addon
+    app.cs_addon = True
     panel("pipeline")
+    app.cs_addon = docs_cs_addon
     pipeline_docs = " ".join(
         w.get("1.0", "end") for w in walk(app._mode_frame.inner)
         if isinstance(w, gui.tk.Text))
@@ -1524,6 +1529,8 @@ def main():
         shutil.rmtree(d, ignore_errors=True)
         (d / "pipeline" / "canadianshopper" / "tools").mkdir(parents=True)
         shutil.copyfile(shipped_pipe, d / "pipeline" / "card_pipeline.py")
+        shutil.copyfile(HERE / "pipeline" / "output_history.py",
+                        d / "pipeline" / "output_history.py")
         shutil.copyfile(HERE / "plugin_manager.py", d / "plugin_manager.py")
         shutil.copyfile(HERE / "browser_utils.py", d / "browser_utils.py")
         shutil.copyfile(HERE / "user_settings.py", d / "user_settings.py")
