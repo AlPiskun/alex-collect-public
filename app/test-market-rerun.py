@@ -217,6 +217,56 @@ def test_woocommerce_csv_written(root):
           history.is_file() and not older.exists() and newest.is_file())
 
 
+def test_facebook_opening(root):
+    """The Facebook step always offers the renamed images, and only once.
+
+    card_pipeline used to open OUTPUT_DIR inside the "media URL is
+    configured" branch, so a run without a WooCommerce site URL never
+    showed the folder holding the images it had just renamed.
+    """
+    folder = root / "output"
+    folder.mkdir()
+    media_page = "https://shop.example/wp-admin/media-new.php"
+
+    def run(media_url, no_browser=False):
+        opened_folders, opened_urls = [], []
+
+        def fake_open_folder(path):
+            opened_folders.append(path)
+            return True
+
+        def fake_open_in_browser(url, browser=None):
+            opened_urls.append(url)
+            return "Test browser"
+
+        with patch.object(card_pipeline, "site_admin_url",
+                          lambda page, settings=None: media_url), \
+                patch.object(card_pipeline, "OUTPUT_DIR", folder), \
+                patch.object(card_pipeline, "open_folder", fake_open_folder), \
+                patch.object(card_pipeline, "open_in_browser",
+                             fake_open_in_browser), \
+                patch("builtins.input", lambda prompt="": "n"), \
+                quiet():
+            card_pipeline.maybe_run_facebook(
+                make_args(facebook=True, no_browser=no_browser))
+        return opened_folders, opened_urls
+
+    folders, urls = run("")
+    check("a missing media URL still opens the image output folder",
+          folders == [folder] and urls == [],
+          "folders=%s urls=%s" % (folders, urls))
+
+    folders, urls = run(media_page)
+    check("a configured media URL opens the page and the folder exactly once",
+          folders == [folder] and urls == [media_page],
+          "folders=%s urls=%s" % (folders, urls))
+
+    folders, urls = run(media_page, no_browser=True)
+    check("--no-browser suppresses the media page and the folder",
+          folders == [] and urls == [],
+          "folders=%s urls=%s" % (folders, urls))
+
+
 def main():
     print("== 1. the AI text a re-run reuses ==")
     with tempfile.TemporaryDirectory() as td:
@@ -232,6 +282,10 @@ def main():
     print("== 4. the WooCommerce CSV is rebuilt ==")
     with tempfile.TemporaryDirectory() as td:
         test_woocommerce_csv_written(Path(td))
+
+    print("== 5. the Facebook step opens the image folder ==")
+    with tempfile.TemporaryDirectory() as td:
+        test_facebook_opening(Path(td))
 
     print()
     if FAIL:

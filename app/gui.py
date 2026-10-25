@@ -46,7 +46,7 @@ from user_settings import (default_scan_dir, load_user_settings,
                            normalize_web_url, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.36"
+VERSION = "2.37"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"

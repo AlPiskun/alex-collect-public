@@ -1483,17 +1483,21 @@ def maybe_run_facebook(args):
     print("  3. Confirm the products are published/live on your store.")
     print("\nThe Facebook feed only includes products already published.")
     media_url = site_admin_url("wp-admin/media-new.php", USER_SETTINGS)
-    if media_url and not getattr(args, "no_browser", False):
-        try:
-            browser_used = open_in_browser(media_url)
-            print("Opened the WordPress media upload page in %s: %s" %
-                  (browser_used or "your browser", media_url))
-        except Exception as exc:
-            print("Could not open the media upload page: %s" % exc)
+    if not media_url:
+        print("Set your WooCommerce site URL in User settings to open its media page.")
+    # The renamed images live in OUTPUT_DIR and have to be uploaded whatever
+    # the media page is, so opening the folder must not depend on media_url
+    # being configured. --no-browser still suppresses both.
+    if not getattr(args, "no_browser", False):
+        if media_url:
+            try:
+                browser_used = open_in_browser(media_url)
+                print("Opened the WordPress media upload page in %s: %s" %
+                      (browser_used or "your browser", media_url))
+            except Exception as exc:
+                print("Could not open the media upload page: %s" % exc)
         if open_folder(OUTPUT_DIR):
             print("Opened the image output folder: %s" % OUTPUT_DIR)
-    elif not media_url:
-        print("Set your WooCommerce site URL in User settings to open its media page.")
 
     while True:
         try:
