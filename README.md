@@ -1,4 +1,4 @@
-# Alex Collect 2.35
+# Alex Collect 2.36
 
 Alex Collect is a local desktop control panel for organizing a small trading-card selling workflow. It brings together the card pipeline, WooCommerce order inputs, a sale checklist, photo utilities, and optional plugins.
 
@@ -9,7 +9,7 @@ Alex Collect is a local desktop control panel for organizing a small trading-car
 - Configure the store URL, AI page, preferred browser, prompt preferences, custom AI commands, seller links, output/scanner folders, Facebook workbook fields, and eBay Quick List templates/defaults from **User Settings** in the menu bar.
 - Copy the built-in **Add grades to titles** and **No grades in titles** prompts, or create, edit, and remove custom AI command buttons in User Settings; hover notes clarify each command’s purpose.
 - Review the initial nine-card category plan in compact one-row-per-card output; the larger, screen-adaptive console keeps the confirmation visible without scrolling.
-- Use the compact task launcher with fixed-width buttons in clearly separated Sell, After a sale, and Photos sections; there is no extra headline above the buttons. Plugins and Logs & reports are direct menu items. Hover task buttons for short tips. The output pane always follows new output and entered replies so prompts remain visible.
+- Use the compact task launcher with fixed-width buttons in clearly separated Sell, After a sale, Photos, and Re-run a marketplace sections; there is no extra headline above the buttons. Plugins and Logs & reports are direct menu items. Hover task buttons for short tips. The output pane always follows new output and entered replies so prompts remain visible.
 - Marketplace results are separated into Facebook, WooCommerce, CanadianShopper, and eBay folders. Woo/CS CSVs and eBay Quick List pages roll older batches into history on their next output run. Use Logs & reports to preview/move existing root-level files. See `app/pipeline/OUTPUT-FILES.md` for the accumulation audit.
 - See `docs/facebook-feed-settings.md` for the Facebook workbook field templates and placeholder reference.
 - Open the configured WordPress media upload page during the listing pipeline, then open the Facebook workbook, its folder, and the configured Facebook review page after export.
@@ -17,6 +17,7 @@ Alex Collect is a local desktop control panel for organizing a small trading-car
 - Open the relevant seller pages after a sale; the core does not automatically change eBay or Facebook listings.
 - Square card photos for manual uploads.
 - The optional CanadianShopper plugin adds draft actions directly to the running pipeline: `v` previews all vendor drafts without changes and returns to the choices, `y` publishes ready drafts after the same `PUBLISH` confirmation used by the app, and `n` (or Enter) skips draft review/publishing. Photo wiring then continues without an extra post-import Enter prompt. The same **Preview drafts** and **Publish ready drafts** buttons remain in the card-pipeline and **Import / publish drafts** panels; the app button also requires its confirmation dialog. No bookmarklet is needed.
+- Re-run one marketplace at a time from **Re-run a marketplace**: rebuild just the WooCommerce CSV, the CanadianShopper CSV, the Facebook feed/export, or the eBay Quick List from the AI reply already on disk. Each button rebuilds only its own output and never moves or renames the images again, so a mistyped answer at one step no longer means repeating the whole batch. If no AI text is found the button asks for the file.
 - Install optional plugins from a local ZIP using **Plugins** in the menu bar.
 
 The core continues to work without any plugins. The CanadianShopper integration is maintained separately and is **not included** in this repository or the core download.
@@ -66,6 +67,7 @@ python test-facebook-delivery.py
 python test-ebay-quicklist.py
 python test-pipeline-output-organization.py
 python test-category-plan.py
+python test-market-rerun.py
 python test-custom-ai-commands.py
 python ../installer/test-bundled-config.py
 ```

@@ -46,7 +46,7 @@ from user_settings import (default_scan_dir, load_user_settings,
                            normalize_web_url, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.35"
+VERSION = "2.36"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -474,6 +474,65 @@ def _prompt_hint_for(text):
     return None
 
 
+MARKET_RERUNS = {
+    "woocommerce": (
+        "WooCommerce CSV",
+        "Rebuild woocommerce_import_<time>.csv from the AI text already on "
+        "disk. Images are not moved or renamed."),
+    "canadianshopper": (
+        "CanadianShopper CSV",
+        "Rebuild the CanadianShopper import CSV (and let the plugin stage "
+        "the photos) without repeating the AI or image steps."),
+    "facebook": (
+        "Facebook feed + xlsx",
+        "Refresh the live feed and write the Marketplace delta xlsx. No CSV "
+        "or images are rebuilt."),
+    "ebay": (
+        "eBay Quick List",
+        "Rebuild the eBay Quick List page from the same AI text."),
+}
+
+RERUN_NEEDS_CARDS = ("woocommerce", "canadianshopper", "ebay")
+
+
+def newest_ai_text(app, script=None):
+    """The newest AI listing reply a re-run can reuse, or None."""
+    script = script if script is not None else find_pipeline_script(
+        app.settings)
+    folders = []
+    if script is not None:
+        folders.append(script.parent)
+    try:
+        folders.append(Path(app.settings.get("pipeline_dir") or WORK))
+    except Exception:
+        pass
+    seen, found = set(), []
+    for folder in folders:
+        try:
+            candidates = [folder / "_card_input.txt"]
+            candidates += sorted(folder.glob("*_card_input*.txt"),
+                                 key=lambda p: _safe_mtime(p), reverse=True)
+        except OSError:
+            continue
+        for path in candidates:
+            if path in seen:
+                continue
+            seen.add(path)
+            try:
+                if path.is_file() and path.stat().st_size:
+                    found.append(path)
+            except OSError:
+                continue
+    return found[0] if found else None
+
+
+def _safe_mtime(path):
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def find_pipeline_script(settings):
     """Where card_pipeline.py lives: saved batch folder, the app's own
     pipeline folder, next to the tools folder (the Scan folder), or next
@@ -808,6 +867,25 @@ checklist - including "scan the replacement into your scan folder"
 - and opens the scan folder so you can start right away. The checklist
 then walks you through updating the photo on the website, on
 CanadianShopper (WirePhotos), and on eBay and Facebook."""
+
+DOCS["markets"] = """\
+Redo ONE marketplace without repeating the AI, split, or image steps.
+Each button rebuilds only its own output and leaves every other file
+alone - the renamed images are never moved or renamed again.
+
+* WooCommerce CSV - rebuilds woocommerce_import_<time>.csv from the AI
+  reply already saved on your PC.
+* CanadianShopper CSV - rebuilds the CanadianShopper import CSV; when the
+  plugin is installed it also stages the square front and back photos.
+* Facebook feed + xlsx - asks the publish question again, refreshes the
+  live feed, and writes the Marketplace delta xlsx. No CSV or image work.
+* eBay Quick List - rebuilds the Quick List page for the same cards.
+
+The panel checks for the AI text (the newest _card_input.txt the app
+wrote beside card_pipeline.py). Use "Choose a different AI text..." to
+point at another reply; if none is found the button asks for the file
+before it starts. Only the marketplace you choose is rewritten, so a
+mistyped answer at one step no longer means re-running the whole batch."""
 
 DOCS_CORE = {
     "cookie": """\
@@ -1543,12 +1621,13 @@ class App(tk.Tk):
 #  menu, the tabs view and the wizard pages.
 PANEL_ORDER = ["cookie", "pipeline", "combine", "stage", "importpanel",
                "wire", "rerun", "sold", "checklist", "zerostock", "square",
-               "newphotos", "logs", "plugins"]
+               "newphotos", "markets", "logs", "plugins"]
 GROUPS_FULL = [("Sell a new batch", ["pipeline", "combine", "stage",
                                      "importpanel", "wire"]),
                ("After a sale", ["sold", "checklist", "zerostock",
                                  "newphotos"]),
-               ("Photos", ["square", "rerun"])]
+               ("Photos", ["square", "rerun"]),
+               ("Re-run a marketplace", ["markets"])]
 
 
 def groups_for(has_cs):
@@ -1561,7 +1640,8 @@ def groups_for(has_cs):
         return GROUPS_FULL
     return [("Sell a new batch", ["pipeline", "combine", "importpanel"]),
             ("After a sale", ["sold", "checklist", "newphotos"]),
-            ("Photos", ["square"])]
+            ("Photos", ["square"]),
+            ("Re-run a marketplace", ["markets"])]
 TITLES = {
     "cookie": "User settings",
     "pipeline": "Run the card pipeline (new batch)",
@@ -1576,6 +1656,7 @@ TITLES = {
     "square": "Square up a photo (manual upload)",
     "plugins": "Plugins",
     "newphotos": "A card needs new photos",
+    "markets": "Re-run a marketplace step",
     "logs": "Logs and reports",
 }
 MENU_LABELS = {
@@ -1591,6 +1672,7 @@ MENU_LABELS = {
     "zerostock": "Archive listings at 0",
     "square": "Square up a photo",
     "newphotos": "New photos needed",
+    "markets": "Re-run a marketplace",
     "logs": "Logs & reports",
     "plugins": "Plugins",
 }
@@ -1608,6 +1690,7 @@ BLURBS = {
     "square": "Pad a photo onto a white square for a manual dashboard upload.",
     "plugins": "Install and manage optional plugins.",
     "newphotos": "Reminder rows + opens the scanner folder.",
+    "markets": "Redo just one marketplace (Woo, CanadianShopper, Facebook, eBay) without repeating the AI or image steps.",
     "logs": "Where every run is recorded.",
 }
 
@@ -2283,6 +2366,107 @@ def build_combine(parent, app):
                command=lambda: open_path(app.settings.get("pipeline_dir",
                                                           WORK))).pack(
         anchor="w")
+
+
+def _rerun_input_for(app, script, choose=False):
+    """The AI reply a re-run should reuse; asks for a file when none exists."""
+    text = None if choose else newest_ai_text(app, script)
+    if text is None:
+        picked = filedialog.askopenfilename(
+            title="Which AI listing text should the re-run use?",
+            initialdir=str(script.parent),
+            filetypes=[("AI listing text", "*.txt"), ("All files", "*.*")],
+            parent=app)
+        if not picked:
+            messagebox.showinfo(
+                "Re-run cancelled",
+                "This step rebuilds a CSV from the AI reply used for the "
+                "batch.\n\nRun the card pipeline once (it saves "
+                "_card_input.txt beside card_pipeline.py), or press the "
+                "button again and choose the text file.", parent=app)
+            return None
+        text = Path(picked)
+    return text
+
+
+def _rerun_market(app, market, input_path=None):
+    """Start `card_pipeline.py rerun --market <market>` for one marketplace."""
+    label = MARKET_RERUNS[market][0]
+    script = find_pipeline_script(app.settings)
+    if script is None:
+        messagebox.showwarning(
+            "Batch folder not found",
+            "I could not find card_pipeline.py. Set your batch folder in "
+            "User settings, then try this button again.", parent=app)
+        return
+    args = ["rerun", "--market", market]
+    if market in RERUN_NEEDS_CARDS:
+        text = input_path or _rerun_input_for(app, script)
+        if text is None:
+            return
+        args += ["--input", str(text)]
+    app.run_tool(str(script), args, "Re-run: " + label,
+                 cwd=str(script.parent))
+
+
+def build_markets(parent, app):
+    panel_header(parent, app, "markets")
+    box = ttk.Frame(parent)
+    box.pack(fill="x")
+    chosen = {"path": None}
+
+    status = ttk.Label(box, text="", style="Dim.TLabel", wraplength=780,
+                       justify="left")
+    status.pack(anchor="w", pady=(0, 4))
+
+    def refresh():
+        path = chosen["path"]
+        if path is None or not Path(path).is_file():
+            found = newest_ai_text(app)
+            path = str(found) if found else None
+            chosen["path"] = path
+        status.config(text=(
+            "AI listing text for re-runs: %s" % path if path else
+            "No AI listing text found yet. The CSV re-runs will ask for the "
+            "file; run the card pipeline once and it saves _card_input.txt "
+            "beside card_pipeline.py."))
+
+    def choose():
+        script = find_pipeline_script(app.settings)
+        if script is None:
+            messagebox.showwarning(
+                "Batch folder not found",
+                "I could not find card_pipeline.py. Set your batch folder "
+                "in User settings, then try again.", parent=app)
+            return
+        text = _rerun_input_for(app, script, choose=True)
+        if text is not None:
+            chosen["path"] = str(text)
+            refresh()
+
+    row = ttk.Frame(box)
+    row.pack(anchor="w", pady=2)
+    for index, market in enumerate(MARKET_RERUNS):
+        label, tip = MARKET_RERUNS[market]
+        button = ttk.Button(row, text=label,
+                            command=lambda m=market: _rerun_market(
+                                app, m, chosen["path"]))
+        button.pack(side="left", padx=(0 if index == 0 else 6, 0))
+        add_tooltip(button, tip)
+
+    tools = ttk.Frame(box)
+    tools.pack(anchor="w", pady=(6, 2))
+    ttk.Button(tools, text="Choose a different AI text...",
+               command=choose).pack(side="left")
+    ttk.Button(tools, text="Open the batch folder",
+               command=lambda: open_path(app.settings.get("pipeline_dir",
+                                                          str(WORK)))
+               ).pack(side="left", padx=8)
+    ttk.Label(box, text="Images are never moved or renamed here, and the "
+              "marketplace you do not choose is left untouched.",
+              style="Dim.TLabel", wraplength=780,
+              justify="left").pack(anchor="w", pady=(4, 0))
+    refresh()
 
 
 def canadianshopper_results_dir(app):
@@ -3073,6 +3257,7 @@ PANEL_BUILDERS = {
     "zerostock": build_zerostock,
     "square": build_square,
     "newphotos": build_newphotos,
+    "markets": build_markets,
     "logs": build_logs,
     "plugins": build_plugins,
 }

@@ -206,8 +206,9 @@ def main():
           18 <= int(gui.ttk.Style(app).lookup("TaskMenu.TButton", "width")) <= 30)
     task_sections = [w.cget("text") for w in walk(tasks_frame(app))
                      if isinstance(w, gui.ttk.LabelFrame)]
-    check("tasks are visually separated into Sell, After, and Photos sections",
-          task_sections == ["Sell a new batch", "After a sale", "Photos"],
+    check("tasks are separated into Sell, After, Photos, and Re-run sections",
+          task_sections == ["Sell a new batch", "After a sale", "Photos",
+                            "Re-run a marketplace"],
           str(task_sections))
 
     print("== 3. every panel builds from the task menu ==")
@@ -254,6 +255,48 @@ def main():
           "--apply" in cap.last["args"] and "type PUBLISH" in
           cap.last["confirm"], str(cap.last))
     app.cs_addon = original_cs_addon
+
+    original_newest = gui.newest_ai_text
+    fake_text = TMP / "_card_input.txt"
+    try:
+        gui.newest_ai_text = lambda *a, **k: fake_text
+        panel("markets")
+        shown_before = len(answers["shown"])
+        find_button(app, "Facebook feed + xlsx", exact=True).invoke()
+        check("facebook re-run launches the pipeline without an AI text",
+              cap.last["script"].endswith("card_pipeline.py") and
+              cap.last["args"] == ["rerun", "--market", "facebook"],
+              str(cap.last))
+        find_button(app, "WooCommerce CSV", exact=True).invoke()
+        check("woocommerce re-run reuses the AI text already on disk",
+              cap.last["args"] == ["rerun", "--market", "woocommerce",
+                                   "--input", str(fake_text)], str(cap.last))
+        find_button(app, "CanadianShopper CSV", exact=True).invoke()
+        check("canadianshopper re-run reuses the AI text already on disk",
+              cap.last["args"] == ["rerun", "--market", "canadianshopper",
+                                   "--input", str(fake_text)], str(cap.last))
+        find_button(app, "eBay Quick List", exact=True).invoke()
+        check("ebay re-run reuses the AI text already on disk",
+              cap.last["args"] == ["rerun", "--market", "ebay",
+                                   "--input", str(fake_text)], str(cap.last))
+        check("re-run buttons stay quiet when the AI text is known",
+              len(answers["shown"]) == shown_before,
+              str(answers["shown"][shown_before:]))
+
+        gui.newest_ai_text = lambda *a, **k: None
+        panel("markets")
+        before = len(cap.calls)
+        find_button(app, "WooCommerce CSV", exact=True).invoke()
+        check("a re-run with no AI text asks for the file instead",
+              len(cap.calls) == before and answers["shown"] and
+              answers["shown"][-1][0] == "info", str(answers["shown"][-1:]))
+        find_button(app, "Facebook feed + xlsx", exact=True).invoke()
+        check("facebook re-runs never ask for the AI text",
+              len(cap.calls) == before + 1 and
+              cap.last["args"] == ["rerun", "--market", "facebook"],
+              str(cap.last))
+    finally:
+        gui.newest_ai_text = original_newest
 
     panel("combine")
     find_button(app, "Preview (--dry-run)").invoke()
