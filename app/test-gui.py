@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -176,7 +177,7 @@ def main():
     preserved = {}
     for path in (gui.CHECKLIST, gui.SETTINGS_FILE, gui.LOG_FILE,
                  gui.CS_COOKIE_FILE, gui.BASE / "woo-keys.txt",
-                 gui.BASE / "sold-cards.txt", gui.BASE / "needs-photos.txt"):
+                 gui.BASE / "sold-cards.txt"):
         preserved[path] = path.read_bytes() if path.is_file() else None
 
     # Use an isolated test plugin directory. The test must not copy files into
@@ -532,24 +533,90 @@ def main():
               cap.last["on_done"] is None, str(cap.last))
     app.cs_addon = sold_cs_addon
 
-    print("== 6. a card needs new photos ==")
+    print("== 6. replacing one card's photos ==")
+    app.settings["woo_site_url"] = "https://shop.example"
     panel("newphotos")
-    find_button(app, "Type the cards...").invoke()
-    app.update()
-    editor = next((w for w in app.winfo_children()
-                   if isinstance(w, gui.tk.Toplevel) and "photos" in
-                   w.title().lower()), None)
-    check("photo editor opens", editor is not None)
-    if editor:
-        txt = next(w for w in walk(editor) if isinstance(w, gui.tk.Text))
-        txt.insert("1.0", "1989 O-Pee-Chee Gretzky")
-        find_button(editor, "Save and use this list").invoke()
+    entries = [w for w in walk(tasks_frame(app))
+               if isinstance(w, gui.ttk.Entry)]
+    check("the photos panel takes a card name or SKU",
+          len(entries) >= 1, str(entries))
+    check("the old one-title-per-line reminder is gone",
+          find_button(app, "Type the cards...") is None)
+    entry = entries[0]
+    asked = []
+
+    def decline(title, *a, **k):
+        asked.append(title)
+        return False          # no key setup, no split, no photo re-wiring
+
+    mb.askyesno = decline
+    opened_before = len(answers["opened_urls"])
+    entry.delete(0, "end")
+    entry.insert(0, "1989 O-Pee-Chee Gretzky")
+    with patch.object(gui, "has_woo_credentials", lambda path=None: False), \
+            patch.object(gui, "open_woo_keys_file",
+                         lambda *a, **k: asked.append("opened keys")):
+        find_button(app, "Find the card...").invoke()
         app.update()
-        a = cap.last
-        check("photo reminder args", a["args"] == [
-            "--images-file", str(gui.BASE / "needs-photos.txt"),
-            "--scan-dir", app.settings["scan_dir"],
-            "--checklist", str(gui.CHECKLIST)], str(a["args"]))
+        check("without API keys the app offers the one-time key setup",
+              "Save your website API keys?" in asked, str(asked))
+        check("declining the key setup opens no keys file",
+              "opened keys" not in asked, str(asked))
+    opened = answers["opened_urls"][opened_before:]
+    check("the filtered product list opens instead of a direct edit page",
+          ("https://shop.example/wp-admin/edit.php?post_type=product&s="
+           "1989+O-Pee-Chee+Gretzky", 2) in opened, str(opened))
+    check("the other marketplace seller pages open too",
+          any("ebay.ca" in url for url, _ in opened) and
+          any("facebook.com" in url for url, _ in opened), str(opened))
+
+    asked.clear()
+    opened_before = len(answers["opened_urls"])
+    fake_keys = ("https://shop.example", "ck_abc", "cs_secret")
+    with patch.object(gui, "has_woo_credentials", lambda path=None: True), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: fake_keys), \
+            patch.object(gui, "woo_get",
+                         lambda *a, **k: (200, [{"id": 42,
+                                                 "name": "1989 Gretzky",
+                                                 "sku": "SKU-1"}])):
+        find_button(app, "Find the card...").invoke()
+        app.update()
+    opened = answers["opened_urls"][opened_before:]
+    check("with API keys the product edit page opens directly",
+          ("https://shop.example/wp-admin/post.php?post=42&action=edit", 2)
+          in opened, str(opened))
+
+    cap = Capture()
+    app.runner.start = cap
+    asked.clear()
+
+    def take_split(title, *a, **k):
+        asked.append(title)
+        return title in ("Split a 9-card sheet?", "Is there a back scan?")
+
+    mb.askyesno = take_split
+    gui.filedialog.askdirectory = lambda **k: str(gui.BASE)
+    gui.filedialog.askopenfilename = lambda **k: str(gui.BASE / "sheet.jpg")
+    with patch.object(gui, "has_woo_credentials", lambda path=None: False), \
+            patch.object(gui, "find_pipeline_script",
+                         lambda settings: Path("C:/pipe/card_pipeline.py")):
+        find_button(app, "Find the card...").invoke()
+        app.update()
+    check("the 9-card split runs with the front and back scans",
+          cap.last is not None and
+          cap.last["script"].endswith("card_pipeline.py") and
+          cap.last["args"][:1] == ["split"] and
+          "--front" in cap.last["args"] and "--back" in cap.last["args"],
+          str(cap.last))
+    check("the CanadianShopper wiring is offered but not forced",
+          "Wire the CanadianShopper photos?" in asked, str(asked))
+
+    # every other section expects the plain stubs back
+    mb.askyesno = lambda *a, **k: answers["askyesno"]
+    gui.filedialog.askdirectory = lambda **k: ""
+    gui.filedialog.askopenfilename = lambda **k: ""
+    app.runner = gui.Runner(app)
 
     print("== 7. the checklist viewer ==")
     gui.CHECKLIST.write_text(

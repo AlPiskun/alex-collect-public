@@ -31,7 +31,7 @@ WHAT IT DOES
           sold-cards-checklist.csv      put an x in the "done" column
     * shows the outstanding list every time you run ANY of the tools in this
       folder (the reminder you asked for)
-    * reminds you to scan replacement photos and can open the scan folder
+    * leaves replacement photos to the control panel's Photos section
 
 TYPICAL USE
     python3 sold-everywhere.py --woo-orders-csv orders.csv
@@ -39,7 +39,6 @@ TYPICAL USE
     python3 sold-everywhere.py --list sold.txt --cs          # let it fix CS too
     python3 sold-everywhere.py --status                      # what is outstanding
     python3 sold-everywhere.py --done 3,5                    # tick rows 3 and 5
-    python3 sold-everywhere.py --images-file needs-photos.txt
     python3 sold-everywhere.py --banner                      # one-line nudge (tools)
 """
 
@@ -174,12 +173,6 @@ def action_for(channel, qty, last_left, scan_dir):
     if channel == "website":
         return ("The order did not come from your website - reduce the stock there"
                 " (Products -> search this title) so it cannot be bought twice.")
-    if channel == "photos":
-        return "Scan the replacement photo(s) into %s" % scan_dir
-    if channel == "photos-all":
-        return ("Replace the photos everywhere: website product media,"
-                " CanadianShopper (run WirePhotos.bat), the eBay listing, and the"
-                " Facebook listing.")
     return ""
 
 
@@ -207,11 +200,6 @@ def channel_rows(card, qty, last_left, sold_on, ref, scan_dir):
         rows.append(make_row(card, "facebook",
                              action_for("facebook", qty, last_left, scan_dir), FB_LINK, ref))
     return rows
-
-
-def photo_rows(card, ref, scan_dir):
-    return [make_row(card, "photos", action_for("photos", 1, False, scan_dir), "", ref),
-            make_row(card, "photos-all", action_for("photos-all", 1, False, scan_dir), "", ref)]
 
 
 def merge_rows(existing, new_rows):
@@ -438,7 +426,6 @@ examples
   python3 sold-everywhere.py --woo-orders-csv orders.csv --cs  let CS be done for me
   python3 sold-everywhere.py --status
   python3 sold-everywhere.py --done 3,5
-  python3 sold-everywhere.py --images-file newphotos.txt
   python3 sold-everywhere.py --banner
 """)
     ap.add_argument("--list", default="", help="text file: one card per line,"
@@ -464,8 +451,6 @@ examples
                     help="path to the optional plugin's stock-update tool")
     ap.add_argument("--gui-dialogs", action="store_true",
                     help="use Tk dialogs for CanadianShopper matching and write confirmation")
-    ap.add_argument("--images-file", default="",
-                    help="cards that need new photos: one title per line")
     ap.add_argument("--scan-dir", default=DEFAULT_SCAN_DIR,
                     help="where your scanner drops the files")
     ap.add_argument("--done", default="", help="tick these checklist numbers (or 'all')")
@@ -544,18 +529,6 @@ examples
                                args.scan_dir)
             created += merge_rows(rows, new)
 
-    if args.images_file:
-        if not Path(args.images_file).is_file():
-            raise SystemExit("! no photo list at %s - make the file first (one card"
-                             " title per line)." % args.images_file)
-        text = Path(args.images_file).read_text(encoding="utf-8-sig", errors="replace")
-        for line in text.splitlines():
-            line = line.strip()
-            if not line or is_sale_comment(line):
-                continue
-            created += merge_rows(rows, photo_rows(line, "photos", args.scan_dir))
-        print("photos    : rows for the cards in %s" % Path(args.images_file).name)
-
     # ---- CanadianShopper leg -------------------------------------------------
     if args.cs and (args.list or args.woo_orders_csv or args.woo_keys or args.woo_api):
         failed = run_cs(args, print, created)
@@ -578,7 +551,7 @@ examples
         for r in created:
             print("   %-16s %-40s %s" % (r["channel"], (r["card"] or "")[:40],
                                          r["what to do"][:64]))
-    elif sales or args.images_file:
+    elif sales:
         print("")
         print("  Nothing new - those cards are already on the checklist.")
 
@@ -590,8 +563,6 @@ examples
     print("-" * 74)
     print("  checklist : %s" % args.checklist)
     print("  tick off  : SoldEverywhere.bat -> 4, or put x in the done column")
-    if any(r.get("channel", "").startswith("photos") for r in created):
-        print("  photos    : scan into %s" % args.scan_dir)
     print("")
     return 0
 

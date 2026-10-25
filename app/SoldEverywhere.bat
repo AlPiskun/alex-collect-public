@@ -30,7 +30,6 @@ set "EVERY=%TOOLS%\sold-everywhere.py"
 set "SOLD=%TOOLS%\sold-cards.py"
 set "CHECK=%TOOLS%\sold-cards-checklist.csv"
 set "LISTTXT=%TOOLS%\sold-cards.txt"
-set "PHOTOS=%TOOLS%\needs-photos.txt"
 set "KEYS=%TOOLS%\woo-keys.txt"
 set "COOKIE=%TOOLS%\cookie.txt"
 set "SCANDIR=%USERPROFILE%\Pictures\Scan"
@@ -74,17 +73,15 @@ echo   1  It sold on MY WEBSITE      ^(type it / orders CSV / API key^)
 echo   2  It sold SOMEWHERE ELSE     ^(Facebook, eBay, in person^)
 echo   3  What is still outstanding  ^(the checklist^)
 echo   4  I did some of them - tick them off
-echo   5  A card needs new photos    ^(scan reminder^)
-echo   6  CanadianShopper: archive every listing already at 0
+echo   5  CanadianShopper: archive every listing already at 0
 echo.
 set "CHOICE="
-set /p "CHOICE=  Type 1-6 and press Enter: "
+set /p "CHOICE=  Type 1-5 and press Enter: "
 if "%CHOICE%"=="1" goto mode_site
 if "%CHOICE%"=="2" goto mode_else
 if "%CHOICE%"=="3" goto mode_status
 if "%CHOICE%"=="4" goto mode_done
-if "%CHOICE%"=="5" goto mode_photos
-if "%CHOICE%"=="6" goto mode_zero
+if "%CHOICE%"=="5" goto mode_zero
 echo   Not one of the numbers - nothing done.
 echo.
 pause
@@ -259,44 +256,7 @@ pause
 exit /b %RC%
 
 REM ==========================================================================
-REM  5 - a card needs new photos
-REM ==========================================================================
-:mode_photos
-if exist "%PHOTOS%" goto photos_edit
->"%PHOTOS%" echo # Cards that need new photos. One per line, spelled as on the sites.
->>"%PHOTOS%" echo # Save, close Notepad, and the reminder rows are made for you.
->>"%PHOTOS%" echo.
-:photos_edit
-echo.
-echo   Opening the photo list. Type the card^(s^) that need new scans, save and
-echo   close Notepad.
-echo.
-start /wait notepad "%PHOTOS%"
-%PY% -u "%EVERY%" --images-file "%PHOTOS%" --scan-dir "%SCANDIR%" --checklist "%CHECK%" > "%OUT%" 2>&1
-set "RC=%ERRORLEVEL%"
-type "%OUT%"
->>"%LOG%" echo ---- photos run exit %RC% ----
-type "%OUT%" >>"%LOG%"
-echo   Scan the new photos with your normal scanner software - the files land in
-echo   the folder being opened now. Then run the usual pipeline ^(rerun.bat^) and
-echo   re-upload to the sites.
-echo.
-if not exist "%SCANDIR%" goto no_scandir
-start "" explorer "%SCANDIR%"
-echo.
-pause
-exit /b 0
-
-:no_scandir
-echo   NOTE: that folder was not found:  %SCANDIR%
-echo   Edit the SCANDIR line at the top of this file if your scans go somewhere
-echo   else.
-echo.
-pause
-exit /b 0
-
-REM ==========================================================================
-REM  6 - archive everything at 0 on CanadianShopper
+REM  5 - archive everything at 0 on CanadianShopper
 REM ==========================================================================
 :mode_zero
 call :need_cookie
