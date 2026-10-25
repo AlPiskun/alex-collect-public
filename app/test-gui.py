@@ -72,6 +72,22 @@ def walk(widget):
         yield from walk(c)
 
 
+def widget_texts(root):
+    """Every widget's 'text' option, skipping widgets that have none.
+
+    walk() visits plain containers too, and a ttk.Frame has no "text"
+    option - cget("text") on it raises TclError. Every widget has a cget
+    attribute, so guarding on hasattr() is not enough.
+    """
+    texts = []
+    for w in walk(root):
+        try:
+            texts.append(str(w.cget("text")))
+        except Exception:
+            continue
+    return texts
+
+
 def find_button(root, text, exact=True):
     for w in walk(root):
         try:
@@ -190,8 +206,7 @@ def main():
               len(app._mode_frame.winfo_children()) > 0)
     app.show_mode("menu")
     app.update()
-    task_text = [str(w.cget("text")) for w in walk(tasks_frame(app))
-                 if hasattr(w, "cget")]
+    task_text = widget_texts(tasks_frame(app))
     check("task launcher omits the removed heading and utility cards",
           "What do you want to do today?" not in task_text and
           "User settings" not in task_text and "Plugins" not in task_text and
