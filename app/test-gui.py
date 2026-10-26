@@ -623,7 +623,13 @@ def main():
                                       "gretzky-front.webp"},
                                      {"id": 8, "src": "https://shop.example/"
                                       "wp-content/uploads/2026/10/"
-                                      "gretzky-back.webp"}]}])
+                                      "gretzky-back.webp"},
+                                     #  A third row that is neither a front nor
+                                     #  a back: replacing the pair has to leave
+                                     #  it alone, and this is the only proof.
+                                     {"id": 9, "src": "https://shop.example/"
+                                      "wp-content/uploads/2026/10/"
+                                      "certificate.webp"}]}])
     FAKE_KEYS = ("https://shop.example", "ck_abc", "cs_secret")
     NO_WORDPRESS = ("https://shop.example", "", "")
     WITH_WORDPRESS = ("https://shop.example", "owner",
@@ -2181,7 +2187,10 @@ def main():
     widgets = list(walk(tasks_frame(app)))
 
     def by_text(label):
-        return next((w for w in widgets if w.cget("text") == label), None)
+        #  Not every widget has a -text option: a ttk.Frame raises TclError on
+        #  cget("text"). find_button() already guards for that, and it only
+        #  returns widgets that can actually be pressed.
+        return find_button(tasks_frame(app), label)
 
     #  Every stub-less Tk widget is a real one here, so the Text box is found
     #  by class rather than by its options.
