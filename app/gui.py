@@ -44,15 +44,17 @@ from browser_utils import available_browsers, browser_label, open_urls as launch
 from plugin_manager import (PluginError, PluginManager,
                             version_at_least)
 from process_utils import no_window_kwargs
+import woo_media
 from sale_inputs import woo_get
 from user_settings import (default_scan_dir, has_woo_credentials,
-                           load_user_settings, marketplace_seller_urls,
-                           normalize_web_url, product_edit_url,
-                           product_search_url, read_woo_credentials,
+                           has_wordpress_credentials, load_user_settings,
+                           marketplace_seller_urls, normalize_web_url,
+                           product_edit_url, product_search_url,
+                           read_woo_credentials, read_wordpress_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.41"
+VERSION = "2.42"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -2316,8 +2318,11 @@ def open_woo_keys_file(app, current_site_url=""):
             path.write_text(text, encoding="utf-8")
         else:
             path.write_text((normalize_web_url(current_site_url) or "") +
-                            "\nck_replace_with_read_only_consumer_key\n"
-                            "cs_replace_with_read_only_consumer_secret\n",
+                            "\nck_replace_with_your_consumer_key\n"
+                            "cs_replace_with_your_consumer_secret\n"
+                            "# Optional lines 4 and 5 for uploading photos:\n"
+                            "wp_replace_with_your_wordpress_username\n"
+                            "wp_replace_with_your_application_password\n",
                             encoding="utf-8")
     # Credentials belong to this Windows account only.
     restrict_file_permissions(path)
@@ -3338,6 +3343,73 @@ def build_newphotos(parent, app):
         folder.mkdir(parents=True, exist_ok=True)
         return folder
 
+    def upload_to_site(app, product, image_path):
+        """Upload the replacement and make it the product's main photo.
+
+        Returns True when the website was updated. Nothing is sent when the
+        site, the keys, or the user's consent are missing.
+        """
+        site, key, secret = read_woo_credentials()
+        wp_site, username, app_password = read_wordpress_credentials()
+        if not (key and secret):
+            return False
+        if not (username and app_password):
+            #  Only ask once per session; a repeated nag is worse than a
+            #  manual upload, and the offer is still here next time the app
+            #  starts.
+            if not getattr(app, "_wp_upload_asked", False):
+                app._wp_upload_asked = True
+                if messagebox.askyesno(
+                        "Upload replacements straight from here?",
+                        "Alex Collect can upload the new photo and set it on "
+                        "the product by itself.\n\nThat needs two more lines "
+                        "in woo-keys.txt: your WordPress username and an "
+                        "Application Password (Users > Profile > Application "
+                        "Passwords).\n\nAdd them now? The file is private and "
+                        "only this account can read it.", parent=app):
+                    open_woo_keys_file(app, site)
+            return False
+        base = woo_media.site_root(wp_site or site)
+        if not base:
+            return False
+        if not woo_media.is_https(base):
+            messagebox.showwarning(
+                "HTTPS needed",
+                "WordPress only accepts an Application Password over HTTPS, "
+                "and the saved address is %s.\n\nThe image is saved; upload "
+                "it from the media library instead." % base, parent=app)
+            return False
+
+        #  Yes means "replace the gallery", which is the opposite of keeping
+        #  it - an easy inversion, so the name says what the answer means.
+        remove_existing = messagebox.askyesnocancel(
+            "Put this photo on the website?",
+            "Upload %s and make it the main photo for:\n\n%s\n\n"
+            "Yes - and remove the photos already there\n"
+            "No - and keep the photos already there\n"
+            "Cancel - do not upload" % (image_path.name, product.get("name")),
+            parent=app)
+        if remove_existing is None:
+            return False
+        status("Uploading %s..." % image_path.name)
+        try:
+            result = woo_media.replace_product_photo(
+                base, key, secret, username, app_password, product,
+                image_path, keep_existing=not remove_existing)
+        except woo_media.MediaError as exc:
+            (messagebox.showwarning if exc.partial else messagebox.showerror)(
+                "The photo was not put on the product", exc.message, parent=app)
+            app.console_line("Photo upload: %s" % exc.message, "err")
+            status("The photo is saved, but the website was not updated.")
+            return False
+        attachment = result["attachment"]
+        app.console_line("Uploaded %s to the website (media ID %s)." %
+                         (image_path.name, attachment["id"]), "ok")
+        status("The website now shows %s." % image_path.name)
+        if attachment.get("source_url"):
+            app.console_line(attachment["source_url"], "dim")
+        return True
+
     def single_product(product):
         """True when one real product was picked, not a search fallback."""
         return bool(isinstance(product, dict) and product.get("id") and
@@ -3482,6 +3554,11 @@ def build_newphotos(parent, app):
                 messagebox.showwarning("Back image not saved",
                                        "%s" % exc, parent=app)
         status("Saved %s" % saved.name)
+
+        # The website photo comes first: the shop is what customers buy from,
+        # and the marketplace copies are wired from the same card afterwards.
+        if single_product(product):
+            upload_to_site(app, product, saved)
 
         if getattr(app, "cs_addon", True) and photo_replace_available():
             if messagebox.askyesno(

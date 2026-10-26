@@ -89,6 +89,7 @@ python test-pipeline-listing.py
 python test-ai-prompts.py
 python test-process-utils.py
 python test-photo-replace.py
+python test-woo-media.py
 python ..\installer\test-bundled-config.py
 ```
 
@@ -106,6 +107,7 @@ Notes:
 | `test-ai-prompts.py` | nothing | The shipped AI prompt files, read without Tk. |
 | `test-process-utils.py` | nothing | No stray console windows; checks flags only. |
 | `test-photo-replace.py` | Pillow | Sheet split, empty-slot detection, replacement naming. |
+| `test-woo-media.py` | none - no network | The upload request, its refusals, and that a half-finished replacement is reported as one. |
 | `..\installer\test-bundled-config.py` | nothing | Checks the version/filename/SHA pins agree. |
 
 Every script must end in `PASS` / `OK` / `ALL ... PASSED` and exit 0.

@@ -12,6 +12,7 @@
 # ===========================================================================
 
 import atexit
+import contextlib
 import json
 import os
 import shutil
@@ -562,8 +563,9 @@ def main():
     app.cs_addon = sold_cs_addon
 
     print("== 6. replacing one card's photos ==")
-    # Later sections keep using the section-4 recorder, so this one gets its
-    # own name and hands `cap` back when it is done.
+    # Every block below runs through photo_env() so this suite can never reach
+    # a real shop: on a developer's machine woo-keys.txt exists, and an
+    # unpatched read would upload the test image to the live site.
     saved_site_url = app.settings.get("woo_site_url", "")
     saved_pipeline = app.settings.get("pipeline_dir", "")
     photos_cs_addon = app.cs_addon
@@ -573,6 +575,7 @@ def main():
     app.settings["woo_site_url"] = "https://shop.example"
     app.settings["pipeline_dir"] = str(replace_root)
     app.cs_addon = True          # the plugin turns the wiring offers on
+    app._wp_upload_asked = True  # no offer to set up keys unless asked for
     panel("newphotos")
     entries = [w for w in walk(tasks_frame(app))
                if isinstance(w, gui.ttk.Entry)]
@@ -585,6 +588,52 @@ def main():
 
     photos_cap = Capture()
     app.runner.start = photos_cap
+    uploads = []
+    opened_keys = []
+
+    def fake_upload(site, key, secret, username, password, product,
+                    image_path, keep_existing=True, **rest):
+        uploads.append({"site": site, "key": key, "username": username,
+                        "password": password, "product": product.get("id"),
+                        "image": Path(image_path).name,
+                        "keep": keep_existing,
+                        "plugin_calls_so_far": len(photos_cap.calls)})
+        return {"attachment": {"id": 901, "source_url":
+                               "https://shop.example/uploads/new.webp"},
+                "product": {"id": 42}, "image_ids": [901]}
+
+    ONE_PRODUCT = (200, [{"id": 42,
+                          "name": "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6",
+                          "sku": "SKU-1",
+                          "images": [{"id": 7, "src": "https://shop.example/"
+                                      "wp-content/uploads/2026/10/"
+                                      "gretzky-front.webp"},
+                                     {"id": 8, "src": "https://shop.example/"
+                                      "wp-content/uploads/2026/10/"
+                                      "gretzky-back.webp"}]}])
+    FAKE_KEYS = ("https://shop.example", "ck_abc", "cs_secret")
+    NO_WORDPRESS = ("https://shop.example", "", "")
+    WITH_WORDPRESS = ("https://shop.example", "owner",
+                      "abcd EFGH ijkl MNOP")
+
+    @contextlib.contextmanager
+    def photo_patch(**kwargs):
+        with patch.object(gui, "has_woo_credentials",
+                          lambda path=None: True), \
+                patch.object(gui, "read_woo_credentials",
+                             lambda path=None: FAKE_KEYS), \
+                patch.object(gui, "read_wordpress_credentials",
+                             lambda path=None: kwargs.get("wordpress",
+                                                          NO_WORDPRESS)), \
+                patch.object(gui, "open_woo_keys_file",
+                             lambda a, site="": opened_keys.append(site)), \
+                patch.object(gui, "woo_get", lambda *a, **k: ONE_PRODUCT):
+            if kwargs.get("upload"):
+                with patch.object(gui.woo_media, "replace_product_photo",
+                                  kwargs["upload"]):
+                    yield
+            else:
+                yield
 
     def decline(title, *a, **k):
         asked.append(title)
@@ -625,14 +674,6 @@ def main():
     app.wait_window = auto_pick
     gui.filedialog.askopenfilename = lambda **k: str(sheet)
 
-    fake_keys = ("https://shop.example", "ck_abc", "cs_secret")
-    one_product = (200, [{"id": 42,
-                          "name": "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6",
-                          "sku": "SKU-1",
-                          "images": [{"id": 7, "src": "https://shop.example/"
-                                      "wp-content/uploads/2026/10/"
-                                      "gretzky-front.webp"}]}])
-
     # -- a search-page fallback must never run the per-card action ----------
     mb.askyesno = decline
     opened_before = len(answers["opened_urls"])
@@ -660,10 +701,7 @@ def main():
     opened_before = len(answers["opened_urls"])
     app.runner.start = photos_cap
     photos_cap.calls.clear()
-    with patch.object(gui, "has_woo_credentials", lambda path=None: True), \
-            patch.object(gui, "read_woo_credentials",
-                         lambda path=None: fake_keys), \
-            patch.object(gui, "woo_get", lambda *a, **k: one_product):
+    with photo_patch():
         find_button(app, "Find the card...").invoke()
         app.update()
     opened = answers["opened_urls"][opened_before:]
@@ -686,19 +724,105 @@ def main():
     check("no staged CSV or cache arguments are sent",
           args is not None and "--ready-dir" not in args and
           "--cache" not in args, str(args))
+    check("without an Application Password nothing is uploaded",
+          not uploads, str(uploads))
 
     # -- a second run must not overwrite the first --------------------------
     mb.askyesno = lambda title, *a, **k: True
-    with patch.object(gui, "has_woo_credentials", lambda path=None: True), \
-            patch.object(gui, "read_woo_credentials",
-                         lambda path=None: fake_keys), \
-            patch.object(gui, "woo_get", lambda *a, **k: one_product):
+    with photo_patch():
         find_button(app, "Find the card...").invoke()
         app.update()
     check("a second replacement counts on to -2",
           (replace_root / "replacements" / "gretzky-front-2.webp").is_file(),
           str(sorted(p.name for p in
                      (replace_root / "replacements").glob("*.webp"))))
+
+    # -- the website photo comes first, then the plugin ---------------------
+    photos_cap.calls.clear()
+    uploads.clear()
+    answers["next_choice"] = False        # No = keep the existing photos
+    mb.askyesno = lambda title, *a, **k: title == \
+        "Replace the CanadianShopper photos?"
+    with photo_patch(wordpress=WITH_WORDPRESS, upload=fake_upload):
+        find_button(app, "Find the card...").invoke()
+        app.update()
+    check("the replacement is uploaded to the website", len(uploads) == 1,
+          str(uploads))
+    if uploads:
+        sent = uploads[0]
+        check("it uses the saved site and WordPress user",
+              sent["site"] == "https://shop.example" and
+              sent["username"] == "owner", str(sent))
+        check("it names the image that was just saved",
+              sent["image"] == "gretzky-front-3.webp", str(sent))
+        check("answering No keeps the existing photos",
+              sent["keep"] is True, str(sent))
+        check("the website is updated before the plugin is called",
+              sent["plugin_calls_so_far"] == 0, str(sent))
+    check("the plugin is still called afterwards",
+          replacement_args(photos_cap.calls) is not None,
+          str(photos_cap.calls))
+
+    photos_cap.calls.clear()
+    uploads.clear()
+    answers["next_choice"] = True         # Yes = replace the gallery
+    with photo_patch(wordpress=WITH_WORDPRESS, upload=fake_upload):
+        find_button(app, "Find the card...").invoke()
+        app.update()
+    check("answering Yes asks for the old photos to be dropped",
+          uploads and uploads[0]["keep"] is False, str(uploads))
+
+    photos_cap.calls.clear()
+    uploads.clear()
+    answers["next_choice"] = None         # Cancel = leave the shop alone
+    with photo_patch(wordpress=WITH_WORDPRESS, upload=fake_upload):
+        find_button(app, "Find the card...").invoke()
+        app.update()
+    check("cancelling uploads nothing", not uploads, str(uploads))
+    check("cancelling does not skip the plugin step",
+          replacement_args(photos_cap.calls) is not None,
+          str(photos_cap.calls))
+
+    # -- an http site is refused before anything is sent -------------------
+    uploads.clear()
+    saved_site = app.settings["woo_site_url"]
+    app.settings["woo_site_url"] = "http://shop.example"
+    warnings_before = len(answers["shown"])
+    answers["next_choice"] = False
+    with photo_patch(wordpress=("http://shop.example", "owner", "abcd EFGH"),
+                     upload=fake_upload):
+        find_button(app, "Find the card...").invoke()
+        app.update()
+    check("an http site is never uploaded to", not uploads, str(uploads))
+    check("the user is told HTTPS is required",
+          any(kind == "warn" and "HTTPS" in str(payload)
+              for kind, payload in answers["shown"][warnings_before:]),
+          str(answers["shown"][warnings_before:]))
+    app.settings["woo_site_url"] = saved_site
+
+    # -- no Application Password: offer once, never upload anyway ----------
+    app._wp_upload_asked = False
+    opened_keys.clear()
+    asked.clear()
+    uploads.clear()
+    answers["next_choice"] = False
+    mb.askyesno = lambda title, *a, **k: title == \
+        "Upload replacements straight from here?"
+    with photo_patch(upload=fake_upload):
+        find_button(app, "Find the card...").invoke()
+        app.update()
+        check("without a password the app offers to set one up",
+              opened_keys == ["https://shop.example"], str(opened_keys))
+        check("no upload is attempted without a password",
+              not uploads, str(uploads))
+        asked.clear()
+        app._wp_upload_asked = True
+        find_button(app, "Find the card...").invoke()
+        app.update()
+        check("it does not ask again in the same session",
+              opened_keys == ["https://shop.example"], str(opened_keys))
+    mb.askyesno = lambda *a, **k: False
+    answers["next_choice"] = None
 
     # -- an older plugin must be refused, not called -----------------------
     asked.clear()
@@ -707,8 +831,10 @@ def main():
     mb.askyesno = decline
     with patch.object(gui, "has_woo_credentials", lambda path=None: True), \
             patch.object(gui, "read_woo_credentials",
-                         lambda path=None: fake_keys), \
-            patch.object(gui, "woo_get", lambda *a, **k: one_product), \
+                         lambda path=None: FAKE_KEYS), \
+            patch.object(gui, "read_wordpress_credentials",
+                         lambda path=None: NO_WORDPRESS), \
+            patch.object(gui, "woo_get", lambda *a, **k: ONE_PRODUCT), \
             patch.object(gui, "plugin_version", lambda *a, **k: "1.0.14"):
         find_button(app, "Find the card...").invoke()
         app.update()
@@ -724,22 +850,26 @@ def main():
     _I.new("RGB", (_tile * 3, _tile * 3 + 400), (0, 0, 0)).save(blank_sheet)
     gui.filedialog.askopenfilename = lambda **k: str(blank_sheet)
     photos_cap.calls.clear()
+    uploads.clear()
     mb.askyesno = lambda title, *a, **k: True
-    with patch.object(gui, "has_woo_credentials", lambda path=None: True), \
-            patch.object(gui, "read_woo_credentials",
-                         lambda path=None: fake_keys), \
-            patch.object(gui, "woo_get", lambda *a, **k: one_product):
+    with photo_patch(wordpress=WITH_WORDPRESS, upload=fake_upload):
         find_button(app, "Find the card...").invoke()
         app.update()
     check("a sheet with no cards on it starts no replacement job",
           replacement_args(photos_cap.calls) is None, str(photos_cap.calls))
+    check("a sheet with no cards on it uploads nothing", not uploads,
+          str(uploads))
 
     # every other section expects the plain stubs back
     app.wait_window = old_wait_window
     app.cs_addon = photos_cs_addon
     app.settings["woo_site_url"] = saved_site_url
     app.settings["pipeline_dir"] = saved_pipeline
+    if hasattr(app, "_wp_upload_asked"):
+        del app._wp_upload_asked
     mb.askyesno = lambda *a, **k: answers["askyesno"]
+    mb.askyesnocancel = lambda *a, **k: (
+        answers["next_prompts"].append((a, k)) or answers["next_choice"])
     gui.filedialog.askopenfilename = lambda **k: ""
     gui.filedialog.askdirectory = lambda **k: ""
     shutil.rmtree(replace_root, ignore_errors=True)

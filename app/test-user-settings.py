@@ -13,9 +13,11 @@ APP = Path(__file__).resolve().parent
 sys.path.insert(0, str(APP))
 sys.path.insert(0, str(APP / "pipeline"))
 
-from user_settings import (feed_urls, has_woo_credentials, load_user_settings,
+from user_settings import (feed_urls, has_woo_credentials,
+                           has_wordpress_credentials, load_user_settings,
                            marketplace_seller_urls, product_edit_url,
                            product_search_url, read_woo_credentials,
+                           read_wordpress_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 import card_pipeline as pipeline
@@ -185,11 +187,66 @@ def main():
             assert not restrict_file_permissions(keys)
         assert not calls
 
+        # -- the optional upload lines, 4 and 5 ----------------------------
+        upload_keys = root / "upload-keys.txt"
+        upload_keys.write_text(
+            "https://shop.example\nck_live\ncs_live\nowner\n"
+            "abcd EFGH ijkl MNOP\n", encoding="utf-8")
+        assert read_woo_credentials(upload_keys) == (
+            "https://shop.example", "ck_live", "cs_live")
+        assert read_wordpress_credentials(upload_keys) == (
+            "https://shop.example", "owner", "abcd EFGH ijkl MNOP")
+        assert has_wordpress_credentials(upload_keys)
+
+        # A WordPress Application Password is handed out in groups; the inner
+        # spaces are part of what the user pasted and must survive reading.
+        assert " " in read_wordpress_credentials(upload_keys)[2]
+
+        # Only three lines: the WooCommerce keys still work, upload does not.
+        three_line = root / "three-line.txt"
+        three_line.write_text("https://shop.example\nck_live\ncs_live\n",
+                              encoding="utf-8")
+        assert read_woo_credentials(three_line)[1:] == ("ck_live", "cs_live")
+        assert read_wordpress_credentials(three_line) == (
+            "https://shop.example", "", "")
+        assert not has_wordpress_credentials(three_line)
+
+        # A username with no password is not half a login.
+        half = root / "half.txt"
+        half.write_text("https://shop.example\nck_live\ncs_live\nowner\n",
+                        encoding="utf-8")
+        assert not has_wordpress_credentials(half)
+
+        # The shipped template must never read as working credentials.
+        template = APP / "woo-keys.txt.example"
+        assert template.is_file()
+        assert not has_wordpress_credentials(template)
+        assert not has_woo_credentials(template)
+        assert read_wordpress_credentials(template)[1:] == ("", "")
+
+        # Comments and blank lines are still ignored around the extra lines.
+        noisy = root / "noisy.txt"
+        noisy.write_text(
+            "# my shop\n\nhttps://shop.example\n# keys\nck_live\ncs_live\n"
+            "owner\n# password\nabcd EFGH ijkl MNOP\n", encoding="utf-8")
+        assert read_wordpress_credentials(noisy) == (
+            "https://shop.example", "owner", "abcd EFGH ijkl MNOP")
+
+        # Rewriting the site URL must not disturb the two upload lines.
+        sync_site_url_to_woo_keys("https://new.example", upload_keys)
+        assert read_wordpress_credentials(upload_keys) == (
+            "https://new.example", "owner", "abcd EFGH ijkl MNOP")
+        assert read_woo_credentials(upload_keys)[1:] == ("ck_live", "cs_live")
+
+        # Missing file is not an error, just nothing to upload with.
+        assert read_wordpress_credentials(root / "absent.txt") == ("", "", "")
+
     print("PASS legacy Woo URL migration, media/admin URLs, and feed overrides")
     print("PASS pipeline opens the configured media upload page before asking")
     print("PASS CanadianShopper folder selection prefers staged output, then current CSV")
     print("PASS photo replacement reads the private keys and the saved seller pages")
     print("PASS the credentials file is readable only by this account")
+    print("PASS optional WordPress upload lines are read, and never faked")
 
 
 if __name__ == "__main__":

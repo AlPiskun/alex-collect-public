@@ -183,16 +183,15 @@ def site_admin_url(path: str, settings: dict | None = None) -> str:
     return base + "/" + path.lstrip("/")
 
 
-PLACEHOLDER_KEY_PREFIXES = ("ck_replace", "cs_replace")
+PLACEHOLDER_KEY_PREFIXES = ("ck_replace", "cs_replace", "wp_replace")
 
 
-def read_woo_credentials(path: Path = WOO_KEYS_FILE) -> tuple[str, str, str]:
-    """Read ``(site, consumer key, consumer secret)`` from the private file.
+def _woo_key_lines(path: Path = WOO_KEYS_FILE) -> tuple[str, list[str]]:
+    """The site URL and every other value in the private file, in order.
 
-    The file is one value per line: the site URL, then the read-only key, then
-    the secret, with ``#`` comments ignored. The shipped example's placeholder
-    values are treated as missing so an untouched template never looks like a
-    working key.
+    One value per line, ``#`` comments ignored. Values keep their inner spaces,
+    because a WordPress Application Password is handed out as four groups of
+    four characters and must be sent exactly as displayed.
     """
     values: list[str] = []
     try:
@@ -201,27 +200,69 @@ def read_woo_credentials(path: Path = WOO_KEYS_FILE) -> tuple[str, str, str]:
             if value and not value.startswith("#"):
                 values.append(value)
     except (OSError, UnicodeError):
-        return "", "", ""
+        return "", []
 
     site = ""
     rest: list[str] = []
     for value in values:
         if not site and value.lower().startswith(("http://", "https://")):
             site = value.rstrip("/")
-        elif not value.lower().startswith(("http://", "https://")):
+        else:
             rest.append(value)
+    return site, rest
+
+
+def _is_placeholder(value: str) -> bool:
+    return value.lower().startswith(PLACEHOLDER_KEY_PREFIXES)
+
+
+def read_woo_credentials(path: Path = WOO_KEYS_FILE) -> tuple[str, str, str]:
+    """Read ``(site, consumer key, consumer secret)`` from the private file.
+
+    The file is one value per line: the site URL, then the consumer key, then
+    the secret. Two optional lines may follow for uploading images, and are
+    ignored here. The shipped example's placeholder values are treated as
+    missing so an untouched template never looks like a working key.
+    """
+    site, rest = _woo_key_lines(path)
+    if not site:
+        return "", "", ""
     key, secret = (rest + ["", ""])[:2]
-    if key.lower().startswith(PLACEHOLDER_KEY_PREFIXES):
+    if _is_placeholder(key):
         key = ""
-    if secret.lower().startswith(PLACEHOLDER_KEY_PREFIXES):
+    if _is_placeholder(secret):
         secret = ""
     return site, key, secret
 
 
+def read_wordpress_credentials(path: Path = WOO_KEYS_FILE) -> tuple[str, str, str]:
+    """Read ``(site, WordPress username, Application Password)``.
+
+    These are the optional fourth and fifth lines. They are needed only to
+    upload an image: the WooCommerce consumer keys cannot reach the media
+    library, while an Application Password can. Either value alone is treated
+    as missing, because WordPress needs both halves.
+    """
+    site, rest = _woo_key_lines(path)
+    if not site or len(rest) < 3:
+        return site, "", ""
+    username = rest[2]
+    password = rest[3] if len(rest) > 3 else ""
+    if _is_placeholder(username) or _is_placeholder(password):
+        return site, "", ""
+    return site, username.strip(), password.strip()
+
+
 def has_woo_credentials(path: Path = WOO_KEYS_FILE) -> bool:
-    """True when a usable site + read-only key pair is already saved."""
+    """True when a usable site + consumer key pair is already saved."""
     site, key, secret = read_woo_credentials(path)
     return bool(site and key and secret)
+
+
+def has_wordpress_credentials(path: Path = WOO_KEYS_FILE) -> bool:
+    """True when the app can upload images to the site by itself."""
+    site, username, password = read_wordpress_credentials(path)
+    return bool(site and username and password)
 
 
 def product_search_url(term: str, settings: dict | None = None) -> str:
