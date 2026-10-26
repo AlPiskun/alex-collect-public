@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
+import os
 import sys
 
 APP = Path(__file__).resolve().parent
@@ -15,7 +16,8 @@ sys.path.insert(0, str(APP / "pipeline"))
 from user_settings import (feed_urls, has_woo_credentials, load_user_settings,
                            marketplace_seller_urls, product_edit_url,
                            product_search_url, read_woo_credentials,
-                           site_admin_url, sync_site_url_to_woo_keys)
+                           restrict_file_permissions, site_admin_url,
+                           sync_site_url_to_woo_keys)
 import card_pipeline as pipeline
 import browser_utils
 
@@ -153,10 +155,41 @@ def main():
     assert product_edit_url(42, {}) == ""
     assert product_search_url("card", {}) == ""
 
+    # Credentials are a private file, not just a git-ignored one.
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        keys = root / "woo-keys.txt"
+        keys.write_text("https://shop.example\nck_abc\ncs_secret\n",
+                        encoding="utf-8")
+        os.chmod(keys, 0o644)
+        assert restrict_file_permissions(keys)
+        assert (keys.stat().st_mode & 0o777) == 0o600
+        # A missing file is reported, not created.
+        assert not restrict_file_permissions(root / "absent.txt")
+        # Windows asks icacls to drop inheritance and grant only this user.
+        calls = []
+        with patch("user_settings.IS_WINDOWS", True), \
+                patch("user_settings.os.environ", {"USERNAME": "Owner"}), \
+                patch("user_settings.subprocess.run",
+                      lambda argv, **kw: (calls.append((argv, kw)) or
+                                          SimpleNamespace(returncode=0))):
+            assert restrict_file_permissions(keys)
+        argv, kw = calls[0]
+        assert argv[:2] == ["icacls", str(keys)]
+        assert "/inheritance:r" in argv and "Owner:F" in argv
+        assert kw.get("capture_output") is True
+        # No username means no rule to grant - refuse rather than open it up.
+        calls.clear()
+        with patch("user_settings.IS_WINDOWS", True), \
+                patch("user_settings.os.environ", {}):
+            assert not restrict_file_permissions(keys)
+        assert not calls
+
     print("PASS legacy Woo URL migration, media/admin URLs, and feed overrides")
     print("PASS pipeline opens the configured media upload page before asking")
     print("PASS CanadianShopper folder selection prefers staged output, then current CSV")
     print("PASS photo replacement reads the private keys and the saved seller pages")
+    print("PASS the credentials file is readable only by this account")
 
 
 if __name__ == "__main__":

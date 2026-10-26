@@ -7,17 +7,60 @@ standalone tools as well as the desktop interface.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import quote_plus, urlparse
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_FILE = APP_DIR / "gui-settings.json"
 WOO_KEYS_FILE = APP_DIR / "woo-keys.txt"
+#: Kept as a constant so the Windows branch can be tested from Linux.
+IS_WINDOWS = sys.platform.startswith("win")
+#: This module is copied around on its own by the tools, so it carries its
+#: own copy of the no-console flag instead of importing process_utils.
+_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
+
+def _no_window():
+    """Popen keyword arguments that hide a child console window."""
+    return {"creationflags": _CREATE_NO_WINDOW} if IS_WINDOWS else {}
 
 
 def default_scan_dir() -> str:
     """A portable default; users can choose their scanner's real folder."""
     return str(Path.home() / "Pictures" / "Scan")
+
+
+def restrict_file_permissions(path: Path) -> bool:
+    """Make a secrets file readable only by the current user.
+
+    woo-keys.txt holds API credentials. It is already git-ignored and never
+    leaves the machine, but by default any account on the PC can read it.
+    On Windows the inherited permissions are removed and only the current
+    user is granted access; elsewhere the file becomes mode 600.
+
+    Returns True when the restriction was applied. A failure is not fatal -
+    the caller keeps working with the file as it is.
+    """
+    path = Path(path)
+    if not path.exists():
+        return False
+    try:
+        if IS_WINDOWS:
+            user = os.environ.get("USERNAME", "").strip()
+            if not user:
+                return False
+            result = subprocess.run(
+                ["icacls", str(path), "/inheritance:r",
+                 "/grant:r", user + ":F"],
+                capture_output=True, text=True, **_no_window())
+            return result.returncode == 0
+        os.chmod(path, 0o600)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def read_woo_keys_site_url(path: Path = WOO_KEYS_FILE) -> str:
@@ -244,4 +287,5 @@ def sync_site_url_to_woo_keys(site_url_value: str,
     else:
         lines.insert(0, site)
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    restrict_file_permissions(path)
     return True

@@ -88,6 +88,7 @@ python test-market-rerun.py
 python test-pipeline-listing.py
 python test-ai-prompts.py
 python test-process-utils.py
+python test-photo-replace.py
 python ..\installer\test-bundled-config.py
 ```
 
@@ -104,6 +105,7 @@ Notes:
 | `test-market-rerun.py`, `test-pipeline-listing.py` | Pillow | Pipeline regression suite; no GUI. |
 | `test-ai-prompts.py` | nothing | The shipped AI prompt files, read without Tk. |
 | `test-process-utils.py` | nothing | No stray console windows; checks flags only. |
+| `test-photo-replace.py` | Pillow | Sheet split, empty-slot detection, replacement naming. |
 | `..\installer\test-bundled-config.py` | nothing | Checks the version/filename/SHA pins agree. |
 
 Every script must end in `PASS` / `OK` / `ALL ... PASSED` and exit 0.

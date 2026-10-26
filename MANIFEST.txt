@@ -1,4 +1,4 @@
-Alex Collect 2.39 — public core package
+Alex Collect 2.40 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -24,6 +24,7 @@ app/:
   user_settings.py                shared local preferences for the GUI and tools
   browser_utils.py                installed-browser detection and page launching
   process_utils.py                hides child console windows on Windows
+  photo_replace.py                sheet split, blank-slot and replacement naming
   facebook-feed-settings.example.json
                                   starter values for the Facebook workbook fields
   plugin_manager.py               local ZIP plugin manager

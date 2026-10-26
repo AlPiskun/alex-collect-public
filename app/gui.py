@@ -48,9 +48,10 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            load_user_settings, marketplace_seller_urls,
                            normalize_web_url, product_edit_url,
                            product_search_url, read_woo_credentials,
-                           site_admin_url, sync_site_url_to_woo_keys)
+                           restrict_file_permissions, site_admin_url,
+                           sync_site_url_to_woo_keys)
 
-VERSION = "2.39"
+VERSION = "2.40"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -2293,6 +2294,8 @@ def open_woo_keys_file(app, current_site_url=""):
                             "\nck_replace_with_read_only_consumer_key\n"
                             "cs_replace_with_read_only_consumer_secret\n",
                             encoding="utf-8")
+    # Credentials belong to this Windows account only.
+    restrict_file_permissions(path)
     open_path(path)
     app.console_line("Opened private WooCommerce credentials file; keep it "
                      "out of public repos and messages.", "dim")
