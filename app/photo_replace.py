@@ -218,20 +218,25 @@ def pair_stem(image_name):
     return stem[: -(len(side) + 1)] if side else stem
 
 
-def pair_paths(folder, image_name, suffix="." + IMG_FORMAT):
+def pair_paths(folder, image_name, suffix="." + IMG_FORMAT,
+               force_sided=False):
     """The next free front/back pair, sharing one counter.
 
     Both names are counted together: if ``-front-1`` is taken, the pair starts
     at ``-2`` even when ``-back-1`` is free, because a half-numbered pair is
     harder to reason about than a skipped number.
+
+    A name with no side keeps its own shape for the front, so a legacy image
+    is not renamed and only the back gains the suffix. That shape is not a
+    matched pair, though, so anything sending both halves to the plugin must
+    pass ``force_sided`` - the plugin verifies the two names differ only by
+    ``-front``/``-back`` and rejects a pair that does not.
     """
     folder = Path(folder)
     base = pair_stem(image_name)
     if not base:
         raise PhotoReplaceError("No image name to build a pair from.")
-    #  A name with no side keeps its own shape for the front, so a legacy
-    #  image is not renamed; only the back gains the suffix.
-    sided = bool(side_of(image_name))
+    sided = bool(side_of(image_name)) or bool(force_sided)
     counter = 1
     while True:
         front = folder / ("%s%s-%d%s" % (base, "-front" if sided else "",
@@ -272,7 +277,8 @@ def save_pair(folder, image_name, front_tile, back_tile=None):
         if not Path(tile).is_file():
             raise PhotoReplaceError("The %s image is missing: %s" % (label, tile))
     suffix = Path(front_tile).suffix or "." + IMG_FORMAT
-    targets = pair_paths(folder, image_name, suffix)
+    targets = pair_paths(folder, image_name, suffix,
+                         force_sided=back_tile is not None)
     written = {}
     for label, tile in sources:
         target = targets[label]

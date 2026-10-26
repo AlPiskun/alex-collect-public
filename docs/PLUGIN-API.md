@@ -93,12 +93,46 @@ normalized comparison. Exactly one listing must match: zero or several matches
 must exit non-zero before any upload or listing write. `--back` is optional and
 additive - without it the existing gallery is left untouched.
 
-The action ID alone cannot tell 1.0.14 from 1.0.15, because both declare
-`batch.photo_replace`; only 1.0.15 accepts `--mode replace` without a CSV. The
-core therefore gates this path on the declared plugin **version** as well as
-the action, and shows an "update the plugin" message rather than risking the
-CSV error on an older copy. Whole-batch wiring remains a separate action
-(`batch.photo_wire`) in its own panel.
+### Version gates
+
+The action ID cannot tell plugin versions apart, because every version since
+1.0.14 declares `batch.photo_replace`. The core therefore checks the declared
+version as well as the action:
+
+| Feature | Needs |
+| --- | --- |
+| `--mode replace` without a staged CSV | plugin **1.0.15** or newer |
+| `--back` replacing the gallery row | plugin **1.0.16** or newer |
+
+`--back` was additive before 1.0.16 - it added the new back beside the old one
+- so sending it to 1.0.15 would leave the previous back photo on the listing.
+The core sends the front alone in that case and says why, rather than
+producing a listing with two backs. Below 1.0.15 it refuses the path entirely
+and shows an "update the plugin" message rather than risking the CSV error.
+
+Whole-batch wiring remains a separate action (`batch.photo_wire`) in its own
+panel.
+
+### The pair contract
+
+A card is photographed front and back, so the core always sends both halves
+together, and the two local filenames differ only by `-front`/`-back`:
+
+```
+gretzky-front-2.webp
+gretzky-back-2.webp
+```
+
+The counter is shared, so a number taken on either side moves the whole pair
+to the next one; a pair is never written as `front-1` beside `back-2`. The
+plugin verifies the pair before uploading and identifies the listing's
+existing back photo by filename, so core guarantees the naming and does not
+send the names separately - the paths are enough.
+
+If the plugin cannot positively identify the existing back, it stops before
+uploading or writing anything. The core surfaces that outcome and offers the
+recovery path: run the card again and choose no back image, which replaces
+the front only.
 
 The core invokes a tool only when a user selects the relevant action. For
 `batch.pipeline_stage`, the hook may define `run_stage(output_paths, args,

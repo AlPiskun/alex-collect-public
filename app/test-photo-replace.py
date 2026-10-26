@@ -233,11 +233,29 @@ def test_pair_naming(root):
           written["front"].read_bytes() == b"FRONT" and
           written["back"].read_bytes() == b"BACK")
 
+    # The plugin verifies that a front/back pair differs only by the side
+    # suffix, so a name with no side must not leak through when a back is
+    # supplied - gretzky-1.webp beside gretzky-back-1.webp would be rejected.
+    matched = photo_replace.pair_paths(root / "pairs", "gretzky.webp",
+                                       force_sided=True)
+    check("a name with no side becomes a matched pair when a back is coming",
+          (matched["front"].name, matched["back"].name) ==
+          ("gretzky-front-1.webp", "gretzky-back-1.webp"), str(matched))
+    check("a forced pair keeps one stem on both sides",
+          photo_replace.pair_stem(matched["front"].name) ==
+          photo_replace.pair_stem(matched["back"].name))
+
     only_front = photo_replace.save_pair(root / "pairs",
                                          "dallas-smith-front.webp", front)
     check("a front on its own still leaves the next number for its back",
           only_front["front"].name == "dallas-smith-front-4.webp" and
           "back" not in only_front, str(only_front))
+
+    legacy_pair = photo_replace.save_pair(root / "pairs", "gretzky.webp",
+                                          front, back)
+    check("saving a pair under a legacy name still matches by name",
+          legacy_pair["front"].name.replace("-front", "-back") ==
+          legacy_pair["back"].name, str(legacy_pair))
 
     before = sorted(p.name for p in (root / "pairs").iterdir())
     try:

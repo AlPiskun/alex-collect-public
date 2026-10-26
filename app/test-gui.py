@@ -214,7 +214,7 @@ def main():
     (cs_package / "tools" / "cs_stage_hook.py").write_text("# test stub\\n")
     (cs_package / "plugin.json").write_text(json.dumps({
         "id": "canadianshopper", "name": "CanadianShopper test stub",
-        "version": "1.0.15", "host_api": 1, "min_core_version": "2.21",
+        "version": "1.0.16", "host_api": 1, "min_core_version": "2.21",
         "description": "GUI test fixture only.",
         "capabilities": ["after_sale.stock_update", "batch.photo_stage",
                          "batch.photo_wire", "batch.photo_replace",
@@ -782,8 +782,8 @@ def main():
     with photo_patch(wordpress=WITH_WORDPRESS, upload=fake_upload):
         find_button(app, "Find the card...").invoke()
         app.update()
-    check("answering Yes asks for the old front and back to be dropped",
-          uploads and uploads[0]["keep_ids"] == [], str(uploads))
+    check("answering Yes drops the old front and back but keeps the rest",
+          uploads and uploads[0]["keep_ids"] == [9], str(uploads))
 
     photos_cap.calls.clear()
     uploads.clear()
@@ -857,6 +857,30 @@ def main():
               for kind, payload in warnings), str(warnings))
     check("nothing is sent to a 1.0.14 plugin",
           replacement_args(photos_cap.calls) is None, str(photos_cap.calls))
+
+    # -- 1.0.15 can replace the front but would only append a back ---------
+    photos_cap.calls.clear()
+    warnings_before = len(answers["shown"])
+    asked.clear()
+    mb.askyesno = lambda title, *a, **k: title == \
+        "Replace the CanadianShopper photos?"
+    with patch.object(gui, "has_woo_credentials", lambda path=None: True), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: FAKE_KEYS), \
+            patch.object(gui, "read_wordpress_credentials",
+                         lambda path=None: NO_WORDPRESS), \
+            patch.object(gui, "woo_get", lambda *a, **k: ONE_PRODUCT), \
+            patch.object(gui, "plugin_version", lambda *a, **k: "1.0.15"):
+        find_button(app, "Find the card...").invoke()
+        app.update()
+    older = replacement_args(photos_cap.calls)
+    check("1.0.15 still replaces the front", older is not None, str(older))
+    check("1.0.15 is never sent a back it would only append",
+          older is not None and "--back" not in older, str(older))
+    check("the user is told the back was left out",
+          any(kind == "warn" and "back" in str(payload).lower()
+              for kind, payload in answers["shown"][warnings_before:]),
+          str(answers["shown"][warnings_before:]))
 
     # -- an all-black sheet must not produce a job -------------------------
     blank_sheet = replace_root / "blank.jpg"

@@ -54,7 +54,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.43"
+VERSION = "2.44"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -76,6 +76,10 @@ CS_PHOTO_REPLACE = "batch.photo_replace"
 #  row. The CSV-free --mode replace arrived in 1.0.15, so the action ID
 #  alone cannot tell the two apart - the version has to be checked.
 CS_PHOTO_REPLACE_VERSION = "1.0.15"
+#  --back was additive until 1.0.16, which replaces the paired gallery row
+#  instead of adding a second back beside it. Sending --back to 1.0.15 would
+#  leave the old back photo on the listing, so the gate is separate.
+CS_PHOTO_BACK_VERSION = "1.0.16"
 CS_TOOL_ACTIONS = {
     "sold-cards.py": "after_sale.stock_update",
     # Filename resolution can only name ONE of the photo actions; call sites
@@ -138,6 +142,13 @@ def photo_replace_available():
     if not TOOL_ACTION(CS_PHOTO_REPLACE):
         return False
     return version_at_least(plugin_version(), CS_PHOTO_REPLACE_VERSION)
+
+
+def photo_back_replaceable():
+    """Whether --back replaces the listing's back instead of adding one."""
+    if not photo_replace_available():
+        return False
+    return version_at_least(plugin_version(), CS_PHOTO_BACK_VERSION)
 
 
 def cs_addon_present():
@@ -3492,10 +3503,23 @@ def build_newphotos(parent, app):
 
     def wire_card(product, front, back=None):
         """Replace the one card's photos on CanadianShopper, no CSV involved."""
+
+        def after(rc):
+            if not rc and back is not None:
+                #  The plugin refuses to guess when it cannot identify the
+                #  listing's back photo, which leaves the listing untouched.
+                #  Saying so beats leaving the user to read the whole log.
+                app.console_line(
+                    "If that failed because the back photo could not be "
+                    "identified, nothing was changed on CanadianShopper. "
+                    "Run this card again and choose no back image to replace "
+                    "only the front.", "dim")
+
         script = TOOL_ACTION(CS_PHOTO_REPLACE)
         app.run_tool(script, replace_args(product.get("name"), front, back),
                      "Replace this card's photos",
-                     cwd=app.settings.get("pipeline_dir", str(WORK)))
+                     cwd=app.settings.get("pipeline_dir", str(WORK)),
+                     on_done=after)
         return True
 
     def wire_batch(after=None):
@@ -3621,15 +3645,29 @@ def build_newphotos(parent, app):
             upload_to_site(app, product, saved, saved_back, old_pair_ids)
 
         if getattr(app, "cs_addon", True) and photo_replace_available():
+            #  1.0.15 can replace the front but only APPENDS a back, which
+            #  would leave the old back photo on the listing - so the back is
+            #  held back rather than sent to a plugin that cannot honour it.
+            send_back = saved_back if photo_back_replaceable() else None
+            if saved_back is not None and send_back is None:
+                messagebox.showwarning(
+                    "The back was not sent",
+                    "CanadianShopper plugin %s replaces a listing's back "
+                    "photo; this copy is %s and would only add the new back "
+                    "beside the old one.\n\nOnly the front will be sent now. "
+                    "Update the plugin to replace both."
+                    % (CS_PHOTO_BACK_VERSION, plugin_version() or "unknown"),
+                    parent=app)
             if messagebox.askyesno(
                     "Replace the CanadianShopper photos?",
                     "Upload %s to CanadianShopper and set %s on this one "
                     "listing?\n\nExactly one listing must match the title, "
-                    "or nothing is written."
-                    % (" and ".join(p.name for p in
-                                    (saved, saved_back) if p is not None),
-                       "them" if saved_back else "it"), parent=app):
-                wire_card(product, saved, saved_back)
+                    "or nothing is written. If the listing's back photo "
+                    "cannot be identified, the plugin stops without changing "
+                    "anything." % (" and ".join(
+                        p.name for p in (saved, send_back) if p is not None),
+                        "them" if send_back else "it"), parent=app):
+                wire_card(product, saved, send_back)
         elif getattr(app, "cs_addon", True) and single_product(product):
             messagebox.showwarning(
                 "Update the CanadianShopper plugin",
