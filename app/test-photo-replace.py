@@ -257,6 +257,20 @@ def test_pair_naming(root):
           legacy_pair["front"].name.replace("-front", "-back") ==
           legacy_pair["back"].name, str(legacy_pair))
 
+    # The search-page fallback finds no product, so there is no website image
+    # to copy a name from. The chosen image still has to be saved - refusing
+    # here threw away the user's pick and killed the whole run.
+    nameless = photo_replace.save_pair(root / "nameless", "", front, back)
+    check("a card with no website image still saves a pair",
+          nameless["front"].is_file() and nameless["back"].is_file(),
+          str(nameless))
+    check("the pair is named after the scan when nothing else is known",
+          nameless["front"].name.replace("-front", "-back") ==
+          nameless["back"].name, str(nameless))
+    alone = photo_replace.save_pair(root / "nameless", "", front)
+    check("a front alone is saved without a name too",
+          alone["front"].is_file() and "back" not in alone, str(alone))
+
     before = sorted(p.name for p in (root / "pairs").iterdir())
     try:
         photo_replace.save_pair(root / "pairs", "dallas-smith-front.webp",

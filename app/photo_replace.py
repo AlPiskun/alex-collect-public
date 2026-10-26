@@ -276,8 +276,15 @@ def save_pair(folder, image_name, front_tile, back_tile=None):
     for label, tile in sources:
         if not Path(tile).is_file():
             raise PhotoReplaceError("The %s image is missing: %s" % (label, tile))
+    #  The replacements folder is normally made before this is called; doing it
+    #  here as well means save_pair() can be used on its own.
+    Path(folder).mkdir(parents=True, exist_ok=True)
     suffix = Path(front_tile).suffix or "." + IMG_FORMAT
-    targets = pair_paths(folder, image_name, suffix,
+    #  Without a product there is no website image to copy the name from - the
+    #  search-page fallback has none - so the scan's own name is used. Refusing
+    #  to save the image the user just chose would throw away their work.
+    name = image_name or Path(front_tile).stem
+    targets = pair_paths(folder, name, suffix,
                          force_sided=back_tile is not None)
     written = {}
     for label, tile in sources:

@@ -570,11 +570,19 @@ def main():
     saved_site_url = app.settings.get("woo_site_url", "")
     saved_pipeline = app.settings.get("pipeline_dir", "")
     photos_cs_addon = app.cs_addon
+    #  The seller pages come from settings, so this section states them rather
+    #  than depending on whatever happens to be saved on the machine.
+    saved_market_urls = {key: app.settings.get(key, "") for key in
+                         ("canadianshopper_store_url", "ebay_selling_url",
+                          "facebook_selling_url")}
     replace_root = TMP / "replace-flow"
     shutil.rmtree(replace_root, ignore_errors=True)
     replace_root.mkdir(parents=True)
     app.settings["woo_site_url"] = "https://shop.example"
     app.settings["pipeline_dir"] = str(replace_root)
+    app.settings["canadianshopper_store_url"] = "https://cs.example/store"
+    app.settings["ebay_selling_url"] = "https://www.ebay.ca/sh/lst/active"
+    app.settings["facebook_selling_url"] = "https://www.facebook.com/marketplace"
     app.cs_addon = True          # the plugin turns the wiring offers on
     app._wp_upload_asked = True  # no offer to set up keys unless asked for
     panel("newphotos")
@@ -634,7 +642,7 @@ def main():
                              lambda a, site="": opened_keys.append(site)), \
                 patch.object(gui, "woo_get", lambda *a, **k: ONE_PRODUCT):
             if kwargs.get("upload"):
-                with patch.object(gui.woo_media, "replace_product_photo",
+                with patch.object(gui.woo_media, "replace_product_photos",
                                   kwargs["upload"]):
                     yield
             else:
@@ -706,6 +714,10 @@ def main():
     opened_before = len(answers["opened_urls"])
     app.runner.start = photos_cap
     photos_cap.calls.clear()
+    #  This block checks that the plugin is called, so the offer has to be
+    #  accepted; every other question here is still declined.
+    mb.askyesno = lambda title, *a, **k: title == \
+        "Replace the CanadianShopper photos?"
     with photo_patch():
         find_button(app, "Find the card...").invoke()
         app.update()
@@ -903,6 +915,7 @@ def main():
     app.cs_addon = photos_cs_addon
     app.settings["woo_site_url"] = saved_site_url
     app.settings["pipeline_dir"] = saved_pipeline
+    app.settings.update(saved_market_urls)
     if hasattr(app, "_wp_upload_asked"):
         del app._wp_upload_asked
     mb.askyesno = lambda *a, **k: answers["askyesno"]

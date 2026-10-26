@@ -55,7 +55,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.46"
+VERSION = "2.47"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -4072,7 +4072,11 @@ def build_newphotos(parent, app):
         if single_product(product):
             upload_to_site(app, product, saved, saved_back, old_pair_ids)
 
-        if getattr(app, "cs_addon", True) and photo_replace_available():
+        #  The plugin replaces one listing by its title, which only exists when
+        #  a single product was chosen. The search-page fallback has no title,
+        #  so offering it there would fail on a missing name.
+        if (getattr(app, "cs_addon", True) and single_product(product) and
+                photo_replace_available()):
             #  1.0.15 can replace the front but only APPENDS a back, which
             #  would leave the old back photo on the listing - so the back is
             #  held back rather than sent to a plugin that cannot honour it.

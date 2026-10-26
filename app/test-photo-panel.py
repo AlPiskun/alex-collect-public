@@ -234,7 +234,7 @@ def make_sheet(path, blanks=(2, 9)):
 
 def drive(app, sheet, yes_for=(), nocancel=None, wordpress=("owner", "pw"),
           site="https://shop.example", product=None, press=None,
-          scancount=1):
+          scancount=1, found=True):
     """Press Find with a scripted sheet, answers and picker behaviour."""
     product = product or PRODUCT
     parent = FakeWidget()
@@ -267,7 +267,8 @@ def drive(app, sheet, yes_for=(), nocancel=None, wordpress=("owner", "pw"),
     with patch.object(gui, "has_woo_credentials", lambda path=None: True), \
             patch.object(gui, "read_woo_credentials", lambda path=None: keys), \
             patch.object(gui, "read_wordpress_credentials", lambda path=None: wp), \
-            patch.object(gui, "woo_get", lambda *a, **k: (200, [product])):
+            patch.object(gui, "woo_get",
+                         lambda *a, **k: (200, [product] if found else [])):
         find.invoke()
     return asked
 
@@ -446,6 +447,34 @@ def test_front_only_by_choice():
           UPLOADS and UPLOADS[0]["back"] is None, str(UPLOADS))
 
 
+def test_no_product_found():
+    print()
+    print("== 6b. the search fallback still saves the chosen images ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    sheet = make_sheet(folder / "Scan-1.jpg")
+    app = FakeApp(folder)
+    UPLOADS.clear()
+    _BOX.shown.clear()
+    #  No product matches, so the panel falls back to the product list. The
+    #  plugin needs a title and there is none, so it must not be offered -
+    #  accepting that offer used to fail on a missing name.
+    with patch.object(gui.woo_media, "replace_product_photos", fake_upload):
+        asked = drive(app, sheet, found=False,
+                      yes_for={"Replace the CanadianShopper photos?",
+                               "Put these photos on the website?"})
+    files = sorted(p.name for p in (folder / "replacements").glob("*.webp"))
+    check("the chosen images are still saved", len(files) == 2, str(files))
+    check("they are named from the scan", all("Scan-1" in f for f in files),
+          str(files))
+    check("the plugin is not called without a product title", not app.runs,
+          str(app.runs))
+    check("nothing is uploaded without a product", not UPLOADS, str(UPLOADS))
+    check("the pages still open", app.opened, str(app.opened))
+    check("the plugin is not even offered without a product",
+          not [t for t in asked if "CanadianShopper" in t], str(asked))
+
+
 def test_empty_sheet():
     print()
     print("== 7. a sheet with no cards on it does nothing ==")
@@ -511,6 +540,7 @@ def main():
     test_old_plugin_refused()
     test_back_from_another_sheet()
     test_front_only_by_choice()
+    test_no_product_found()
     test_empty_sheet()
     test_website_first()
     print()
