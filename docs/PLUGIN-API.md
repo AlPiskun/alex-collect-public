@@ -82,8 +82,11 @@ cs-image-sync.py --mode replace --title "<full listing title>"
   --cookie-file "<cookie.txt>"
 ```
 
-The plugin supplies its own padding and upload; there is no pipeline run,
-`cs-ready` folder, or staged cache involved. The core passes the selected
+A card is photographed as a front and a back, and both are replaced, so the
+core sends `--front` and `--back` together whenever a back was chosen; `--back`
+is omitted only when the card has no back image. The plugin supplies its own
+padding and upload; there is no pipeline run, `cs-ready` folder, or staged
+cache involved. The core passes the selected
 product's full name exactly as the WooCommerce REST API returned it, with no
 stripping of a trailing grade, and matching uses the plugin's exact-first
 normalized comparison. Exactly one listing must match: zero or several matches

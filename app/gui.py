@@ -54,7 +54,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.42"
+VERSION = "2.43"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -3343,14 +3343,17 @@ def build_newphotos(parent, app):
         folder.mkdir(parents=True, exist_ok=True)
         return folder
 
-    def upload_to_site(app, product, image_path):
-        """Upload the replacement and make it the product's main photo.
+    def upload_to_site(app, product, front_path, back_path=None,
+                       old_pair_ids=()):
+        """Upload the pair and make it the product's photos on the website.
 
         Returns True when the website was updated. Nothing is sent when the
         site, the keys, or the user's consent are missing.
         """
         site, key, secret = read_woo_credentials()
         wp_site, username, app_password = read_wordpress_credentials()
+        photos = " and ".join(Path(x).name for x in
+                              (front_path, back_path) if x is not None)
         if not (key and secret):
             return False
         if not (username and app_password):
@@ -3361,9 +3364,9 @@ def build_newphotos(parent, app):
                 app._wp_upload_asked = True
                 if messagebox.askyesno(
                         "Upload replacements straight from here?",
-                        "Alex Collect can upload the new photo and set it on "
-                        "the product by itself.\n\nThat needs two more lines "
-                        "in woo-keys.txt: your WordPress username and an "
+                        "Alex Collect can upload the new photos and set them "
+                        "on the product by itself.\n\nThat needs two more "
+                        "lines in woo-keys.txt: your WordPress username and an "
                         "Application Password (Users > Profile > Application "
                         "Passwords).\n\nAdd them now? The file is private and "
                         "only this account can read it.", parent=app):
@@ -3376,38 +3379,50 @@ def build_newphotos(parent, app):
             messagebox.showwarning(
                 "HTTPS needed",
                 "WordPress only accepts an Application Password over HTTPS, "
-                "and the saved address is %s.\n\nThe image is saved; upload "
-                "it from the media library instead." % base, parent=app)
+                "and the saved address is %s.\n\nThe photos are saved; "
+                "upload them from the media library instead." % base,
+                parent=app)
             return False
 
-        #  Yes means "replace the gallery", which is the opposite of keeping
+        #  Yes means "replace the old pair", which is the opposite of keeping
         #  it - an easy inversion, so the name says what the answer means.
-        remove_existing = messagebox.askyesnocancel(
-            "Put this photo on the website?",
-            "Upload %s and make it the main photo for:\n\n%s\n\n"
-            "Yes - and remove the photos already there\n"
+        replace_old = messagebox.askyesnocancel(
+            "Put these photos on the website?",
+            "Upload %s and make them the photos for:\n\n%s\n\n"
+            "Yes - and replace the front and back already there\n"
             "No - and keep the photos already there\n"
-            "Cancel - do not upload" % (image_path.name, product.get("name")),
-            parent=app)
-        if remove_existing is None:
+            "Cancel - do not upload"
+            % (photos, product.get("name")), parent=app)
+        if replace_old is None:
             return False
-        status("Uploading %s..." % image_path.name)
+        if replace_old:
+            keep_ids = [row["id"]
+                        for row in woo_media.existing_images(product)
+                        if row["id"] not in set(old_pair_ids)]
+        else:
+            keep_ids = None
+        status("Uploading %s..." % photos)
         try:
-            result = woo_media.replace_product_photo(
+            result = woo_media.replace_product_photos(
                 base, key, secret, username, app_password, product,
-                image_path, keep_existing=not remove_existing)
+                front_path, back_path, keep_ids=keep_ids)
         except woo_media.MediaError as exc:
             (messagebox.showwarning if exc.partial else messagebox.showerror)(
-                "The photo was not put on the product", exc.message, parent=app)
+                "The photos were not put on the product", exc.message,
+                parent=app)
             app.console_line("Photo upload: %s" % exc.message, "err")
-            status("The photo is saved, but the website was not updated.")
+            status("The photos are saved, but the website was not updated.")
             return False
-        attachment = result["attachment"]
+        front = result["front"]
         app.console_line("Uploaded %s to the website (media ID %s)." %
-                         (image_path.name, attachment["id"]), "ok")
-        status("The website now shows %s." % image_path.name)
-        if attachment.get("source_url"):
-            app.console_line(attachment["source_url"], "dim")
+                         (Path(front_path).name, front["id"]), "ok")
+        if result.get("back"):
+            app.console_line("Uploaded %s to the website (media ID %s)." %
+                             (Path(back_path).name, result["back"]["id"]), "ok")
+        status("The website now shows %s." % photos)
+        for attachment in (front, result.get("back")):
+            if attachment and attachment.get("source_url"):
+                app.console_line(attachment["source_url"], "dim")
         return True
 
     def single_product(product):
@@ -3415,11 +3430,16 @@ def build_newphotos(parent, app):
         return bool(isinstance(product, dict) and product.get("id") and
                     str(product.get("name") or "").strip())
 
-    def choose_tile(candidates, question):
-        """Let the user pick one image from the sheet; None means cancel."""
-        if not candidates:
+    def choose_tile(candidates, question, more_scan=None):
+        """Let the user pick one image; None means no choice was made.
+
+        ``more_scan`` is offered as a button when the wanted image is not on
+        this sheet - the back of a card is often scanned with the front, but
+        not always, and refusing to look elsewhere would be arbitrary.
+        """
+        if not candidates and more_scan is None:
             return None
-        if len(candidates) == 1:
+        if len(candidates) == 1 and more_scan is None:
             return candidates[0]
         top = tk.Toplevel(app)
         top.title("Which image?")
@@ -3429,18 +3449,33 @@ def build_newphotos(parent, app):
         ttk.Label(top, text=question, wraplength=430,
                   justify="left").pack(anchor="w", padx=8, pady=(8, 4))
         listing = tk.Listbox(top, height=11, exportselection=False)
-        for tile in candidates:
-            listing.insert("end", "Sheet position %d   (%s)" %
-                           (tile["position"], Path(tile["path"]).name))
         listing.pack(fill="both", expand=True, padx=8)
-        listing.selection_set(0)
         chosen = {"tile": None}
+        shown = {"tiles": list(candidates)}
+
+        def fill(tiles):
+            shown["tiles"] = list(tiles)
+            listing.delete(0, "end")
+            for tile in tiles:
+                listing.insert(
+                    "end", "%s   (%s)" %
+                    (tile.get("sheet") or "Sheet position %d" %
+                     tile.get("position", 0), Path(tile["path"]).name))
+            if tiles:
+                listing.selection_set(0)
+
+        fill(candidates)
 
         def accept(*_event):
             picked = listing.curselection()
-            if picked:
-                chosen["tile"] = candidates[picked[0]]
+            if picked and shown["tiles"]:
+                chosen["tile"] = shown["tiles"][picked[0]]
             top.destroy()
+
+        def another():
+            tiles = more_scan()
+            if tiles:
+                fill(tiles)
 
         row = ttk.Frame(top)
         row.pack(fill="x", padx=8, pady=6)
@@ -3448,6 +3483,9 @@ def build_newphotos(parent, app):
                    command=accept).pack(side="right")
         ttk.Button(row, text="Cancel",
                    command=top.destroy).pack(side="right", padx=8)
+        if more_scan is not None:
+            ttk.Button(row, text="Another scan...",
+                       command=another).pack(side="left")
         listing.bind("<Double-Button-1>", accept)
         app.wait_window(top)
         return chosen["tile"]
@@ -3501,14 +3539,37 @@ def build_newphotos(parent, app):
                 app.open_webpages(urls)
             return
 
-        tiles_dir = replace_dir() / "_tiles" / Path(scan).stem
+        def usable_tiles(scan_path):
+            """The non-empty images on a sheet, tagged with the file they came from."""
+            found = photo_replace.split_sheet(
+                scan_path, replace_dir() / "_tiles" / Path(scan_path).stem)
+            return [dict(tile, sheet=Path(scan_path).name) for tile in found
+                    if not tile["blank"] and tile["path"]]
+
+        def ask_for_sheet(title):
+            """Ask for another scan and return its usable images."""
+            chosen = filedialog.askopenfilename(
+                title=title, initialdir=app.settings.get("scan_dir", str(BASE)),
+                filetypes=[("Images", "*.jpg *.jpeg *.png *.tif *.tiff *.bmp "
+                                      "*.webp"), ("All files", "*.*")])
+            if not chosen:
+                return None
+            try:
+                return usable_tiles(chosen)
+            except Exception as exc:
+                messagebox.showerror("Could not split the scan", "%s" % exc,
+                                     parent=app)
+                return None
+
         try:
-            tiles = photo_replace.split_sheet(scan, tiles_dir)
+            tiles = photo_replace.split_sheet(
+                scan, replace_dir() / "_tiles" / Path(scan).stem)
         except Exception as exc:
             messagebox.showerror("Could not split the scan",
                                  "%s" % exc, parent=app)
             return
-        usable = [t for t in tiles if not t["blank"] and t["path"]]
+        usable = [dict(tile, sheet=Path(scan).name) for tile in tiles
+                  if not tile["blank"] and tile["path"]]
         if not usable:
             messagebox.showinfo(
                 "No images on that sheet",
@@ -3518,56 +3579,56 @@ def build_newphotos(parent, app):
             return
         status("%d of %d slots hold a card." % (len(usable), len(tiles)))
 
-        front = choose_tile(usable, "Which image is the FRONT of %s?" %
-                            (product.get("name") if isinstance(product, dict)
-                             else query))
+        label = (product.get("name") if isinstance(product, dict) else query)
+        front = choose_tile(usable, "Which image is the FRONT of %s?" % label)
         if front is None:
             return
 
-        back = None
-        remaining = [t for t in usable if t["position"] != front["position"]]
-        if remaining and messagebox.askyesno(
-                "Is there a back image?",
-                "Does this sheet also hold a BACK for the same card?\n\n"
-                "The back is optional - without it the existing gallery photo "
-                "is left alone.", parent=app):
-            back = choose_tile(remaining, "Which image is the BACK?")
-            if back is not None and back is front:
-                back = None
+        #  The back is the other half of the pair, so it is chosen rather than
+        #  assumed, and it is looked for on this sheet first.
+        remaining = [t for t in usable if t["path"] != front["path"]]
+        back = choose_tile(
+            remaining, "Which image is the BACK of %s?" % label,
+            more_scan=lambda: ask_for_sheet("Which scan holds the BACK?"))
+        if back is None:
+            if not messagebox.askyesno(
+                    "No back image",
+                    "Only a front was chosen, so the back photo will be left "
+                    "as it is.\n\nContinue with the front only?", parent=app):
+                return
 
         try:
             current = photo_replace.woo_image_name(product)
-            saved = photo_replace.copy_as_replacement(
-                replace_dir(), current, front["path"])
+            written = photo_replace.save_pair(
+                replace_dir(), current, front["path"],
+                back["path"] if back else None)
         except Exception as exc:
-            messagebox.showerror("Could not name the replacement",
+            messagebox.showerror("Could not save the replacement",
                                  "%s" % exc, parent=app)
             return
-        saved_back = None
-        if back is not None:
-            try:
-                saved_back = photo_replace.copy_as_replacement(
-                    replace_dir(),
-                    photo_replace.replacement_stem(saved.name) + "-back",
-                    back["path"])
-            except Exception as exc:
-                messagebox.showwarning("Back image not saved",
-                                       "%s" % exc, parent=app)
-        status("Saved %s" % saved.name)
+        saved = written["front"]
+        saved_back = written.get("back")
+        old_pair_ids = photo_replace.pair_ids(
+            woo_media.existing_images(product)) if isinstance(product, dict) \
+            else []
+        status("Saved %s%s" % (saved.name,
+                               " and %s" % saved_back.name if saved_back
+                               else ""))
 
         # The website photo comes first: the shop is what customers buy from,
         # and the marketplace copies are wired from the same card afterwards.
         if single_product(product):
-            upload_to_site(app, product, saved)
+            upload_to_site(app, product, saved, saved_back, old_pair_ids)
 
         if getattr(app, "cs_addon", True) and photo_replace_available():
             if messagebox.askyesno(
                     "Replace the CanadianShopper photos?",
-                    "Upload %s to CanadianShopper and set it as the photo for "
-                    "this one listing?%s\n\nExactly one listing must match "
-                    "the title, or nothing is written."
-                    % (saved.name, "\nThe back image is added to the gallery."
-                       if saved_back else ""), parent=app):
+                    "Upload %s to CanadianShopper and set %s on this one "
+                    "listing?\n\nExactly one listing must match the title, "
+                    "or nothing is written."
+                    % (" and ".join(p.name for p in
+                                    (saved, saved_back) if p is not None),
+                       "them" if saved_back else "it"), parent=app):
                 wire_card(product, saved, saved_back)
         elif getattr(app, "cs_addon", True) and single_product(product):
             messagebox.showwarning(

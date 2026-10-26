@@ -277,40 +277,80 @@ def set_product_images(site, key, secret, product_id, image_ids, timeout=60,
     raise MediaError(last or "The product update did not complete.")
 
 
+def image_name_from_url(src):
+    """The bare filename of a gallery row's URL."""
+    return str(src or "").strip().rstrip("/").rsplit("/", 1)[-1]
+
+
+def existing_images(product):
+    """``[{"id": int, "name": str}]`` for the product's gallery, in order."""
+    rows = []
+    for image in (product or {}).get("images") or []:
+        if not isinstance(image, dict):
+            continue
+        if not str(image.get("id", "")).isdigit():
+            continue
+        rows.append({"id": int(image["id"]),
+                     "name": image_name_from_url(image.get("src"))})
+    return rows
+
+
 def existing_image_ids(product):
     """The attachment IDs already on a product, in display order."""
-    ids = []
-    for image in (product or {}).get("images") or []:
-        if isinstance(image, dict) and str(image.get("id", "")).isdigit():
-            ids.append(int(image["id"]))
-    return ids
+    return [row["id"] for row in existing_images(product)]
 
 
-def replace_product_photo(site, key, secret, username, app_password,
-                          product, image_path, keep_existing=True,
-                          timeout=60, opener=None):
-    """Upload ``image_path`` and make it the product's main photo.
+def replace_product_photos(site, key, secret, username, app_password, product,
+                           front_path, back_path=None, keep_ids=None,
+                           timeout=60, opener=None):
+    """Upload the card's photos and make them the product's images.
 
-    ``keep_existing`` keeps the current gallery rows behind the new image,
-    which is the default: the new photo becomes the main one and nothing the
-    shop already had is discarded. Setting it False replaces the gallery.
+    The front becomes the main photo and the back follows it. ``keep_ids`` are
+    the gallery rows to leave behind the new pair; passing an empty list drops
+    every existing photo, while ``None`` keeps them all. Both images are
+    uploaded before the product is touched, so a failed upload changes nothing.
     """
     product_id = (product or {}).get("id")
     if not product_id:
         raise MediaError("No product was selected, so there is nothing to "
                          "update.")
-    attachment = upload_media(site, username, app_password, image_path,
-                              title=(product or {}).get("name"),
-                              timeout=timeout, opener=opener)
-    ids = [attachment["id"]]
-    if keep_existing:
+    uploads = [("front", front_path)]
+    if back_path is not None:
+        uploads.append(("back", back_path))
+    attachments = {}
+    for label, path in uploads:
+        try:
+            attachments[label] = upload_media(
+                site, username, app_password, path,
+                title=(product or {}).get("name"), timeout=timeout,
+                opener=opener)
+        except MediaError as exc:
+            done = (" The %s image is already in the media library, but the "
+                    "product was not changed." % "front"
+                    if attachments else "")
+            raise MediaError("The %s image could not be uploaded. %s%s"
+                             % (label, exc.message, done),
+                             status=exc.status,
+                             attachment_id=(attachments.get("front") or {}
+                                            ).get("id"),
+                             partial=bool(attachments))
+    ids = [attachments["front"]["id"]]
+    if "back" in attachments:
+        ids.append(attachments["back"]["id"])
+    if keep_ids is None:
         ids += [i for i in existing_image_ids(product) if i not in ids]
+    else:
+        ids += [int(i) for i in keep_ids
+                if str(i).strip().isdigit() and int(i) not in ids]
     try:
         updated = set_product_images(site, key, secret, product_id, ids,
                                      timeout=timeout, opener=opener)
     except MediaError as exc:
         raise MediaError(
-            "The image reached the media library, but the product was NOT "
+            "The photos reached the media library, but the product was NOT "
             "updated. %s" % exc.message,
-            status=exc.status, attachment_id=attachment["id"], partial=True)
-    return {"attachment": attachment, "product": updated, "image_ids": ids}
+            status=exc.status,
+            attachment_id=attachments["front"]["id"], partial=True)
+    return {"front": attachments["front"],
+            "back": attachments.get("back"),
+            "product": updated, "image_ids": ids}

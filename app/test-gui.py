@@ -592,15 +592,19 @@ def main():
     opened_keys = []
 
     def fake_upload(site, key, secret, username, password, product,
-                    image_path, keep_existing=True, **rest):
+                    front_path, back_path=None, keep_ids=None, **rest):
         uploads.append({"site": site, "key": key, "username": username,
                         "password": password, "product": product.get("id"),
-                        "image": Path(image_path).name,
-                        "keep": keep_existing,
+                        "front": Path(front_path).name,
+                        "back": Path(back_path).name if back_path else None,
+                        "keep_ids": keep_ids,
                         "plugin_calls_so_far": len(photos_cap.calls)})
-        return {"attachment": {"id": 901, "source_url":
-                               "https://shop.example/uploads/new.webp"},
-                "product": {"id": 42}, "image_ids": [901]}
+        back = {"id": 902, "source_url":
+                "https://shop.example/uploads/back.webp"} if back_path else None
+        return {"front": {"id": 901, "source_url":
+                          "https://shop.example/uploads/front.webp"},
+                "back": back, "product": {"id": 42},
+                "image_ids": [901] + ([902] if back else [])}
 
     ONE_PRODUCT = (200, [{"id": 42,
                           "name": "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6",
@@ -708,8 +712,10 @@ def main():
     check("with API keys the product edit page opens directly",
           ("https://shop.example/wp-admin/post.php?post=42&action=edit", 2)
           in opened, str(opened))
-    check("the replacement is named after the website image",
-          (replace_root / "replacements" / "gretzky-front-1.webp").is_file(),
+    check("the pair is named after the website image",
+          (replace_root / "replacements" / "gretzky-front-1.webp").is_file()
+          and (replace_root / "replacements" /
+               "gretzky-back-1.webp").is_file(),
           str(sorted(p.name for p in
                      (replace_root / "replacements").glob("*.webp"))))
 
@@ -724,6 +730,10 @@ def main():
     check("no staged CSV or cache arguments are sent",
           args is not None and "--ready-dir" not in args and
           "--cache" not in args, str(args))
+    check("both halves are sent to the plugin",
+          args is not None and "--back" in args and
+          Path(args[args.index("--back") + 1]).name == "gretzky-back-1.webp",
+          str(args))
     check("without an Application Password nothing is uploaded",
           not uploads, str(uploads))
 
@@ -732,8 +742,10 @@ def main():
     with photo_patch():
         find_button(app, "Find the card...").invoke()
         app.update()
-    check("a second replacement counts on to -2",
-          (replace_root / "replacements" / "gretzky-front-2.webp").is_file(),
+    check("a second replacement counts on to -2 on both sides",
+          (replace_root / "replacements" / "gretzky-front-2.webp").is_file()
+          and (replace_root / "replacements" /
+               "gretzky-back-2.webp").is_file(),
           str(sorted(p.name for p in
                      (replace_root / "replacements").glob("*.webp"))))
 
@@ -746,17 +758,18 @@ def main():
     with photo_patch(wordpress=WITH_WORDPRESS, upload=fake_upload):
         find_button(app, "Find the card...").invoke()
         app.update()
-    check("the replacement is uploaded to the website", len(uploads) == 1,
+    check("the pair is uploaded to the website", len(uploads) == 1,
           str(uploads))
     if uploads:
         sent = uploads[0]
         check("it uses the saved site and WordPress user",
               sent["site"] == "https://shop.example" and
               sent["username"] == "owner", str(sent))
-        check("it names the image that was just saved",
-              sent["image"] == "gretzky-front-3.webp", str(sent))
-        check("answering No keeps the existing photos",
-              sent["keep"] is True, str(sent))
+        check("it names the files that were just saved",
+              sent["front"] == "gretzky-front-3.webp" and
+              sent["back"] == "gretzky-back-3.webp", str(sent))
+        check("answering No keeps every existing photo",
+              sent["keep_ids"] is None, str(sent))
         check("the website is updated before the plugin is called",
               sent["plugin_calls_so_far"] == 0, str(sent))
     check("the plugin is still called afterwards",
@@ -769,8 +782,8 @@ def main():
     with photo_patch(wordpress=WITH_WORDPRESS, upload=fake_upload):
         find_button(app, "Find the card...").invoke()
         app.update()
-    check("answering Yes asks for the old photos to be dropped",
-          uploads and uploads[0]["keep"] is False, str(uploads))
+    check("answering Yes asks for the old front and back to be dropped",
+          uploads and uploads[0]["keep_ids"] == [], str(uploads))
 
     photos_cap.calls.clear()
     uploads.clear()

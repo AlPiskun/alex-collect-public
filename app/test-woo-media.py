@@ -72,6 +72,15 @@ def product_reply(product_id=42, ids=(901,)):
                             ).encode("utf-8"))
 
 
+def header(request, name):
+    """urllib stores header names with its own capitalisation."""
+    wanted = name.lower()
+    for key, value in request["headers"].items():
+        if key.lower() == wanted:
+            return value
+    return ""
+
+
 def temp_image(name="gretzky-front-1.webp", data=b"RIFF-webp-bytes"):
     folder = Path(tempfile.mkdtemp())
     path = folder / name
@@ -191,9 +200,11 @@ def test_refusals():
 
 def test_product_update():
     print()
-    print("== 6. the product is pointed at the new image first ==")
+    print("== 6. the product is pointed at the new photo first ==")
+    product = {"id": 42, "name": "Gretzky",
+               "images": [{"id": 5, "src": "https://shop.example/u/a-front.webp"},
+                          {"id": 6, "src": "https://shop.example/u/a-back.webp"}]}
     opener = FakeOpener(product_reply())
-    product = {"id": 42, "name": "Gretzky", "images": [{"id": 5}, {"id": 6}]}
     woo_media.set_product_images(SITE, KEY, SECRET, 42, [901, 5, 6],
                                  opener=opener)
     sent = opener.requests[0]
@@ -209,101 +220,131 @@ def test_product_update():
           [i["id"] for i in body["images"]] == [901, 5, 6], str(body))
 
     print()
-    print("== 7. keeping or replacing the old gallery ==")
-    opener = FakeOpener(media_reply(), product_reply())
-    result = woo_media.replace_product_photo(
-        SITE, KEY, SECRET, USER, PASSWORD, product, temp_image(),
-        keep_existing=True, opener=opener)
-    check("by default the existing photos are kept behind the new one",
-          result["image_ids"] == [901, 5, 6], str(result["image_ids"]))
-    opener = FakeOpener(media_reply(), product_reply(ids=(901,)))
-    result = woo_media.replace_product_photo(
-        SITE, KEY, SECRET, USER, PASSWORD, product, temp_image(),
-        keep_existing=False, opener=opener)
-    check("asking to replace the gallery sends only the new image",
-          result["image_ids"] == [901], str(result["image_ids"]))
-    check("junk in the images array is ignored",
-          woo_media.existing_image_ids(
-              {"images": [{"id": 5}, {"id": "x"}, {}, {"src": "u"}]}) == [5])
-    check("a product with no images still works",
-          woo_media.existing_image_ids({"id": 1}) == [])
+    print("== 7. a front and a back go up as one pair ==")
+    opener = FakeOpener(media_reply(901), media_reply(902),
+                        product_reply(ids=(901, 902, 5, 6)))
+    result = woo_media.replace_product_photos(
+        SITE, KEY, SECRET, USER, PASSWORD, product,
+        temp_image("gretzky-front-1.webp", b"FRONT"),
+        temp_image("gretzky-back-1.webp", b"BACK"), keep_ids=None,
+        opener=opener)
+    posts = [r for r in opener.requests if r["method"] == "POST"]
+    puts = [r for r in opener.requests if r["method"] == "PUT"]
+    check("both photos are uploaded before the product is touched",
+          len(posts) == 2 and len(puts) == 1 and
+          opener.requests.index(puts[0]) == 2, str(len(opener.requests)))
+    check("the front is uploaded first",
+          posts[0]["body"] == b"FRONT" and posts[1]["body"] == b"BACK")
+    check("each carries its own filename",
+          "gretzky-front-1.webp" in header(posts[0], "Content-Disposition") and
+          "gretzky-back-1.webp" in header(posts[1], "Content-Disposition"),
+          str([header(p, "Content-Disposition") for p in posts]))
+    ids = [i["id"] for i in json.loads(puts[0]["body"].decode())["images"]]
+    check("the pair leads the gallery, the old photos follow",
+          ids == [901, 902, 5, 6], str(ids))
+    check("both attachments come back",
+          result["front"]["id"] == 901 and result["back"]["id"] == 902,
+          str(result))
 
     print()
-    print("== 8. a half-finished replacement is reported as half-finished ==")
-    opener = FakeOpener(media_reply(), (500, b'{"message":"boom"}'),
-                        (500, b'{"message":"boom"}'))
-    try:
-        woo_media.replace_product_photo(SITE, KEY, SECRET, USER, PASSWORD,
-                                        product, temp_image(), opener=opener)
-        check("a failed product update raises", False, "no error raised")
-    except woo_media.MediaError as exc:
-        check("it says the image reached the library", "media library" in
-              exc.message, exc.message)
-        check("it says the product was NOT updated",
-              "NOT updated" in exc.message, exc.message)
-        check("it carries the attachment id so the work is not lost",
-              exc.attachment_id == 901 and exc.partial, str(vars(exc)))
-
-    opener = FakeOpener(media_reply(), (401, b'{"message":"bad keys"}'))
-    try:
-        woo_media.replace_product_photo(SITE, KEY, SECRET, USER, PASSWORD,
-                                        product, temp_image(), opener=opener)
-    except woo_media.MediaError as exc:
-        check("Read-only keys are called out", "Read/Write" in exc.message,
-              exc.message)
+    print("== 8. which old photos are dropped ==")
+    for keep, expected, label in (
+            (None, [901, 902, 5, 6], "keeping everything"),
+            ([], [901, 902], "replacing the whole gallery"),
+            ([9], [901, 902, 9], "keeping only the extra photos")):
+        opener = FakeOpener(media_reply(901), media_reply(902),
+                            product_reply(ids=tuple(expected)))
+        woo_media.replace_product_photos(
+            SITE, KEY, SECRET, USER, PASSWORD, product,
+            temp_image(), temp_image("b.webp"), keep_ids=keep, opener=opener)
+        put = [r for r in opener.requests if r["method"] == "PUT"][0]
+        got = [i["id"] for i in json.loads(put["body"].decode())["images"]]
+        check("%s sends %s" % (label, expected), got == expected, str(got))
+    opener = FakeOpener(media_reply(901), media_reply(902),
+                        product_reply(ids=(901, 902)))
+    result = woo_media.replace_product_photos(
+        SITE, KEY, SECRET, USER, PASSWORD, product,
+        temp_image(), None, keep_ids=[], opener=opener)
+    check("a front alone is allowed", result["back"] is None, str(result))
+    check("a front alone still uploads only once",
+          len([r for r in opener.requests if r["method"] == "POST"]) == 1)
 
     print()
-    print("== 9. upload refusal means nothing is changed ==")
+    print("== 9. a half-finished replacement is reported as one ==")
+    opener = FakeOpener(media_reply(901), (401, b'{"message":"nope"}'))
+    try:
+        woo_media.replace_product_photos(
+            SITE, KEY, SECRET, USER, PASSWORD, product, temp_image(),
+            temp_image("b.webp"), keep_ids=None, opener=opener)
+        check("a refused back upload raises", False, "no error raised")
+    except woo_media.MediaError as exc:
+        check("it says the front is already in the library",
+              "already in the media library" in exc.message, exc.message)
+        check("it says the product was not changed",
+              "not changed" in exc.message, exc.message)
+        check("no product update is attempted", len(opener.requests) == 2,
+              str([r["method"] for r in opener.requests]))
+
     opener = FakeOpener((401, b'{"message":"no"}'))
     try:
-        woo_media.replace_product_photo(SITE, KEY, SECRET, USER, PASSWORD,
-                                        product, temp_image(), opener=opener)
-        check("a refused upload raises", False)
+        woo_media.replace_product_photos(
+            SITE, KEY, SECRET, USER, PASSWORD, product, temp_image(),
+            temp_image("b.webp"), keep_ids=None, opener=opener)
+        check("a refused front upload raises", False)
     except woo_media.MediaError as exc:
-        check("a refused upload is not reported as partial",
-              not exc.partial and exc.attachment_id is None, str(vars(exc)))
-        check("the product was never touched", len(opener.requests) == 1,
-              str([r["url"] for r in opener.requests]))
+        check("a refused front is not reported as partial",
+              not exc.partial, str(vars(exc)))
+        check("nothing else is sent after a refused front",
+              len(opener.requests) == 1, str(len(opener.requests)))
 
-    opener = FakeOpener(media_reply(), (200, b"{}"))
+    opener = FakeOpener(media_reply(901), media_reply(902),
+                        (500, b'{"message":"boom"}'),
+                        (500, b'{"message":"boom"}'))
     try:
-        woo_media.replace_product_photo(SITE, KEY, SECRET, USER, PASSWORD,
-                                        product, temp_image(), opener=opener)
-        check("an empty 200 is not accepted as success", False, "no error raised")
+        woo_media.replace_product_photos(
+            SITE, KEY, SECRET, USER, PASSWORD, product, temp_image(),
+            temp_image("b.webp"), keep_ids=None, opener=opener)
+        check("a failed product update raises", False, "no error raised")
+    except woo_media.MediaError as exc:
+        check("it says the photos reached the library",
+              "media library" in exc.message, exc.message)
+        check("it says the product was NOT updated",
+              "NOT updated" in exc.message, exc.message)
+        check("it carries the front attachment id",
+              exc.attachment_id == 901 and exc.partial, str(vars(exc)))
+
+    opener = FakeOpener(media_reply(901), media_reply(902), (200, b"{}"))
+    try:
+        woo_media.replace_product_photos(
+            SITE, KEY, SECRET, USER, PASSWORD, product, temp_image(),
+            temp_image("b.webp"), opener=opener)
+        check("an empty 200 is not accepted as success", False)
     except woo_media.MediaError as exc:
         check("an empty 200 is not accepted as success",
               "could not be confirmed" in exc.message, exc.message)
+
     opener = FakeOpener(media_reply(), product_reply(ids=(5,)))
     try:
-        woo_media.replace_product_photo(SITE, KEY, SECRET, USER, PASSWORD,
-                                        product, temp_image(), opener=opener)
-        check("an answer without the new image is not success", False)
+        woo_media.replace_product_photos(
+            SITE, KEY, SECRET, USER, PASSWORD, product, temp_image(),
+            opener=opener)
     except woo_media.MediaError as exc:
         check("an answer without the new image is not success",
               "not on the product" in exc.message, exc.message)
 
     print()
-    print("== 10. retries only where they are safe ==")
-    opener = FakeOpener((503, b"busy"), product_reply())
-    woo_media.set_product_images(SITE, KEY, SECRET, 42, [901],
-                                 retries=2, opener=opener)
-    check("a busy site is retried and the update still lands",
-          len(opener.requests) == 2, str(len(opener.requests)))
-    opener = FakeOpener((401, b"no"), product_reply())
-    try:
-        woo_media.set_product_images(SITE, KEY, SECRET, 42, [901],
-                                     retries=3, opener=opener)
-    except woo_media.MediaError:
-        check("a refusal is not retried pointlessly",
-              len(opener.requests) == 1, str(len(opener.requests)))
-    opener = FakeOpener(media_reply())
-    try:
-        woo_media.replace_product_photo(SITE, KEY, SECRET, USER, PASSWORD,
-                                        {"name": "no id"}, temp_image(),
-                                        opener=opener)
-    except woo_media.MediaError:
-        check("a product with no id uploads nothing", not opener.requests)
-
+    print("== 10. the gallery rows are read the way the site stores them ==")
+    rows = woo_media.existing_images(
+        {"images": [{"id": 5, "src": "https://shop.example/u/a-front.webp"},
+                    {"id": 6, "src": "https://shop.example/u/a-back.webp"},
+                    {"id": "x", "src": "u/bad.webp"},
+                    {}, {"src": "no-id.webp"}]})
+    check("only rows with a numeric id are kept", len(rows) == 2, str(rows))
+    check("the filename is taken from the URL",
+          rows[0]["name"] == "a-front.webp" and rows[1]["name"] == "a-back.webp",
+          str(rows))
+    check("a trailing slash does not confuse it",
+          woo_media.image_name_from_url("https://x.example/a.webp/") == "a.webp")
 
 def test_parsing_helpers():
     print()

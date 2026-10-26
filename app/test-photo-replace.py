@@ -171,6 +171,99 @@ def test_next_available(root):
     check("the source tile is left where it was", tile.is_file())
 
 
+def test_pair_naming(root):
+    """A card's two photos differ only by -front / -back, counter included."""
+    check("a front name is recognised",
+          photo_replace.side_of("dallas-smith-front.webp") == "front")
+    check("a back name is recognised",
+          photo_replace.side_of("dallas-smith-back.webp") == "back")
+    check("a name with no side is recognised as neither",
+          photo_replace.side_of("dallas-smith.webp") == "")
+    check("a side is still found after a counter",
+          photo_replace.side_of("dallas-smith-back-3.webp") == "back")
+    check("both halves share one stem",
+          photo_replace.pair_stem("dallas-smith-front-2.webp") ==
+          photo_replace.pair_stem("dallas-smith-back.webp") == "dallas-smith")
+
+    folder = root / "pairs"
+    folder.mkdir(parents=True, exist_ok=True)
+    fresh = photo_replace.pair_paths(folder, "dallas-smith-front.webp")
+    check("a fresh pair starts at 1 on both sides",
+          (fresh["front"].name, fresh["back"].name) ==
+          ("dallas-smith-front-1.webp", "dallas-smith-back-1.webp"),
+          str(fresh))
+
+    # The important rule: one counter for the pair, not one each. A taken back
+    # number must push the front too, or the two halves stop matching.
+    (folder / "dallas-smith-back-1.webp").write_bytes(b"x")
+    taken = photo_replace.pair_paths(folder, "dallas-smith-front.webp")
+    check("a taken back number moves the front as well",
+          (taken["front"].name, taken["back"].name) ==
+          ("dallas-smith-front-2.webp", "dallas-smith-back-2.webp"),
+          str(taken))
+
+    (folder / "dallas-smith-front-1.webp").write_bytes(b"x")
+    (folder / "dallas-smith-front-2.webp").write_bytes(b"x")
+    (folder / "dallas-smith-back-2.webp").write_bytes(b"x")
+    nxt = photo_replace.pair_paths(folder, "dallas-smith-front.webp")
+    check("the pair skips a number either half has taken",
+          nxt["counter"] == 3, str(nxt))
+
+    from_back = photo_replace.pair_paths(folder, "dallas-smith-back.webp")
+    check("building from the back image gives the same pair",
+          (from_back["front"].name, from_back["back"].name) ==
+          ("dallas-smith-front-3.webp", "dallas-smith-back-3.webp"),
+          str(from_back))
+
+    legacy = photo_replace.pair_paths(folder, "gretzky.webp")
+    check("a name with no side keeps its own shape for the front",
+          (legacy["front"].name, legacy["back"].name) ==
+          ("gretzky-1.webp", "gretzky-back-1.webp"), str(legacy))
+
+    front = root / "tile-front.webp"
+    back = root / "tile-back.webp"
+    front.write_bytes(b"FRONT")
+    back.write_bytes(b"BACK")
+    written = photo_replace.save_pair(root / "pairs", "dallas-smith-front.webp",
+                                      front, back)
+    check("saving a pair writes both with one counter",
+          written["front"].name == "dallas-smith-front-3.webp" and
+          written["back"].name == "dallas-smith-back-3.webp", str(written))
+    check("each half holds its own bytes",
+          written["front"].read_bytes() == b"FRONT" and
+          written["back"].read_bytes() == b"BACK")
+
+    only_front = photo_replace.save_pair(root / "pairs",
+                                         "dallas-smith-front.webp", front)
+    check("a front on its own still leaves the next number for its back",
+          only_front["front"].name == "dallas-smith-front-4.webp" and
+          "back" not in only_front, str(only_front))
+
+    before = sorted(p.name for p in (root / "pairs").iterdir())
+    try:
+        photo_replace.save_pair(root / "pairs", "dallas-smith-front.webp",
+                                front, root / "missing-back.webp")
+        check("a missing back is refused", False, "no error raised")
+    except photo_replace.PhotoReplaceError:
+        check("a missing back is refused before the front is written",
+              sorted(p.name for p in (root / "pairs").iterdir()) == before,
+              "the folder changed")
+
+    check("the old pair is found by its sides",
+          photo_replace.pair_ids([
+              {"id": 5, "name": "a-front.webp"},
+              {"id": 6, "name": "a-back.webp"},
+              {"id": 9, "name": "certificate.webp"}]) == [5, 6])
+    check("an unrelated photo is not part of the pair",
+          9 not in photo_replace.pair_ids([
+              {"id": 5, "name": "a-front.webp"},
+              {"id": 9, "name": "certificate.webp"}]))
+    check("a gallery with no side names falls back to its main photo",
+          photo_replace.pair_ids([{"id": 5, "name": "one.webp"},
+                                  {"id": 6, "name": "two.webp"}]) == [5])
+    check("no images means no old pair", photo_replace.pair_ids([]) == [])
+
+
 def test_errors(root):
     try:
         photo_replace.split_sheet(root / "nope.jpg", root / "out")
@@ -207,7 +300,11 @@ def main():
     with tempfile.TemporaryDirectory() as td:
         test_next_available(Path(td))
 
-    print("== 5. clear errors ==")
+    print("== 5. a card's two photos are named as one pair ==")
+    with tempfile.TemporaryDirectory() as td:
+        test_pair_naming(Path(td))
+
+    print("== 6. clear errors ==")
     with tempfile.TemporaryDirectory() as td:
         test_errors(Path(td))
 
