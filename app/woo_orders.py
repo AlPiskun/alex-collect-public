@@ -32,6 +32,15 @@ AUTO_MATCH = 0.90
 SHOW_MATCH = 0.30
 
 _DROP = re.compile(r"^[\s\-\u2022\u00b7*]+")
+#  A card list is full of lines that begin with a card number: "#217 Paul
+#  Henderson ...". Only a hash that is NOT followed by a digit is a comment,
+#  which is the difference between reading 6 cards and 32.
+_COMMENT = re.compile(r"^#(?![0-9])")
+#  The card's own number is written "#259"; the other digits on the line are
+#  the year, the grade, or the team's founding date. Nothing else in a pasted
+#  line is as useful for finding the card.
+_CARD_NUMBER = re.compile(r"#\s*(\d{1,4}[a-z]?)", re.IGNORECASE)
+_BRACKETED = re.compile(r"\([^)]*\)")
 _NUMBERING = re.compile(r"^\(?\d{1,3}[.)\]:-]\s*")
 _LINE_NOTES = re.compile(r"\s+[-\u2013]\s+\$?\d+(?:[.,]\d{2})?\s*$")
 
@@ -72,7 +81,8 @@ def parse_card_list(text):
     """
     names = []
     for raw in str(text or "").splitlines():
-        if raw.strip().startswith("#"):
+        stripped = str(raw).strip()
+        if not stripped or _COMMENT.match(stripped):
             continue
         name = clean_card_line(raw)
         if name:
@@ -201,12 +211,26 @@ def search_terms(line):
     """
     text = clean_card_line(line)
     terms = [text]
-    words = [w for w in normalise(text).split() if len(w) > 2]
-    #  Longest first: players and sets are longer than grades and numbers.
-    if len(words) > 1:
-        terms.append(" ".join(sorted(words, key=len, reverse=True)[:2]))
-    if words:
-        terms.append(max(words, key=len))
+    #  Words in brackets are notes about the card - "(Rookie Card)", "(Traded)",
+    #  "(Near Mint)" - and the longest of them ("rookie") is a worse search
+    #  term than the player's name, so they are not candidates.
+    plain = _BRACKETED.sub(" ", text)
+    words = [w for w in normalise(plain).split() if len(w) > 2]
+    ranked = sorted(words, key=len, reverse=True)
+    #  The card number narrows a catalogue down hardest; pairing it with one
+    #  distinctive word keeps the results short enough to rank well.
+    marked = _CARD_NUMBER.search(text)
+    if marked:
+        for word in ranked[:2]:
+            terms.append("%s %s" % (marked.group(1), word))
+    if len(ranked) > 1:
+        terms.append(" ".join(ranked[:2]))
+    if ranked:
+        terms.append(ranked[0])
+    if marked:
+        #  Last resort: the number on its own. Wide, but the ranking below
+        #  still has to make sense of the result.
+        terms.append(marked.group(1))
     seen, unique = set(), []
     for term in terms:
         key = term.lower()
@@ -217,16 +241,24 @@ def search_terms(line):
 
 
 def merge_duplicates(plan):
-    """Collapse repeated products into one line item with a quantity."""
+    """Collapse *identical* lines into one line item with a quantity.
+
+    Two lines for the same product are not necessarily the same card: a
+    customer asking for the same card at Near Mint and at Excellent is asking
+    for two different items. Merging on the product alone would quietly halve
+    that order to "quantity 2" of one card, so the pasted line is part of the
+    key and only a genuinely repeated line is combined.
+    """
     order, index = [], {}
     for item in plan or []:
         product_id = item.get("product_id")
         if not product_id:
             continue
-        if product_id in index:
-            order[index[product_id]]["quantity"] += int(item.get("quantity") or 1)
+        key = (product_id, normalise(item.get("line") or ""))
+        if key in index:
+            order[index[key]]["quantity"] += int(item.get("quantity") or 1)
         else:
-            index[product_id] = len(order)
+            index[key] = len(order)
             order.append({"product_id": product_id,
                           "quantity": int(item.get("quantity") or 1),
                           "line": item.get("line", ""),

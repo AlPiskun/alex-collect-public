@@ -55,7 +55,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.45"
+VERSION = "2.46"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -932,9 +932,15 @@ A customer texts you a list of cards. Paste it here and Alex Collect
 creates the order on your website, with each line matched to a real
 product.
 
-One card per line. Numbering ("1."), bullets, quotes and a trailing
-price are ignored. If two lines are the same card, the order gets one
-row with quantity 2.
+One card per line, in either order - "1970-71 O-Pee-Chee Paul Henderson
+#217" or "#217 Paul Henderson 1970-71 O-Pee-Chee". Numbering ("1."),
+bullets, quotes, bracketed notes and a trailing price are ignored. A
+line that starts with a card number is a card, not a comment; a line
+that starts with a hash and a space ("# a note") is a comment.
+
+A line repeated word for word becomes one row of quantity 2. The same
+card listed at two different grades stays two rows, because those are
+two different cards.
 
 You are asked whether to start a new order or add to an existing one
 (enter its order number). A line Alex Collect is not sure about opens a

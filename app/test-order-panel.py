@@ -104,12 +104,20 @@ CATALOG = [
 ]
 
 
+def words_match(term, name):
+    """The way WooCommerce matches: every word of the term must appear.
+
+    A literal substring test would fail "107 pelyk" against "Mike Pelyk #107"
+    and send the panel down a fallback it would not need on a real site.
+    """
+    wanted = [w for w in term.lower().replace("#", " ").split() if len(w) > 2]
+    return bool(wanted) and all(w in name.lower() for w in wanted)
+
+
 def search(site, path, params, key, secret, **kwargs):
     """A stand-in for the site's product search (the woo_get signature)."""
     term = str((params or {}).get("search") or "")
-    words = [w for w in term.lower().replace("#", " ").split() if len(w) > 2]
-    matches = [p for p in CATALOG
-               if all(w in p["name"].lower() for w in words)]
+    matches = [row for row in CATALOG if words_match(term, row["name"])]
     return (200, matches) if matches else (200, [])
 
 
@@ -427,8 +435,8 @@ def test_long_list_uses_scrollable_confirm():
                  for n in range(1, 26)]
 
     def big_search(site, path, params, key, secret, **kwargs):
-        term = str((params or {}).get("search") or "").lower()
-        hits = [row for row in catalogue if term in row["name"].lower()]
+        term = str((params or {}).get("search") or "")
+        hits = [row for row in catalogue if words_match(term, row["name"])]
         return (200, hits) if hits else (200, [])
 
     app = FakeApp()
@@ -515,6 +523,35 @@ def test_percent_sign():
           str(net.requests[0]["body"].get("fee_lines") if net.requests else ""))
 
 
+def test_hash_lines_reach_the_order():
+    print()
+    print("== 13. lines written #217 reach the order ==")
+    stocked = [
+        {"id": 217, "name": "1970-71 O-Pee-Chee Paul Henderson #217 NM",
+         "price": "25.00", "stock_status": "instock"},
+        {"id": 107, "name": "1970-71 O-Pee-Chee Mike Pelyk #107 RC",
+         "price": "8.00", "stock_status": "instock"},
+    ]
+
+    def stocked_search(site, path, params, key, secret, **kwargs):
+        term = str((params or {}).get("search") or "")
+        hits = [row for row in stocked if words_match(term, row["name"])]
+        return (200, hits) if hits else (200, [])
+
+    app = FakeApp()
+    net = FakeNet(order_json())
+    run_panel(app,
+              "#217 Paul Henderson (Near Mint) 1970-71 O-Pee-Chee\n"
+              "\n"
+              "#107 Mike Pelyk (Rookie Card) 1970-71 O-Pee-Chee\n",
+              net=net, search_fn=stocked_search,
+              answers={"New order or an existing one?": True,
+                       "Create the order?": True})
+    check("the panel does not treat a card number as a comment",
+          net.requests and len(net.requests[0]["body"]["line_items"]) == 2,
+          str(net.requests[0]["body"]["line_items"] if net.requests else "none"))
+
+
 def test_open_button():
     print()
     print("== 13. the open-list button ==")
@@ -552,6 +589,7 @@ def main():
     test_long_list_uses_scrollable_confirm()
     test_discount_refused()
     test_percent_sign()
+    test_hash_lines_reach_the_order()
     test_open_button()
     test_empty_paste()
     print()

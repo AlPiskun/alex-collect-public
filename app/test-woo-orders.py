@@ -113,6 +113,97 @@ def test_parsing():
           "1989 O-Pee-Chee Gretzky")
 
 
+#  A real paste: 26 of the 32 lines begin with a card number. Treating those
+#  as comments silently dropped 26 cards once, which is why they are pinned.
+PASTED = """\
+1971-72 O-Pee-Chee Dave Keon #259 2nd Team All-Star Toronto Maple Leafs EX-MT 6
+
+#217 Paul Henderson (Near Mint) 1970-71 O-Pee-Chee
+
+#107 Mike Pelyk (Rookie Card) 1970-71 O-Pee-Chee
+
+1970-71 O-Pee-Chee Lowell MacDonald #206 Pittsburgh Penguins (VG-EX 4)
+
+1970-71 O-Pee-Chee Jim Morrison #90 Pittsburgh Penguins (EX-MT 6)
+
+#59 Tim Horton (EX) 1970-71 O-Pee-Chee
+
+#50 Yvan Cournoyer (NM) 1970-71 O-Pee-Chee
+
+#177 Guy Lapointe (Rookie Card) EX 1970-71 O-Pee-Chee 
+
+#109 Mike Walton EX 1970-71 O-Pee-Chee Trading Card
+
+1970-71 O-Pee-Chee John Ferguson #264 Montreal Canadiens (EX-MT 6) 
+
+#217 Paul Henderson (Excellent) 1970-71 O-Pee-Chee
+
+1972-73 O-Pee-Chee Hockey 2nd Series Checklist #190 Unmarked (EX 5)
+
+#8 Kenny Hodge 1970-71 O-Pee-Chee
+
+#175a Mickey Redmond (Traded) 1970-71 O-Pee-Chee
+
+#176 Henri Richard (EX) 1970-71 O-Pee-Chee
+
+#181 Jean Ratelle (NM) 1970-71 O-Pee-Chee
+
+#26 Garry Unger 1970-71 O-Pee-Chee
+
+#58 Pete Mahovlich (EX) 1970-71 O-Pee-Chee
+
+#139 Ed Westfall 1970-71 O-Pee-Chee
+
+#230 Len Lunde (EX) 1970-71 O-Pee-Chee
+
+#136 Derek Sanderson 1970-71 O-Pee-Chee 
+
+#20 Stan Mikita (PR) 1970-71 O-Pee-Chee
+
+#17 Pat Stapleton 1970-71 O-Pee-Chee
+
+#19 Eric Nesterenko 1970-71 O-Pee-Chee
+
+#219 Dave Keon (Near Mint) 1970-71 O-Pee-Chee
+
+#191 Earl Ingarfield (EX) 1970-71 O-Pee-Chee
+
+#178 Jean-Claude Tremblay (PR) 1970-71 O-Pee-Chee
+
+#191 Earl Ingarfield (PR) 1970-71 O-Pee-Chee
+
+#51 Serge Savard (EX) 1970-71 O-Pee-Chee 
+
+#57 Jacques Lemaire (PR) 1970-71 O-Pee-Chee
+
+#52 Jacques Laperriere (EX) 1970-71 O-Pee-Chee Clone
+
+1970-71 O-Pee-Chee John Ferguson #264 Montreal Canadiens (EX 5)
+"""
+
+
+def test_card_number_lines():
+    print("== 1b. lines that begin with a card number are cards ==")
+    names = woo_orders.parse_card_list(PASTED)
+    check("all 32 pasted lines are read", len(names) == 32, str(len(names)))
+    check("a line starting with #217 is a card, not a comment",
+          names[1] == "#217 Paul Henderson (Near Mint) 1970-71 O-Pee-Chee",
+          names[1] if len(names) > 1 else "")
+    check("the last line is read too",
+          names[-1] == "1970-71 O-Pee-Chee John Ferguson #264 Montreal "
+                       "Canadiens (EX 5)", names[-1])
+    check("a hash that is not a number is still a comment",
+          woo_orders.parse_card_list("# a note\n#217 Tim Horton\n") ==
+          ["#217 Tim Horton"])
+    check("a hash alone is a comment",
+          woo_orders.parse_card_list("#\n#217 Tim Horton") == ["#217 Tim Horton"])
+    check("a lettered card number survives",
+          "#175a Mickey Redmond (Traded) 1970-71 O-Pee-Chee" in names)
+    check("the card number never becomes a comment marker mid-list",
+          sum(1 for n in names if n.startswith("#")) == 26,
+          str(sum(1 for n in names if n.startswith("#"))))
+
+
 # ------------------------------------------------------------ 2. the matching
 def test_matching():
     print()
@@ -174,6 +265,30 @@ def test_matching():
           len({t.lower() for t in terms}) == len(terms), str(terms))
     check("a one-word line still gives one term",
           woo_orders.search_terms("Gretzky") == ["Gretzky"])
+    #  Picking the two longest words alone chose the team ("toronto maple"),
+    #  which is useless for finding one card. The card number anchors it.
+    terms = woo_orders.search_terms(
+        "1971-72 O-Pee-Chee Dave Keon #259 2nd Team All-Star Toronto Maple "
+        "Leafs EX-MT 6")
+    check("the card number leads the fallback searches",
+          terms[1] == "259 toronto", str(terms))
+    check("the year is not mistaken for the card number",
+          not terms[1].startswith("1971"), str(terms))
+    terms = woo_orders.search_terms("#175a Mickey Redmond (Traded) 1970-71 "
+                                    "O-Pee-Chee")
+    check("a lettered card number is used as written",
+          terms[1].startswith("175a"), str(terms))
+    #  The note in brackets is longer than the player's name, and picking it
+    #  searched for "107 rookie" instead of "107 pelyk" - no product has the
+    #  word "rookie", so the card was never found.
+    terms = woo_orders.search_terms("#107 Mike Pelyk (Rookie Card) 1970-71 "
+                                    "O-Pee-Chee")
+    check("a bracketed note is not used as the search word",
+          terms[1] == "107 pelyk", str(terms))
+    check("the bracketed word is absent from the fallback terms",
+          not any("rookie" in t.lower() for t in terms[1:]), str(terms))
+    check("the card number alone is the last resort",
+          terms[-1] == "107", str(terms))
 
 
 # ----------------------------------------------------------- 4. the order body
@@ -192,8 +307,31 @@ def test_payload():
 
     twice = plan_for(1, 1)
     merged = woo_orders.merge_duplicates(twice)
-    check("the same card twice becomes one row of quantity 2",
+    check("the same line twice becomes one row of quantity 2",
           len(merged) == 1 and merged[0]["quantity"] == 2, str(merged))
+
+    #  Two grades of one card are two different things to sell, even when the
+    #  catalogue only has one product for both. Merging them would turn a
+    #  two-card order into "quantity 2" of a single card.
+    two_grades = [
+        {"product_id": 7, "quantity": 1, "line": "Henderson (Near Mint)",
+         "product": {"id": 7, "price": "20.00"}},
+        {"product_id": 7, "quantity": 1, "line": "Henderson (Excellent)",
+         "product": {"id": 7, "price": "20.00"}},
+    ]
+    graded = woo_orders.merge_duplicates(two_grades)
+    check("two grades of one card stay as two rows",
+          len(graded) == 2 and [i["quantity"] for i in graded] == [1, 1],
+          str(graded))
+    check("the order body keeps both rows",
+          len(woo_orders.order_payload(two_grades)["line_items"]) == 2,
+          str(woo_orders.order_payload(two_grades)["line_items"]))
+    check("the estimate counts both cards",
+          woo_orders.estimate_total(two_grades)["subtotal"] == 40.0,
+          str(woo_orders.estimate_total(two_grades)))
+    check("an identical repeated line still merges",
+          len(woo_orders.merge_duplicates(two_grades + [two_grades[0]])) == 2,
+          str(woo_orders.merge_duplicates(two_grades + [two_grades[0]])))
     check("the order body follows suit",
           woo_orders.order_payload(twice)["line_items"] ==
           [{"product_id": 1, "quantity": 2}])
@@ -369,6 +507,7 @@ def test_merge_line_items():
 
 def main():
     test_parsing()
+    test_card_number_lines()
     test_matching()
     test_payload()
     test_create()
