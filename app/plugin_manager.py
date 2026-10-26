@@ -53,6 +53,38 @@ def _safe_relative(value, label):
     return path
 
 
+def parse_version(value):
+    """A dotted version as a tuple of ints, or () when it is not one.
+
+    Lenient on purpose: plugin versions are author-supplied strings, and a
+    caller comparing versions must not blow up on "1.0.15-beta" or "". Extra
+    parts are kept, so 1.2.3.4 compares sensibly against 1.2.3.
+    """
+    if not isinstance(value, str):
+        return ()
+    parts = []
+    for piece in value.strip().split("."):
+        digits = re.match(r"\d+", piece)
+        if not digits:
+            break
+        parts.append(int(digits.group()))
+    return tuple(parts)
+
+
+def version_at_least(have, want, _pad=4):
+    """True when ``have`` is the same as or newer than ``want``.
+
+    Missing trailing parts count as zero, so 1.0 and 1.0.0 are equal, and an
+    unreadable version is never treated as new enough.
+    """
+    have_parts, want_parts = parse_version(have), parse_version(want)
+    if not have_parts or not want_parts:
+        return False
+    width = max(len(have_parts), len(want_parts), _pad)
+    return (have_parts + (0,) * (width - len(have_parts)) >=
+            want_parts + (0,) * (width - len(want_parts)))
+
+
 def _version_tuple(value):
     if not isinstance(value, str) or not re.fullmatch(r"\d+(?:\.\d+){1,2}", value):
         raise PluginError("min_core_version must use a numeric version such as 2.21.")
@@ -147,7 +179,7 @@ class PluginManager:
     """Install, list, enable, disable, and remove local plugin ZIPs."""
 
     def __init__(self, root=None, host_api=PLUGIN_API_VERSION,
-                 core_version="2.40"):
+                 core_version="2.41"):
         self.root = Path(root) if root is not None else default_plugin_root()
         self.root = self.root.expanduser()
         self.host_api = host_api

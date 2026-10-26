@@ -213,7 +213,7 @@ def main():
     (cs_package / "tools" / "cs_stage_hook.py").write_text("# test stub\\n")
     (cs_package / "plugin.json").write_text(json.dumps({
         "id": "canadianshopper", "name": "CanadianShopper test stub",
-        "version": "1.0.0", "host_api": 1, "min_core_version": "2.21",
+        "version": "1.0.15", "host_api": 1, "min_core_version": "2.21",
         "description": "GUI test fixture only.",
         "capabilities": ["after_sale.stock_update", "batch.photo_stage",
                          "batch.photo_wire", "batch.photo_replace",
@@ -565,8 +565,13 @@ def main():
     # Later sections keep using the section-4 recorder, so this one gets its
     # own name and hands `cap` back when it is done.
     saved_site_url = app.settings.get("woo_site_url", "")
+    saved_pipeline = app.settings.get("pipeline_dir", "")
     photos_cs_addon = app.cs_addon
+    replace_root = TMP / "replace-flow"
+    shutil.rmtree(replace_root, ignore_errors=True)
+    replace_root.mkdir(parents=True)
     app.settings["woo_site_url"] = "https://shop.example"
+    app.settings["pipeline_dir"] = str(replace_root)
     app.cs_addon = True          # the plugin turns the wiring offers on
     panel("newphotos")
     entries = [w for w in walk(tasks_frame(app))
@@ -583,21 +588,50 @@ def main():
 
     def decline(title, *a, **k):
         asked.append(title)
-        return False          # no key setup, no split, no photo re-wiring
+        return False          # no key setup, no split, no photo replacement
 
-    def titles_run(calls):
-        """--title values from the recorded photo jobs."""
-        found = []
+    def replacement_args(calls):
+        """Arguments of the recorded CSV-free replacement job, if any."""
         for call in calls:
-            args = call.get("args") or []
-            if "--title" in args:
-                found.append(args[args.index("--title") + 1])
-        return found
+            if "--mode" in call.get("args", []) and \
+                    "replace" in call.get("args", []):
+                return call["args"]
+        return None
+
+    # A real sheet: white cards, three empty (black) slots.
+    from PIL import Image as _I
+    sheet = replace_root / "Scan2026-10-25_120000.jpg"
+    _tile = 600
+    _sheet = _I.new("RGB", (_tile * 3, _tile * 3 + 400), (0, 0, 0))
+    _pos = 1
+    for _row in range(3):
+        for _col in range(3):
+            if _pos not in (2, 4, 9):
+                _sheet.paste((235, 230, 220),
+                             (_col * _tile + 80, _row * _tile + 80,
+                              (_col + 1) * _tile - 80, (_row + 1) * _tile - 80))
+            _pos += 1
+    _sheet.save(sheet)
+
+    def auto_pick(window):
+        """Stand in for the user choosing the first image in the picker."""
+        button = find_button(window, "Use this image")
+        if button is not None:
+            button.invoke()
+        else:
+            window.destroy()
+
+    old_wait_window = app.wait_window
+    app.wait_window = auto_pick
+    gui.filedialog.askopenfilename = lambda **k: str(sheet)
 
     fake_keys = ("https://shop.example", "ck_abc", "cs_secret")
     one_product = (200, [{"id": 42,
                           "name": "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6",
-                          "sku": "SKU-1"}])
+                          "sku": "SKU-1",
+                          "images": [{"id": 7, "src": "https://shop.example/"
+                                      "wp-content/uploads/2026/10/"
+                                      "gretzky-front.webp"}]}])
 
     # -- a search-page fallback must never run the per-card action ----------
     mb.askyesno = decline
@@ -620,14 +654,12 @@ def main():
     check("the other marketplace seller pages open too",
           any("ebay.ca" in url for url, _ in opened) and
           any("facebook.com" in url for url, _ in opened), str(opened))
-    check("a search-page fallback never asks for or runs per-card wiring",
-          "Wire this card's photos?" not in asked and
-          not titles_run(photos_cap.calls),
-          str((asked, photos_cap.calls)))
 
-    # -- one product selected: per-card is offered first -------------------
+    # -- one product selected: sheet, split, pick, name, replace -----------
     asked.clear()
     opened_before = len(answers["opened_urls"])
+    app.runner.start = photos_cap
+    photos_cap.calls.clear()
     with patch.object(gui, "has_woo_credentials", lambda path=None: True), \
             patch.object(gui, "read_woo_credentials",
                          lambda path=None: fake_keys), \
@@ -638,105 +670,80 @@ def main():
     check("with API keys the product edit page opens directly",
           ("https://shop.example/wp-admin/post.php?post=42&action=edit", 2)
           in opened, str(opened))
-    check("a single product offers the per-card wiring first",
-          asked[:1] == ["Wire this card's photos?"], str(asked))
-    check("declining per-card offers the whole batch as its own choice",
-          "Wire the whole staged batch?" in asked, str(asked))
-    check("declining both offers rewires nothing",
-          not any("cs-image" in str(c.get("script", ""))
-                  for c in photos_cap.calls), str(photos_cap.calls))
+    check("the replacement is named after the website image",
+          (replace_root / "replacements" / "gretzky-front-1.webp").is_file(),
+          str(sorted(p.name for p in
+                     (replace_root / "replacements").glob("*.webp"))))
 
-    # -- accepting per-card passes the full product name -------------------
-    recorded_actions = []
-    real_tool_action = gui.TOOL_ACTION
+    args = replacement_args(photos_cap.calls)
+    check("the sheet's chosen image is sent as --front",
+          args is not None and Path(args[args.index("--front") + 1]).is_file(),
+          str(args))
+    check("--mode replace is used, with the full product title",
+          args is not None and args[:2] == ["--mode", "replace"] and
+          args[args.index("--title") + 1] ==
+          "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6", str(args))
+    check("no staged CSV or cache arguments are sent",
+          args is not None and "--ready-dir" not in args and
+          "--cache" not in args, str(args))
 
-    def recording(action_id):
-        recorded_actions.append(action_id)
-        return real_tool_action(action_id)
-
-    def take_per_card(title, *a, **k):
-        asked.append(title)
-        return title == "Wire this card's photos?"
-
-    mb.askyesno = take_per_card
-    asked.clear()
+    # -- a second run must not overwrite the first --------------------------
+    mb.askyesno = lambda title, *a, **k: True
     with patch.object(gui, "has_woo_credentials", lambda path=None: True), \
             patch.object(gui, "read_woo_credentials",
                          lambda path=None: fake_keys), \
-            patch.object(gui, "woo_get", lambda *a, **k: one_product), \
-            patch.object(gui, "TOOL_ACTION", recording):
+            patch.object(gui, "woo_get", lambda *a, **k: one_product):
         find_button(app, "Find the card...").invoke()
         app.update()
-    check("per-card wiring resolves batch.photo_replace",
-          "batch.photo_replace" in recorded_actions and
-          "batch.photo_stage" not in recorded_actions,
-          str(recorded_actions))
-    check("per-card wiring passes the full product name, grade and all",
-          titles_run(photos_cap.calls) ==
-          ["1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6"],
-          str(photos_cap.calls))
+    check("a second replacement counts on to -2",
+          (replace_root / "replacements" / "gretzky-front-2.webp").is_file(),
+          str(sorted(p.name for p in
+                     (replace_root / "replacements").glob("*.webp"))))
 
-    # -- an older plugin is told to update, never widened to the batch -----
-    def no_replace(action_id):
-        recorded_actions.append(action_id)
-        return "" if action_id == "batch.photo_replace" else \
-            real_tool_action(action_id)
-
-    mb.askyesno = decline
+    # -- an older plugin must be refused, not called -----------------------
     asked.clear()
+    photos_cap.calls.clear()
     warnings_before = len(answers["shown"])
-    calls_before = len(photos_cap.calls)
+    mb.askyesno = decline
     with patch.object(gui, "has_woo_credentials", lambda path=None: True), \
             patch.object(gui, "read_woo_credentials",
                          lambda path=None: fake_keys), \
             patch.object(gui, "woo_get", lambda *a, **k: one_product), \
-            patch.object(gui, "TOOL_ACTION", no_replace):
+            patch.object(gui, "plugin_version", lambda *a, **k: "1.0.14"):
         find_button(app, "Find the card...").invoke()
         app.update()
     warnings = answers["shown"][warnings_before:]
-    check("a plugin without the replace action is told to update",
-          any(kind == "warn" and "1.0.14" in str(args)
-              for kind, args in warnings), str(warnings))
-    check("the whole batch is still offered, but as a separate choice",
-          "Wire this card's photos?" not in asked and
-          "Wire the whole staged batch?" in asked, str(asked))
-    check("no photo job starts when the replace action is unavailable",
-          len(photos_cap.calls) == calls_before, str(photos_cap.calls))
+    check("1.0.14 is refused because the mode arrived in 1.0.15",
+          any(kind == "warn" and "1.0.15" in str(payload)
+              for kind, payload in warnings), str(warnings))
+    check("nothing is sent to a 1.0.14 plugin",
+          replacement_args(photos_cap.calls) is None, str(photos_cap.calls))
 
-    # -- after a split the two wiring choices stay distinct ----------------
-    def take_split(title, *a, **k):
-        asked.append(title)
-        return title in ("Split a 9-card sheet?", "Is there a back scan?")
+    # -- an all-black sheet must not produce a job -------------------------
+    blank_sheet = replace_root / "blank.jpg"
+    _I.new("RGB", (_tile * 3, _tile * 3 + 400), (0, 0, 0)).save(blank_sheet)
+    gui.filedialog.askopenfilename = lambda **k: str(blank_sheet)
+    photos_cap.calls.clear()
+    mb.askyesno = lambda title, *a, **k: True
+    with patch.object(gui, "has_woo_credentials", lambda path=None: True), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: fake_keys), \
+            patch.object(gui, "woo_get", lambda *a, **k: one_product):
+        find_button(app, "Find the card...").invoke()
+        app.update()
+    check("a sheet with no cards on it starts no replacement job",
+          replacement_args(photos_cap.calls) is None, str(photos_cap.calls))
 
-    mb.askyesno = take_split
-    asked.clear()
-    gui.filedialog.askdirectory = lambda **k: str(gui.BASE)
-    gui.filedialog.askopenfilename = lambda **k: str(gui.BASE / "sheet.jpg")
-    calls_before = len(photos_cap.calls)
-    try:
-        with patch.object(gui, "has_woo_credentials", lambda path=None: False), \
-                patch.object(gui, "find_pipeline_script",
-                             lambda settings: Path("C:/pipe/card_pipeline.py")):
-            find_button(app, "Find the card...").invoke()
-            app.update()
-        check("the 9-card split runs with the front and back scans",
-              photos_cap.last is not None and
-              photos_cap.last["script"].endswith("card_pipeline.py") and
-              photos_cap.last["args"][:1] == ["split"] and
-              "--front" in photos_cap.last["args"] and
-              "--back" in photos_cap.last["args"],
-              str(photos_cap.last))
-        check("after a split the whole batch is offered separately",
-              "Wire the whole staged batch?" in asked, str(asked))
-        check("no CanadianShopper job ran when both offers were declined",
-              len(photos_cap.calls) == calls_before + 1, str(photos_cap.calls))
-    finally:
-        app.cs_addon = photos_cs_addon
-        app.settings["woo_site_url"] = saved_site_url
-        mb.askyesno = lambda *a, **k: answers["askyesno"]
-        gui.filedialog.askdirectory = lambda **k: ""
-        gui.filedialog.askopenfilename = lambda **k: ""
-        app.runner.start = cap       # hand the recorder back to section 7
+    # every other section expects the plain stubs back
+    app.wait_window = old_wait_window
+    app.cs_addon = photos_cs_addon
+    app.settings["woo_site_url"] = saved_site_url
+    app.settings["pipeline_dir"] = saved_pipeline
+    mb.askyesno = lambda *a, **k: answers["askyesno"]
+    gui.filedialog.askopenfilename = lambda **k: ""
+    gui.filedialog.askdirectory = lambda **k: ""
+    shutil.rmtree(replace_root, ignore_errors=True)
+    app.runner.start = cap       # hand the recorder back to section 7
 
     print("== 7. the checklist viewer ==")
     gui.CHECKLIST.write_text(

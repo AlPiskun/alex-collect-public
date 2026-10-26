@@ -41,7 +41,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from browser_utils import available_browsers, browser_label, open_urls as launch_urls
-from plugin_manager import PluginError, PluginManager
+from plugin_manager import (PluginError, PluginManager,
+                            version_at_least)
 from process_utils import no_window_kwargs
 from sale_inputs import woo_get
 from user_settings import (default_scan_dir, has_woo_credentials,
@@ -51,7 +52,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.40"
+VERSION = "2.41"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -69,6 +70,10 @@ CS_PLUGIN_ID = "canadianshopper"
 CS_PHOTO_STAGE = "batch.photo_stage"
 CS_PHOTO_WIRE = "batch.photo_wire"
 CS_PHOTO_REPLACE = "batch.photo_replace"
+#  batch.photo_replace existed in 1.0.14 but only matched a staged CSV
+#  row. The CSV-free --mode replace arrived in 1.0.15, so the action ID
+#  alone cannot tell the two apart - the version has to be checked.
+CS_PHOTO_REPLACE_VERSION = "1.0.15"
 CS_TOOL_ACTIONS = {
     "sold-cards.py": "after_sale.stock_update",
     # Filename resolution can only name ONE of the photo actions; call sites
@@ -111,6 +116,26 @@ def TOOL_ACTION(action_id):
         return str(PLUGIN_MANAGER.resolve_action(action_id))
     except PluginError:
         return ""
+
+
+def plugin_version(plugin_id=CS_PLUGIN_ID):
+    """The installed plugin's declared version, or "" when unreadable."""
+    try:
+        return str(PLUGIN_MANAGER.get_plugin(plugin_id).get("version") or "")
+    except PluginError:
+        return ""
+
+
+def photo_replace_available():
+    """Whether the plugin can replace ONE card's photos without a staged CSV.
+
+    The action ID is not enough: 1.0.14 declares batch.photo_replace but only
+    matches a staged CSV row, which a replacement run does not have. Offering
+    it there would produce the "CSV(s) not found" failure the user already hit.
+    """
+    if not TOOL_ACTION(CS_PHOTO_REPLACE):
+        return False
+    return version_at_least(plugin_version(), CS_PHOTO_REPLACE_VERSION)
 
 
 def cs_addon_present():
@@ -3275,8 +3300,12 @@ def build_newphotos(parent, app):
                 "Your website answered HTTP %s.\n\nThe product list will open "
                 "instead - pick the card there." % code, parent=app)
             return None
+        # Keep the images: the replacement is named after the card's current
+        # website image, so dropping them here would silently fall back to the
+        # scan's own filename.
         rows = [{"id": p.get("id"), "name": (p.get("name") or "").strip(),
-                 "sku": (p.get("sku") or "").strip()}
+                 "sku": (p.get("sku") or "").strip(),
+                 "images": p.get("images") or []}
                 for p in data if isinstance(p, dict) and p.get("id")]
         if not rows:
             messagebox.showinfo(
@@ -3290,30 +3319,72 @@ def build_newphotos(parent, app):
 
     # -- the photo work -----------------------------------------------------
     def wire_args():
-        """The wire arguments both photo paths share."""
+        """The wire arguments the whole-batch path uses."""
         return ["--mode", "wire", "--cookie-file", str(CS_COOKIE_FILE),
                 "--ready-dir", str(canadianshopper_ready_dir(app)),
                 "--cache", str(canadianshopper_cache_path(app))]
 
-    def wire_card(product):
-        """Re-wire the one card being edited, matched by its full title.
+    def replace_args(title, front, back=None):
+        """The CSV-free per-card arguments (plugin 1.0.15 and newer)."""
+        args = ["--mode", "replace", "--title", str(title),
+                "--front", str(front), "--cookie-file", str(CS_COOKIE_FILE)]
+        if back:
+            args += ["--back", str(back)]
+        return args
 
-        Needs the plugin's per-card action. Without it nothing is written and
-        the app says so - it must never quietly widen this into bulk wiring.
-        """
+    def replace_dir():
+        """Where the chosen replacements are written for this batch."""
+        folder = Path(app.settings.get("pipeline_dir") or WORK) / "replacements"
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def single_product(product):
+        """True when one real product was picked, not a search fallback."""
+        return bool(isinstance(product, dict) and product.get("id") and
+                    str(product.get("name") or "").strip())
+
+    def choose_tile(candidates, question):
+        """Let the user pick one image from the sheet; None means cancel."""
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0]
+        top = tk.Toplevel(app)
+        top.title("Which image?")
+        top.transient(app)
+        top.geometry("460x320")
+        top.grab_set()
+        ttk.Label(top, text=question, wraplength=430,
+                  justify="left").pack(anchor="w", padx=8, pady=(8, 4))
+        listing = tk.Listbox(top, height=11, exportselection=False)
+        for tile in candidates:
+            listing.insert("end", "Sheet position %d   (%s)" %
+                           (tile["position"], Path(tile["path"]).name))
+        listing.pack(fill="both", expand=True, padx=8)
+        listing.selection_set(0)
+        chosen = {"tile": None}
+
+        def accept(*_event):
+            picked = listing.curselection()
+            if picked:
+                chosen["tile"] = candidates[picked[0]]
+            top.destroy()
+
+        row = ttk.Frame(top)
+        row.pack(fill="x", padx=8, pady=6)
+        ttk.Button(row, text="Use this image",
+                   command=accept).pack(side="right")
+        ttk.Button(row, text="Cancel",
+                   command=top.destroy).pack(side="right", padx=8)
+        listing.bind("<Double-Button-1>", accept)
+        app.wait_window(top)
+        return chosen["tile"]
+
+    def wire_card(product, front, back=None):
+        """Replace the one card's photos on CanadianShopper, no CSV involved."""
         script = TOOL_ACTION(CS_PHOTO_REPLACE)
-        if not script:
-            messagebox.showwarning(
-                "Update the CanadianShopper plugin",
-                "Re-wiring a single card's photos needs CanadianShopper plugin "
-                "1.0.14 or newer, and this copy does not offer that action. "
-                "Nothing was changed.\n\nUpdate the plugin in the Plugins "
-                "panel and try again - \"Wire the photos\" still re-wires the "
-                "whole staged batch in the meantime.", parent=app)
-            return False
-        title = str(product.get("name") or "")
-        app.run_tool(script, wire_args() + ["--title", title],
-                     "Wire this card's photos",
+        app.run_tool(script, replace_args(product.get("name"), front, back),
+                     "Replace this card's photos",
                      cwd=app.settings.get("pipeline_dir", str(WORK)))
         return True
 
@@ -3324,39 +3395,8 @@ def build_newphotos(parent, app):
                      cwd=app.settings.get("pipeline_dir", str(WORK)),
                      on_done=after)
 
-    def split_scan(on_done):
-        """Cut a 9-card sheet into its nine front (and optional back) images."""
-        images = [("Images", "*.jpg *.jpeg *.png *.tif *.tiff *.bmp *.webp"),
-                  ("All files", "*.*")]
-        front = filedialog.askopenfilename(
-            title="Choose the FRONT scan of the 9-card sheet",
-            initialdir=app.settings.get("scan_dir", str(BASE)),
-            filetypes=images)
-        if not front:
-            return on_done(0)
-        args = ["split", "--front", str(front)]
-        if messagebox.askyesno(
-                "Is there a back scan?",
-                "Do you also have the BACK of this sheet?\n\n"
-                "The split writes the nine back images as well when you "
-                "choose it.", parent=app):
-            back = filedialog.askopenfilename(
-                title="Choose the BACK scan of the same sheet",
-                initialdir=str(Path(front).parent), filetypes=images)
-            if back:
-                args += ["--back", str(back)]
-        script = find_pipeline_script(app.settings)
-        if script is None:
-            messagebox.showwarning(
-                "Pipeline not found",
-                "card_pipeline.py was not found, so the scan cannot be split "
-                "here. Set the batch folder in User settings.", parent=app)
-            return on_done(0)
-        app.run_tool(str(script), args, "Split the replacement scan",
-                     cwd=str(Path(script).parent), on_done=on_done)
-
     def replace(query, product):
-        """Folder, split, pages, and (with the plugin) the photo wiring."""
+        """Sheet -> tiles -> one chosen image -> named copy -> every page."""
         urls = []
         if isinstance(product, dict) and product.get("id"):
             edit = product_edit_url(product["id"], app.settings)
@@ -3371,68 +3411,95 @@ def build_newphotos(parent, app):
             status("Product list filtered to %r." % query)
         urls += marketplace_seller_urls(app.settings)
 
-        folder = filedialog.askdirectory(
-            title="Where are the replacement images?",
-            initialdir=app.settings.get("scan_dir", str(BASE)))
-        if folder and not open_path(folder):
+        try:
+            import photo_replace
+        except ImportError as exc:
+            messagebox.showerror("Photo helper missing",
+                                 "photo_replace.py could not be loaded:\n%s"
+                                 % exc, parent=app)
+            return
+
+        scan = filedialog.askopenfilename(
+            title="Which scan holds the replacement images?",
+            initialdir=app.settings.get("scan_dir", str(BASE)),
+            filetypes=[("Images", "*.jpg *.jpeg *.png *.tif *.tiff *.bmp "
+                                  "*.webp"), ("All files", "*.*")])
+        if not scan:
+            if urls:
+                app.open_webpages(urls)
+            return
+
+        tiles_dir = replace_dir() / "_tiles" / Path(scan).stem
+        try:
+            tiles = photo_replace.split_sheet(scan, tiles_dir)
+        except Exception as exc:
+            messagebox.showerror("Could not split the scan",
+                                 "%s" % exc, parent=app)
+            return
+        usable = [t for t in tiles if not t["blank"] and t["path"]]
+        if not usable:
+            messagebox.showinfo(
+                "No images on that sheet",
+                "Every slot on %s looks empty (a black background).\n\n"
+                "Scan the sheet again, or choose a different file." %
+                Path(scan).name, parent=app)
+            return
+        status("%d of %d slots hold a card." % (len(usable), len(tiles)))
+
+        front = choose_tile(usable, "Which image is the FRONT of %s?" %
+                            (product.get("name") if isinstance(product, dict)
+                             else query))
+        if front is None:
+            return
+
+        back = None
+        remaining = [t for t in usable if t["position"] != front["position"]]
+        if remaining and messagebox.askyesno(
+                "Is there a back image?",
+                "Does this sheet also hold a BACK for the same card?\n\n"
+                "The back is optional - without it the existing gallery photo "
+                "is left alone.", parent=app):
+            back = choose_tile(remaining, "Which image is the BACK?")
+            if back is not None and back is front:
+                back = None
+
+        try:
+            current = photo_replace.woo_image_name(product)
+            saved = photo_replace.copy_as_replacement(
+                replace_dir(), current, front["path"])
+        except Exception as exc:
+            messagebox.showerror("Could not name the replacement",
+                                 "%s" % exc, parent=app)
+            return
+        saved_back = None
+        if back is not None:
+            try:
+                saved_back = photo_replace.copy_as_replacement(
+                    replace_dir(),
+                    photo_replace.replacement_stem(saved.name) + "-back",
+                    back["path"])
+            except Exception as exc:
+                messagebox.showwarning("Back image not saved",
+                                       "%s" % exc, parent=app)
+        status("Saved %s" % saved.name)
+
+        if getattr(app, "cs_addon", True) and photo_replace_available():
+            if messagebox.askyesno(
+                    "Replace the CanadianShopper photos?",
+                    "Upload %s to CanadianShopper and set it as the photo for "
+                    "this one listing?%s\n\nExactly one listing must match "
+                    "the title, or nothing is written."
+                    % (saved.name, "\nThe back image is added to the gallery."
+                       if saved_back else ""), parent=app):
+                wire_card(product, saved, saved_back)
+        elif getattr(app, "cs_addon", True) and single_product(product):
             messagebox.showwarning(
-                "Folder not found", "Could not open:\n%s" % folder,
+                "Update the CanadianShopper plugin",
+                "Replacing one card's photos needs CanadianShopper plugin "
+                "%s or newer; this copy is %s. The image was saved for you, "
+                "but nothing was sent to CanadianShopper."
+                % (CS_PHOTO_REPLACE_VERSION, plugin_version() or "unknown"),
                 parent=app)
-
-        do_split = bool(folder) and messagebox.askyesno(
-            "Split a 9-card sheet?",
-            "Run the 9-card split on a scan of this card's sheet?\n\n"
-            "The front scan is required and the back is optional. The images "
-            "land in the pipeline's output folder.", parent=app)
-
-        # Per-card wiring needs BOTH a single product and the plugin's per-card
-        # action; bulk wiring stays a separate, explicit choice. Offering bulk
-        # only after saying the per-card path is unavailable is not a silent
-        # fallback - the two questions are always distinct.
-        bulk_warning = ("Re-wire every staged front/back photo now?\n\n"
-                        "This uses whatever is staged and cached - it is not "
-                        "limited to this one card.")
-        single = bool(isinstance(product, dict) and product.get("id") and
-                      str(product.get("name") or "").strip())
-        per_card = whole_batch = False
-        if getattr(app, "cs_addon", True):
-            if single and TOOL_ACTION(CS_PHOTO_REPLACE):
-                per_card = messagebox.askyesno(
-                    "Wire this card's photos?",
-                    "Re-wire the gallery photos for %s now?\n\n"
-                    "Only this card is touched: the plugin writes nothing "
-                    "unless exactly one staged row and one CanadianShopper "
-                    "listing match that title." % product["name"], parent=app)
-                if not per_card:
-                    whole_batch = messagebox.askyesno(
-                        "Wire the whole staged batch?", bulk_warning, parent=app)
-            elif single:
-                messagebox.showwarning(
-                    "Update the CanadianShopper plugin",
-                    "Re-wiring one card's photos needs CanadianShopper plugin "
-                    "1.0.14 or newer. This copy does not offer that action, so "
-                    "no photos were changed.\n\nYou can still re-wire the "
-                    "whole staged batch.", parent=app)
-                whole_batch = messagebox.askyesno(
-                    "Wire the whole staged batch?", bulk_warning, parent=app)
-            else:
-                whole_batch = messagebox.askyesno(
-                    "Wire the whole staged batch?", bulk_warning, parent=app)
-
-        def after_split(rc):
-            if rc != 0:
-                return
-            if per_card:
-                wire_card(product)
-            elif whole_batch:
-                wire_batch()
-
-        if do_split:
-            split_scan(after_split)
-        elif per_card:
-            wire_card(product)
-        elif whole_batch:
-            wire_batch()
 
         if urls:
             app.open_webpages(urls)

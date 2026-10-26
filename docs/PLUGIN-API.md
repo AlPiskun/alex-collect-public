@@ -72,14 +72,30 @@ backs them all, so the core resolves each one by ID rather than by filename:
 | `batch.photo_wire` | "Wire the photos", and the whole-batch offer in Replace a card's photos | `--mode wire --cookie-file ... --ready-dir ... --cache ...` |
 | `batch.photo_replace` | "Wire this card's photos?" in Replace a card's photos | the same `--mode wire` arguments plus `--title <full product name>` |
 
-`batch.photo_replace` is the narrow one. The core passes the selected
-product's full name, exactly as returned by the WooCommerce REST API, with no
-stripping of a trailing grade. The plugin must require exactly one staged CSV
-row and exactly one matching CanadianShopper listing, and must exit non-zero
-without writing when the match is missing or ambiguous. The core only offers
-this path when a single product was actually selected; if the action is
-unavailable (a plugin older than 1.0.14) it says so and leaves the whole-batch
-action as a separate, explicit choice rather than silently widening the job.
+`batch.photo_replace` is the narrow one, and since plugin 1.0.15 it needs no
+staged CSV at all. When a card's photos are replaced the core splits the new
+sheet scan, writes the chosen image into a `replacements` folder, and calls:
+
+```
+cs-image-sync.py --mode replace --title "<full listing title>"
+  --front "<local front image>" [--back "<local back image>"]
+  --cookie-file "<cookie.txt>"
+```
+
+The plugin supplies its own padding and upload; there is no pipeline run,
+`cs-ready` folder, or staged cache involved. The core passes the selected
+product's full name exactly as the WooCommerce REST API returned it, with no
+stripping of a trailing grade, and matching uses the plugin's exact-first
+normalized comparison. Exactly one listing must match: zero or several matches
+must exit non-zero before any upload or listing write. `--back` is optional and
+additive - without it the existing gallery is left untouched.
+
+The action ID alone cannot tell 1.0.14 from 1.0.15, because both declare
+`batch.photo_replace`; only 1.0.15 accepts `--mode replace` without a CSV. The
+core therefore gates this path on the declared plugin **version** as well as
+the action, and shows an "update the plugin" message rather than risking the
+CSV error on an older copy. Whole-batch wiring remains a separate action
+(`batch.photo_wire`) in its own panel.
 
 The core invokes a tool only when a user selects the relevant action. For
 `batch.pipeline_stage`, the hook may define `run_stage(output_paths, args,
