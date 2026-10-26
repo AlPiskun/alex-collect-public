@@ -41,16 +41,21 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from browser_utils import available_browsers, browser_label, open_urls as launch_urls
-from plugin_manager import PluginError, PluginManager
+from plugin_manager import (PluginError, PluginManager,
+                            version_at_least)
 from process_utils import no_window_kwargs
+import woo_media
+import woo_orders
 from sale_inputs import woo_get
 from user_settings import (default_scan_dir, has_woo_credentials,
-                           load_user_settings, marketplace_seller_urls,
-                           normalize_web_url, product_edit_url,
-                           product_search_url, read_woo_credentials,
-                           site_admin_url, sync_site_url_to_woo_keys)
+                           has_wordpress_credentials, load_user_settings,
+                           marketplace_seller_urls, normalize_web_url,
+                           product_edit_url, product_search_url,
+                           read_woo_credentials, read_wordpress_credentials,
+                           restrict_file_permissions, site_admin_url,
+                           sync_site_url_to_woo_keys)
 
-VERSION = "2.39"
+VERSION = "2.47"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -68,6 +73,14 @@ CS_PLUGIN_ID = "canadianshopper"
 CS_PHOTO_STAGE = "batch.photo_stage"
 CS_PHOTO_WIRE = "batch.photo_wire"
 CS_PHOTO_REPLACE = "batch.photo_replace"
+#  batch.photo_replace existed in 1.0.14 but only matched a staged CSV
+#  row. The CSV-free --mode replace arrived in 1.0.15, so the action ID
+#  alone cannot tell the two apart - the version has to be checked.
+CS_PHOTO_REPLACE_VERSION = "1.0.15"
+#  --back was additive until 1.0.16, which replaces the paired gallery row
+#  instead of adding a second back beside it. Sending --back to 1.0.15 would
+#  leave the old back photo on the listing, so the gate is separate.
+CS_PHOTO_BACK_VERSION = "1.0.16"
 CS_TOOL_ACTIONS = {
     "sold-cards.py": "after_sale.stock_update",
     # Filename resolution can only name ONE of the photo actions; call sites
@@ -110,6 +123,33 @@ def TOOL_ACTION(action_id):
         return str(PLUGIN_MANAGER.resolve_action(action_id))
     except PluginError:
         return ""
+
+
+def plugin_version(plugin_id=CS_PLUGIN_ID):
+    """The installed plugin's declared version, or "" when unreadable."""
+    try:
+        return str(PLUGIN_MANAGER.get_plugin(plugin_id).get("version") or "")
+    except PluginError:
+        return ""
+
+
+def photo_replace_available():
+    """Whether the plugin can replace ONE card's photos without a staged CSV.
+
+    The action ID is not enough: 1.0.14 declares batch.photo_replace but only
+    matches a staged CSV row, which a replacement run does not have. Offering
+    it there would produce the "CSV(s) not found" failure the user already hit.
+    """
+    if not TOOL_ACTION(CS_PHOTO_REPLACE):
+        return False
+    return version_at_least(plugin_version(), CS_PHOTO_REPLACE_VERSION)
+
+
+def photo_back_replaceable():
+    """Whether --back replaces the listing's back instead of adding one."""
+    if not photo_replace_available():
+        return False
+    return version_at_least(plugin_version(), CS_PHOTO_BACK_VERSION)
 
 
 def cs_addon_present():
@@ -887,6 +927,34 @@ square - for the occasional card you upload by hand through the
 dashboard instead of through a batch. The square copy is written next
 to the original; the original is never touched. No cookie needed."""
 
+DOCS["ordertext"] = """\
+A customer texts you a list of cards. Paste it here and Alex Collect
+creates the order on your website, with each line matched to a real
+product.
+
+One card per line, in either order - "1970-71 O-Pee-Chee Paul Henderson
+#217" or "#217 Paul Henderson 1970-71 O-Pee-Chee". Numbering ("1."),
+bullets, quotes, bracketed notes and a trailing price are ignored. A
+line that starts with a card number is a card, not a comment; a line
+that starts with a hash and a space ("# a note") is a comment.
+
+A line repeated word for word becomes one row of quantity 2. The same
+card listed at two different grades stays two rows, because those are
+two different cards.
+
+You are asked whether to start a new order or add to an existing one
+(enter its order number). A line Alex Collect is not sure about opens a
+search where you pick the card - nothing is guessed. Leave the discount
+box empty for full price, or type a percentage to put one discount line
+on the order.
+
+The order is created as PENDING: nothing is charged and no email is
+sent. Open it in the dashboard to check it and take payment.
+
+Without website API keys the order list opens instead, and the pasted
+list is copied to the clipboard so you can paste it there.
+"""
+
 DOCS["newphotos"] = """\
 One card needs better photos (a rescan, a condition change, a cracked
 slab). Type its name or SKU and press Find.
@@ -1662,8 +1730,9 @@ class App(tk.Tk):
 #  menu, the tabs view and the wizard pages.
 PANEL_ORDER = ["cookie", "pipeline", "combine", "stage", "importpanel",
                "wire", "rerun", "sold", "checklist", "zerostock", "square",
-               "newphotos", "markets", "logs", "plugins"]
-GROUPS_FULL = [("Sell a new batch", ["pipeline", "combine", "stage",
+               "newphotos", "ordertext", "markets", "logs", "plugins"]
+GROUPS_FULL = [("Sell to a customer", ["ordertext"]),
+               ("Sell a new batch", ["pipeline", "combine", "stage",
                                      "importpanel", "wire"]),
                ("After a sale", ["sold", "checklist", "zerostock"]),
                ("Photos", ["square", "rerun", "newphotos"]),
@@ -1678,7 +1747,8 @@ def groups_for(has_cs):
     """
     if has_cs:
         return GROUPS_FULL
-    return [("Sell a new batch", ["pipeline", "combine", "importpanel"]),
+    return [("Sell to a customer", ["ordertext"]),
+            ("Sell a new batch", ["pipeline", "combine", "importpanel"]),
             ("After a sale", ["sold", "checklist"]),
             ("Photos", ["square", "newphotos"]),
             ("Re-run a marketplace", ["markets"])]
@@ -1696,6 +1766,7 @@ TITLES = {
     "square": "Square up a photo (manual upload)",
     "plugins": "Plugins",
     "newphotos": "Replace a card's photos",
+    "ordertext": "Make an order from a card list",
     "markets": "Re-run a marketplace step",
     "logs": "Logs and reports",
 }
@@ -1712,6 +1783,7 @@ MENU_LABELS = {
     "zerostock": "Archive listings at 0",
     "square": "Square up a photo",
     "newphotos": "Replace card photos",
+    "ordertext": "Order from a text list",
     "markets": "Re-run a marketplace",
     "logs": "Logs & reports",
     "plugins": "Plugins",
@@ -1730,6 +1802,7 @@ BLURBS = {
     "square": "Pad a photo onto a white square for a manual dashboard upload.",
     "plugins": "Install and manage optional plugins.",
     "newphotos": "Find a card, open its replacement images, and refresh its pages.",
+    "ordertext": "Paste the list a customer texted you and turn it into a website order.",
     "markets": "Redo just one marketplace (Woo, CanadianShopper, Facebook, eBay) without repeating the AI or image steps.",
     "logs": "Where every run is recorded.",
 }
@@ -2290,9 +2363,14 @@ def open_woo_keys_file(app, current_site_url=""):
             path.write_text(text, encoding="utf-8")
         else:
             path.write_text((normalize_web_url(current_site_url) or "") +
-                            "\nck_replace_with_read_only_consumer_key\n"
-                            "cs_replace_with_read_only_consumer_secret\n",
+                            "\nck_replace_with_your_consumer_key\n"
+                            "cs_replace_with_your_consumer_secret\n"
+                            "# Optional lines 4 and 5 for uploading photos:\n"
+                            "wp_replace_with_your_wordpress_username\n"
+                            "wp_replace_with_your_application_password\n",
                             encoding="utf-8")
+    # Credentials belong to this Windows account only.
+    restrict_file_permissions(path)
     open_path(path)
     app.console_line("Opened private WooCommerce credentials file; keep it "
                      "out of public repos and messages.", "dim")
@@ -3179,6 +3257,400 @@ def build_square(parent, app):
         side="left", padx=8)
 
 
+def build_ordertext(parent, app):
+    """Paste a customer's list of cards and turn it into a WooCommerce order.
+
+    A customer texts a list; this matches each line to a real product and
+    writes a draft order. Nothing is charged and no email is sent - the order
+    lands in the dashboard as pending, for review, exactly like one typed by
+    hand. Without API keys the order list opens and the pasted text is copied
+    to the clipboard so it can be pasted into the dashboard.
+    """
+    panel_header(parent, app, "ordertext")
+    box = ttk.Frame(parent)
+    box.pack(fill="both", expand=True)
+
+    ttk.Label(box, text="Paste the list - one card per line. Numbering, "
+                        "bullets and a trailing price are ignored.",
+              style="Dim.TLabel").pack(anchor="w")
+    text = tk.Text(box, height=11, wrap="word", font=("Consolas", 9))
+    text.pack(fill="both", expand=True, pady=(2, 4))
+
+    row = ttk.Frame(box)
+    row.pack(fill="x")
+    status = ttk.Label(box, text="", style="Dim.TLabel", wraplength=760,
+                       justify="left")
+    status.pack(anchor="w", pady=(3, 0))
+
+    def say(message):
+        try:
+            status.configure(text=message)
+        except Exception:
+            pass
+
+    discount = tk.StringVar(value="")
+    ttk.Label(row, text="Discount %:").pack(side="left")
+    ttk.Entry(row, textvariable=discount, width=5).pack(side="left",
+                                                       padx=(3, 14))
+    ttk.Label(row, text="optional - one discount line on the order",
+              style="Dim.TLabel").pack(side="left")
+
+    # -- the pieces --------------------------------------------------------
+    def discount_percent():
+        """The discount as 0-100, or None when what was typed is unusable.
+
+        None means "ask again": quietly charging full price because a box could
+        not be read would be the worst possible outcome on a real order.
+        """
+        raw = str(discount.get() or "").strip().replace("%", "").strip()
+        if not raw:
+            return 0.0
+        try:
+            value = float(raw)
+        except ValueError:
+            return None
+        if not 0 <= value <= 100:
+            return None
+        return value
+
+    def confirm_order(question):
+        """Ask before writing. A long list gets a scrollable window.
+
+        A message box cannot hold 30 card names, and the whole point of the
+        confirmation is that the user can read what is about to be created.
+        """
+        if len(question) < 1200 and question.count("\n") < 20:
+            return messagebox.askyesno("Create the order?", question,
+                                       parent=app)
+        top = tk.Toplevel(app)
+        top.title("Create the order?")
+        top.transient(app)
+        top.geometry("780x540")
+        top.grab_set()
+        body = ttk.Frame(top)
+        body.pack(fill="both", expand=True, padx=8, pady=(8, 3))
+        view = tk.Text(body, wrap="word", height=22, state="normal")
+        scroll = ttk.Scrollbar(body, orient="vertical", command=view.yview)
+        view.configure(yscrollcommand=scroll.set)
+        view.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        view.insert("1.0", question)
+        view.configure(state="disabled")
+        result = {"ok": False}
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=8, pady=6)
+        ttk.Button(buttons, text="Create the order",
+                   command=lambda: (result.update(ok=True), top.destroy())
+                   ).pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=top.destroy).pack(
+            side="right", padx=8)
+        top.protocol("WM_DELETE_WINDOW", top.destroy)
+        app.wait_window(top)
+        return result["ok"]
+
+    def open_orders(site=""):
+        url = woo_orders.orders_admin_url(
+            site or read_woo_credentials()[0] or
+            app.settings.get("woo_site_url", ""))
+        if url:
+            app.open_webpages([url])
+        return url
+
+    def copy_to_clipboard(lines):
+        """Leave the list on the clipboard for pasting into the dashboard."""
+        try:
+            app.clipboard_clear()
+            app.clipboard_append("\n".join(lines))
+            return True
+        except Exception:
+            return False
+
+    def search_products(term, site, key, secret):
+        """One product search, trimmed to what an order needs."""
+        try:
+            code, data = woo_get(site, "/wp-json/wc/v3/products",
+                                 {"search": term, "per_page": 30}, key, secret)
+        except Exception:
+            return []
+        if code != 200 or not isinstance(data, list):
+            return []
+        return [{"id": product.get("id"),
+                 "name": (product.get("name") or "").strip(),
+                 "price": product.get("price") or "",
+                 "sku": (product.get("sku") or "").strip(),
+                 "stock_status": product.get("stock_status") or ""}
+                for product in data
+                if isinstance(product, dict) and product.get("id")]
+
+    def candidates_for(name, site, key, secret):
+        """Every product worth showing for one pasted line."""
+        found, seen = [], set()
+        for term in woo_orders.search_terms(name):
+            for product in search_products(term, site, key, secret):
+                if product["id"] not in seen:
+                    seen.add(product["id"])
+                    found.append(product)
+            if woo_orders.auto_pick(name, found):
+                break
+        return found
+
+    def describe(product):
+        """One list-row label: name, price, stock, match strength."""
+        price = woo_orders.price_of(product)
+        bits = [product.get("name") or "(untitled)"]
+        if price is not None:
+            bits.append("$%.2f" % price)
+        if product.get("stock_status") == "outofstock":
+            bits.append("OUT OF STOCK")
+        return "   ".join(bits)
+
+    def pick_card(name, candidates, site, key, secret):
+        """Ask which product a line means. Product, "skip", or False to stop."""
+        top = tk.Toplevel(app)
+        top.title("Which card is this?")
+        top.transient(app)
+        top.geometry("760x360")
+        top.grab_set()
+        ttk.Label(top, text="Not sure which card this means:\n%s" % name,
+                  wraplength=720, justify="left").pack(anchor="w", padx=8,
+                                                       pady=(8, 4))
+        ttk.Label(top, text="Pick the right one, or search again with other "
+                            "words.", style="Dim.TLabel").pack(anchor="w",
+                                                               padx=8)
+        term = tk.StringVar(value=(woo_orders.search_terms(name) or [name])[0])
+        search_row = ttk.Frame(top)
+        search_row.pack(fill="x", padx=8, pady=4)
+        entry = ttk.Entry(search_row, textvariable=term)
+        entry.pack(side="left", fill="x", expand=True)
+        listing = tk.Listbox(top, height=9, exportselection=False)
+        listing.pack(fill="both", expand=True, padx=8)
+        chosen = {"product": None, "stop": False, "shown": []}
+
+        def show(products):
+            chosen["shown"] = list(products)
+            listing.delete(0, "end")
+            for product in products:
+                listing.insert("end", describe(product))
+            if products:
+                listing.selection_set(0)
+
+        def do_search():
+            show(search_products(term.get().strip(), site, key, secret))
+
+        def use(*_event):
+            picked = listing.curselection()
+            if picked and chosen["shown"]:
+                chosen["product"] = chosen["shown"][picked[0]]
+            top.destroy()
+
+        def skip():
+            chosen["product"] = "skip"
+            top.destroy()
+
+        def stop():
+            chosen["product"] = False
+            top.destroy()
+
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=8, pady=6)
+        ttk.Button(buttons, text="Use this card", command=use).pack(
+            side="right")
+        ttk.Button(buttons, text="Skip this one", command=skip).pack(
+            side="right", padx=8)
+        ttk.Button(buttons, text="Cancel all", command=stop).pack(side="left")
+        ttk.Button(buttons, text="Search", command=do_search).pack(side="left",
+                                                                 padx=8)
+        listing.bind("<Double-Button-1>", use)
+        entry.bind("<Return>", lambda *_: do_search())
+        show(candidates)
+        app.wait_window(top)
+        return chosen["product"]
+
+    def ask_target(site, key, secret):
+        """("new"|"existing", order_id) - or (None, None) when cancelled."""
+        choice = messagebox.askyesnocancel(
+            "New order or an existing one?",
+            "Yes  - start a NEW order for these cards\n"
+            "No   - add them to an order that already exists\n"
+            "Cancel - stop here", parent=app)
+        if choice is None:
+            return None, None
+        if choice:
+            return "new", None
+        answer = simpledialog.askstring(
+            "Which order?", "Order number (the # shown in the order list):",
+            parent=app)
+        if answer is None:
+            return None, None
+        try:
+            order_id = int(str(answer).strip().lstrip("#"))
+        except ValueError:
+            messagebox.showwarning("Not an order number",
+                                   "%r is not an order number." % answer,
+                                   parent=app)
+            return None, None
+        try:
+            order = woo_orders.read_order(site, key, secret, order_id)
+        except woo_orders.OrderError as exc:
+            messagebox.showwarning("Could not open that order", exc.message,
+                                   parent=app)
+            return None, None
+        return "existing", order
+
+    def confirm_text(plan, skipped, target, order, percent):
+        """What is about to happen, in the words the user can check."""
+        estimate = woo_orders.estimate_total(plan, percent)
+        lines = ["%d lines read: %d matched, %d skipped." %
+                 (len(plan) + len(skipped), len(plan), len(skipped)), ""]
+        if target == "existing":
+            lines.append("Added to order #%s, which already holds %d card(s)."
+                         % (order.get("number") or order.get("id"),
+                            len(order.get("line_items") or [])))
+        else:
+            lines.append("A new order will hold:")
+        lines.append("")
+        merged = woo_orders.merge_duplicates(plan)
+        for item in merged[:22]:
+            price = woo_orders.price_of(item.get("product") or {})
+            lines.append("  %-2d  %s%s" % (
+                item["quantity"], (item.get("product") or {}).get(
+                    "name", "(untitled)"),
+                "" if price is None else "   $%.2f" % price))
+        if len(merged) > 22:
+            lines.append("  ... and %d more" % (len(merged) - 22))
+        lines.append("")
+        if estimate["priced"]:
+            lines.append("Subtotal  $%.2f" % estimate["subtotal"])
+            if estimate["discount"]:
+                lines.append("Discount %g%%  -$%.2f" % (percent,
+                                                       estimate["discount"]))
+            lines.append("Total     $%.2f" % estimate["total"])
+        if estimate["unpriced"]:
+            lines.append("(%d card(s) have no price on the website)"
+                         % estimate["unpriced"])
+        if skipped:
+            lines.append("")
+            lines.append("Not on the website (left out):")
+            for name in skipped[:10]:
+                lines.append("  %s" % name)
+            if len(skipped) > 10:
+                lines.append("  ... and %d more" % (len(skipped) - 10))
+        lines.append("")
+        lines.append("Nothing is charged and no email is sent. Continue?")
+        return "\n".join(lines)
+
+    def finish(target, order, site, key, secret, percent, names):
+        """Look the lines up, ask about the unclear ones, then write."""
+        say("Looking up %d cards..." % len(names))
+        pairs = []
+
+        def work():
+            for index, name in enumerate(names, 1):
+                try:
+                    found = candidates_for(name, site, key, secret)
+                except Exception:
+                    #  A lookup that fails is not a match; the picker below
+                    #  still lets the line be searched by hand.
+                    found = []
+                pairs.append((name, found))
+                app.after(0, lambda i=index, n=name: say(
+                    "Looked up %d of %d: %s" % (i, len(names), n[:50])))
+            app.after(0, lambda: assemble(pairs))
+
+        def assemble(pairs):
+            plan, skipped = [], []
+            for name, candidates in pairs:
+                product = woo_orders.auto_pick(name, candidates)
+                if product is None:
+                    picked = pick_card(name, candidates, site, key, secret)
+                    if picked is False:
+                        say("Cancelled - nothing was sent.")
+                        return
+                    if picked == "skip" or picked is None:
+                        skipped.append(name)
+                        continue
+                    product = picked
+                plan.append({"product_id": product["id"], "quantity": 1,
+                             "line": name, "product": product})
+            say("")
+            if not plan:
+                messagebox.showinfo(
+                    "Nothing matched",
+                    "None of those lines matched a card on the website, so "
+                    "no order was created.", parent=app)
+                return
+            #  Two lines asking for the same card become one row of quantity 2,
+            #  so the order reads the way a person would write it.
+            plan = woo_orders.merge_duplicates(plan)
+            question = confirm_text(plan, skipped, target, order, percent)
+            if not confirm_order(question):
+                say("Cancelled - nothing was sent.")
+                return
+            say("Writing the order...")
+            try:
+                if target == "existing":
+                    result = woo_orders.add_to_order(
+                        site, key, secret, order["id"], plan,
+                        discount_percent=percent)
+                else:
+                    result = woo_orders.create_order(
+                        site, key, secret, plan, discount_percent=percent)
+            except woo_orders.OrderError as exc:
+                messagebox.showerror("The order was not written", exc.message,
+                                     parent=app)
+                app.console_line("Order: %s" % exc.message, "err")
+                say("The order was not written.")
+                return
+            number = result.get("number") or result.get("id")
+            app.console_line("Order #%s written on the website (%d cards%s)."
+                             % (number, len(result.get("line_items") or []),
+                                ", %d skipped" % len(skipped) if skipped
+                                else ""), "ok")
+            say("Order #%s is ready - opening it now." % number)
+            url = woo_orders.order_edit_url(site, result.get("id"))
+            if url:
+                app.open_webpages([url])
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def start():
+        names = woo_orders.parse_card_list(text.get("1.0", "end"))
+        if not names:
+            messagebox.showinfo(
+                "Paste a list first",
+                "Paste the customer's list into the box, one card per line.",
+                parent=app)
+            return
+        site, key, secret = read_woo_credentials()
+        if not (site and key and secret):
+            copied = copy_to_clipboard(names)
+            open_orders(app.settings.get("woo_site_url", ""))
+            messagebox.showinfo(
+                "Order list opened",
+                "%d card names read.\n\nNo website API keys are saved, so the "
+                "order list is open instead%s." % (
+                    len(names), " and the list is on your clipboard - paste it "
+                    "into the order's card search" if copied else ""),
+                parent=app)
+            return
+        percent = discount_percent()
+        if percent is None:
+            messagebox.showwarning(
+                "Discount not understood",
+                "Type a number between 0 and 100 in the discount box, or "
+                "leave it empty to charge full price.", parent=app)
+            return
+        target, order = ask_target(site, key, secret)
+        if target is None:
+            say("Cancelled - nothing was sent.")
+            return
+        finish(target, order, site, key, secret, percent, names)
+
+    ttk.Button(row, text="Build the order", command=start).pack(side="right")
+    ttk.Button(row, text="Open the order list",
+               command=lambda: open_orders()).pack(side="right", padx=8)
+
+
 def build_newphotos(parent, app):
     """Replace one card's photos, then put every marketplace page on screen.
 
@@ -3272,8 +3744,12 @@ def build_newphotos(parent, app):
                 "Your website answered HTTP %s.\n\nThe product list will open "
                 "instead - pick the card there." % code, parent=app)
             return None
+        # Keep the images: the replacement is named after the card's current
+        # website image, so dropping them here would silently fall back to the
+        # scan's own filename.
         rows = [{"id": p.get("id"), "name": (p.get("name") or "").strip(),
-                 "sku": (p.get("sku") or "").strip()}
+                 "sku": (p.get("sku") or "").strip(),
+                 "images": p.get("images") or []}
                 for p in data if isinstance(p, dict) and p.get("id")]
         if not rows:
             messagebox.showinfo(
@@ -3287,31 +3763,191 @@ def build_newphotos(parent, app):
 
     # -- the photo work -----------------------------------------------------
     def wire_args():
-        """The wire arguments both photo paths share."""
+        """The wire arguments the whole-batch path uses."""
         return ["--mode", "wire", "--cookie-file", str(CS_COOKIE_FILE),
                 "--ready-dir", str(canadianshopper_ready_dir(app)),
                 "--cache", str(canadianshopper_cache_path(app))]
 
-    def wire_card(product):
-        """Re-wire the one card being edited, matched by its full title.
+    def replace_args(title, front, back=None):
+        """The CSV-free per-card arguments (plugin 1.0.15 and newer)."""
+        args = ["--mode", "replace", "--title", str(title),
+                "--front", str(front), "--cookie-file", str(CS_COOKIE_FILE)]
+        if back:
+            args += ["--back", str(back)]
+        return args
 
-        Needs the plugin's per-card action. Without it nothing is written and
-        the app says so - it must never quietly widen this into bulk wiring.
+    def replace_dir():
+        """Where the chosen replacements are written for this batch."""
+        folder = Path(app.settings.get("pipeline_dir") or WORK) / "replacements"
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def upload_to_site(app, product, front_path, back_path=None,
+                       old_pair_ids=()):
+        """Upload the pair and make it the product's photos on the website.
+
+        Returns True when the website was updated. Nothing is sent when the
+        site, the keys, or the user's consent are missing.
         """
-        script = TOOL_ACTION(CS_PHOTO_REPLACE)
-        if not script:
-            messagebox.showwarning(
-                "Update the CanadianShopper plugin",
-                "Re-wiring a single card's photos needs CanadianShopper plugin "
-                "1.0.14 or newer, and this copy does not offer that action. "
-                "Nothing was changed.\n\nUpdate the plugin in the Plugins "
-                "panel and try again - \"Wire the photos\" still re-wires the "
-                "whole staged batch in the meantime.", parent=app)
+        site, key, secret = read_woo_credentials()
+        wp_site, username, app_password = read_wordpress_credentials()
+        photos = " and ".join(Path(x).name for x in
+                              (front_path, back_path) if x is not None)
+        if not (key and secret):
             return False
-        title = str(product.get("name") or "")
-        app.run_tool(script, wire_args() + ["--title", title],
-                     "Wire this card's photos",
-                     cwd=app.settings.get("pipeline_dir", str(WORK)))
+        if not (username and app_password):
+            #  Only ask once per session; a repeated nag is worse than a
+            #  manual upload, and the offer is still here next time the app
+            #  starts.
+            if not getattr(app, "_wp_upload_asked", False):
+                app._wp_upload_asked = True
+                if messagebox.askyesno(
+                        "Upload replacements straight from here?",
+                        "Alex Collect can upload the new photos and set them "
+                        "on the product by itself.\n\nThat needs two more "
+                        "lines in woo-keys.txt: your WordPress username and an "
+                        "Application Password (Users > Profile > Application "
+                        "Passwords).\n\nAdd them now? The file is private and "
+                        "only this account can read it.", parent=app):
+                    open_woo_keys_file(app, site)
+            return False
+        base = woo_media.site_root(wp_site or site)
+        if not base:
+            return False
+        if not woo_media.is_https(base):
+            messagebox.showwarning(
+                "HTTPS needed",
+                "WordPress only accepts an Application Password over HTTPS, "
+                "and the saved address is %s.\n\nThe photos are saved; "
+                "upload them from the media library instead." % base,
+                parent=app)
+            return False
+
+        #  Yes means "replace the old pair", which is the opposite of keeping
+        #  it - an easy inversion, so the name says what the answer means.
+        replace_old = messagebox.askyesnocancel(
+            "Put these photos on the website?",
+            "Upload %s and make them the photos for:\n\n%s\n\n"
+            "Yes - and replace the front and back already there\n"
+            "No - and keep the photos already there\n"
+            "Cancel - do not upload"
+            % (photos, product.get("name")), parent=app)
+        if replace_old is None:
+            return False
+        if replace_old:
+            keep_ids = [row["id"]
+                        for row in woo_media.existing_images(product)
+                        if row["id"] not in set(old_pair_ids)]
+        else:
+            keep_ids = None
+        status("Uploading %s..." % photos)
+        try:
+            result = woo_media.replace_product_photos(
+                base, key, secret, username, app_password, product,
+                front_path, back_path, keep_ids=keep_ids)
+        except woo_media.MediaError as exc:
+            (messagebox.showwarning if exc.partial else messagebox.showerror)(
+                "The photos were not put on the product", exc.message,
+                parent=app)
+            app.console_line("Photo upload: %s" % exc.message, "err")
+            status("The photos are saved, but the website was not updated.")
+            return False
+        front = result["front"]
+        app.console_line("Uploaded %s to the website (media ID %s)." %
+                         (Path(front_path).name, front["id"]), "ok")
+        if result.get("back"):
+            app.console_line("Uploaded %s to the website (media ID %s)." %
+                             (Path(back_path).name, result["back"]["id"]), "ok")
+        status("The website now shows %s." % photos)
+        for attachment in (front, result.get("back")):
+            if attachment and attachment.get("source_url"):
+                app.console_line(attachment["source_url"], "dim")
+        return True
+
+    def single_product(product):
+        """True when one real product was picked, not a search fallback."""
+        return bool(isinstance(product, dict) and product.get("id") and
+                    str(product.get("name") or "").strip())
+
+    def choose_tile(candidates, question, more_scan=None):
+        """Let the user pick one image; None means no choice was made.
+
+        ``more_scan`` is offered as a button when the wanted image is not on
+        this sheet - the back of a card is often scanned with the front, but
+        not always, and refusing to look elsewhere would be arbitrary.
+        """
+        if not candidates and more_scan is None:
+            return None
+        if len(candidates) == 1 and more_scan is None:
+            return candidates[0]
+        top = tk.Toplevel(app)
+        top.title("Which image?")
+        top.transient(app)
+        top.geometry("460x320")
+        top.grab_set()
+        ttk.Label(top, text=question, wraplength=430,
+                  justify="left").pack(anchor="w", padx=8, pady=(8, 4))
+        listing = tk.Listbox(top, height=11, exportselection=False)
+        listing.pack(fill="both", expand=True, padx=8)
+        chosen = {"tile": None}
+        shown = {"tiles": list(candidates)}
+
+        def fill(tiles):
+            shown["tiles"] = list(tiles)
+            listing.delete(0, "end")
+            for tile in tiles:
+                listing.insert(
+                    "end", "%s   (%s)" %
+                    (tile.get("sheet") or "Sheet position %d" %
+                     tile.get("position", 0), Path(tile["path"]).name))
+            if tiles:
+                listing.selection_set(0)
+
+        fill(candidates)
+
+        def accept(*_event):
+            picked = listing.curselection()
+            if picked and shown["tiles"]:
+                chosen["tile"] = shown["tiles"][picked[0]]
+            top.destroy()
+
+        def another():
+            tiles = more_scan()
+            if tiles:
+                fill(tiles)
+
+        row = ttk.Frame(top)
+        row.pack(fill="x", padx=8, pady=6)
+        ttk.Button(row, text="Use this image",
+                   command=accept).pack(side="right")
+        ttk.Button(row, text="Cancel",
+                   command=top.destroy).pack(side="right", padx=8)
+        if more_scan is not None:
+            ttk.Button(row, text="Another scan...",
+                       command=another).pack(side="left")
+        listing.bind("<Double-Button-1>", accept)
+        app.wait_window(top)
+        return chosen["tile"]
+
+    def wire_card(product, front, back=None):
+        """Replace the one card's photos on CanadianShopper, no CSV involved."""
+
+        def after(rc):
+            if not rc and back is not None:
+                #  The plugin refuses to guess when it cannot identify the
+                #  listing's back photo, which leaves the listing untouched.
+                #  Saying so beats leaving the user to read the whole log.
+                app.console_line(
+                    "If that failed because the back photo could not be "
+                    "identified, nothing was changed on CanadianShopper. "
+                    "Run this card again and choose no back image to replace "
+                    "only the front.", "dim")
+
+        script = TOOL_ACTION(CS_PHOTO_REPLACE)
+        app.run_tool(script, replace_args(product.get("name"), front, back),
+                     "Replace this card's photos",
+                     cwd=app.settings.get("pipeline_dir", str(WORK)),
+                     on_done=after)
         return True
 
     def wire_batch(after=None):
@@ -3321,39 +3957,8 @@ def build_newphotos(parent, app):
                      cwd=app.settings.get("pipeline_dir", str(WORK)),
                      on_done=after)
 
-    def split_scan(on_done):
-        """Cut a 9-card sheet into its nine front (and optional back) images."""
-        images = [("Images", "*.jpg *.jpeg *.png *.tif *.tiff *.bmp *.webp"),
-                  ("All files", "*.*")]
-        front = filedialog.askopenfilename(
-            title="Choose the FRONT scan of the 9-card sheet",
-            initialdir=app.settings.get("scan_dir", str(BASE)),
-            filetypes=images)
-        if not front:
-            return on_done(0)
-        args = ["split", "--front", str(front)]
-        if messagebox.askyesno(
-                "Is there a back scan?",
-                "Do you also have the BACK of this sheet?\n\n"
-                "The split writes the nine back images as well when you "
-                "choose it.", parent=app):
-            back = filedialog.askopenfilename(
-                title="Choose the BACK scan of the same sheet",
-                initialdir=str(Path(front).parent), filetypes=images)
-            if back:
-                args += ["--back", str(back)]
-        script = find_pipeline_script(app.settings)
-        if script is None:
-            messagebox.showwarning(
-                "Pipeline not found",
-                "card_pipeline.py was not found, so the scan cannot be split "
-                "here. Set the batch folder in User settings.", parent=app)
-            return on_done(0)
-        app.run_tool(str(script), args, "Split the replacement scan",
-                     cwd=str(Path(script).parent), on_done=on_done)
-
     def replace(query, product):
-        """Folder, split, pages, and (with the plugin) the photo wiring."""
+        """Sheet -> tiles -> one chosen image -> named copy -> every page."""
         urls = []
         if isinstance(product, dict) and product.get("id"):
             edit = product_edit_url(product["id"], app.settings)
@@ -3368,68 +3973,141 @@ def build_newphotos(parent, app):
             status("Product list filtered to %r." % query)
         urls += marketplace_seller_urls(app.settings)
 
-        folder = filedialog.askdirectory(
-            title="Where are the replacement images?",
-            initialdir=app.settings.get("scan_dir", str(BASE)))
-        if folder and not open_path(folder):
-            messagebox.showwarning(
-                "Folder not found", "Could not open:\n%s" % folder,
-                parent=app)
+        try:
+            import photo_replace
+        except ImportError as exc:
+            messagebox.showerror("Photo helper missing",
+                                 "photo_replace.py could not be loaded:\n%s"
+                                 % exc, parent=app)
+            return
 
-        do_split = bool(folder) and messagebox.askyesno(
-            "Split a 9-card sheet?",
-            "Run the 9-card split on a scan of this card's sheet?\n\n"
-            "The front scan is required and the back is optional. The images "
-            "land in the pipeline's output folder.", parent=app)
+        scan = filedialog.askopenfilename(
+            title="Which scan holds the replacement images?",
+            initialdir=app.settings.get("scan_dir", str(BASE)),
+            filetypes=[("Images", "*.jpg *.jpeg *.png *.tif *.tiff *.bmp "
+                                  "*.webp"), ("All files", "*.*")])
+        if not scan:
+            if urls:
+                app.open_webpages(urls)
+            return
 
-        # Per-card wiring needs BOTH a single product and the plugin's per-card
-        # action; bulk wiring stays a separate, explicit choice. Offering bulk
-        # only after saying the per-card path is unavailable is not a silent
-        # fallback - the two questions are always distinct.
-        bulk_warning = ("Re-wire every staged front/back photo now?\n\n"
-                        "This uses whatever is staged and cached - it is not "
-                        "limited to this one card.")
-        single = bool(isinstance(product, dict) and product.get("id") and
-                      str(product.get("name") or "").strip())
-        per_card = whole_batch = False
-        if getattr(app, "cs_addon", True):
-            if single and TOOL_ACTION(CS_PHOTO_REPLACE):
-                per_card = messagebox.askyesno(
-                    "Wire this card's photos?",
-                    "Re-wire the gallery photos for %s now?\n\n"
-                    "Only this card is touched: the plugin writes nothing "
-                    "unless exactly one staged row and one CanadianShopper "
-                    "listing match that title." % product["name"], parent=app)
-                if not per_card:
-                    whole_batch = messagebox.askyesno(
-                        "Wire the whole staged batch?", bulk_warning, parent=app)
-            elif single:
-                messagebox.showwarning(
-                    "Update the CanadianShopper plugin",
-                    "Re-wiring one card's photos needs CanadianShopper plugin "
-                    "1.0.14 or newer. This copy does not offer that action, so "
-                    "no photos were changed.\n\nYou can still re-wire the "
-                    "whole staged batch.", parent=app)
-                whole_batch = messagebox.askyesno(
-                    "Wire the whole staged batch?", bulk_warning, parent=app)
-            else:
-                whole_batch = messagebox.askyesno(
-                    "Wire the whole staged batch?", bulk_warning, parent=app)
+        def usable_tiles(scan_path):
+            """The non-empty images on a sheet, tagged with the file they came from."""
+            found = photo_replace.split_sheet(
+                scan_path, replace_dir() / "_tiles" / Path(scan_path).stem)
+            return [dict(tile, sheet=Path(scan_path).name) for tile in found
+                    if not tile["blank"] and tile["path"]]
 
-        def after_split(rc):
-            if rc != 0:
+        def ask_for_sheet(title):
+            """Ask for another scan and return its usable images."""
+            chosen = filedialog.askopenfilename(
+                title=title, initialdir=app.settings.get("scan_dir", str(BASE)),
+                filetypes=[("Images", "*.jpg *.jpeg *.png *.tif *.tiff *.bmp "
+                                      "*.webp"), ("All files", "*.*")])
+            if not chosen:
+                return None
+            try:
+                return usable_tiles(chosen)
+            except Exception as exc:
+                messagebox.showerror("Could not split the scan", "%s" % exc,
+                                     parent=app)
+                return None
+
+        try:
+            tiles = photo_replace.split_sheet(
+                scan, replace_dir() / "_tiles" / Path(scan).stem)
+        except Exception as exc:
+            messagebox.showerror("Could not split the scan",
+                                 "%s" % exc, parent=app)
+            return
+        usable = [dict(tile, sheet=Path(scan).name) for tile in tiles
+                  if not tile["blank"] and tile["path"]]
+        if not usable:
+            messagebox.showinfo(
+                "No images on that sheet",
+                "Every slot on %s looks empty (a black background).\n\n"
+                "Scan the sheet again, or choose a different file." %
+                Path(scan).name, parent=app)
+            return
+        status("%d of %d slots hold a card." % (len(usable), len(tiles)))
+
+        label = (product.get("name") if isinstance(product, dict) else query)
+        front = choose_tile(usable, "Which image is the FRONT of %s?" % label)
+        if front is None:
+            return
+
+        #  The back is the other half of the pair, so it is chosen rather than
+        #  assumed, and it is looked for on this sheet first.
+        remaining = [t for t in usable if t["path"] != front["path"]]
+        back = choose_tile(
+            remaining, "Which image is the BACK of %s?" % label,
+            more_scan=lambda: ask_for_sheet("Which scan holds the BACK?"))
+        if back is None:
+            if not messagebox.askyesno(
+                    "No back image",
+                    "Only a front was chosen, so the back photo will be left "
+                    "as it is.\n\nContinue with the front only?", parent=app):
                 return
-            if per_card:
-                wire_card(product)
-            elif whole_batch:
-                wire_batch()
 
-        if do_split:
-            split_scan(after_split)
-        elif per_card:
-            wire_card(product)
-        elif whole_batch:
-            wire_batch()
+        try:
+            current = photo_replace.woo_image_name(product)
+            written = photo_replace.save_pair(
+                replace_dir(), current, front["path"],
+                back["path"] if back else None)
+        except Exception as exc:
+            messagebox.showerror("Could not save the replacement",
+                                 "%s" % exc, parent=app)
+            return
+        saved = written["front"]
+        saved_back = written.get("back")
+        old_pair_ids = photo_replace.pair_ids(
+            woo_media.existing_images(product)) if isinstance(product, dict) \
+            else []
+        status("Saved %s%s" % (saved.name,
+                               " and %s" % saved_back.name if saved_back
+                               else ""))
+
+        # The website photo comes first: the shop is what customers buy from,
+        # and the marketplace copies are wired from the same card afterwards.
+        if single_product(product):
+            upload_to_site(app, product, saved, saved_back, old_pair_ids)
+
+        #  The plugin replaces one listing by its title, which only exists when
+        #  a single product was chosen. The search-page fallback has no title,
+        #  so offering it there would fail on a missing name.
+        if (getattr(app, "cs_addon", True) and single_product(product) and
+                photo_replace_available()):
+            #  1.0.15 can replace the front but only APPENDS a back, which
+            #  would leave the old back photo on the listing - so the back is
+            #  held back rather than sent to a plugin that cannot honour it.
+            send_back = saved_back if photo_back_replaceable() else None
+            if saved_back is not None and send_back is None:
+                messagebox.showwarning(
+                    "The back was not sent",
+                    "CanadianShopper plugin %s replaces a listing's back "
+                    "photo; this copy is %s and would only add the new back "
+                    "beside the old one.\n\nOnly the front will be sent now. "
+                    "Update the plugin to replace both."
+                    % (CS_PHOTO_BACK_VERSION, plugin_version() or "unknown"),
+                    parent=app)
+            if messagebox.askyesno(
+                    "Replace the CanadianShopper photos?",
+                    "Upload %s to CanadianShopper and set %s on this one "
+                    "listing?\n\nExactly one listing must match the title, "
+                    "or nothing is written. If the listing's back photo "
+                    "cannot be identified, the plugin stops without changing "
+                    "anything." % (" and ".join(
+                        p.name for p in (saved, send_back) if p is not None),
+                        "them" if send_back else "it"), parent=app):
+                wire_card(product, saved, send_back)
+        elif getattr(app, "cs_addon", True) and single_product(product):
+            messagebox.showwarning(
+                "Update the CanadianShopper plugin",
+                "Replacing one card's photos needs CanadianShopper plugin "
+                "%s or newer; this copy is %s. The image was saved for you, "
+                "but nothing was sent to CanadianShopper."
+                % (CS_PHOTO_REPLACE_VERSION, plugin_version() or "unknown"),
+                parent=app)
 
         if urls:
             app.open_webpages(urls)
@@ -3561,6 +4239,7 @@ PANEL_BUILDERS = {
     "zerostock": build_zerostock,
     "square": build_square,
     "newphotos": build_newphotos,
+    "ordertext": build_ordertext,
     "markets": build_markets,
     "logs": build_logs,
     "plugins": build_plugins,

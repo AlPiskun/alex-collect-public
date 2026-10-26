@@ -7,17 +7,60 @@ standalone tools as well as the desktop interface.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import quote_plus, urlparse
 
 APP_DIR = Path(__file__).resolve().parent
 SETTINGS_FILE = APP_DIR / "gui-settings.json"
 WOO_KEYS_FILE = APP_DIR / "woo-keys.txt"
+#: Kept as a constant so the Windows branch can be tested from Linux.
+IS_WINDOWS = sys.platform.startswith("win")
+#: This module is copied around on its own by the tools, so it carries its
+#: own copy of the no-console flag instead of importing process_utils.
+_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
+
+def _no_window():
+    """Popen keyword arguments that hide a child console window."""
+    return {"creationflags": _CREATE_NO_WINDOW} if IS_WINDOWS else {}
 
 
 def default_scan_dir() -> str:
     """A portable default; users can choose their scanner's real folder."""
     return str(Path.home() / "Pictures" / "Scan")
+
+
+def restrict_file_permissions(path: Path) -> bool:
+    """Make a secrets file readable only by the current user.
+
+    woo-keys.txt holds API credentials. It is already git-ignored and never
+    leaves the machine, but by default any account on the PC can read it.
+    On Windows the inherited permissions are removed and only the current
+    user is granted access; elsewhere the file becomes mode 600.
+
+    Returns True when the restriction was applied. A failure is not fatal -
+    the caller keeps working with the file as it is.
+    """
+    path = Path(path)
+    if not path.exists():
+        return False
+    try:
+        if IS_WINDOWS:
+            user = os.environ.get("USERNAME", "").strip()
+            if not user:
+                return False
+            result = subprocess.run(
+                ["icacls", str(path), "/inheritance:r",
+                 "/grant:r", user + ":F"],
+                capture_output=True, text=True, **_no_window())
+            return result.returncode == 0
+        os.chmod(path, 0o600)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def read_woo_keys_site_url(path: Path = WOO_KEYS_FILE) -> str:
@@ -140,16 +183,15 @@ def site_admin_url(path: str, settings: dict | None = None) -> str:
     return base + "/" + path.lstrip("/")
 
 
-PLACEHOLDER_KEY_PREFIXES = ("ck_replace", "cs_replace")
+PLACEHOLDER_KEY_PREFIXES = ("ck_replace", "cs_replace", "wp_replace")
 
 
-def read_woo_credentials(path: Path = WOO_KEYS_FILE) -> tuple[str, str, str]:
-    """Read ``(site, consumer key, consumer secret)`` from the private file.
+def _woo_key_lines(path: Path = WOO_KEYS_FILE) -> tuple[str, list[str]]:
+    """The site URL and every other value in the private file, in order.
 
-    The file is one value per line: the site URL, then the read-only key, then
-    the secret, with ``#`` comments ignored. The shipped example's placeholder
-    values are treated as missing so an untouched template never looks like a
-    working key.
+    One value per line, ``#`` comments ignored. Values keep their inner spaces,
+    because a WordPress Application Password is handed out as four groups of
+    four characters and must be sent exactly as displayed.
     """
     values: list[str] = []
     try:
@@ -158,27 +200,69 @@ def read_woo_credentials(path: Path = WOO_KEYS_FILE) -> tuple[str, str, str]:
             if value and not value.startswith("#"):
                 values.append(value)
     except (OSError, UnicodeError):
-        return "", "", ""
+        return "", []
 
     site = ""
     rest: list[str] = []
     for value in values:
         if not site and value.lower().startswith(("http://", "https://")):
             site = value.rstrip("/")
-        elif not value.lower().startswith(("http://", "https://")):
+        else:
             rest.append(value)
+    return site, rest
+
+
+def _is_placeholder(value: str) -> bool:
+    return value.lower().startswith(PLACEHOLDER_KEY_PREFIXES)
+
+
+def read_woo_credentials(path: Path = WOO_KEYS_FILE) -> tuple[str, str, str]:
+    """Read ``(site, consumer key, consumer secret)`` from the private file.
+
+    The file is one value per line: the site URL, then the consumer key, then
+    the secret. Two optional lines may follow for uploading images, and are
+    ignored here. The shipped example's placeholder values are treated as
+    missing so an untouched template never looks like a working key.
+    """
+    site, rest = _woo_key_lines(path)
+    if not site:
+        return "", "", ""
     key, secret = (rest + ["", ""])[:2]
-    if key.lower().startswith(PLACEHOLDER_KEY_PREFIXES):
+    if _is_placeholder(key):
         key = ""
-    if secret.lower().startswith(PLACEHOLDER_KEY_PREFIXES):
+    if _is_placeholder(secret):
         secret = ""
     return site, key, secret
 
 
+def read_wordpress_credentials(path: Path = WOO_KEYS_FILE) -> tuple[str, str, str]:
+    """Read ``(site, WordPress username, Application Password)``.
+
+    These are the optional fourth and fifth lines. They are needed only to
+    upload an image: the WooCommerce consumer keys cannot reach the media
+    library, while an Application Password can. Either value alone is treated
+    as missing, because WordPress needs both halves.
+    """
+    site, rest = _woo_key_lines(path)
+    if not site or len(rest) < 3:
+        return site, "", ""
+    username = rest[2]
+    password = rest[3] if len(rest) > 3 else ""
+    if _is_placeholder(username) or _is_placeholder(password):
+        return site, "", ""
+    return site, username.strip(), password.strip()
+
+
 def has_woo_credentials(path: Path = WOO_KEYS_FILE) -> bool:
-    """True when a usable site + read-only key pair is already saved."""
+    """True when a usable site + consumer key pair is already saved."""
     site, key, secret = read_woo_credentials(path)
     return bool(site and key and secret)
+
+
+def has_wordpress_credentials(path: Path = WOO_KEYS_FILE) -> bool:
+    """True when the app can upload images to the site by itself."""
+    site, username, password = read_wordpress_credentials(path)
+    return bool(site and username and password)
 
 
 def product_search_url(term: str, settings: dict | None = None) -> str:
@@ -244,4 +328,5 @@ def sync_site_url_to_woo_keys(site_url_value: str,
     else:
         lines.insert(0, site)
     path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    restrict_file_permissions(path)
     return True

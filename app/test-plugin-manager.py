@@ -6,7 +6,8 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from plugin_manager import PluginError, PluginManager, default_plugin_root, validate_manifest
+from plugin_manager import (PluginError, PluginManager, default_plugin_root,
+                           parse_version, validate_manifest, version_at_least)
 
 
 MANIFEST = {
@@ -28,6 +29,39 @@ def make_zip(path, manifest=None, prefix=""):
                     json.dumps(manifest))
         zf.writestr(prefix + "tools/after_sale.py", "# harmless test stub\n")
     return path
+
+
+class VersionGateTests(unittest.TestCase):
+    """Comparing plugin versions is what keeps a stale plugin from being used.
+
+    batch.photo_replace exists in both 1.0.14 and 1.0.15, but only 1.0.15 can
+    work without a staged CSV, so the action ID alone is not enough.
+    """
+
+    def test_parse_version_tolerates_real_world_strings(self):
+        self.assertEqual(parse_version("1.0.15"), (1, 0, 15))
+        self.assertEqual(parse_version("1.0.15-beta"), (1, 0, 15))
+        self.assertEqual(parse_version(" 2.40 "), (2, 40))
+        self.assertEqual(parse_version(""), ())
+        self.assertEqual(parse_version(None), ())
+        self.assertEqual(parse_version("v1.0"), ())
+
+    def test_version_at_least_orders_numerically(self):
+        self.assertTrue(version_at_least("1.0.15", "1.0.15"))
+        self.assertTrue(version_at_least("1.0.16", "1.0.15"))
+        self.assertTrue(version_at_least("1.1", "1.0.15"))
+        self.assertTrue(version_at_least("2.0", "1.0.15"))
+        self.assertFalse(version_at_least("1.0.14", "1.0.15"))
+        self.assertFalse(version_at_least("1.0.9", "1.0.15"))
+
+    def test_equal_versions_of_different_length_match(self):
+        self.assertTrue(version_at_least("1.0", "1.0.0"))
+        self.assertTrue(version_at_least("1.0.0", "1.0"))
+
+    def test_unreadable_versions_are_never_new_enough(self):
+        self.assertFalse(version_at_least("", "1.0.15"))
+        self.assertFalse(version_at_least("1.0.15", ""))
+        self.assertFalse(version_at_least(None, "1.0.15"))
 
 
 class PluginManagerTests(unittest.TestCase):

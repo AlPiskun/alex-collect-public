@@ -72,14 +72,67 @@ backs them all, so the core resolves each one by ID rather than by filename:
 | `batch.photo_wire` | "Wire the photos", and the whole-batch offer in Replace a card's photos | `--mode wire --cookie-file ... --ready-dir ... --cache ...` |
 | `batch.photo_replace` | "Wire this card's photos?" in Replace a card's photos | the same `--mode wire` arguments plus `--title <full product name>` |
 
-`batch.photo_replace` is the narrow one. The core passes the selected
-product's full name, exactly as returned by the WooCommerce REST API, with no
-stripping of a trailing grade. The plugin must require exactly one staged CSV
-row and exactly one matching CanadianShopper listing, and must exit non-zero
-without writing when the match is missing or ambiguous. The core only offers
-this path when a single product was actually selected; if the action is
-unavailable (a plugin older than 1.0.14) it says so and leaves the whole-batch
-action as a separate, explicit choice rather than silently widening the job.
+`batch.photo_replace` is the narrow one, and since plugin 1.0.15 it needs no
+staged CSV at all. When a card's photos are replaced the core splits the new
+sheet scan, writes the chosen image into a `replacements` folder, and calls:
+
+```
+cs-image-sync.py --mode replace --title "<full listing title>"
+  --front "<local front image>" [--back "<local back image>"]
+  --cookie-file "<cookie.txt>"
+```
+
+A card is photographed as a front and a back, and both are replaced, so the
+core sends `--front` and `--back` together whenever a back was chosen; `--back`
+is omitted only when the card has no back image. The plugin supplies its own
+padding and upload; there is no pipeline run, `cs-ready` folder, or staged
+cache involved. The core passes the selected
+product's full name exactly as the WooCommerce REST API returned it, with no
+stripping of a trailing grade, and matching uses the plugin's exact-first
+normalized comparison. Exactly one listing must match: zero or several matches
+must exit non-zero before any upload or listing write. `--back` is optional and
+additive - without it the existing gallery is left untouched.
+
+### Version gates
+
+The action ID cannot tell plugin versions apart, because every version since
+1.0.14 declares `batch.photo_replace`. The core therefore checks the declared
+version as well as the action:
+
+| Feature | Needs |
+| --- | --- |
+| `--mode replace` without a staged CSV | plugin **1.0.15** or newer |
+| `--back` replacing the gallery row | plugin **1.0.16** or newer |
+
+`--back` was additive before 1.0.16 - it added the new back beside the old one
+- so sending it to 1.0.15 would leave the previous back photo on the listing.
+The core sends the front alone in that case and says why, rather than
+producing a listing with two backs. Below 1.0.15 it refuses the path entirely
+and shows an "update the plugin" message rather than risking the CSV error.
+
+Whole-batch wiring remains a separate action (`batch.photo_wire`) in its own
+panel.
+
+### The pair contract
+
+A card is photographed front and back, so the core always sends both halves
+together, and the two local filenames differ only by `-front`/`-back`:
+
+```
+gretzky-front-2.webp
+gretzky-back-2.webp
+```
+
+The counter is shared, so a number taken on either side moves the whole pair
+to the next one; a pair is never written as `front-1` beside `back-2`. The
+plugin verifies the pair before uploading and identifies the listing's
+existing back photo by filename, so core guarantees the naming and does not
+send the names separately - the paths are enough.
+
+If the plugin cannot positively identify the existing back, it stops before
+uploading or writing anything. The core surfaces that outcome and offers the
+recovery path: run the card again and choose no back image, which replaces
+the front only.
 
 The core invokes a tool only when a user selects the relevant action. For
 `batch.pipeline_stage`, the hook may define `run_stage(output_paths, args,

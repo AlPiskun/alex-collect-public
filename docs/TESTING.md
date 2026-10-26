@@ -88,6 +88,11 @@ python test-market-rerun.py
 python test-pipeline-listing.py
 python test-ai-prompts.py
 python test-process-utils.py
+python test-photo-replace.py
+python test-photo-panel.py
+python test-woo-orders.py
+python test-order-panel.py
+python test-woo-media.py
 python ..\installer\test-bundled-config.py
 ```
 
@@ -104,6 +109,11 @@ Notes:
 | `test-market-rerun.py`, `test-pipeline-listing.py` | Pillow | Pipeline regression suite; no GUI. |
 | `test-ai-prompts.py` | nothing | The shipped AI prompt files, read without Tk. |
 | `test-process-utils.py` | nothing | No stray console windows; checks flags only. |
+| `test-photo-replace.py` | Pillow | Sheet split, empty-slot detection, replacement naming. |
+| `test-woo-media.py` | none - no network | The upload request, its refusals, and that a half-finished replacement is reported as one. |
+| `test-photo-panel.py` | Pillow | Drives the real Photos panel against a stubbed Tk: which image goes where, the arguments the plugin receives, and what each plugin version is allowed to be sent. |
+| `test-woo-orders.py` | none - no network | Reading a pasted card list, which card a line means, when the app refuses to guess, and the exact order body that would be sent. |
+| `test-order-panel.py` | Pillow | Drives the real order panel against a stubbed Tk: the pasted list, the picker, new vs existing orders, the discount, and the no-keys fallback. |
 | `..\installer\test-bundled-config.py` | nothing | Checks the version/filename/SHA pins agree. |
 
 Every script must end in `PASS` / `OK` / `ALL ... PASSED` and exit 0.

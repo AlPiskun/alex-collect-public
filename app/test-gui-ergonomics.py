@@ -46,10 +46,15 @@ def main():
     core_ids = {pid for _group, ids in gui.groups_for(False) for pid in ids}
     check("core task menu omits plugin-only tasks",
           not ({"stage", "wire", "zerostock"} & core_ids))
-    check("task sections are Sell, After a sale, Photos, and Re-run",
+    check("task sections are Sell to a customer, Sell a new batch, After a "
+          "sale, Photos, and Re-run",
           [name for name, _ids in gui.groups_for(True)] ==
-          ["Sell a new batch", "After a sale", "Photos",
+          ["Sell to a customer", "Sell a new batch", "After a sale", "Photos",
            "Re-run a marketplace"])
+    check("the order-from-a-list panel leads the tasks",
+          gui.groups_for(True)[0][1] == ["ordertext"] and
+          gui.groups_for(False)[0][1] == ["ordertext"] and
+          gui.PANEL_BUILDERS["ordertext"] is gui.build_ordertext)
     re_run_group = [ids for name, ids in gui.groups_for(True)
                     if name == "Re-run a marketplace"]
     check("the re-run panel is its own task section and tab",
