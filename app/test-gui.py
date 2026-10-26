@@ -274,9 +274,10 @@ def main():
           18 <= int(gui.ttk.Style(app).lookup("TaskMenu.TButton", "width")) <= 30)
     task_sections = [w.cget("text") for w in walk(tasks_frame(app))
                      if isinstance(w, gui.ttk.LabelFrame)]
-    check("tasks are separated into Sell, After, Photos, and Re-run sections",
-          task_sections == ["Sell a new batch", "After a sale", "Photos",
-                            "Re-run a marketplace"],
+    check("tasks are separated into customer, batch, After, Photos, and "
+          "Re-run sections",
+          task_sections == ["Sell to a customer", "Sell a new batch",
+                            "After a sale", "Photos", "Re-run a marketplace"],
           str(task_sections))
 
     print("== 3. every panel builds from the task menu ==")
@@ -2157,6 +2158,72 @@ def main():
           dlg2.front_var.get() == str(dfront) and
           dlg2.back_var.get() == str(dback))
     dlg2.destroy()
+    # ------------------------------------------------------------------
+    # 21. order from a pasted card list (no network: no keys saved here)
+    # ------------------------------------------------------------------
+    print("== 21. order from a pasted card list ==")
+    saved_site_url = app.settings.get("woo_site_url", "")
+    app.settings["woo_site_url"] = "https://shop.example"
+    panel("ordertext")
+    widgets = list(walk(tasks_frame(app)))
+
+    def by_text(label):
+        return next((w for w in widgets if w.cget("text") == label), None)
+
+    #  Every stub-less Tk widget is a real one here, so the Text box is found
+    #  by class rather than by its options.
+    texts = [w for w in widgets if isinstance(w, gui.tk.Text)
+             and w.winfo_exists()]
+    text_box = texts[-1] if texts else None
+    check("the panel has a place to paste the list", text_box is not None,
+          str(type(text_box)))
+    check("the panel offers to build the order",
+          by_text("Build the order") is not None)
+    check("the panel offers the order list",
+          by_text("Open the order list") is not None)
+
+    if text_box is not None:
+        text_box.delete("1.0", "end")
+        text_box.insert("1.0", "1. 1989 O-Pee-Chee Gretzky #1\n"
+                               "2. 1990 Score Mario Lemieux #2 - $12.50\n"
+                               "\n"
+                               "# a note, not a card\n")
+        parsed = gui.woo_orders.parse_card_list(text_box.get("1.0", "end"))
+        check("the pasted list is read one card per line",
+              parsed == ["1989 O-Pee-Chee Gretzky #1",
+                         "1990 Score Mario Lemieux #2"], str(parsed))
+
+        #  With no keys the panel must open the order list and copy the text,
+        #  never reach the website.
+        shown_before = len(answers["shown"])
+        opened_before = len(answers["opened_urls"])
+        with patch.object(gui, "read_woo_credentials",
+                          lambda path=None: ("", "", "")):
+            by_text("Build the order").invoke()
+            app.update()
+        opened = [u for u, _ in answers["opened_urls"][opened_before:]]
+        check("without keys the order list opens",
+              "https://shop.example/wp-admin/admin.php?page=wc-orders" in opened,
+              str(opened))
+        check("the list is left on the clipboard",
+              "Gretzky #1" in str(app.clipboard_get()), str(app.clipboard_get())[:80])
+        shown = answers["shown"][shown_before:]
+        check("the user is told why the list opened",
+              any("clipboard" in str(payload) for _, payload in shown),
+              str(shown))
+
+        #  An empty box must not try anything at all.
+        text_box.delete("1.0", "end")
+        shown_before = len(answers["shown"])
+        by_text("Build the order").invoke()
+        app.update()
+        check("an empty box asks for a list",
+              any("Paste a list first" in str(payload)
+                  for _, payload in answers["shown"][shown_before:]),
+              str(answers["shown"][shown_before:]))
+
+    app.settings["woo_site_url"] = saved_site_url
+
     shutil.rmtree(drop_dir, ignore_errors=True)
     app.settings.clear()
     app.settings.update(saved_settings)

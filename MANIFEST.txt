@@ -1,4 +1,4 @@
-Alex Collect 2.44 — public core package
+Alex Collect 2.45 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -26,6 +26,7 @@ app/:
   process_utils.py                hides child console windows on Windows
   photo_replace.py                sheet split, blank-slot and replacement naming
   woo_media.py                    upload a photo and set it on the product
+  woo_orders.py                   turn a pasted card list into an order
   facebook-feed-settings.example.json
                                   starter values for the Facebook workbook fields
   plugin_manager.py               local ZIP plugin manager

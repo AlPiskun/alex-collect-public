@@ -63,13 +63,18 @@ class FakeWidget:
     def winfo_children(self): return list(self.children)
     def destroy(self): pass
     def focus_set(self): pass
+    def yview(self, *a, **k): return (0.0, 1.0)
+    def xview(self, *a, **k): return (0.0, 1.0)
+    def see(self, *a, **k): return None
+    def protocol(self, *a, **k): return None
     def insert(self, *a, **k):
         if a and a[0] == "end":
             self.items.append(a[1])
     def delete(self, *a, **k):
         if a and a[0] == 0:
             self.items = []
-    def get(self): return self.value
+    def get(self, *args, **kwargs):
+        return self.value      # Text.get("1.0", "end") and Entry.get()
     def set(self, value): self.value = value
     def curselection(self):
         return self.selection or ((0,) if self.items else ())

@@ -45,6 +45,7 @@ from plugin_manager import (PluginError, PluginManager,
                             version_at_least)
 from process_utils import no_window_kwargs
 import woo_media
+import woo_orders
 from sale_inputs import woo_get
 from user_settings import (default_scan_dir, has_woo_credentials,
                            has_wordpress_credentials, load_user_settings,
@@ -54,7 +55,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.44"
+VERSION = "2.45"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -926,6 +927,28 @@ square - for the occasional card you upload by hand through the
 dashboard instead of through a batch. The square copy is written next
 to the original; the original is never touched. No cookie needed."""
 
+DOCS["ordertext"] = """\
+A customer texts you a list of cards. Paste it here and Alex Collect
+creates the order on your website, with each line matched to a real
+product.
+
+One card per line. Numbering ("1."), bullets, quotes and a trailing
+price are ignored. If two lines are the same card, the order gets one
+row with quantity 2.
+
+You are asked whether to start a new order or add to an existing one
+(enter its order number). A line Alex Collect is not sure about opens a
+search where you pick the card - nothing is guessed. Leave the discount
+box empty for full price, or type a percentage to put one discount line
+on the order.
+
+The order is created as PENDING: nothing is charged and no email is
+sent. Open it in the dashboard to check it and take payment.
+
+Without website API keys the order list opens instead, and the pasted
+list is copied to the clipboard so you can paste it there.
+"""
+
 DOCS["newphotos"] = """\
 One card needs better photos (a rescan, a condition change, a cracked
 slab). Type its name or SKU and press Find.
@@ -1701,8 +1724,9 @@ class App(tk.Tk):
 #  menu, the tabs view and the wizard pages.
 PANEL_ORDER = ["cookie", "pipeline", "combine", "stage", "importpanel",
                "wire", "rerun", "sold", "checklist", "zerostock", "square",
-               "newphotos", "markets", "logs", "plugins"]
-GROUPS_FULL = [("Sell a new batch", ["pipeline", "combine", "stage",
+               "newphotos", "ordertext", "markets", "logs", "plugins"]
+GROUPS_FULL = [("Sell to a customer", ["ordertext"]),
+               ("Sell a new batch", ["pipeline", "combine", "stage",
                                      "importpanel", "wire"]),
                ("After a sale", ["sold", "checklist", "zerostock"]),
                ("Photos", ["square", "rerun", "newphotos"]),
@@ -1717,7 +1741,8 @@ def groups_for(has_cs):
     """
     if has_cs:
         return GROUPS_FULL
-    return [("Sell a new batch", ["pipeline", "combine", "importpanel"]),
+    return [("Sell to a customer", ["ordertext"]),
+            ("Sell a new batch", ["pipeline", "combine", "importpanel"]),
             ("After a sale", ["sold", "checklist"]),
             ("Photos", ["square", "newphotos"]),
             ("Re-run a marketplace", ["markets"])]
@@ -1735,6 +1760,7 @@ TITLES = {
     "square": "Square up a photo (manual upload)",
     "plugins": "Plugins",
     "newphotos": "Replace a card's photos",
+    "ordertext": "Make an order from a card list",
     "markets": "Re-run a marketplace step",
     "logs": "Logs and reports",
 }
@@ -1751,6 +1777,7 @@ MENU_LABELS = {
     "zerostock": "Archive listings at 0",
     "square": "Square up a photo",
     "newphotos": "Replace card photos",
+    "ordertext": "Order from a text list",
     "markets": "Re-run a marketplace",
     "logs": "Logs & reports",
     "plugins": "Plugins",
@@ -1769,6 +1796,7 @@ BLURBS = {
     "square": "Pad a photo onto a white square for a manual dashboard upload.",
     "plugins": "Install and manage optional plugins.",
     "newphotos": "Find a card, open its replacement images, and refresh its pages.",
+    "ordertext": "Paste the list a customer texted you and turn it into a website order.",
     "markets": "Redo just one marketplace (Woo, CanadianShopper, Facebook, eBay) without repeating the AI or image steps.",
     "logs": "Where every run is recorded.",
 }
@@ -3223,6 +3251,400 @@ def build_square(parent, app):
         side="left", padx=8)
 
 
+def build_ordertext(parent, app):
+    """Paste a customer's list of cards and turn it into a WooCommerce order.
+
+    A customer texts a list; this matches each line to a real product and
+    writes a draft order. Nothing is charged and no email is sent - the order
+    lands in the dashboard as pending, for review, exactly like one typed by
+    hand. Without API keys the order list opens and the pasted text is copied
+    to the clipboard so it can be pasted into the dashboard.
+    """
+    panel_header(parent, app, "ordertext")
+    box = ttk.Frame(parent)
+    box.pack(fill="both", expand=True)
+
+    ttk.Label(box, text="Paste the list - one card per line. Numbering, "
+                        "bullets and a trailing price are ignored.",
+              style="Dim.TLabel").pack(anchor="w")
+    text = tk.Text(box, height=11, wrap="word", font=("Consolas", 9))
+    text.pack(fill="both", expand=True, pady=(2, 4))
+
+    row = ttk.Frame(box)
+    row.pack(fill="x")
+    status = ttk.Label(box, text="", style="Dim.TLabel", wraplength=760,
+                       justify="left")
+    status.pack(anchor="w", pady=(3, 0))
+
+    def say(message):
+        try:
+            status.configure(text=message)
+        except Exception:
+            pass
+
+    discount = tk.StringVar(value="")
+    ttk.Label(row, text="Discount %:").pack(side="left")
+    ttk.Entry(row, textvariable=discount, width=5).pack(side="left",
+                                                       padx=(3, 14))
+    ttk.Label(row, text="optional - one discount line on the order",
+              style="Dim.TLabel").pack(side="left")
+
+    # -- the pieces --------------------------------------------------------
+    def discount_percent():
+        """The discount as 0-100, or None when what was typed is unusable.
+
+        None means "ask again": quietly charging full price because a box could
+        not be read would be the worst possible outcome on a real order.
+        """
+        raw = str(discount.get() or "").strip().replace("%", "").strip()
+        if not raw:
+            return 0.0
+        try:
+            value = float(raw)
+        except ValueError:
+            return None
+        if not 0 <= value <= 100:
+            return None
+        return value
+
+    def confirm_order(question):
+        """Ask before writing. A long list gets a scrollable window.
+
+        A message box cannot hold 30 card names, and the whole point of the
+        confirmation is that the user can read what is about to be created.
+        """
+        if len(question) < 1200 and question.count("\n") < 20:
+            return messagebox.askyesno("Create the order?", question,
+                                       parent=app)
+        top = tk.Toplevel(app)
+        top.title("Create the order?")
+        top.transient(app)
+        top.geometry("780x540")
+        top.grab_set()
+        body = ttk.Frame(top)
+        body.pack(fill="both", expand=True, padx=8, pady=(8, 3))
+        view = tk.Text(body, wrap="word", height=22, state="normal")
+        scroll = ttk.Scrollbar(body, orient="vertical", command=view.yview)
+        view.configure(yscrollcommand=scroll.set)
+        view.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        view.insert("1.0", question)
+        view.configure(state="disabled")
+        result = {"ok": False}
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=8, pady=6)
+        ttk.Button(buttons, text="Create the order",
+                   command=lambda: (result.update(ok=True), top.destroy())
+                   ).pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=top.destroy).pack(
+            side="right", padx=8)
+        top.protocol("WM_DELETE_WINDOW", top.destroy)
+        app.wait_window(top)
+        return result["ok"]
+
+    def open_orders(site=""):
+        url = woo_orders.orders_admin_url(
+            site or read_woo_credentials()[0] or
+            app.settings.get("woo_site_url", ""))
+        if url:
+            app.open_webpages([url])
+        return url
+
+    def copy_to_clipboard(lines):
+        """Leave the list on the clipboard for pasting into the dashboard."""
+        try:
+            app.clipboard_clear()
+            app.clipboard_append("\n".join(lines))
+            return True
+        except Exception:
+            return False
+
+    def search_products(term, site, key, secret):
+        """One product search, trimmed to what an order needs."""
+        try:
+            code, data = woo_get(site, "/wp-json/wc/v3/products",
+                                 {"search": term, "per_page": 30}, key, secret)
+        except Exception:
+            return []
+        if code != 200 or not isinstance(data, list):
+            return []
+        return [{"id": product.get("id"),
+                 "name": (product.get("name") or "").strip(),
+                 "price": product.get("price") or "",
+                 "sku": (product.get("sku") or "").strip(),
+                 "stock_status": product.get("stock_status") or ""}
+                for product in data
+                if isinstance(product, dict) and product.get("id")]
+
+    def candidates_for(name, site, key, secret):
+        """Every product worth showing for one pasted line."""
+        found, seen = [], set()
+        for term in woo_orders.search_terms(name):
+            for product in search_products(term, site, key, secret):
+                if product["id"] not in seen:
+                    seen.add(product["id"])
+                    found.append(product)
+            if woo_orders.auto_pick(name, found):
+                break
+        return found
+
+    def describe(product):
+        """One list-row label: name, price, stock, match strength."""
+        price = woo_orders.price_of(product)
+        bits = [product.get("name") or "(untitled)"]
+        if price is not None:
+            bits.append("$%.2f" % price)
+        if product.get("stock_status") == "outofstock":
+            bits.append("OUT OF STOCK")
+        return "   ".join(bits)
+
+    def pick_card(name, candidates, site, key, secret):
+        """Ask which product a line means. Product, "skip", or False to stop."""
+        top = tk.Toplevel(app)
+        top.title("Which card is this?")
+        top.transient(app)
+        top.geometry("760x360")
+        top.grab_set()
+        ttk.Label(top, text="Not sure which card this means:\n%s" % name,
+                  wraplength=720, justify="left").pack(anchor="w", padx=8,
+                                                       pady=(8, 4))
+        ttk.Label(top, text="Pick the right one, or search again with other "
+                            "words.", style="Dim.TLabel").pack(anchor="w",
+                                                               padx=8)
+        term = tk.StringVar(value=(woo_orders.search_terms(name) or [name])[0])
+        search_row = ttk.Frame(top)
+        search_row.pack(fill="x", padx=8, pady=4)
+        entry = ttk.Entry(search_row, textvariable=term)
+        entry.pack(side="left", fill="x", expand=True)
+        listing = tk.Listbox(top, height=9, exportselection=False)
+        listing.pack(fill="both", expand=True, padx=8)
+        chosen = {"product": None, "stop": False, "shown": []}
+
+        def show(products):
+            chosen["shown"] = list(products)
+            listing.delete(0, "end")
+            for product in products:
+                listing.insert("end", describe(product))
+            if products:
+                listing.selection_set(0)
+
+        def do_search():
+            show(search_products(term.get().strip(), site, key, secret))
+
+        def use(*_event):
+            picked = listing.curselection()
+            if picked and chosen["shown"]:
+                chosen["product"] = chosen["shown"][picked[0]]
+            top.destroy()
+
+        def skip():
+            chosen["product"] = "skip"
+            top.destroy()
+
+        def stop():
+            chosen["product"] = False
+            top.destroy()
+
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=8, pady=6)
+        ttk.Button(buttons, text="Use this card", command=use).pack(
+            side="right")
+        ttk.Button(buttons, text="Skip this one", command=skip).pack(
+            side="right", padx=8)
+        ttk.Button(buttons, text="Cancel all", command=stop).pack(side="left")
+        ttk.Button(buttons, text="Search", command=do_search).pack(side="left",
+                                                                 padx=8)
+        listing.bind("<Double-Button-1>", use)
+        entry.bind("<Return>", lambda *_: do_search())
+        show(candidates)
+        app.wait_window(top)
+        return chosen["product"]
+
+    def ask_target(site, key, secret):
+        """("new"|"existing", order_id) - or (None, None) when cancelled."""
+        choice = messagebox.askyesnocancel(
+            "New order or an existing one?",
+            "Yes  - start a NEW order for these cards\n"
+            "No   - add them to an order that already exists\n"
+            "Cancel - stop here", parent=app)
+        if choice is None:
+            return None, None
+        if choice:
+            return "new", None
+        answer = simpledialog.askstring(
+            "Which order?", "Order number (the # shown in the order list):",
+            parent=app)
+        if answer is None:
+            return None, None
+        try:
+            order_id = int(str(answer).strip().lstrip("#"))
+        except ValueError:
+            messagebox.showwarning("Not an order number",
+                                   "%r is not an order number." % answer,
+                                   parent=app)
+            return None, None
+        try:
+            order = woo_orders.read_order(site, key, secret, order_id)
+        except woo_orders.OrderError as exc:
+            messagebox.showwarning("Could not open that order", exc.message,
+                                   parent=app)
+            return None, None
+        return "existing", order
+
+    def confirm_text(plan, skipped, target, order, percent):
+        """What is about to happen, in the words the user can check."""
+        estimate = woo_orders.estimate_total(plan, percent)
+        lines = ["%d lines read: %d matched, %d skipped." %
+                 (len(plan) + len(skipped), len(plan), len(skipped)), ""]
+        if target == "existing":
+            lines.append("Added to order #%s, which already holds %d card(s)."
+                         % (order.get("number") or order.get("id"),
+                            len(order.get("line_items") or [])))
+        else:
+            lines.append("A new order will hold:")
+        lines.append("")
+        merged = woo_orders.merge_duplicates(plan)
+        for item in merged[:22]:
+            price = woo_orders.price_of(item.get("product") or {})
+            lines.append("  %-2d  %s%s" % (
+                item["quantity"], (item.get("product") or {}).get(
+                    "name", "(untitled)"),
+                "" if price is None else "   $%.2f" % price))
+        if len(merged) > 22:
+            lines.append("  ... and %d more" % (len(merged) - 22))
+        lines.append("")
+        if estimate["priced"]:
+            lines.append("Subtotal  $%.2f" % estimate["subtotal"])
+            if estimate["discount"]:
+                lines.append("Discount %g%%  -$%.2f" % (percent,
+                                                       estimate["discount"]))
+            lines.append("Total     $%.2f" % estimate["total"])
+        if estimate["unpriced"]:
+            lines.append("(%d card(s) have no price on the website)"
+                         % estimate["unpriced"])
+        if skipped:
+            lines.append("")
+            lines.append("Not on the website (left out):")
+            for name in skipped[:10]:
+                lines.append("  %s" % name)
+            if len(skipped) > 10:
+                lines.append("  ... and %d more" % (len(skipped) - 10))
+        lines.append("")
+        lines.append("Nothing is charged and no email is sent. Continue?")
+        return "\n".join(lines)
+
+    def finish(target, order, site, key, secret, percent, names):
+        """Look the lines up, ask about the unclear ones, then write."""
+        say("Looking up %d cards..." % len(names))
+        pairs = []
+
+        def work():
+            for index, name in enumerate(names, 1):
+                try:
+                    found = candidates_for(name, site, key, secret)
+                except Exception:
+                    #  A lookup that fails is not a match; the picker below
+                    #  still lets the line be searched by hand.
+                    found = []
+                pairs.append((name, found))
+                app.after(0, lambda i=index, n=name: say(
+                    "Looked up %d of %d: %s" % (i, len(names), n[:50])))
+            app.after(0, lambda: assemble(pairs))
+
+        def assemble(pairs):
+            plan, skipped = [], []
+            for name, candidates in pairs:
+                product = woo_orders.auto_pick(name, candidates)
+                if product is None:
+                    picked = pick_card(name, candidates, site, key, secret)
+                    if picked is False:
+                        say("Cancelled - nothing was sent.")
+                        return
+                    if picked == "skip" or picked is None:
+                        skipped.append(name)
+                        continue
+                    product = picked
+                plan.append({"product_id": product["id"], "quantity": 1,
+                             "line": name, "product": product})
+            say("")
+            if not plan:
+                messagebox.showinfo(
+                    "Nothing matched",
+                    "None of those lines matched a card on the website, so "
+                    "no order was created.", parent=app)
+                return
+            #  Two lines asking for the same card become one row of quantity 2,
+            #  so the order reads the way a person would write it.
+            plan = woo_orders.merge_duplicates(plan)
+            question = confirm_text(plan, skipped, target, order, percent)
+            if not confirm_order(question):
+                say("Cancelled - nothing was sent.")
+                return
+            say("Writing the order...")
+            try:
+                if target == "existing":
+                    result = woo_orders.add_to_order(
+                        site, key, secret, order["id"], plan,
+                        discount_percent=percent)
+                else:
+                    result = woo_orders.create_order(
+                        site, key, secret, plan, discount_percent=percent)
+            except woo_orders.OrderError as exc:
+                messagebox.showerror("The order was not written", exc.message,
+                                     parent=app)
+                app.console_line("Order: %s" % exc.message, "err")
+                say("The order was not written.")
+                return
+            number = result.get("number") or result.get("id")
+            app.console_line("Order #%s written on the website (%d cards%s)."
+                             % (number, len(result.get("line_items") or []),
+                                ", %d skipped" % len(skipped) if skipped
+                                else ""), "ok")
+            say("Order #%s is ready - opening it now." % number)
+            url = woo_orders.order_edit_url(site, result.get("id"))
+            if url:
+                app.open_webpages([url])
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def start():
+        names = woo_orders.parse_card_list(text.get("1.0", "end"))
+        if not names:
+            messagebox.showinfo(
+                "Paste a list first",
+                "Paste the customer's list into the box, one card per line.",
+                parent=app)
+            return
+        site, key, secret = read_woo_credentials()
+        if not (site and key and secret):
+            copied = copy_to_clipboard(names)
+            open_orders(app.settings.get("woo_site_url", ""))
+            messagebox.showinfo(
+                "Order list opened",
+                "%d card names read.\n\nNo website API keys are saved, so the "
+                "order list is open instead%s." % (
+                    len(names), " and the list is on your clipboard - paste it "
+                    "into the order's card search" if copied else ""),
+                parent=app)
+            return
+        percent = discount_percent()
+        if percent is None:
+            messagebox.showwarning(
+                "Discount not understood",
+                "Type a number between 0 and 100 in the discount box, or "
+                "leave it empty to charge full price.", parent=app)
+            return
+        target, order = ask_target(site, key, secret)
+        if target is None:
+            say("Cancelled - nothing was sent.")
+            return
+        finish(target, order, site, key, secret, percent, names)
+
+    ttk.Button(row, text="Build the order", command=start).pack(side="right")
+    ttk.Button(row, text="Open the order list",
+               command=lambda: open_orders()).pack(side="right", padx=8)
+
+
 def build_newphotos(parent, app):
     """Replace one card's photos, then put every marketplace page on screen.
 
@@ -3807,6 +4229,7 @@ PANEL_BUILDERS = {
     "zerostock": build_zerostock,
     "square": build_square,
     "newphotos": build_newphotos,
+    "ordertext": build_ordertext,
     "markets": build_markets,
     "logs": build_logs,
     "plugins": build_plugins,
