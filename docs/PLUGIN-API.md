@@ -116,10 +116,20 @@ version as well as the action:
 - so sending it to 1.0.15 would leave the previous back photo on the listing.
 Plugin 1.0.16 replaces the row that matches the pair; plugin 1.0.17 asks the user
 when it cannot identify that row instead of stopping. No new gate is needed for
-1.0.17: the arguments and action IDs are unchanged.
-The core sends the front alone in that case and says why, rather than
-producing a listing with two backs. Below 1.0.15 it refuses the path entirely
-and shows an "update the plugin" message rather than risking the CSV error.
+either: the arguments and action IDs are unchanged, so a 1.0.16 copy that can
+identify the pair keeps working exactly as it does today.
+
+Plugin 1.0.18 changes nothing in the contract - it hardens the plugin's own
+console fallback so a stray `{}` answer from a core without the `pick_back`
+handler (2.48 and older) is ignored and re-prompted rather than consumed, and
+blank or unrelated lines no longer cancel. Core 2.49 answers `pick_back`
+properly, so the fallback is not reached there. No core change is needed for
+1.0.18.
+
+Where the pair cannot be identified and the plugin predates 1.0.17, the core
+sends the front alone and says why, rather than producing a listing with two
+backs. Below 1.0.15 it refuses the path entirely and shows an "update the
+plugin" message rather than risking the CSV error.
 
 Whole-batch wiring remains a separate action (`batch.photo_wire`) in its own
 panel.
