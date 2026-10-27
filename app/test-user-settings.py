@@ -165,7 +165,13 @@ def main():
                         encoding="utf-8")
         os.chmod(keys, 0o644)
         assert restrict_file_permissions(keys)
-        assert (keys.stat().st_mode & 0o777) == 0o600
+        if os.name == "posix":
+            assert (keys.stat().st_mode & 0o777) == 0o600
+        else:
+            #  Windows has no mode bits: the file is restricted with an ACL,
+            #  and the icacls command itself is checked in the block below.
+            #  Asserting 0o600 here failed on a real Windows run.
+            assert keys.exists()
         # A missing file is reported, not created.
         assert not restrict_file_permissions(root / "absent.txt")
         # Windows asks icacls to drop inheritance and grant only this user.

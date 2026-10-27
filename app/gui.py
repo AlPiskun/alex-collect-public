@@ -44,7 +44,9 @@ from browser_utils import available_browsers, browser_label, open_urls as launch
 from plugin_manager import (PluginError, PluginManager,
                             version_at_least)
 from process_utils import no_window_kwargs
+import photo_assign
 import photo_pool
+import photo_replace
 import photo_thumbs
 import woo_media
 import woo_orders
@@ -57,7 +59,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.51"
+VERSION = "2.52"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -3944,6 +3946,30 @@ def build_newphotos(parent, app):
         refresh_sheets()
         status("Sheets cleared.")
 
+    def ensure_images():
+        """Make sure a free image is there to pick; say so when none is left.
+
+        Sheets stay loaded for the whole sitting, and each card takes a front
+        and a back off them, so a long sitting does eventually use the lot.
+        Pressing Find then used to do nothing whatsoever - the button looked
+        broken rather than finished - so the dead end is spoken instead.
+        """
+        if pool.unused():
+            return True
+        add_sheets()
+        if pool.unused():
+            return True
+        if pool.sheets:
+            _used, total = pool.progress()
+            status("Every image on the loaded sheets has been used. Add "
+                   "another sheet, or press Clear and load these again.")
+            messagebox.showinfo(
+                "That is the whole sheet",
+                "All %d images on the loaded sheets already have a card.\n\n"
+                "Add another scan to carry on, or press Clear and load the "
+                "sheet again." % total, parent=app)
+        return False
+
     def upload_to_site(app, product, front_path, back_path=None,
                        old_pair_ids=()):
         """Upload the pair and make it the product's photos on the website.
@@ -4391,13 +4417,10 @@ def build_newphotos(parent, app):
             return [tile for tile in pool.unused()
                     if tile["sheet_path"] == sheet["path"]]
 
-        if not pool.unused():
-            #  Nothing loaded yet: the sheets come first, before any choice.
-            if not add_sheets():
-                if urls:
-                    app.open_webpages(urls)
-                return
-        if not pool.unused():
+        #  Sheets first: this is where the sitting starts, and a sitting can
+        #  run out - either way the user is told rather than left pressing a
+        #  button that does nothing.
+        if not ensure_images():
             if urls:
                 app.open_webpages(urls)
             return
@@ -4512,6 +4535,186 @@ def build_newphotos(parent, app):
                 app.console_line("Opened %s for the saved images." %
                                  saved.parent, "dim")
 
+    # -- the assignment window: cards first, three ways ---------------------
+    def apply_ready(rows):
+        """Save, upload and wire every row that is ready. Returns the count."""
+        done = 0
+        for row in photo_assign.ready(rows):
+            product, tile = row["product"], row["tile"]
+            label = product.get("name") or ""
+            partner = pool.same_slot(tile)
+            if partner is not None and partner["used_by"]:
+                partner = None
+            try:
+                current = photo_replace.woo_image_name(product)
+                written = photo_replace.save_pair(
+                    replace_dir(), current, tile["path"],
+                    partner["path"] if partner else None)
+            except Exception as exc:
+                app.console_line("Could not save %s: %s" % (label, exc), "err")
+                continue
+            saved = written["front"]
+            saved_back = written.get("back")
+            old_pair_ids = photo_replace.pair_ids(
+                woo_media.existing_images(product))
+            upload_to_site(app, product, saved, saved_back, old_pair_ids)
+            if getattr(app, "cs_addon", True) and single_product(product) and \
+                    photo_replace_available():
+                send_back = saved_back if photo_back_replaceable() else None
+                wire_card(product, saved, send_back)
+            pool.take(tile, label)
+            if partner is not None:
+                pool.take(partner, label)
+            row["status"] = photo_assign.EMPTY
+            row["product"] = None
+            done += 1
+            app.console_line("Assigned %s." % (saved.name,), "ok")
+        refresh_sheets()
+        return done
+
+    def open_assign_window():
+        """Line the loaded images up with products, then apply them in a batch.
+
+        Three ways to fill the same worksheet, because which one suits depends
+        on the pile of scans: read the sheet's titles with an AI and paste
+        them, paste the cards in the order they were scanned, or point at one
+        image and search for its card.
+        """
+        if not ensure_images():
+            return
+        rows = []
+        top = tk.Toplevel(app)
+        app.photo_assign_window = top      # kept so a test can drive it
+        top.title("Assign the images to cards")
+        top.transient(app)
+        top.geometry("860x560")
+        method = tk.StringVar(master=top, value="titles")
+        text = tk.Text(top, height=7, wrap="word")
+        listing = tk.Listbox(top, height=10, exportselection=False)
+        said = ttk.Label(top, text="", style="Dim.TLabel")
+
+        def render():
+            listing.delete(0, "end")
+            for index, row in enumerate(rows):
+                caption = photo_thumbs.caption(row["tile"])
+                if row["product"]:
+                    what = row["product"].get("name") or ""
+                else:
+                    what = "- %s" % row["status"]
+                listing.insert("end", "%d. %s   %s" % (index + 1, caption, what))
+            said.configure(text=photo_assign.headline(rows) if rows else
+                           "Paste the list above, then press Read these.")
+
+        def do_search(term):
+            site, key, secret = read_woo_credentials(keys_file)
+            if not (site and key and secret):
+                return []
+            try:
+                code, data = woo_get(site, "/wp-json/wc/v3/products",
+                                     {"search": term, "per_page": 20}, key,
+                                     secret)
+            except Exception:
+                return []
+            if code != 200 or not isinstance(data, list):
+                return []
+            return [{"id": p.get("id"), "name": (p.get("name") or "").strip(),
+                     "sku": (p.get("sku") or "").strip(),
+                     "images": p.get("images") or []}
+                    for p in data if isinstance(p, dict) and p.get("id")]
+
+        def read_list():
+            del rows[:]
+            pasted = text.get("1.0", "end")
+            if method.get() == "titles":
+                titles = photo_assign.parse_titles(pasted)
+                if not titles:
+                    messagebox.showinfo("Paste the titles first",
+                                        "Paste the AI's answer, one title per "
+                                        "line, then press Read these.",
+                                        parent=top)
+                    return
+                rows.extend(photo_assign.rows_from_titles(
+                    pool, titles, do_search))
+            else:
+                names = woo_orders.parse_card_list(pasted)
+                if not names:
+                    messagebox.showinfo("Paste the cards first",
+                                        "Paste the cards in the order they "
+                                        "were scanned, one per line.",
+                                        parent=top)
+                    return
+                products = []
+                for name in names:
+                    found = do_search(name)
+                    picked = woo_orders.auto_pick(name, found) if found else None
+                    products.append(picked)
+                rows.extend(photo_assign.rows_from_products(pool, products))
+            render()
+            status(photo_assign.headline(rows))
+
+        def choose_for_row():
+            picked = listing.curselection()
+            if not picked or not rows:
+                messagebox.showinfo("Choose a row",
+                                    "Select a row first.", parent=top)
+                return
+            row = rows[picked[0]]
+            term = row["title"] or ""
+            product = find_product(term) if term else None
+            if isinstance(product, dict) and product.get("id"):
+                photo_assign.replace_title(rows, picked[0], product)
+                render()
+
+        def apply_all():
+            ready_rows = photo_assign.ready(rows)
+            if not ready_rows:
+                messagebox.showinfo(
+                    "Nothing is ready",
+                    "No row has a card matched to it yet. Read the list, or "
+                    "choose a card for a row.", parent=top)
+                return
+            if not messagebox.askyesno(
+                    "Replace these photos?",
+                    "%d card%s will be replaced, one at a time.\n\nA card "
+                    "that fails stops itself and the rest carry on."
+                    % (len(ready_rows), "" if len(ready_rows) == 1 else "s"),
+                    parent=top):
+                return
+            done = apply_ready(rows)
+            render()
+            status("%d of %d replaced." % (done, len(ready_rows)))
+
+        ttk.Label(top, text="How should the images find their cards?",
+                  font=("TkDefaultFont", 10, "bold")).pack(anchor="w", padx=10,
+                                                          pady=(10, 2))
+        choices = ttk.Frame(top)
+        choices.pack(anchor="w", padx=10)
+        ttk.Radiobutton(choices, text="Read the sheet's titles (AI answer)",
+                        variable=method, value="titles").pack(side="left")
+        ttk.Radiobutton(choices, text="Paste the cards in scan order",
+                        variable=method, value="products").pack(side="left",
+                                                                padx=12)
+        ttk.Radiobutton(choices, text="One at a time (the card search below)",
+                        variable=method, value="one").pack(side="left")
+        ttk.Label(top, text="Paste here - an AI answer read off the sheet, or "
+                  "your cards in the order they were scanned:",
+                  style="Dim.TLabel", wraplength=820).pack(anchor="w", padx=10,
+                                                           pady=(8, 2))
+        text.pack(fill="x", padx=10)
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=10, pady=6)
+        ttk.Button(buttons, text="Read these", command=read_list).pack(
+            side="left")
+        ttk.Button(buttons, text="Choose a card for this row",
+                   command=choose_for_row).pack(side="left", padx=8)
+        ttk.Button(buttons, text="Apply the ready ones",
+                   command=apply_all).pack(side="right")
+        ttk.Button(buttons, text="Close", command=top.destroy).pack(
+            side="right", padx=8)
+        listing.pack(fill="both", expand=True, padx=10, pady=(0, 4))
+        said.pack(anchor="w", padx=10, pady=(0, 8))
+        render()
+
     def start():
         query = term.get().strip()
         if not query:
@@ -4538,6 +4741,8 @@ def build_newphotos(parent, app):
                command=add_sheets).pack(side="left")
     ttk.Button(sheets_row, text="Clear",
                command=clear_sheets).pack(side="left", padx=6)
+    ttk.Button(sheets_row, text="Assign photos to cards...",
+               command=open_assign_window).pack(side="left", padx=(10, 0))
     sheets_text["label"] = ttk.Label(box, text="", style="Dim.TLabel",
                                      wraplength=780, justify="left")
     sheets_text["label"].pack(anchor="w", pady=(2, 0))
