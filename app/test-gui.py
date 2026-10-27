@@ -808,9 +808,16 @@ def main():
         check("it uses the saved site and WordPress user",
               sent["site"] == "https://shop.example" and
               sent["username"] == "owner", str(sent))
+        #  The sitting starts empty, so the pair under those names is the
+        #  only one there - the upload names the files just written, not a
+        #  leftover from the card before.
+        on_disk = sorted(p.name for p in
+                         (replace_root / "replacements").glob("*.webp"))
         check("it names the files that were just saved",
-              sent["front"] == "gretzky-front-3.webp" and
-              sent["back"] == "gretzky-back-3.webp", str(sent))
+              sent["front"] == "gretzky-front-1.webp" and
+              sent["back"] == "gretzky-back-1.webp" and
+              on_disk == ["gretzky-back-1.webp", "gretzky-front-1.webp"],
+              "%s %s" % (sent, on_disk))
         check("answering No keeps every existing photo",
               sent["keep_ids"] is None, str(sent))
         check("the website is updated before the plugin is called",
