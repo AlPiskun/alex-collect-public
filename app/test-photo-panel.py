@@ -234,6 +234,7 @@ def make_sheet(path, blanks=(2, 9)):
 
 
 SHEET_CALLS = []
+QUESTIONS = []
 
 
 def drive(app, sheet, yes_for=(), nocancel=None, wordpress=("owner", "pw"),
@@ -268,7 +269,10 @@ def drive(app, sheet, yes_for=(), nocancel=None, wordpress=("owner", "pw"),
 
     PICKER["press"] = press or first_button
     _BOX.askyesno = ask
-    _BOX.askyesnocancel = lambda title, *a, **k: (asked.append(title), nocancel)[1]
+    _BOX.askyesnocancel = lambda title, *a, **k: (
+        asked.append(title),
+        QUESTIONS.append((title, a[0] if a else "")),
+        nocancel)[2]
     #  Sheets are picked as a group now, once for the whole sitting; the
     #  single-file dialog is only used for "the back is on another scan".
     sheets = [str(sheet)] * scancount
@@ -333,6 +337,21 @@ def test_version_gates():
                                  "allowed" if back_ok else "held back"),
               gui.photo_back_replaceable() is back_ok,
               str(gui.photo_back_replaceable()))
+
+
+UPLOADED = []
+
+
+def capture_upload(site, key, secret, username, password, product, front_path,
+                   back_path=None, keep_ids=None, **rest):
+    """Record what would have been sent to the website."""
+    UPLOADED.append({"site": site, "keep_ids": keep_ids,
+                     "front": Path(front_path).name,
+                     "back": Path(back_path).name if back_path else None})
+    return {"front": {"id": 901, "source_url": "https://shop.example/f.webp"},
+            "back": ({"id": 902, "source_url": "https://shop.example/b.webp"}
+                     if back_path else None),
+            "product": {"id": 42}, "image_ids": [901, 902]}
 
 
 def test_pair_saved_and_sent():
@@ -598,6 +617,142 @@ def test_two_cards_one_sitting():
     shutil.rmtree(folder, ignore_errors=True)
 
 
+def test_unreadable_old_back():
+    print()
+    print("== 12. an old back with no readable name is asked about ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    sheet = make_sheet(folder / "Scan-01.jpg")
+    app = FakeApp(folder)
+    #  A gallery from before the -front/-back convention: the second photo is
+    #  the old back, but nothing in its name says so.
+    unreadable = {"id": 42,
+                  "name": "1972-73 O-Pee-Chee Dave Burrows #133",
+                  "sku": "SKU-1",
+                  "images": [
+                      {"id": 11, "src": "https://shop.example/u/IMG_2231.jpg"},
+                      {"id": 12, "src": "https://shop.example/u/IMG_2232.jpg"},
+                      {"id": 13, "src": "https://shop.example/u/"
+                                        "certificate.jpg"}]}
+    seen = {"rows": [], "asked": ""}
+
+    def press(window):
+        labels = [w.cget("text") for w in window.walk()]
+        if "Remove this photo from the product" in labels:
+            listing = next(w for w in window.walk()
+                           if w._kw.get("height") == 8)
+            seen["rows"] = list(listing.items)
+            wanted = [i for i, text in enumerate(seen["rows"])
+                      if "IMG_2232" in text]
+            listing.selection_set(wanted[0] if wanted else 0)
+            for w in window.walk():
+                if w.cget("text") == "Remove this photo from the product":
+                    w.invoke()
+                    return
+        for w in window.walk():
+            if w.cget("text") == "Use this image":
+                w.invoke()
+                return
+        window.destroy()
+
+    UPLOADED.clear()
+    QUESTIONS.clear()
+    with patch.object(gui.woo_media, "replace_product_photos", capture_upload):
+        drive(app, sheet, scancount=1, press=press, nocancel=True,
+              product=unreadable)
+    for title, message in QUESTIONS:
+        if title == "Put these photos on the website?":
+            seen["asked"] = message
+
+    check("the old back is asked about, not guessed", seen["rows"] != [],
+          str(seen["rows"]))
+    check("the photo already treated as the front is not offered again",
+          all("IMG_2231" not in row for row in seen["rows"]),
+          str(seen["rows"]))
+    check("every photo whose name says nothing is offered, so the user "
+          "decides rather than the program", len(seen["rows"]) == 2,
+          str(seen["rows"]))
+    check("the confirmation names what comes off the product",
+          "Taken off this product" in seen["asked"] and
+          "IMG_2232" in seen["asked"], seen["asked"][:300])
+    check("it says the image file is not deleted",
+          "media library" in seen["asked"], seen["asked"][:300])
+    check("the gallery keeps only the certificate",
+          UPLOADED and UPLOADED[0]["keep_ids"] == [13], str(UPLOADED))
+    check("the new pair is what goes on", UPLOADED and
+          UPLOADED[0]["front"].endswith("-front-1.webp") and
+          (UPLOADED[0]["back"] or "").endswith("-back-1.webp"),
+          str(UPLOADED))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_old_back_kept_when_asked_to():
+    print()
+    print("== 13. keeping every photo is still allowed ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    sheet = make_sheet(folder / "Scan-01.jpg")
+    app = FakeApp(folder)
+    unreadable = {"id": 42, "name": "Old gallery", "sku": "SKU-1",
+                  "images": [
+                      {"id": 11, "src": "https://shop.example/u/IMG_2231.jpg"},
+                      {"id": 12, "src": "https://shop.example/u/IMG_2232.jpg"}]}
+
+    def press(window):
+        for w in window.walk():
+            if w.cget("text") == "Keep every existing photo":
+                w.invoke()
+                return
+        for w in window.walk():
+            if w.cget("text") == "Use this image":
+                w.invoke()
+                return
+        window.destroy()
+
+    UPLOADED.clear()
+    with patch.object(gui.woo_media, "replace_product_photos", capture_upload):
+        drive(app, sheet, scancount=1, press=press, nocancel=False,
+              product=unreadable)
+    check("answering No keeps every existing photo",
+          UPLOADED and UPLOADED[0]["keep_ids"] is None, str(UPLOADED))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_old_back_cancelled():
+    print()
+    print("== 14. cancelling the question writes nothing ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    sheet = make_sheet(folder / "Scan-01.jpg")
+    app = FakeApp(folder)
+    unreadable = {"id": 42, "name": "Old gallery", "sku": "SKU-1",
+                  "images": [
+                      {"id": 11, "src": "https://shop.example/u/IMG_2231.jpg"},
+                      {"id": 12, "src": "https://shop.example/u/IMG_2232.jpg"}]}
+
+    def press(window):
+        for w in window.walk():
+            if w.cget("text") == "Cancel this card":
+                w.invoke()
+                return
+        for w in window.walk():
+            if w.cget("text") == "Use this image":
+                w.invoke()
+                return
+        window.destroy()
+
+    UPLOADED.clear()
+    with patch.object(gui.woo_media, "replace_product_photos", capture_upload):
+        drive(app, sheet, scancount=1, press=press, nocancel=True,
+              product=unreadable)
+    check("cancelling uploads nothing", not UPLOADED, str(UPLOADED))
+    check("the pair is still saved locally, so nothing is lost",
+          bool(list((folder / "replacements").glob("*.webp"))),
+          str(sorted(p.name for p in
+                     (folder / "replacements").glob("*"))))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
 def test_empty_sheet():
     print()
     print("== 7. a sheet with no cards on it does nothing ==")
@@ -666,6 +821,9 @@ def main():
     test_no_product_found()
     test_same_slot_back()
     test_two_cards_one_sitting()
+    test_unreadable_old_back()
+    test_old_back_kept_when_asked_to()
+    test_old_back_cancelled()
     test_empty_sheet()
     test_website_first()
     print()

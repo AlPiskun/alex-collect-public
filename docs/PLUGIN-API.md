@@ -95,6 +95,12 @@ must exit non-zero before any upload or listing write.
 `--back` is optional. Without it, the plugin retargets the listing's **primary**
 image and leaves every gallery row alone - it does not add a back.
 
+On the website side the same rule holds, so the core applies it too: the old
+pair is taken off the product (never deleted - the files stay in the media
+library) before the new one goes on, and when the gallery's filenames say
+nothing about which photo is the back, the core asks rather than treating the
+first row as the only one to replace.
+
 A listing's main front is not a gallery row. CanadianShopper keeps it in a
 separate field from the additional images, so **one gallery row is not a
 one-photo listing**: that row may be an old back, a certificate, or packaging.

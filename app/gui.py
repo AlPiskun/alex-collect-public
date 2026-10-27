@@ -57,7 +57,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.49"
+VERSION = "2.50"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -3985,21 +3985,54 @@ def build_newphotos(parent, app):
                 parent=app)
             return False
 
+        #  The old pair comes off the product before the new one goes on, so a
+        #  listing never carries two backs. Removing a photo from a product is
+        #  not deleting it: the file stays in the media library.
+        rows = woo_media.existing_images(product)
+        remove_ids = list(old_pair_ids)
+        if back_path is not None:
+            #  A gallery that predates the -front/-back naming has no readable
+            #  back, and pair_ids() would quietly treat the first row as the
+            #  only one to replace - leaving the old back beside the new one.
+            #  Ask instead of assuming.
+            try:
+                import photo_replace
+                unread = photo_replace.unread_back_rows(rows)
+            except ImportError:
+                unread = []
+            #  The row already being replaced as the front is not a candidate
+            #  for the back, so it is not offered again.
+            unread = [row for row in unread
+                      if row["id"] not in set(remove_ids)]
+            if unread:
+                choice = choose_old_back(unread, product.get("name") or "")
+                if choice.get("cancel"):
+                    return False
+                remove_ids += [i for i in (choice.get("remove") or [])
+                               if i not in remove_ids]
+
+        staying = [row for row in rows if row["id"] not in set(remove_ids)]
+        leaving = [row for row in rows if row["id"] in set(remove_ids)]
+        plan = ["Upload %s and make them the photos for:" % photos, "",
+                product.get("name") or "(untitled product)"]
+        if leaving:
+            plan += ["", "Taken off this product (the image files stay in "
+                     "your media library):"]
+            plan += ["  - %s" % (row["name"] or row["id"]) for row in leaving]
+        if staying:
+            plan += ["", "Left alone:"]
+            plan += ["  - %s" % (row["name"] or row["id"]) for row in staying]
+        plan += ["", "Yes - take those off and put the new photos on",
+                 "No - add the new photos and leave every existing one",
+                 "Cancel - do not upload"]
         #  Yes means "replace the old pair", which is the opposite of keeping
         #  it - an easy inversion, so the name says what the answer means.
         replace_old = messagebox.askyesnocancel(
-            "Put these photos on the website?",
-            "Upload %s and make them the photos for:\n\n%s\n\n"
-            "Yes - and replace the front and back already there\n"
-            "No - and keep the photos already there\n"
-            "Cancel - do not upload"
-            % (photos, product.get("name")), parent=app)
+            "Put these photos on the website?", "\n".join(plan), parent=app)
         if replace_old is None:
             return False
         if replace_old:
-            keep_ids = [row["id"]
-                        for row in woo_media.existing_images(product)
-                        if row["id"] not in set(old_pair_ids)]
+            keep_ids = [row["id"] for row in staying]
         else:
             keep_ids = None
         status("Uploading %s..." % photos)
@@ -4020,6 +4053,12 @@ def build_newphotos(parent, app):
         if result.get("back"):
             app.console_line("Uploaded %s to the website (media ID %s)." %
                              (Path(back_path).name, result["back"]["id"]), "ok")
+        if replace_old and leaving:
+            app.console_line(
+                "Removed %s from the product gallery; the image files are "
+                "still in your media library." %
+                " and ".join(row["name"] or str(row["id"]) for row in leaving),
+                "dim")
         status("The website now shows %s." % photos)
         for attachment in (front, result.get("back")):
             if attachment and attachment.get("source_url"):
@@ -4215,6 +4254,72 @@ def build_newphotos(parent, app):
             return chosen["tile"]
 
         return by_picture() if pictures else by_list()
+
+    def choose_old_back(rows, product_name):
+        """Ask which gallery row is the old back, when the name does not say.
+
+        A product gallery that predates the ``-front``/``-back`` convention
+        cannot be read by filename. Choosing the first row as the front and
+        ignoring the rest leaves the old back sitting beside the new one,
+        which is how a listing ends up with two backs - so the user is asked.
+
+        Returns ``{"remove": [ids]}``, or ``{"cancel": True}``.
+        """
+        top = tk.Toplevel(app)
+        top.title("Remove the old back from the product?")
+        top.transient(app)
+        top.geometry("700x420")
+        top.grab_set()
+        answer = {"cancel": True, "remove": []}
+        ttk.Label(top, text=product_name or "This product",
+                  font=("TkDefaultFont", 10, "bold"),
+                  wraplength=660).pack(anchor="w", padx=10, pady=(10, 2))
+        ttk.Label(top, text="None of these photos says whether it is the "
+                  "front or the back, so Alex Collect will not guess. Pick "
+                  "the one that is the old BACK photo: it is taken off this "
+                  "product before the new one goes on.\n\nThe image file is "
+                  "not deleted - it stays in your media library.",
+                  wraplength=660, justify="left").pack(anchor="w", padx=10,
+                                                      pady=(0, 6))
+        listing = tk.Listbox(top, height=8, exportselection=False)
+        listing.pack(fill="both", expand=True, padx=10)
+        for row in rows:
+            listing.insert("end", str(row.get("name") or "(no filename)"))
+        if rows:
+            listing.selection_set(0)
+
+        def take_row(*_event):
+            picked = listing.curselection()
+            if not picked or not rows:
+                messagebox.showinfo("Choose a photo",
+                                    "Select the photo that is the old back.",
+                                    parent=top)
+                return
+            answer["cancel"] = False
+            answer["remove"] = [rows[picked[0]]["id"]]
+            top.destroy()
+
+        def keep_all(*_event):
+            answer["cancel"] = False
+            answer["remove"] = []
+            top.destroy()
+
+        def cancel(*_event):
+            answer["cancel"] = True
+            top.destroy()
+
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=10, pady=8)
+        ttk.Button(buttons, text="Remove this photo from the product",
+                   command=take_row).pack(side="left")
+        ttk.Button(buttons, text="Keep every existing photo",
+                   command=keep_all).pack(side="left", padx=8)
+        ttk.Button(buttons, text="Cancel this card", command=cancel).pack(
+            side="right")
+        listing.bind("<Double-Button-1>", take_row)
+        top.protocol("WM_DELETE_WINDOW", cancel)
+        app.wait_window(top)
+        return answer
 
     def wire_card(product, front, back=None):
         """Replace the one card's photos on CanadianShopper, no CSV involved."""
