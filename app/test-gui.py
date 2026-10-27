@@ -692,6 +692,10 @@ def main():
     old_wait_window = app.wait_window
     app.wait_window = auto_pick
     gui.filedialog.askopenfilename = lambda **k: str(sheet)
+    #  Since 2.48 the sheets are loaded once, as a group, and stay loaded for
+    #  the whole sitting - the single-file dialog is only used for "the back
+    #  is on another scan".
+    gui.filedialog.askopenfilenames = lambda **k: (str(sheet),)
 
     # -- a search-page fallback must never run the per-card action ----------
     mb.askyesno = decline
@@ -905,6 +909,11 @@ def main():
     blank_sheet = replace_root / "blank.jpg"
     _I.new("RGB", (_tile * 3, _tile * 3 + 400), (0, 0, 0)).save(blank_sheet)
     gui.filedialog.askopenfilename = lambda **k: str(blank_sheet)
+    #  Sheets loaded earlier are still in the pool, so it is emptied first:
+    #  this block is about a blank sheet being refused, not about leftovers.
+    if getattr(app, "photo_pool", None) is not None:
+        app.photo_pool.clear()
+    gui.filedialog.askopenfilenames = lambda **k: (str(blank_sheet),)
     photos_cap.calls.clear()
     uploads.clear()
     mb.askyesno = lambda title, *a, **k: True
@@ -928,7 +937,10 @@ def main():
     mb.askyesnocancel = lambda *a, **k: (
         answers["next_prompts"].append((a, k)) or answers["next_choice"])
     gui.filedialog.askopenfilename = lambda **k: ""
+    gui.filedialog.askopenfilenames = lambda **k: ()
     gui.filedialog.askdirectory = lambda **k: ""
+    if getattr(app, "photo_pool", None) is not None:
+        app.photo_pool.clear()
     shutil.rmtree(replace_root, ignore_errors=True)
     app.runner.start = cap       # hand the recorder back to section 7
 

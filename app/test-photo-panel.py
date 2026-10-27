@@ -795,6 +795,84 @@ def test_replacements_folder_opens():
     shutil.rmtree(folder, ignore_errors=True)
 
 
+def test_assign_window():
+    print()
+    print("== 16. the assignment window: titles in, replacements out ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    sheet = make_sheet(folder / "Scan-front.jpg")
+    app = FakeApp(folder)
+    app.photo_pool = photo_pool.PhotoPool(tiles_dir=folder / "tiles")
+    app.photo_pool.add_sheet(sheet, index=0)
+    parent = FakeWidget()
+    gui.build_newphotos(parent, app)
+    opener = next(w for w in parent.walk()
+                  if w.cget("text") == "Assign photos to cards...")
+    opener.invoke()
+    top = app.photo_assign_window
+    check("the window opens", top is not None)
+
+    def by_text(label):
+        return next((w for w in top.walk() if w.cget("text") == label), None)
+
+    box = next(w for w in top.walk() if w._kw.get("height") == 7)
+    box.get = lambda *a, **k: (
+        "1. 1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6\n"
+        "2. 1990 Score Mario Lemieux #2\n")
+    products = [
+        {"id": 42, "name": "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6",
+         "sku": "", "images": []},
+        {"id": 43, "name": "1990 Score Mario Lemieux #2", "sku": "",
+         "images": []},
+    ]
+
+    def fake_get(site, path, params, key, secret):
+        wanted = words_set(params.get("search") or "")
+        found = [p for p in products if wanted <= words_set(p["name"])]
+        return 200, found
+
+    UPLOADED.clear()
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck", "cs")), \
+            patch.object(gui, "woo_get", fake_get), \
+            patch.object(gui, "read_wordpress_credentials",
+                         lambda path=None: ("https://shop.example", "owner", "pw")), \
+            patch.object(gui.woo_media, "replace_product_photos",
+                         capture_upload):
+        by_text("Read these").invoke()
+        listing = next(w for w in top.walk() if w._kw.get("height") == 10)
+        check("each image gets a row", len(listing.items) == 7,
+              str(len(listing.items)))
+        shown = " ".join(str(x) for x in listing.items)
+        check("a titled row names the card it matched",
+              "Gretzky" in shown and "Lemieux" in shown, shown[:160])
+        _BOX.askyesno = lambda *a, **k: True
+        #  "Put these photos on the website?" answers yes/no/cancel.
+        _BOX.askyesnocancel = lambda *a, **k: True
+        by_text("Apply the ready ones").invoke()
+
+    check("both matched cards were replaced", len(UPLOADED) == 2,
+          str(len(UPLOADED)))
+    check("the website was told what to keep", all(
+        u["keep_ids"] is not None for u in UPLOADED), str(UPLOADED))
+    names = sorted(p.name for p in (folder / "replacements").glob("*.webp"))
+    check("the pair is saved as a pair", names == ["Scan-front_1-1.webp",
+                                                   "Scan-front_3-1.webp"],
+          str(names))
+    check("one image per card is used up",
+          app.photo_pool.progress() == (2, 7), str(app.photo_pool.progress()))
+    check("the rows left over still say they have no title",
+          any("no title" in str(x) for x in listing.items),
+          str(listing.items[:3]))
+    _BOX.askyesno = lambda *a, **k: False
+    _BOX.askyesnocancel = lambda *a, **k: None
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def words_set(text):
+    return set(str(text).lower().replace("-", " ").split())
+
+
 def test_empty_sheet():
     print()
     print("== 7. a sheet with no cards on it does nothing ==")
@@ -867,6 +945,7 @@ def main():
     test_old_back_kept_when_asked_to()
     test_old_back_cancelled()
     test_replacements_folder_opens()
+    test_assign_window()
     test_empty_sheet()
     test_website_first()
     print()
