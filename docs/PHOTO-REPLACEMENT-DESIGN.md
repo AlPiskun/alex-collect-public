@@ -1,6 +1,6 @@
 # Replacing card photos — proposed redesign
 
-Status: proposal, for discussion. Nothing here is built yet.
+Status: partly built. 2.48 ships the pictures and the sheet-first entry (steps 1 and 3, and the picker from step 2). The card-per-slot assignment window, the AI read of the sheets and the nine-at-a-time queue are still proposals.
 
 ![The proposed window](mockups/photo-replace-flow.png)
 

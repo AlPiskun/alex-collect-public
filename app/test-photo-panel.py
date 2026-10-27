@@ -156,6 +156,7 @@ def install_tk():
 _TK, _TTK, _DIALOG, _BOX = install_tk()
 
 import gui                                     # noqa: E402
+import photo_pool                              # noqa: E402
 import photo_replace                           # noqa: E402
 from PIL import Image                          # noqa: E402
 
@@ -232,10 +233,18 @@ def make_sheet(path, blanks=(2, 9)):
     return path
 
 
+SHEET_CALLS = []
+
+
 def drive(app, sheet, yes_for=(), nocancel=None, wordpress=("owner", "pw"),
           site="https://shop.example", product=None, press=None,
-          scancount=1, found=True):
-    """Press Find with a scripted sheet, answers and picker behaviour."""
+          scancount=1, found=True, cards=1):
+    """Press Find with a scripted sheet, answers and picker behaviour.
+
+    ``cards`` presses Find more than once on the same panel, which is how a
+    whole sheet is worked through in one sitting.
+    """
+    SHEET_CALLS.clear()
     product = product or PRODUCT
     parent = FakeWidget()
     gui.build_newphotos(parent, app)
@@ -260,8 +269,16 @@ def drive(app, sheet, yes_for=(), nocancel=None, wordpress=("owner", "pw"),
     PICKER["press"] = press or first_button
     _BOX.askyesno = ask
     _BOX.askyesnocancel = lambda title, *a, **k: (asked.append(title), nocancel)[1]
-    scans = [str(sheet)] * scancount
-    _DIALOG.askopenfilename = lambda **k: scans.pop(0) if scans else str(sheet)
+    #  Sheets are picked as a group now, once for the whole sitting; the
+    #  single-file dialog is only used for "the back is on another scan".
+    sheets = [str(sheet)] * scancount
+
+    def pick_sheets(**_kw):
+        SHEET_CALLS.append(1)
+        return (sheets.pop(0),) if sheets else ()
+
+    _DIALOG.askopenfilenames = pick_sheets
+    _DIALOG.askopenfilename = lambda **k: str(sheet)
     keys = (site, "ck_live", "cs_live")
     wp = (site, wordpress[0], wordpress[1]) if wordpress else (site, "", "")
     with patch.object(gui, "has_woo_credentials", lambda path=None: True), \
@@ -269,7 +286,8 @@ def drive(app, sheet, yes_for=(), nocancel=None, wordpress=("owner", "pw"),
             patch.object(gui, "read_wordpress_credentials", lambda path=None: wp), \
             patch.object(gui, "woo_get",
                          lambda *a, **k: (200, [product] if found else [])):
-        find.invoke()
+        for _card in range(max(1, cards)):
+            find.invoke()
     return asked
 
 
@@ -475,6 +493,111 @@ def test_no_product_found():
           not [t for t in asked if "CanadianShopper" in t], str(asked))
 
 
+def press_first_tile(window):
+    """Accept whichever image the picker has selected."""
+    for w in window.walk():
+        if w.cget("text") == "Use this image":
+            w.invoke()
+            return
+    window.destroy()
+
+
+def test_same_slot_back():
+    print()
+    print("== 10. the back is proposed from the same slot ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    front_sheet = make_sheet(folder / "Scan-front.jpg")
+    back_sheet = make_sheet(folder / "Scan-back.jpg")
+    app = FakeApp(folder)
+    #  Both sheets are already loaded, the way they are after Add sheets.
+    app.photo_pool = photo_pool.PhotoPool(tiles_dir=folder / "tiles")
+    app.photo_pool.add_sheet(front_sheet, index=0)
+    app.photo_pool.add_sheet(back_sheet, index=1)
+
+    picked = {"n": 0, "front": "", "back": ""}
+
+    def shown(window):
+        """What the picker has selected, read the way the user would see it."""
+        for w in window.walk():
+            if w._kw.get("height") == 11 and w.items:
+                index = w.curselection()[0]
+                return w.items[index]
+        return ""
+
+    def press(window):
+        picked["n"] += 1
+        if picked["n"] == 1:
+            #  Deliberately not the first image: slot 4, not slot 1, so the
+            #  pairing is proven rather than stumbled into by list order.
+            for w in window.walk():
+                if w._kw.get("height") == 11:
+                    w.selection_set(2)
+            picked["front"] = shown(window)
+        else:
+            picked["back"] = shown(window)
+        for w in window.walk():
+            if w.cget("text") == "Use this image":
+                w.invoke()
+                return
+
+    asked = drive(app, front_sheet, scancount=0, press=press, nocancel=False,
+                  yes_for={"Replace the CanadianShopper photos?"})
+    check("the loaded sheets are not asked for again", not SHEET_CALLS,
+          str(SHEET_CALLS))
+    args = replace_args(app)
+    check("the front is the image that was chosen", "Slot 4" in picked["front"],
+          picked["front"])
+    check("the back offered is the same slot", "Slot 4" in picked["back"],
+          picked["back"])
+    check("it comes from the back sheet", "Scan-back" in picked["back"],
+          picked["back"])
+    check("the pairing is marked as the proposed one",
+          "proposed" in picked["back"], picked["back"])
+    check("both halves were sent", args is not None and "--back" in args,
+          str(args))
+    check("the pair is named from the card, not the scan",
+          args is not None and
+          Path(flag(args, "--front")).name.replace("-front", "-back") ==
+          Path(flag(args, "--back")).name, str(args))
+    check("the pairing did not need a second question", picked["n"] == 2,
+          str(picked["n"]))
+    check("the used images are remembered",
+          app.photo_pool.progress() == (2, 14),
+          str(app.photo_pool.progress()))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_two_cards_one_sitting():
+    print()
+    print("== 11. one sheet, two cards, one sitting ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    sheet = make_sheet(folder / "Scan-01.jpg")
+    app = FakeApp(folder)
+    drive(app, sheet, scancount=1, cards=2, press=press_first_tile,
+          nocancel=False, yes_for={"Replace the CanadianShopper photos?"})
+    check("the sheet is chosen once for both cards", len(SHEET_CALLS) == 1,
+          str(SHEET_CALLS))
+    check("both cards were sent to the plugin", len(app.runs) == 2,
+          str([r["title"] for r in app.runs]))
+    fronts = [flag(run["args"], "--front") for run in app.runs
+              if "--front" in run["args"]]
+    check("two cards, two different front images", len(set(fronts)) == 2,
+          str(fronts))
+    check("the first card was not offered again for the second",
+          all(fronts), str(fronts))
+    check("the panel knows how much of the sheet is left",
+          app.photo_pool.progress() == (4, 7),
+          str(app.photo_pool.progress()))
+    names = sorted(p.name for p in (folder / "replacements").glob("*.webp"))
+    check("each card kept its own pair counter",
+          names == ["gretzky-back-1.webp", "gretzky-back-2.webp",
+                    "gretzky-front-1.webp", "gretzky-front-2.webp"],
+          str(names))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
 def test_empty_sheet():
     print()
     print("== 7. a sheet with no cards on it does nothing ==")
@@ -541,6 +664,8 @@ def main():
     test_back_from_another_sheet()
     test_front_only_by_choice()
     test_no_product_found()
+    test_same_slot_back()
+    test_two_cards_one_sitting()
     test_empty_sheet()
     test_website_first()
     print()
