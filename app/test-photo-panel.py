@@ -753,6 +753,48 @@ def test_old_back_cancelled():
     shutil.rmtree(folder, ignore_errors=True)
 
 
+def test_replacements_folder_opens():
+    print()
+    print("== 15. the saved images are on screen with the pages ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    sheet = make_sheet(folder / "Scan-01.jpg")
+    app = FakeApp(folder)
+    opened = []
+
+    def note(path):
+        opened.append(Path(path))
+        return True
+
+    def press(window):
+        for w in window.walk():
+            if w.cget("text") == "Use this image":
+                w.invoke()
+                return
+        window.destroy()
+
+    with patch.object(gui, "open_path", note), \
+            patch.object(gui.woo_media, "replace_product_photos", capture_upload):
+        drive(app, sheet, scancount=1, press=press, nocancel=True)
+    check("the pages still open", app.opened, str(app.opened))
+    check("the replacements folder opens with them",
+          opened == [folder / "replacements"], str(opened))
+    names = sorted(p.name for p in (folder / "replacements").glob("*.webp"))
+    check("it is the folder the pair was just written to",
+          len(names) == 2 and all("-front-1" in n or "-back-1" in n
+                                  for n in names), str(names))
+
+    #  Nothing saved means nothing to show, so the folder is not opened.
+    opened.clear()
+    app2 = FakeApp(folder)
+    with patch.object(gui, "open_path", note):
+        drive(app2, sheet, scancount=0, press=press, yes_for=(),
+              found=False)
+    check("no replacement, no folder", not opened, str(opened))
+    check("the product list still opens", app2.opened, str(app2.opened))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
 def test_empty_sheet():
     print()
     print("== 7. a sheet with no cards on it does nothing ==")
@@ -824,6 +866,7 @@ def main():
     test_unreadable_old_back()
     test_old_back_kept_when_asked_to()
     test_old_back_cancelled()
+    test_replacements_folder_opens()
     test_empty_sheet()
     test_website_first()
     print()

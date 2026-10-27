@@ -57,7 +57,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.50"
+VERSION = "2.51"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -4505,6 +4505,12 @@ def build_newphotos(parent, app):
 
         if urls:
             app.open_webpages(urls)
+            #  The pages are where the same files get uploaded by hand, so the
+            #  folder holding them is opened too - after the browser, so it is
+            #  the window on top and the files can be dragged straight from it.
+            if open_path(saved.parent):
+                app.console_line("Opened %s for the saved images." %
+                                 saved.parent, "dim")
 
     def start():
         query = term.get().strip()
