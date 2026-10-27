@@ -931,6 +931,30 @@ def test_website_first():
           UPLOADS[0]["keep_ids"] == [9], str(UPLOADS))
 
 
+def test_spent_sitting():
+    print()
+    print("== 17. a sitting with every image used says so ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    #  Six images: three cards use them all, the fourth press has nothing to
+    #  pick. It used to do nothing at all, so the panel looked broken.
+    sheet = make_sheet(folder / "Scan-1.jpg", blanks=(2, 4, 9))
+    app = FakeApp(folder)
+    _BOX.shown.clear()
+    UPLOADS.clear()
+    with patch.object(gui.woo_media, "replace_product_photos", fake_upload):
+        drive(app, sheet, cards=4, nocancel=False)
+    check("three cards used the whole sheet",
+          app.photo_pool.progress() == (6, 6), str(app.photo_pool.progress()))
+    check("the fourth press explains the sheet is spent",
+          any(kind == "showinfo" and "already have a card" in str(payload)
+              for kind, payload in _BOX.shown), str(_BOX.shown))
+    saved = sorted(p.name for p in (folder / "replacements").glob("*.webp"))
+    check("the spent press saved nothing - three pairs, no fourth",
+          len(saved) == 6, str(saved))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
 def main():
     test_version_gates()
     test_pair_saved_and_sent()
@@ -946,6 +970,7 @@ def main():
     test_old_back_cancelled()
     test_replacements_folder_opens()
     test_assign_window()
+    test_spent_sitting()
     test_empty_sheet()
     test_website_first()
     print()

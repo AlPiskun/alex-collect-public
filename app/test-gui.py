@@ -711,6 +711,22 @@ def main():
               "Save your website API keys?" in asked, str(asked))
         check("declining the key setup opens no keys file",
               "opened keys" not in asked, str(asked))
+    def fresh_sitting():
+        """Start a new sitting: no used images, no leftover pairs.
+
+        A sitting is one load of sheets, and every card worked through takes
+        two images off it - including the press above, which saved a pair
+        before it found there were no API keys. Each scenario below needs a
+        card of its own, so each one starts again; otherwise the fourth finds
+        the sheet spent and does nothing, which is how one dead press turned
+        into eleven failing checks.
+        """
+        if getattr(app, "photo_pool", None) is not None:
+            app.photo_pool.clear()
+        shutil.rmtree(replace_root / "replacements", ignore_errors=True)
+        photos_cap.calls.clear()
+        uploads.clear()
+
     opened = answers["opened_urls"][opened_before:]
     check("the filtered product list opens instead of a direct edit page",
           ("https://shop.example/wp-admin/edit.php?post_type=product&s="
@@ -723,7 +739,9 @@ def main():
     asked.clear()
     opened_before = len(answers["opened_urls"])
     app.runner.start = photos_cap
-    photos_cap.calls.clear()
+    #  The key press above went through a pair before it found no keys were
+    #  saved, so the card scenarios start from a clean sheet again.
+    fresh_sitting()
     #  This block checks that the plugin is called, so the offer has to be
     #  accepted; every other question here is still declined.
     mb.askyesno = lambda title, *a, **k: title == \
@@ -759,6 +777,9 @@ def main():
           str(args))
     check("without an Application Password nothing is uploaded",
           not uploads, str(uploads))
+    check("the sitting had six card images to work through",
+          len(app.photo_pool) == 6 and app.photo_pool.progress() == (2, 6),
+          str((len(app.photo_pool), app.photo_pool.progress())))
 
     # -- a second run must not overwrite the first --------------------------
     mb.askyesno = lambda title, *a, **k: True
@@ -773,8 +794,7 @@ def main():
                      (replace_root / "replacements").glob("*.webp"))))
 
     # -- the website photo comes first, then the plugin ---------------------
-    photos_cap.calls.clear()
-    uploads.clear()
+    fresh_sitting()
     answers["next_choice"] = False        # No = keep the existing photos
     mb.askyesno = lambda title, *a, **k: title == \
         "Replace the CanadianShopper photos?"
@@ -799,8 +819,7 @@ def main():
           replacement_args(photos_cap.calls) is not None,
           str(photos_cap.calls))
 
-    photos_cap.calls.clear()
-    uploads.clear()
+    fresh_sitting()
     answers["next_choice"] = True         # Yes = replace the gallery
     with photo_patch(wordpress=WITH_WORDPRESS, upload=fake_upload):
         find_button(app, "Find the card...").invoke()
@@ -808,8 +827,7 @@ def main():
     check("answering Yes drops the old front and back but keeps the rest",
           uploads and uploads[0]["keep_ids"] == [9], str(uploads))
 
-    photos_cap.calls.clear()
-    uploads.clear()
+    fresh_sitting()
     answers["next_choice"] = None         # Cancel = leave the shop alone
     with photo_patch(wordpress=WITH_WORDPRESS, upload=fake_upload):
         find_button(app, "Find the card...").invoke()
@@ -820,7 +838,7 @@ def main():
           str(photos_cap.calls))
 
     # -- an http site is refused before anything is sent -------------------
-    uploads.clear()
+    fresh_sitting()
     saved_site = app.settings["woo_site_url"]
     app.settings["woo_site_url"] = "http://shop.example"
     warnings_before = len(answers["shown"])
@@ -837,10 +855,10 @@ def main():
     app.settings["woo_site_url"] = saved_site
 
     # -- no Application Password: offer once, never upload anyway ----------
+    fresh_sitting()
     app._wp_upload_asked = False
     opened_keys.clear()
     asked.clear()
-    uploads.clear()
     answers["next_choice"] = False
     mb.askyesno = lambda title, *a, **k: title == \
         "Upload replacements straight from here?"
@@ -861,8 +879,8 @@ def main():
     answers["next_choice"] = None
 
     # -- an older plugin must be refused, not called -----------------------
+    fresh_sitting()
     asked.clear()
-    photos_cap.calls.clear()
     warnings_before = len(answers["shown"])
     mb.askyesno = decline
     with patch.object(gui, "has_woo_credentials", lambda path=None: True), \
@@ -882,7 +900,7 @@ def main():
           replacement_args(photos_cap.calls) is None, str(photos_cap.calls))
 
     # -- 1.0.15 can replace the front but would only append a back ---------
-    photos_cap.calls.clear()
+    fresh_sitting()
     warnings_before = len(answers["shown"])
     asked.clear()
     mb.askyesno = lambda title, *a, **k: title == \
@@ -904,6 +922,31 @@ def main():
           any(kind == "warn" and "back" in str(payload).lower()
               for kind, payload in answers["shown"][warnings_before:]),
           str(answers["shown"][warnings_before:]))
+
+    # -- a sitting that has used every image says so ------------------------
+    #  Three cards take all six images off the sheet. The fourth press cannot
+    #  do anything, and used to do it silently - which is exactly how the
+    #  scenarios above failed when they shared one sitting.
+    fresh_sitting()
+    mb.askyesno = lambda *a, **k: False
+    for _card in range(3):
+        with photo_patch():
+            find_button(app, "Find the card...").invoke()
+            app.update()
+    check("three cards used the whole sheet",
+          len(app.photo_pool) == 6 and app.photo_pool.progress() == (6, 6),
+          str(app.photo_pool.progress()))
+    shown_before = len(answers["shown"])
+    photos_cap.calls.clear()
+    with photo_patch():
+        find_button(app, "Find the card...").invoke()
+        app.update()
+    check("a spent sheet is explained instead of a dead button",
+          any(kind == "info" and "already have a card" in str(payload)
+              for kind, payload in answers["shown"][shown_before:]),
+          str(answers["shown"][shown_before:]))
+    check("a spent sheet starts no replacement job",
+          replacement_args(photos_cap.calls) is None, str(photos_cap.calls))
 
     # -- an all-black sheet must not produce a job -------------------------
     blank_sheet = replace_root / "blank.jpg"

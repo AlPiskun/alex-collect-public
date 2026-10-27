@@ -3946,6 +3946,30 @@ def build_newphotos(parent, app):
         refresh_sheets()
         status("Sheets cleared.")
 
+    def ensure_images():
+        """Make sure a free image is there to pick; say so when none is left.
+
+        Sheets stay loaded for the whole sitting, and each card takes a front
+        and a back off them, so a long sitting does eventually use the lot.
+        Pressing Find then used to do nothing whatsoever - the button looked
+        broken rather than finished - so the dead end is spoken instead.
+        """
+        if pool.unused():
+            return True
+        add_sheets()
+        if pool.unused():
+            return True
+        if pool.sheets:
+            _used, total = pool.progress()
+            status("Every image on the loaded sheets has been used. Add "
+                   "another sheet, or press Clear and load these again.")
+            messagebox.showinfo(
+                "That is the whole sheet",
+                "All %d images on the loaded sheets already have a card.\n\n"
+                "Add another scan to carry on, or press Clear and load the "
+                "sheet again." % total, parent=app)
+        return False
+
     def upload_to_site(app, product, front_path, back_path=None,
                        old_pair_ids=()):
         """Upload the pair and make it the product's photos on the website.
@@ -4393,13 +4417,10 @@ def build_newphotos(parent, app):
             return [tile for tile in pool.unused()
                     if tile["sheet_path"] == sheet["path"]]
 
-        if not pool.unused():
-            #  Nothing loaded yet: the sheets come first, before any choice.
-            if not add_sheets():
-                if urls:
-                    app.open_webpages(urls)
-                return
-        if not pool.unused():
+        #  Sheets first: this is where the sitting starts, and a sitting can
+        #  run out - either way the user is told rather than left pressing a
+        #  button that does nothing.
+        if not ensure_images():
             if urls:
                 app.open_webpages(urls)
             return
@@ -4559,9 +4580,8 @@ def build_newphotos(parent, app):
         them, paste the cards in the order they were scanned, or point at one
         image and search for its card.
         """
-        if not pool.unused():
-            if not add_sheets():
-                return
+        if not ensure_images():
+            return
         rows = []
         top = tk.Toplevel(app)
         app.photo_assign_window = top      # kept so a test can drive it
