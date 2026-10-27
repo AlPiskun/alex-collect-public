@@ -57,7 +57,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.48"
+VERSION = "2.49"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1541,6 +1541,8 @@ class App(tk.Tk):
         if kind == "match_cs":
             matches = self._pick_cs_matches(request)
             return {"matches": matches}
+        if kind == "pick_back":
+            return self._pick_cs_back(request)
         return {}
 
     def _confirm_cs_dialog(self, text):
@@ -1663,6 +1665,102 @@ class App(tk.Tk):
         entry.focus_set()
         self.wait_window(top)
         return chosen
+
+    def _pick_cs_back(self, request):
+        """Ask which existing gallery row is the card's old back photo.
+
+        CanadianShopper keeps a listing's main front apart from its gallery, so
+        a listing with one gallery row is not a one-photo listing: that row can
+        be an old back, a certificate, or packaging. The plugin asks rather than
+        guessing, and this is the real dialog; without a handler for this type
+        the app would answer {} and the plugin would fall back to numbered
+        console choices.
+
+        Answers ``{"row": <id>}`` (replace that row), ``{"row": null}`` (keep
+        every row and add the new back), or ``{"cancel": true}``.
+        """
+        rows = [row for row in (request.get("rows") or [])
+                if isinstance(row, dict)]
+        allow_add = request.get("allow_add", True)
+        title = str(request.get("title") or "this card")
+        #  "Untouched" must not look like "add a back": a window that was never
+        #  answered cancels, so no listing is changed by a stray click.
+        answer = {"choice": "cancel", "row": None}
+        top = tk.Toplevel(self)
+        top.title("Which row is the old back?")
+        top.transient(self)
+        top.geometry("720x430")
+        top.grab_set()
+        ttk.Label(top, text="%s" % title, wraplength=690,
+                  font=("TkDefaultFont", 10, "bold")).pack(
+                      anchor="w", padx=10, pady=(10, 2))
+        sent = " / ".join(str(request.get(key)) for key in ("front", "back")
+                          if request.get(key))
+        if sent:
+            ttk.Label(top, text="Replacing with: %s" % sent,
+                      style="Dim.TLabel", wraplength=690).pack(
+                          anchor="w", padx=10)
+        ttk.Label(top, text="CanadianShopper cannot tell which of these rows "
+                  "is the card's old back photo, and it will not guess. Pick "
+                  "the row to replace with the new back, or keep every row and "
+                  "add the new back beside them.", wraplength=690,
+                  justify="left").pack(anchor="w", padx=10, pady=(6, 6))
+        listing = tk.Listbox(top, height=9, exportselection=False)
+        listing.pack(fill="both", expand=True, padx=10)
+        for row in rows:
+            sort = row.get("sortOrder")
+            name = str(row.get("filename") or "(no filename)")
+            suffix = "" if sort in (None, "") else "   [position %s]" % sort
+            listing.insert("end", "%s%s" % (name, suffix))
+        if rows:
+            listing.selection_set(0)
+
+        def take_row(*_event):
+            picked = listing.curselection()
+            if not picked or not rows:
+                messagebox.showinfo(
+                    "Choose a row",
+                    "Select the row that is the old back photo.", parent=top)
+                return
+            row = rows[picked[0]]
+            if row.get("id") in (None, ""):
+                messagebox.showwarning(
+                    "That row has no ID",
+                    "CanadianShopper did not send an ID for this row, so it "
+                    "cannot be replaced safely.", parent=top)
+                return
+            answer["choice"] = "row"
+            answer["row"] = str(row["id"])
+            top.destroy()
+
+        def add_new(*_event):
+            answer["choice"] = "add"
+            answer["row"] = None
+            top.destroy()
+
+        def cancel(*_event):
+            answer["choice"] = "cancel"
+            answer["row"] = None
+            top.destroy()
+
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=10, pady=8)
+        ttk.Button(buttons, text="Replace the selected row",
+                   command=take_row).pack(side="left")
+        if allow_add:
+            ttk.Button(buttons, text="No old back - keep every row and add "
+                       "the new one",
+                       command=add_new).pack(side="left", padx=8)
+        ttk.Button(buttons, text="Cancel this card",
+                   command=cancel).pack(side="right")
+        listing.bind("<Double-Button-1>", take_row)
+        top.protocol("WM_DELETE_WINDOW", cancel)
+        self.wait_window(top)
+        if answer["choice"] == "row" and answer["row"] is not None:
+            return {"row": answer["row"]}
+        if answer["choice"] == "add":
+            return {"row": None}
+        return {"cancel": True}
 
     def set_setting(self, key, value):
         self.settings[key] = value
