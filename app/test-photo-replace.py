@@ -271,6 +271,46 @@ def test_pair_naming(root):
     check("a front alone is saved without a name too",
           alone["front"].is_file() and "back" not in alone, str(alone))
 
+    # A gallery that predates the -front/-back naming cannot be read by
+    # filename. pair_ids() then quietly treats the first row as the only one
+    # to replace, which leaves an unsuffixed old back on the product beside
+    # the new one - so these rows are reported for the user to decide.
+    named = [{"id": 7, "name": "gretzky-front.webp"},
+             {"id": 8, "name": "gretzky-back.webp"}]
+    check("a named pair identifies both sides",
+          photo_replace.side_rows(named)["back"]["id"] == 8,
+          str(photo_replace.side_rows(named)))
+    check("a named pair needs no question",
+          photo_replace.unread_back_rows(named) == [],
+          str(photo_replace.unread_back_rows(named)))
+
+    loose = [{"id": 11, "name": "IMG_2231.jpg"},
+             {"id": 12, "name": "IMG_2232.jpg"}]
+    check("an unsuffixed pair has no identified side",
+          photo_replace.side_rows(loose) == {},
+          str(photo_replace.side_rows(loose)))
+    check("both unsuffixed rows are offered as a possible back",
+          [r["id"] for r in photo_replace.unread_back_rows(loose)] == [11, 12],
+          str(photo_replace.unread_back_rows(loose)))
+
+    mixed = [{"id": 13, "name": "burrows-front.jpg"},
+             {"id": 14, "name": "back-of-card.jpg"}]
+    check("a back that only says so in the middle is not identified",
+          photo_replace.side_rows(mixed)["front"]["id"] == 13 and
+          "back" not in photo_replace.side_rows(mixed),
+          str(photo_replace.side_rows(mixed)))
+    check("the un-named row beside a known front is offered",
+          [r["id"] for r in photo_replace.unread_back_rows(mixed)] == [14],
+          str(photo_replace.unread_back_rows(mixed)))
+
+    paired = mixed + [{"id": 15, "name": "burrows-back.jpg"}]
+    check("once a real back is named, nothing is asked",
+          photo_replace.unread_back_rows(paired) == [],
+          str(photo_replace.unread_back_rows(paired)))
+    check("one photo alone is not a question worth asking",
+          photo_replace.unread_back_rows([{"id": 99, "name": "x.jpg"}]) == [],
+          str(photo_replace.unread_back_rows([{"id": 99, "name": "x.jpg"}])))
+
     before = sorted(p.name for p in (root / "pairs").iterdir())
     try:
         photo_replace.save_pair(root / "pairs", "dallas-smith-front.webp",

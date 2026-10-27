@@ -44,6 +44,8 @@ from browser_utils import available_browsers, browser_label, open_urls as launch
 from plugin_manager import (PluginError, PluginManager,
                             version_at_least)
 from process_utils import no_window_kwargs
+import photo_pool
+import photo_thumbs
 import woo_media
 import woo_orders
 from sale_inputs import woo_get
@@ -55,7 +57,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.47"
+VERSION = "2.51"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1539,6 +1541,8 @@ class App(tk.Tk):
         if kind == "match_cs":
             matches = self._pick_cs_matches(request)
             return {"matches": matches}
+        if kind == "pick_back":
+            return self._pick_cs_back(request)
         return {}
 
     def _confirm_cs_dialog(self, text):
@@ -1661,6 +1665,102 @@ class App(tk.Tk):
         entry.focus_set()
         self.wait_window(top)
         return chosen
+
+    def _pick_cs_back(self, request):
+        """Ask which existing gallery row is the card's old back photo.
+
+        CanadianShopper keeps a listing's main front apart from its gallery, so
+        a listing with one gallery row is not a one-photo listing: that row can
+        be an old back, a certificate, or packaging. The plugin asks rather than
+        guessing, and this is the real dialog; without a handler for this type
+        the app would answer {} and the plugin would fall back to numbered
+        console choices.
+
+        Answers ``{"row": <id>}`` (replace that row), ``{"row": null}`` (keep
+        every row and add the new back), or ``{"cancel": true}``.
+        """
+        rows = [row for row in (request.get("rows") or [])
+                if isinstance(row, dict)]
+        allow_add = request.get("allow_add", True)
+        title = str(request.get("title") or "this card")
+        #  "Untouched" must not look like "add a back": a window that was never
+        #  answered cancels, so no listing is changed by a stray click.
+        answer = {"choice": "cancel", "row": None}
+        top = tk.Toplevel(self)
+        top.title("Which row is the old back?")
+        top.transient(self)
+        top.geometry("720x430")
+        top.grab_set()
+        ttk.Label(top, text="%s" % title, wraplength=690,
+                  font=("TkDefaultFont", 10, "bold")).pack(
+                      anchor="w", padx=10, pady=(10, 2))
+        sent = " / ".join(str(request.get(key)) for key in ("front", "back")
+                          if request.get(key))
+        if sent:
+            ttk.Label(top, text="Replacing with: %s" % sent,
+                      style="Dim.TLabel", wraplength=690).pack(
+                          anchor="w", padx=10)
+        ttk.Label(top, text="CanadianShopper cannot tell which of these rows "
+                  "is the card's old back photo, and it will not guess. Pick "
+                  "the row to replace with the new back, or keep every row and "
+                  "add the new back beside them.", wraplength=690,
+                  justify="left").pack(anchor="w", padx=10, pady=(6, 6))
+        listing = tk.Listbox(top, height=9, exportselection=False)
+        listing.pack(fill="both", expand=True, padx=10)
+        for row in rows:
+            sort = row.get("sortOrder")
+            name = str(row.get("filename") or "(no filename)")
+            suffix = "" if sort in (None, "") else "   [position %s]" % sort
+            listing.insert("end", "%s%s" % (name, suffix))
+        if rows:
+            listing.selection_set(0)
+
+        def take_row(*_event):
+            picked = listing.curselection()
+            if not picked or not rows:
+                messagebox.showinfo(
+                    "Choose a row",
+                    "Select the row that is the old back photo.", parent=top)
+                return
+            row = rows[picked[0]]
+            if row.get("id") in (None, ""):
+                messagebox.showwarning(
+                    "That row has no ID",
+                    "CanadianShopper did not send an ID for this row, so it "
+                    "cannot be replaced safely.", parent=top)
+                return
+            answer["choice"] = "row"
+            answer["row"] = str(row["id"])
+            top.destroy()
+
+        def add_new(*_event):
+            answer["choice"] = "add"
+            answer["row"] = None
+            top.destroy()
+
+        def cancel(*_event):
+            answer["choice"] = "cancel"
+            answer["row"] = None
+            top.destroy()
+
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=10, pady=8)
+        ttk.Button(buttons, text="Replace the selected row",
+                   command=take_row).pack(side="left")
+        if allow_add:
+            ttk.Button(buttons, text="No old back - keep every row and add "
+                       "the new one",
+                       command=add_new).pack(side="left", padx=8)
+        ttk.Button(buttons, text="Cancel this card",
+                   command=cancel).pack(side="right")
+        listing.bind("<Double-Button-1>", take_row)
+        top.protocol("WM_DELETE_WINDOW", cancel)
+        self.wait_window(top)
+        if answer["choice"] == "row" and answer["row"] is not None:
+            return {"row": answer["row"]}
+        if answer["choice"] == "add":
+            return {"row": None}
+        return {"cancel": True}
 
     def set_setting(self, key, value):
         self.settings[key] = value
@@ -3666,6 +3766,7 @@ def build_newphotos(parent, app):
 
     keys_file = BASE / "woo-keys.txt"
     term = tk.StringVar(master=box)
+    sheets_text = {"label": None}     # set once the strip is built below
     hint = ttk.Label(box, text="", style="Dim.TLabel", wraplength=760,
                      justify="left")
 
@@ -3782,6 +3883,67 @@ def build_newphotos(parent, app):
         folder.mkdir(parents=True, exist_ok=True)
         return folder
 
+    #  The sheets stay loaded for the whole sitting, so the second card does
+    #  not mean splitting the scan again - and the images already used are not
+    #  offered for the next one.
+    pool = getattr(app, "photo_pool", None)
+    if pool is None:
+        #  Kept on the app, not on the panel: the tab is rebuilt when it is
+        #  opened again, and re-splitting the sheets each time would throw away
+        #  which images had already been used.
+        pool = photo_pool.PhotoPool()
+        app.photo_pool = pool
+
+    def sheet_files():
+        return [("Images", "*.jpg *.jpeg *.png *.tif *.tiff *.bmp *.webp"),
+                ("All files", "*.*")]
+
+    def add_sheets():
+        """Load one or more replacement sheets; False when nothing was added."""
+        chosen = filedialog.askopenfilenames(
+            title="Which replacement sheets? (front first, then back)",
+            initialdir=app.settings.get("scan_dir", str(BASE)),
+            filetypes=sheet_files())
+        if not chosen:
+            return False
+        chosen = list(chosen) if not isinstance(chosen, str) else [chosen]
+        pool.tiles_dir = replace_dir()
+        failed, added = [], 0
+        for path in chosen:
+            try:
+                pool.add_sheet(path, index=len(pool.sheets))
+            except photo_pool.PhotoPoolError as exc:
+                failed.append("%s: %s" % (Path(path).name, exc))
+                continue
+            added += 1
+        refresh_sheets()
+        if failed:
+            messagebox.showwarning(
+                "Some sheets were not added", "\n".join(failed), parent=app)
+        if added:
+            status("%d sheet%s loaded - %d images to use." % (
+                added, "" if added == 1 else "s", len(pool.unused())))
+        return bool(added)
+
+    def refresh_sheets():
+        """Say what is loaded, and how much of it is still unused."""
+        label = sheets_text["label"]
+        if label is None:
+            return
+        if not pool.sheets:
+            label.configure(text="No replacement sheets loaded yet - Add "
+                            "sheets starts here, and they stay loaded for the "
+                            "next card too.")
+            return
+        used, total = pool.progress()
+        label.configure(text="  |  ".join(pool.summary()) +
+                        "     (%d of %d images used)" % (used, total))
+
+    def clear_sheets():
+        pool.clear()
+        refresh_sheets()
+        status("Sheets cleared.")
+
     def upload_to_site(app, product, front_path, back_path=None,
                        old_pair_ids=()):
         """Upload the pair and make it the product's photos on the website.
@@ -3823,21 +3985,54 @@ def build_newphotos(parent, app):
                 parent=app)
             return False
 
+        #  The old pair comes off the product before the new one goes on, so a
+        #  listing never carries two backs. Removing a photo from a product is
+        #  not deleting it: the file stays in the media library.
+        rows = woo_media.existing_images(product)
+        remove_ids = list(old_pair_ids)
+        if back_path is not None:
+            #  A gallery that predates the -front/-back naming has no readable
+            #  back, and pair_ids() would quietly treat the first row as the
+            #  only one to replace - leaving the old back beside the new one.
+            #  Ask instead of assuming.
+            try:
+                import photo_replace
+                unread = photo_replace.unread_back_rows(rows)
+            except ImportError:
+                unread = []
+            #  The row already being replaced as the front is not a candidate
+            #  for the back, so it is not offered again.
+            unread = [row for row in unread
+                      if row["id"] not in set(remove_ids)]
+            if unread:
+                choice = choose_old_back(unread, product.get("name") or "")
+                if choice.get("cancel"):
+                    return False
+                remove_ids += [i for i in (choice.get("remove") or [])
+                               if i not in remove_ids]
+
+        staying = [row for row in rows if row["id"] not in set(remove_ids)]
+        leaving = [row for row in rows if row["id"] in set(remove_ids)]
+        plan = ["Upload %s and make them the photos for:" % photos, "",
+                product.get("name") or "(untitled product)"]
+        if leaving:
+            plan += ["", "Taken off this product (the image files stay in "
+                     "your media library):"]
+            plan += ["  - %s" % (row["name"] or row["id"]) for row in leaving]
+        if staying:
+            plan += ["", "Left alone:"]
+            plan += ["  - %s" % (row["name"] or row["id"]) for row in staying]
+        plan += ["", "Yes - take those off and put the new photos on",
+                 "No - add the new photos and leave every existing one",
+                 "Cancel - do not upload"]
         #  Yes means "replace the old pair", which is the opposite of keeping
         #  it - an easy inversion, so the name says what the answer means.
         replace_old = messagebox.askyesnocancel(
-            "Put these photos on the website?",
-            "Upload %s and make them the photos for:\n\n%s\n\n"
-            "Yes - and replace the front and back already there\n"
-            "No - and keep the photos already there\n"
-            "Cancel - do not upload"
-            % (photos, product.get("name")), parent=app)
+            "Put these photos on the website?", "\n".join(plan), parent=app)
         if replace_old is None:
             return False
         if replace_old:
-            keep_ids = [row["id"]
-                        for row in woo_media.existing_images(product)
-                        if row["id"] not in set(old_pair_ids)]
+            keep_ids = [row["id"] for row in staying]
         else:
             keep_ids = None
         status("Uploading %s..." % photos)
@@ -3858,6 +4053,12 @@ def build_newphotos(parent, app):
         if result.get("back"):
             app.console_line("Uploaded %s to the website (media ID %s)." %
                              (Path(back_path).name, result["back"]["id"]), "ok")
+        if replace_old and leaving:
+            app.console_line(
+                "Removed %s from the product gallery; the image files are "
+                "still in your media library." %
+                " and ".join(row["name"] or str(row["id"]) for row in leaving),
+                "dim")
         status("The website now shows %s." % photos)
         for attachment in (front, result.get("back")):
             if attachment and attachment.get("source_url"):
@@ -3869,65 +4070,256 @@ def build_newphotos(parent, app):
         return bool(isinstance(product, dict) and product.get("id") and
                     str(product.get("name") or "").strip())
 
-    def choose_tile(candidates, question, more_scan=None):
-        """Let the user pick one image; None means no choice was made.
+    def choose_tile(candidates, question, more_scan=None, preselect=None):
+        """Let the user pick one image by looking at it; None means no choice.
+
+        The tiles are named Scan01_4.webp and so on, which says nothing about
+        what is on them, so they are shown as pictures captioned with the slot
+        and sheet they came from. When Tk cannot draw the pictures (no image
+        support, or a test stub) the same choices fall back to a plain list.
 
         ``more_scan`` is offered as a button when the wanted image is not on
         this sheet - the back of a card is often scanned with the front, but
         not always, and refusing to look elsewhere would be arbitrary.
+        ``preselect`` is the tile proposed before the user decides: normally
+        the back in the same slot as the chosen front.
         """
         if not candidates and more_scan is None:
             return None
-        if len(candidates) == 1 and more_scan is None:
+        if len(candidates) == 1 and more_scan is None and preselect is None:
             return candidates[0]
+
+        tiles_by_path = {str(t.get("path")): t for t in candidates}
+        thumbs = photo_thumbs.Thumbnails()
+        keep = {}                     # PhotoImage objects Tk must not free
+        pictures = {}
+        for key in tiles_by_path:
+            photo = photo_thumbs.as_photo(thumbs.get(key))
+            if photo is not None:
+                keep[key] = photo
+                pictures[key] = photo
+
         top = tk.Toplevel(app)
         top.title("Which image?")
         top.transient(app)
-        top.geometry("460x320")
         top.grab_set()
-        ttk.Label(top, text=question, wraplength=430,
-                  justify="left").pack(anchor="w", padx=8, pady=(8, 4))
-        listing = tk.Listbox(top, height=11, exportselection=False)
-        listing.pack(fill="both", expand=True, padx=8)
         chosen = {"tile": None}
         shown = {"tiles": list(candidates)}
 
-        def fill(tiles):
-            shown["tiles"] = list(tiles)
-            listing.delete(0, "end")
-            for tile in tiles:
-                listing.insert(
-                    "end", "%s   (%s)" %
-                    (tile.get("sheet") or "Sheet position %d" %
-                     tile.get("position", 0), Path(tile["path"]).name))
-            if tiles:
-                listing.selection_set(0)
+        def by_picture():
+            """The grid of pictures: click one, then Use this image."""
+            top.geometry("840x580")
+            ttk.Label(top, text=question, wraplength=800,
+                      justify="left").pack(anchor="w", padx=10, pady=(10, 2))
+            ttk.Label(top, text="These are the card images on your sheets - "
+                      "pick the one that belongs to this card.",
+                      style="Dim.TLabel").pack(anchor="w", padx=10,
+                                               pady=(0, 6))
+            holder = ttk.Frame(top)
+            holder.pack(fill="both", expand=True, padx=10, pady=(0, 4))
+            cells = {}
+            state = {"key": None}
 
-        fill(candidates)
+            def choose(key):
+                state["key"] = key
+                for other, cell in cells.items():
+                    picked = other == key
+                    cell.configure(
+                        highlightbackground="#2f6fd0" if picked else "#d8dce2",
+                        highlightthickness=3 if picked else 1)
 
-        def accept(*_event):
+            def accept(*_event):
+                tile = tiles_by_path.get(state["key"] or "")
+                if tile is not None:
+                    chosen["tile"] = tile
+                top.destroy()
+
+            def draw(tiles):
+                for child in holder.winfo_children():
+                    child.destroy()
+                cells.clear()
+                shown["tiles"] = list(tiles)
+                for row in photo_thumbs.rows(tiles):
+                    line = ttk.Frame(holder)
+                    line.pack(anchor="w", pady=4)
+                    for tile in row:
+                        key = str(tile.get("path"))
+                        cell = tk.Frame(line, highlightthickness=1,
+                                        highlightbackground="#d8dce2")
+                        cell.pack(side="left", padx=6)
+                        label = ttk.Label(cell)
+                        if key in pictures:
+                            label.configure(image=pictures[key])
+                        label.pack(padx=2, pady=(2, 0))
+                        caption = photo_thumbs.caption(tile)
+                        if preselect is not None and \
+                                str(preselect.get("path")) == key:
+                            caption += "  \u00b7 proposed"
+                        ttk.Label(cell, text=caption, style="Dim.TLabel",
+                                  wraplength=photo_thumbs.THUMB_SIZE[0]
+                                  ).pack(padx=2, pady=(0, 2))
+                        for widget in (cell, label):
+                            widget.bind("<Button-1>",
+                                        lambda _e, k=key: choose(k))
+                            widget.bind("<Double-Button-1>",
+                                        lambda _e, k=key: (choose(k), accept()))
+                        cells[key] = cell
+                if shown["tiles"]:
+                    wanted = None
+                    if preselect is not None and \
+                            str(preselect.get("path")) in cells:
+                        wanted = str(preselect.get("path"))
+                    choose(wanted or str(shown["tiles"][0].get("path")))
+
+            draw(candidates)
+            buttons = ttk.Frame(top)
+            buttons.pack(fill="x", padx=10, pady=8)
+            ttk.Button(buttons, text="Use this image",
+                       command=accept).pack(side="right")
+            ttk.Button(buttons, text="Cancel",
+                       command=top.destroy).pack(side="right", padx=8)
+            if more_scan is not None:
+                def another():
+                    tiles = more_scan()
+                    if not tiles:
+                        return
+                    for tile in tiles:
+                        key = str(tile.get("path"))
+                        tiles_by_path[key] = tile
+                        photo = photo_thumbs.as_photo(thumbs.get(key))
+                        if photo is not None:
+                            keep[key] = photo
+                            pictures[key] = photo
+                    draw(tiles)
+
+                ttk.Button(buttons, text="Another scan...",
+                           command=another).pack(side="left")
+            top.bind("<Return>", accept)
+            app.wait_window(top)
+            return chosen["tile"]
+
+        def by_list():
+            """The fallback: the same choices as names, without pictures."""
+            top.geometry("460x320")
+            ttk.Label(top, text=question, wraplength=430,
+                      justify="left").pack(anchor="w", padx=8, pady=(8, 4))
+            listing = tk.Listbox(top, height=11, exportselection=False)
+            listing.pack(fill="both", expand=True, padx=8)
+
+            def fill(tiles):
+                shown["tiles"] = list(tiles)
+                listing.delete(0, "end")
+                keys = []
+                for tile in tiles:
+                    keys.append(str(tile.get("path")))
+                    line = photo_thumbs.describe(tile)
+                    if preselect is not None and keys[-1] == \
+                            str(preselect.get("path")):
+                        line += "   - proposed"
+                    listing.insert("end", line)
+                if not tiles:
+                    return
+                #  The proposed image is the one already selected, so pressing
+                #  Use this image accepts the pairing without hunting for it.
+                wanted = 0
+                if preselect is not None and \
+                        str(preselect.get("path")) in keys:
+                    wanted = keys.index(str(preselect.get("path")))
+                listing.selection_set(wanted)
+
+            fill(candidates)
+
+            def accept(*_event):
+                picked = listing.curselection()
+                if picked and shown["tiles"]:
+                    chosen["tile"] = shown["tiles"][picked[0]]
+                top.destroy()
+
+            def another():
+                tiles = more_scan()
+                if tiles:
+                    fill(tiles)
+
+            row = ttk.Frame(top)
+            row.pack(fill="x", padx=8, pady=6)
+            ttk.Button(row, text="Use this image",
+                       command=accept).pack(side="right")
+            ttk.Button(row, text="Cancel",
+                       command=top.destroy).pack(side="right", padx=8)
+            if more_scan is not None:
+                ttk.Button(row, text="Another scan...",
+                           command=another).pack(side="left")
+            listing.bind("<Double-Button-1>", accept)
+            app.wait_window(top)
+            return chosen["tile"]
+
+        return by_picture() if pictures else by_list()
+
+    def choose_old_back(rows, product_name):
+        """Ask which gallery row is the old back, when the name does not say.
+
+        A product gallery that predates the ``-front``/``-back`` convention
+        cannot be read by filename. Choosing the first row as the front and
+        ignoring the rest leaves the old back sitting beside the new one,
+        which is how a listing ends up with two backs - so the user is asked.
+
+        Returns ``{"remove": [ids]}``, or ``{"cancel": True}``.
+        """
+        top = tk.Toplevel(app)
+        top.title("Remove the old back from the product?")
+        top.transient(app)
+        top.geometry("700x420")
+        top.grab_set()
+        answer = {"cancel": True, "remove": []}
+        ttk.Label(top, text=product_name or "This product",
+                  font=("TkDefaultFont", 10, "bold"),
+                  wraplength=660).pack(anchor="w", padx=10, pady=(10, 2))
+        ttk.Label(top, text="None of these photos says whether it is the "
+                  "front or the back, so Alex Collect will not guess. Pick "
+                  "the one that is the old BACK photo: it is taken off this "
+                  "product before the new one goes on.\n\nThe image file is "
+                  "not deleted - it stays in your media library.",
+                  wraplength=660, justify="left").pack(anchor="w", padx=10,
+                                                      pady=(0, 6))
+        listing = tk.Listbox(top, height=8, exportselection=False)
+        listing.pack(fill="both", expand=True, padx=10)
+        for row in rows:
+            listing.insert("end", str(row.get("name") or "(no filename)"))
+        if rows:
+            listing.selection_set(0)
+
+        def take_row(*_event):
             picked = listing.curselection()
-            if picked and shown["tiles"]:
-                chosen["tile"] = shown["tiles"][picked[0]]
+            if not picked or not rows:
+                messagebox.showinfo("Choose a photo",
+                                    "Select the photo that is the old back.",
+                                    parent=top)
+                return
+            answer["cancel"] = False
+            answer["remove"] = [rows[picked[0]]["id"]]
             top.destroy()
 
-        def another():
-            tiles = more_scan()
-            if tiles:
-                fill(tiles)
+        def keep_all(*_event):
+            answer["cancel"] = False
+            answer["remove"] = []
+            top.destroy()
 
-        row = ttk.Frame(top)
-        row.pack(fill="x", padx=8, pady=6)
-        ttk.Button(row, text="Use this image",
-                   command=accept).pack(side="right")
-        ttk.Button(row, text="Cancel",
-                   command=top.destroy).pack(side="right", padx=8)
-        if more_scan is not None:
-            ttk.Button(row, text="Another scan...",
-                       command=another).pack(side="left")
-        listing.bind("<Double-Button-1>", accept)
+        def cancel(*_event):
+            answer["cancel"] = True
+            top.destroy()
+
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=10, pady=8)
+        ttk.Button(buttons, text="Remove this photo from the product",
+                   command=take_row).pack(side="left")
+        ttk.Button(buttons, text="Keep every existing photo",
+                   command=keep_all).pack(side="left", padx=8)
+        ttk.Button(buttons, text="Cancel this card", command=cancel).pack(
+            side="right")
+        listing.bind("<Double-Button-1>", take_row)
+        top.protocol("WM_DELETE_WINDOW", cancel)
         app.wait_window(top)
-        return chosen["tile"]
+        return answer
 
     def wire_card(product, front, back=None):
         """Replace the one card's photos on CanadianShopper, no CSV involved."""
@@ -3981,72 +4373,68 @@ def build_newphotos(parent, app):
                                  % exc, parent=app)
             return
 
-        scan = filedialog.askopenfilename(
-            title="Which scan holds the replacement images?",
-            initialdir=app.settings.get("scan_dir", str(BASE)),
-            filetypes=[("Images", "*.jpg *.jpeg *.png *.tif *.tiff *.bmp "
-                                  "*.webp"), ("All files", "*.*")])
-        if not scan:
+        def ask_for_sheet(title):
+            """Add another sheet to the pool and offer its images."""
+            chosen_path = filedialog.askopenfilename(
+                title=title, initialdir=app.settings.get("scan_dir", str(BASE)),
+                filetypes=sheet_files())
+            if not chosen_path:
+                return None
+            try:
+                pool.tiles_dir = replace_dir()
+                sheet = pool.add_sheet(chosen_path, index=len(pool.sheets))
+            except photo_pool.PhotoPoolError as exc:
+                messagebox.showerror("Could not split the scan", "%s" % exc,
+                                     parent=app)
+                return None
+            refresh_sheets()
+            return [tile for tile in pool.unused()
+                    if tile["sheet_path"] == sheet["path"]]
+
+        if not pool.unused():
+            #  Nothing loaded yet: the sheets come first, before any choice.
+            if not add_sheets():
+                if urls:
+                    app.open_webpages(urls)
+                return
+        if not pool.unused():
             if urls:
                 app.open_webpages(urls)
             return
 
-        def usable_tiles(scan_path):
-            """The non-empty images on a sheet, tagged with the file they came from."""
-            found = photo_replace.split_sheet(
-                scan_path, replace_dir() / "_tiles" / Path(scan_path).stem)
-            return [dict(tile, sheet=Path(scan_path).name) for tile in found
-                    if not tile["blank"] and tile["path"]]
-
-        def ask_for_sheet(title):
-            """Ask for another scan and return its usable images."""
-            chosen = filedialog.askopenfilename(
-                title=title, initialdir=app.settings.get("scan_dir", str(BASE)),
-                filetypes=[("Images", "*.jpg *.jpeg *.png *.tif *.tiff *.bmp "
-                                      "*.webp"), ("All files", "*.*")])
-            if not chosen:
-                return None
-            try:
-                return usable_tiles(chosen)
-            except Exception as exc:
-                messagebox.showerror("Could not split the scan", "%s" % exc,
-                                     parent=app)
-                return None
-
-        try:
-            tiles = photo_replace.split_sheet(
-                scan, replace_dir() / "_tiles" / Path(scan).stem)
-        except Exception as exc:
-            messagebox.showerror("Could not split the scan",
-                                 "%s" % exc, parent=app)
-            return
-        usable = [dict(tile, sheet=Path(scan).name) for tile in tiles
-                  if not tile["blank"] and tile["path"]]
-        if not usable:
-            messagebox.showinfo(
-                "No images on that sheet",
-                "Every slot on %s looks empty (a black background).\n\n"
-                "Scan the sheet again, or choose a different file." %
-                Path(scan).name, parent=app)
-            return
-        status("%d of %d slots hold a card." % (len(usable), len(tiles)))
-
         label = (product.get("name") if isinstance(product, dict) else query)
-        front = choose_tile(usable, "Which image is the FRONT of %s?" % label)
+        status("%d images left on %d sheet%s." % (
+            len(pool.unused()), len(pool.sheets),
+            "" if len(pool.sheets) == 1 else "s"))
+        front = choose_tile(pool.front_candidates(),
+                            "Which image is the FRONT of %s?" % label)
         if front is None:
+            if urls:
+                app.open_webpages(urls)
             return
 
-        #  The back is the other half of the pair, so it is chosen rather than
-        #  assumed, and it is looked for on this sheet first.
-        remaining = [t for t in usable if t["path"] != front["path"]]
-        back = choose_tile(
-            remaining, "Which image is the BACK of %s?" % label,
-            more_scan=lambda: ask_for_sheet("Which scan holds the BACK?"))
+        #  Both sheets were filled in the same order, so slot 4 of the back
+        #  sheet is almost always the back of slot 4 of the front sheet. That
+        #  is proposed, not assumed: when it is the only back left it is used
+        #  without a question, and otherwise the picker opens on it.
+        proposed = pool.same_slot(front)
+        backs = pool.back_candidates(front)
+        if proposed is not None and len(backs) == 1:
+            back = proposed
+            status("Using slot %d of %s as the back." % (
+                back["position"], back["sheet"]))
+        else:
+            back = choose_tile(
+                backs, "Which image is the BACK of %s?" % label,
+                more_scan=lambda: ask_for_sheet("Which scan holds the BACK?"),
+                preselect=proposed)
         if back is None:
             if not messagebox.askyesno(
                     "No back image",
                     "Only a front was chosen, so the back photo will be left "
                     "as it is.\n\nContinue with the front only?", parent=app):
+                if urls:
+                    app.open_webpages(urls)
                 return
 
         try:
@@ -4066,6 +4454,12 @@ def build_newphotos(parent, app):
         status("Saved %s%s" % (saved.name,
                                " and %s" % saved_back.name if saved_back
                                else ""))
+        #  The images are spoken for now, so the next card is not offered them
+        #  again - this is what makes a whole sheet one sitting.
+        pool.take(front, label)
+        if back is not None:
+            pool.take(back, label)
+        refresh_sheets()
 
         # The website photo comes first: the shop is what customers buy from,
         # and the marketplace copies are wired from the same card afterwards.
@@ -4111,6 +4505,12 @@ def build_newphotos(parent, app):
 
         if urls:
             app.open_webpages(urls)
+            #  The pages are where the same files get uploaded by hand, so the
+            #  folder holding them is opened too - after the browser, so it is
+            #  the window on top and the files can be dragged straight from it.
+            if open_path(saved.parent):
+                app.console_line("Opened %s for the saved images." %
+                                 saved.parent, "dim")
 
     def start():
         query = term.get().strip()
@@ -4130,6 +4530,18 @@ def build_newphotos(parent, app):
                 return
         replace(query, product)
 
+    #  Sheets first: this is where the sitting starts, the way the pipeline
+    #  starts from the scans rather than from a card name.
+    sheets_row = ttk.Frame(box)
+    sheets_row.pack(anchor="w", pady=(4, 0))
+    ttk.Button(sheets_row, text="Add sheets...",
+               command=add_sheets).pack(side="left")
+    ttk.Button(sheets_row, text="Clear",
+               command=clear_sheets).pack(side="left", padx=6)
+    sheets_text["label"] = ttk.Label(box, text="", style="Dim.TLabel",
+                                     wraplength=780, justify="left")
+    sheets_text["label"].pack(anchor="w", pady=(2, 0))
+
     row = ttk.Frame(box)
     row.pack(anchor="w", pady=4)
     ttk.Label(row, text="Card name or SKU:").pack(side="left")
@@ -4147,6 +4559,7 @@ def build_newphotos(parent, app):
                        app.settings.get("scan_dir", DEFAULT_SCAN_DIR)))
                ).pack(side="left", padx=8)
     hint.pack(anchor="w", pady=(2, 0))
+    refresh_sheets()
 
 
 def build_logs(parent, app):

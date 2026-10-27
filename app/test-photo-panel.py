@@ -156,6 +156,7 @@ def install_tk():
 _TK, _TTK, _DIALOG, _BOX = install_tk()
 
 import gui                                     # noqa: E402
+import photo_pool                              # noqa: E402
 import photo_replace                           # noqa: E402
 from PIL import Image                          # noqa: E402
 
@@ -232,10 +233,19 @@ def make_sheet(path, blanks=(2, 9)):
     return path
 
 
+SHEET_CALLS = []
+QUESTIONS = []
+
+
 def drive(app, sheet, yes_for=(), nocancel=None, wordpress=("owner", "pw"),
           site="https://shop.example", product=None, press=None,
-          scancount=1, found=True):
-    """Press Find with a scripted sheet, answers and picker behaviour."""
+          scancount=1, found=True, cards=1):
+    """Press Find with a scripted sheet, answers and picker behaviour.
+
+    ``cards`` presses Find more than once on the same panel, which is how a
+    whole sheet is worked through in one sitting.
+    """
+    SHEET_CALLS.clear()
     product = product or PRODUCT
     parent = FakeWidget()
     gui.build_newphotos(parent, app)
@@ -259,9 +269,20 @@ def drive(app, sheet, yes_for=(), nocancel=None, wordpress=("owner", "pw"),
 
     PICKER["press"] = press or first_button
     _BOX.askyesno = ask
-    _BOX.askyesnocancel = lambda title, *a, **k: (asked.append(title), nocancel)[1]
-    scans = [str(sheet)] * scancount
-    _DIALOG.askopenfilename = lambda **k: scans.pop(0) if scans else str(sheet)
+    _BOX.askyesnocancel = lambda title, *a, **k: (
+        asked.append(title),
+        QUESTIONS.append((title, a[0] if a else "")),
+        nocancel)[2]
+    #  Sheets are picked as a group now, once for the whole sitting; the
+    #  single-file dialog is only used for "the back is on another scan".
+    sheets = [str(sheet)] * scancount
+
+    def pick_sheets(**_kw):
+        SHEET_CALLS.append(1)
+        return (sheets.pop(0),) if sheets else ()
+
+    _DIALOG.askopenfilenames = pick_sheets
+    _DIALOG.askopenfilename = lambda **k: str(sheet)
     keys = (site, "ck_live", "cs_live")
     wp = (site, wordpress[0], wordpress[1]) if wordpress else (site, "", "")
     with patch.object(gui, "has_woo_credentials", lambda path=None: True), \
@@ -269,7 +290,8 @@ def drive(app, sheet, yes_for=(), nocancel=None, wordpress=("owner", "pw"),
             patch.object(gui, "read_wordpress_credentials", lambda path=None: wp), \
             patch.object(gui, "woo_get",
                          lambda *a, **k: (200, [product] if found else [])):
-        find.invoke()
+        for _card in range(max(1, cards)):
+            find.invoke()
     return asked
 
 
@@ -315,6 +337,21 @@ def test_version_gates():
                                  "allowed" if back_ok else "held back"),
               gui.photo_back_replaceable() is back_ok,
               str(gui.photo_back_replaceable()))
+
+
+UPLOADED = []
+
+
+def capture_upload(site, key, secret, username, password, product, front_path,
+                   back_path=None, keep_ids=None, **rest):
+    """Record what would have been sent to the website."""
+    UPLOADED.append({"site": site, "keep_ids": keep_ids,
+                     "front": Path(front_path).name,
+                     "back": Path(back_path).name if back_path else None})
+    return {"front": {"id": 901, "source_url": "https://shop.example/f.webp"},
+            "back": ({"id": 902, "source_url": "https://shop.example/b.webp"}
+                     if back_path else None),
+            "product": {"id": 42}, "image_ids": [901, 902]}
 
 
 def test_pair_saved_and_sent():
@@ -475,6 +512,289 @@ def test_no_product_found():
           not [t for t in asked if "CanadianShopper" in t], str(asked))
 
 
+def press_first_tile(window):
+    """Accept whichever image the picker has selected."""
+    for w in window.walk():
+        if w.cget("text") == "Use this image":
+            w.invoke()
+            return
+    window.destroy()
+
+
+def test_same_slot_back():
+    print()
+    print("== 10. the back is proposed from the same slot ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    front_sheet = make_sheet(folder / "Scan-front.jpg")
+    back_sheet = make_sheet(folder / "Scan-back.jpg")
+    app = FakeApp(folder)
+    #  Both sheets are already loaded, the way they are after Add sheets.
+    app.photo_pool = photo_pool.PhotoPool(tiles_dir=folder / "tiles")
+    app.photo_pool.add_sheet(front_sheet, index=0)
+    app.photo_pool.add_sheet(back_sheet, index=1)
+
+    picked = {"n": 0, "front": "", "back": ""}
+
+    def shown(window):
+        """What the picker has selected, read the way the user would see it."""
+        for w in window.walk():
+            if w._kw.get("height") == 11 and w.items:
+                index = w.curselection()[0]
+                return w.items[index]
+        return ""
+
+    def press(window):
+        picked["n"] += 1
+        if picked["n"] == 1:
+            #  Deliberately not the first image: slot 4, not slot 1, so the
+            #  pairing is proven rather than stumbled into by list order.
+            for w in window.walk():
+                if w._kw.get("height") == 11:
+                    w.selection_set(2)
+            picked["front"] = shown(window)
+        else:
+            picked["back"] = shown(window)
+        for w in window.walk():
+            if w.cget("text") == "Use this image":
+                w.invoke()
+                return
+
+    asked = drive(app, front_sheet, scancount=0, press=press, nocancel=False,
+                  yes_for={"Replace the CanadianShopper photos?"})
+    check("the loaded sheets are not asked for again", not SHEET_CALLS,
+          str(SHEET_CALLS))
+    args = replace_args(app)
+    check("the front is the image that was chosen", "Slot 4" in picked["front"],
+          picked["front"])
+    check("the back offered is the same slot", "Slot 4" in picked["back"],
+          picked["back"])
+    check("it comes from the back sheet", "Scan-back" in picked["back"],
+          picked["back"])
+    check("the pairing is marked as the proposed one",
+          "proposed" in picked["back"], picked["back"])
+    check("both halves were sent", args is not None and "--back" in args,
+          str(args))
+    check("the pair is named from the card, not the scan",
+          args is not None and
+          Path(flag(args, "--front")).name.replace("-front", "-back") ==
+          Path(flag(args, "--back")).name, str(args))
+    check("the pairing did not need a second question", picked["n"] == 2,
+          str(picked["n"]))
+    check("the used images are remembered",
+          app.photo_pool.progress() == (2, 14),
+          str(app.photo_pool.progress()))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_two_cards_one_sitting():
+    print()
+    print("== 11. one sheet, two cards, one sitting ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    sheet = make_sheet(folder / "Scan-01.jpg")
+    app = FakeApp(folder)
+    drive(app, sheet, scancount=1, cards=2, press=press_first_tile,
+          nocancel=False, yes_for={"Replace the CanadianShopper photos?"})
+    check("the sheet is chosen once for both cards", len(SHEET_CALLS) == 1,
+          str(SHEET_CALLS))
+    check("both cards were sent to the plugin", len(app.runs) == 2,
+          str([r["title"] for r in app.runs]))
+    fronts = [flag(run["args"], "--front") for run in app.runs
+              if "--front" in run["args"]]
+    check("two cards, two different front images", len(set(fronts)) == 2,
+          str(fronts))
+    check("the first card was not offered again for the second",
+          all(fronts), str(fronts))
+    check("the panel knows how much of the sheet is left",
+          app.photo_pool.progress() == (4, 7),
+          str(app.photo_pool.progress()))
+    names = sorted(p.name for p in (folder / "replacements").glob("*.webp"))
+    check("each card kept its own pair counter",
+          names == ["gretzky-back-1.webp", "gretzky-back-2.webp",
+                    "gretzky-front-1.webp", "gretzky-front-2.webp"],
+          str(names))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_unreadable_old_back():
+    print()
+    print("== 12. an old back with no readable name is asked about ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    sheet = make_sheet(folder / "Scan-01.jpg")
+    app = FakeApp(folder)
+    #  A gallery from before the -front/-back convention: the second photo is
+    #  the old back, but nothing in its name says so.
+    unreadable = {"id": 42,
+                  "name": "1972-73 O-Pee-Chee Dave Burrows #133",
+                  "sku": "SKU-1",
+                  "images": [
+                      {"id": 11, "src": "https://shop.example/u/IMG_2231.jpg"},
+                      {"id": 12, "src": "https://shop.example/u/IMG_2232.jpg"},
+                      {"id": 13, "src": "https://shop.example/u/"
+                                        "certificate.jpg"}]}
+    seen = {"rows": [], "asked": ""}
+
+    def press(window):
+        labels = [w.cget("text") for w in window.walk()]
+        if "Remove this photo from the product" in labels:
+            listing = next(w for w in window.walk()
+                           if w._kw.get("height") == 8)
+            seen["rows"] = list(listing.items)
+            wanted = [i for i, text in enumerate(seen["rows"])
+                      if "IMG_2232" in text]
+            listing.selection_set(wanted[0] if wanted else 0)
+            for w in window.walk():
+                if w.cget("text") == "Remove this photo from the product":
+                    w.invoke()
+                    return
+        for w in window.walk():
+            if w.cget("text") == "Use this image":
+                w.invoke()
+                return
+        window.destroy()
+
+    UPLOADED.clear()
+    QUESTIONS.clear()
+    with patch.object(gui.woo_media, "replace_product_photos", capture_upload):
+        drive(app, sheet, scancount=1, press=press, nocancel=True,
+              product=unreadable)
+    for title, message in QUESTIONS:
+        if title == "Put these photos on the website?":
+            seen["asked"] = message
+
+    check("the old back is asked about, not guessed", seen["rows"] != [],
+          str(seen["rows"]))
+    check("the photo already treated as the front is not offered again",
+          all("IMG_2231" not in row for row in seen["rows"]),
+          str(seen["rows"]))
+    check("every photo whose name says nothing is offered, so the user "
+          "decides rather than the program", len(seen["rows"]) == 2,
+          str(seen["rows"]))
+    check("the confirmation names what comes off the product",
+          "Taken off this product" in seen["asked"] and
+          "IMG_2232" in seen["asked"], seen["asked"][:300])
+    check("it says the image file is not deleted",
+          "media library" in seen["asked"], seen["asked"][:300])
+    check("the gallery keeps only the certificate",
+          UPLOADED and UPLOADED[0]["keep_ids"] == [13], str(UPLOADED))
+    check("the new pair is what goes on", UPLOADED and
+          UPLOADED[0]["front"].endswith("-front-1.webp") and
+          (UPLOADED[0]["back"] or "").endswith("-back-1.webp"),
+          str(UPLOADED))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_old_back_kept_when_asked_to():
+    print()
+    print("== 13. keeping every photo is still allowed ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    sheet = make_sheet(folder / "Scan-01.jpg")
+    app = FakeApp(folder)
+    unreadable = {"id": 42, "name": "Old gallery", "sku": "SKU-1",
+                  "images": [
+                      {"id": 11, "src": "https://shop.example/u/IMG_2231.jpg"},
+                      {"id": 12, "src": "https://shop.example/u/IMG_2232.jpg"}]}
+
+    def press(window):
+        for w in window.walk():
+            if w.cget("text") == "Keep every existing photo":
+                w.invoke()
+                return
+        for w in window.walk():
+            if w.cget("text") == "Use this image":
+                w.invoke()
+                return
+        window.destroy()
+
+    UPLOADED.clear()
+    with patch.object(gui.woo_media, "replace_product_photos", capture_upload):
+        drive(app, sheet, scancount=1, press=press, nocancel=False,
+              product=unreadable)
+    check("answering No keeps every existing photo",
+          UPLOADED and UPLOADED[0]["keep_ids"] is None, str(UPLOADED))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_old_back_cancelled():
+    print()
+    print("== 14. cancelling the question writes nothing ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    sheet = make_sheet(folder / "Scan-01.jpg")
+    app = FakeApp(folder)
+    unreadable = {"id": 42, "name": "Old gallery", "sku": "SKU-1",
+                  "images": [
+                      {"id": 11, "src": "https://shop.example/u/IMG_2231.jpg"},
+                      {"id": 12, "src": "https://shop.example/u/IMG_2232.jpg"}]}
+
+    def press(window):
+        for w in window.walk():
+            if w.cget("text") == "Cancel this card":
+                w.invoke()
+                return
+        for w in window.walk():
+            if w.cget("text") == "Use this image":
+                w.invoke()
+                return
+        window.destroy()
+
+    UPLOADED.clear()
+    with patch.object(gui.woo_media, "replace_product_photos", capture_upload):
+        drive(app, sheet, scancount=1, press=press, nocancel=True,
+              product=unreadable)
+    check("cancelling uploads nothing", not UPLOADED, str(UPLOADED))
+    check("the pair is still saved locally, so nothing is lost",
+          bool(list((folder / "replacements").glob("*.webp"))),
+          str(sorted(p.name for p in
+                     (folder / "replacements").glob("*"))))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_replacements_folder_opens():
+    print()
+    print("== 15. the saved images are on screen with the pages ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    sheet = make_sheet(folder / "Scan-01.jpg")
+    app = FakeApp(folder)
+    opened = []
+
+    def note(path):
+        opened.append(Path(path))
+        return True
+
+    def press(window):
+        for w in window.walk():
+            if w.cget("text") == "Use this image":
+                w.invoke()
+                return
+        window.destroy()
+
+    with patch.object(gui, "open_path", note), \
+            patch.object(gui.woo_media, "replace_product_photos", capture_upload):
+        drive(app, sheet, scancount=1, press=press, nocancel=True)
+    check("the pages still open", app.opened, str(app.opened))
+    check("the replacements folder opens with them",
+          opened == [folder / "replacements"], str(opened))
+    names = sorted(p.name for p in (folder / "replacements").glob("*.webp"))
+    check("it is the folder the pair was just written to",
+          len(names) == 2 and all("-front-1" in n or "-back-1" in n
+                                  for n in names), str(names))
+
+    #  Nothing saved means nothing to show, so the folder is not opened.
+    opened.clear()
+    app2 = FakeApp(folder)
+    with patch.object(gui, "open_path", note):
+        drive(app2, sheet, scancount=0, press=press, yes_for=(),
+              found=False)
+    check("no replacement, no folder", not opened, str(opened))
+    check("the product list still opens", app2.opened, str(app2.opened))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
 def test_empty_sheet():
     print()
     print("== 7. a sheet with no cards on it does nothing ==")
@@ -541,6 +861,12 @@ def main():
     test_back_from_another_sheet()
     test_front_only_by_choice()
     test_no_product_found()
+    test_same_slot_back()
+    test_two_cards_one_sitting()
+    test_unreadable_old_back()
+    test_old_back_kept_when_asked_to()
+    test_old_back_cancelled()
+    test_replacements_folder_opens()
     test_empty_sheet()
     test_website_first()
     print()

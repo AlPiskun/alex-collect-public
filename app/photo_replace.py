@@ -264,6 +264,44 @@ def pair_ids(images):
     return [i for i in ids if i is not None]
 
 
+def side_rows(images):
+    """The gallery rows whose filenames say which side they are.
+
+    Returns ``{"front": row, "back": row}``, with a side present only when a
+    row names itself with that suffix. A gallery that predates the naming
+    convention matches nothing here, and that is the point: the caller asks
+    rather than assuming a position is a back.
+
+    This is the counterpart of :func:`pair_ids` for galleries that cannot be
+    read by name. ``pair_ids`` falls back to "the first row is the front",
+    which silently leaves an unsuffixed old back on the product beside the new
+    one.
+    """
+    found = {}
+    for row in images or []:
+        side = side_of(row.get("name"))
+        if side and side not in found and row.get("id") is not None:
+            found[side] = row
+    return found
+
+
+def unread_back_rows(images):
+    """Rows that might be the old back but do not say so in the filename.
+
+    Every row is a candidate except one that names itself front or back, and
+    a gallery of a single row is not ambiguous enough to be worth a question:
+    with one photo there is nothing to choose between.
+    """
+    rows = [row for row in images or [] if row.get("id") is not None]
+    if len(rows) < 2:
+        return []
+    identified = side_rows(rows)
+    if "back" in identified:
+        return []
+    taken = {identified[side]["id"] for side in identified}
+    return [row for row in rows if row["id"] not in taken]
+
+
 def save_pair(folder, image_name, front_tile, back_tile=None):
     """Copy the chosen tiles in as a front/back pair sharing one counter.
 
