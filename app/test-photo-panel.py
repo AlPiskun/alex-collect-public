@@ -177,6 +177,33 @@ def widget_class(name, base=FakeWidget):
     return type("Fake" + name, (base,), {})
 
 
+def radio_class():
+    """A radio button whose invoke() moves its variable, as Tk's does.
+
+    The fake used to run the command and leave the variable alone, so a panel
+    that reads "which source did you pick" could not be tested at all - the
+    click changed nothing and every branch looked identical.
+    """
+    class FakeRadiobutton(widget_class("Radiobutton")):
+        def invoke(self):
+            var = self._kw.get("variable")
+            if var is not None and hasattr(var, "set"):
+                var.set(self._kw.get("value"))
+            super().invoke()
+    return FakeRadiobutton
+
+
+def check_class():
+    """A check box whose invoke() flips its variable."""
+    class FakeCheckbutton(widget_class("Checkbutton")):
+        def invoke(self):
+            var = self._kw.get("variable")
+            if var is not None and hasattr(var, "get"):
+                var.set(not var.get())
+            super().invoke()
+    return FakeCheckbutton
+
+
 def install_tk():
     tk = types.ModuleType("tkinter")
     for name, base in dict(Frame=FakeWidget, Label=FakeWidget,
@@ -189,9 +216,11 @@ def install_tk():
     tk.font = types.SimpleNamespace(nametofont=lambda *a, **k: FakeWidget())
     ttk = types.ModuleType("tkinter.ttk")
     for name in ("Frame", "Label", "Button", "Entry", "LabelFrame", "Notebook",
-                 "Scrollbar", "Checkbutton", "Radiobutton", "Combobox",
+                 "Scrollbar", "Combobox",
                  "Treeview", "Separator", "Progressbar"):
         setattr(ttk, name, widget_class(name))
+    ttk.Radiobutton = radio_class()
+    ttk.Checkbutton = check_class()
     ttk.Style = lambda *a, **k: types.SimpleNamespace(
         configure=lambda *a, **k: None, lookup=lambda *a, **k: "22",
         theme_use=lambda *a, **k: None, map=lambda *a, **k: None)
@@ -242,7 +271,11 @@ class FakeApp:
         self.runs, self.opened, self.lines = [], [], []
 
     def run_tool(self, tool, args, title, cwd=None, on_done=None, confirm=None):
-        self.runs.append({"args": [str(a) for a in args], "title": title})
+        #  on_done is kept, not just accepted: the sold panel only records an
+        #  order as added when the tool reports success, so the test has to be
+        #  able to hand back an exit code the way the real runner does.
+        self.runs.append({"args": [str(a) for a in args], "title": title,
+                          "tool": str(tool), "on_done": on_done})
         return True
 
     def open_webpages(self, urls, new_window=False):
@@ -251,6 +284,12 @@ class FakeApp:
 
     def console_line(self, text, tag=""):
         self.lines.append((tag, str(text)))
+
+    def after(self, delay, callback=None):
+        """Tk's after(): panels hand background results back through it."""
+        if callback is not None:
+            callback()
+        return "after-id"
 
     def wait_window(self, window):
         window.wait_window()

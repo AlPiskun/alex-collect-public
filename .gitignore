@@ -15,6 +15,10 @@ app/pipeline/**/facebook_history.xlsx
 # Temporary runtime files
 *.log
 *.tmp
+app/sold-orders-seen.json
+app/cs-orders.json
+app/cs-sold-preview.txt
+
 .DS_Store
 Thumbs.db
 

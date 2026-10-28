@@ -48,6 +48,7 @@ import photo_assign
 import photo_pool
 import photo_replace
 import photo_thumbs
+import sale_preview
 import woo_media
 import woo_orders
 from sale_inputs import woo_get
@@ -59,7 +60,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.59"
+VERSION = "2.60"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -77,6 +78,10 @@ CS_PLUGIN_ID = "canadianshopper"
 CS_PHOTO_STAGE = "batch.photo_stage"
 CS_PHOTO_WIRE = "batch.photo_wire"
 CS_PHOTO_REPLACE = "batch.photo_replace"
+#  Reading CanadianShopper's own order list, so a sale there can be
+#  previewed before it is written. Optional: a plugin without it
+#  still sells cards, the panel just says what is missing.
+CS_ORDERS_ACTION = "after_sale.orders"
 #  batch.photo_replace existed in 1.0.14 but only matched a staged CSV
 #  row. The CSV-free --mode replace arrived in 1.0.15, so the action ID
 #  alone cannot tell the two apart - the version has to be checked.
@@ -176,6 +181,10 @@ SETTINGS_FILE = BASE / "gui-settings.json"
 LOG_FILE = BASE / "gui-log.txt"
 CHECKLIST = BASE / "sold-cards-checklist.csv"
 CS_COOKIE_FILE = BASE / "cookie.txt"
+#  Which orders have already been turned into checklist rows. It is a
+#  cache, not a record: the checklist and the ledger stay the truth,
+#  and losing this file only means a preview shows older orders again.
+SOLD_ORDERS_SEEN = BASE / sale_preview.SEEN_FILE
 CS_HOME = "https://canadianshopper.ca"
 _TOOL_DIALOG_START = "\x1eALEX_COLLECT_DIALOG:"
 _TOOL_DIALOG_END = "\x1f"
@@ -1277,6 +1286,8 @@ TOOLTIPS = {
     "Apply the previewed change": "Write exactly what the preview listed",
     "Clear": "Empty this list; the files on disk are left alone",
     "Type the cards...": "Open the editor for typing what sold, one card per line",
+    "Add these": "Add only the orders shown above to the checklist - the rest of the website is left alone",
+    "Preview new orders": "Read the orders that came in since you last looked, and write nothing",
     "Open plugins folder": "Open the folder plugins are installed into",
     "Open the tools folder": "Open the folder holding this app's tools",
     "Dry-run (writes nothing)": "Report what would happen without writing anything",
@@ -3130,6 +3141,31 @@ def build_cookie(parent, app):
                       anchor="w", pady=(4, 8))
 
 
+def in_background(app, work, done):
+    """Run a slow call off the window thread, then draw with its answer.
+
+    A website read can take a few seconds, and doing it inline froze the whole
+    window - which on Windows is painted as "Not Responding" and reads as a
+    hung program. The work runs on a daemon thread and its result (or its
+    error) comes back through ``app.after``, so every Tk call still happens on
+    the thread that owns the widgets.
+    """
+    def runner():
+        try:
+            result, error = work(), None
+        except Exception as exc:      # the caller draws the message
+            result, error = None, exc
+        try:
+            app.after(0, lambda: done(result, error))
+        except Exception:
+            #  The window was closed while the call was out; there is nobody
+            #  left to draw for, and a progress display must never be able to
+            #  turn a finished read into a traceback in the log.
+            pass
+
+    threading.Thread(target=runner, daemon=True).start()
+
+
 def open_woo_keys_file(app, current_site_url=""):
     """Create/open the local Woo REST-key file without exposing keys in GUI."""
     path = BASE / "woo-keys.txt"
@@ -3599,26 +3635,300 @@ def build_rerun(parent, app):
 
 
 def build_sold(parent, app):
+    #  The panel used to lead with two rows of radios and end with the buttons,
+    #  so the first thing a person saw was configuration and the thing they
+    #  actually came to do was below the fold - "I can't see how to run this".
+    #  It now opens with the action: read what sold, look at it, then add it.
     panel_header(parent, app, "sold")
     box = ttk.Frame(parent)
     box.pack(fill="x")
     src = tk.StringVar(master=parent, value="typed")
     onch = tk.StringVar(master=parent, value="website")
     do_cs = tk.BooleanVar(master=parent, value=False)
+    state = {"path": None, "preview": []}
 
+    channel_names = {"website": "your website",
+                     "canadianshopper": "CanadianShopper",
+                     "facebook": "Facebook", "ebay": "eBay",
+                     "inperson": "an in-person sale",
+                     "other": "another place"}
+
+    # ---------------------------------------------------------- credentials
+    def keys_path():
+        return BASE / "woo-keys.txt"
+
+    def creds_or_offer():
+        """(site, key, secret) or None, offering the one-time file when absent.
+
+        The key file is the difference between a sale being one click and it
+        being retyped by hand, so it is offered once, with that reason
+        attached - and only when it is actually missing.
+        """
+        site, key, secret = read_woo_credentials()
+        site = site or app.settings.get("woo_site_url", "")
+        if site and key and secret:
+            return site, key, secret
+        if messagebox.askyesno(
+                "One-time setup: your website's API keys",
+                "I can read new orders straight from your website, so a sale "
+                "is one click instead of retyping its title.\n\n"
+                "That needs two lines in a private file beside the app:\n"
+                "  woo-keys.txt\n"
+                "  1. your website's address\n"
+                "  2. a READ-ONLY WooCommerce key (Settings > Advanced > "
+                "REST API > Add key)\n\n"
+                "It is a one-time step, and it makes every later check one "
+                "click. Fill it in now?"):
+            open_woo_keys_file(app, app.settings.get("woo_site_url", ""))
+            app.console_line("Fill in woo-keys.txt, save it, then press "
+                             "Preview new orders again.", "dim")
+        else:
+            app.console_line("No website keys, so nothing can be read yet: "
+                             "type the cards instead, or use the orders CSV.",
+                             "dim")
+        return None
+
+    # ------------------------------------------------------------- preview
+    def seen_numbers():
+        return sale_preview.load_seen(SOLD_ORDERS_SEEN)
+
+    def show_preview(rows, source_name, source="website"):
+        """Put the previewed cards on screen. Writes nothing anywhere."""
+        state["preview"] = rows
+        state["preview_source"] = source
+        listing.delete(0, "end")
+        for row in rows:
+            listing.insert("end", sale_preview.label(row))
+        if rows:
+            summary.configure(text=sale_preview.headline(rows))
+            list_frame.pack(anchor="w", fill="x", pady=(3, 4))
+            add_preview_btn.configure(
+                text="Add these %d card%s to the checklist%s" % (
+                    len(rows), "" if len(rows) == 1 else "s",
+                    " and fix CanadianShopper" if do_cs.get() else ""))
+            add_preview_btn.pack(anchor="w", pady=(0, 4))
+            for line in sale_preview.describe(rows):
+                app.console_line(line, "dim")
+            app.console_line(
+                "%s  (read from %s - nothing has been written yet)" %
+                (sale_preview.headline(rows), source_name), "ok")
+        else:
+            list_frame.pack_forget()
+            add_preview_btn.pack_forget()
+            summary.configure(text="No new orders: everything %s has is "
+                                   "already on the checklist." % source_name)
+            app.console_line("No new orders on %s." % source_name, "ok")
+
+    def preview_arrived(orders, error, source_name, source="website",
+                        statuses=sale_preview.DEFAULT_STATUSES):
+        """Draw what a read turned up - the only place a preview is decided."""
+        if error is not None:
+            message = getattr(error, "message", str(error))
+            hint = getattr(error, "hint", "")
+            messagebox.showerror("Could not read your orders",
+                                 message +
+                                 ("\n\n" + hint if hint else ""),
+                                 parent=box.winfo_toplevel())
+            app.console_line("Preview failed: %s %s" % (message, hint), "err")
+            summary.configure(text="Could not read your orders: " + message)
+            return
+        rows = sale_preview.unseen(
+            sale_preview.order_rows(orders, statuses=statuses, source=source),
+            seen_numbers())
+        show_preview(rows, source_name, source)
+
+    def read_website(creds):
+        site, key, secret = creds
+        summary.configure(text="Reading orders from %s..." % site)
+        app.console_line("Reading orders from %s..." % site, "cmd")
+        in_background(
+            app,
+            lambda: sale_preview.read_orders(woo_get, site, key, secret),
+            lambda orders, error: preview_arrived(orders, error, "your website"))
+
+    def read_canadianshopper():
+        action = TOOL_ACTION(CS_ORDERS_ACTION)
+        if not action:
+            messagebox.showinfo(
+                "CanadianShopper order list",
+                "Reading CanadianShopper's own orders needs the plugin's order "
+                "reader, and the installed plugin does not have it yet.\n\n"
+                "Until it does, either choose \"my website\" if the sale went "
+                "through the website, type the card with \"Type the cards...\", "
+                "or search the store yourself - that is the secondary route "
+                "and it needs no plugin at all.")
+            app.console_line(
+                "This CanadianShopper plugin has no order reader yet (%s). "
+                "Website orders can still be previewed." % CS_ORDERS_ACTION,
+                "dim")
+            return
+        out = BASE / "cs-orders.json"
+        try:
+            out.unlink()
+        except FileNotFoundError:
+            pass
+        args = ["--orders-out", str(out),
+                "--days", str(sale_preview.DEFAULT_DAYS)]
+        if CS_COOKIE_FILE.is_file():
+            args += ["--cookie-file", str(CS_COOKIE_FILE)]
+        summary.configure(text="Asking CanadianShopper for its orders...")
+
+        def done(rc):
+            if rc != 0:
+                app.console_line("The CanadianShopper order read failed "
+                                 "(exit %s); nothing was previewed." % rc, "err")
+                summary.configure(text="CanadianShopper could not be read.")
+                return False
+            #  No status filter: WooCommerce's statuses are not
+            #  CanadianShopper's, and the plugin already returns the orders it
+            #  considers sold. Filtering here would silently drop every one.
+            preview_arrived(sale_preview.read_orders_file(out), None,
+                            "CanadianShopper", source="canadianshopper",
+                            statuses=())
+            return True
+
+        app.run_tool(action, args, "CanadianShopper orders",
+                     cwd=app.settings.get("pipeline_dir", str(WORK)),
+                     on_done=done)
+
+    def preview_new():
+        kind = sale_preview.channel_kind(onch.get())
+        if kind == "plugin":
+            read_canadianshopper()
+            return
+        if kind == "manual":
+            messagebox.showinfo(
+                "No order list to read",
+                "%s keeps no order list this app can read, so there is nothing "
+                "to preview.\n\nType the card with \"Type the cards...\", or "
+                "search the title in the seller pages the checklist links to."
+                % channel_names.get(onch.get(), "That channel").capitalize())
+            return
+        creds = creds_or_offer()
+        if creds:
+            read_website(creds)
+
+    def add_previewed():
+        """The previewed orders only - not everything the website has."""
+        rows = state["preview"]
+        if not rows:
+            return
+        if state.get("preview_source") == "canadianshopper":
+            #  CanadianShopper's order numbers mean nothing to WooCommerce, so
+            #  the cards go in by title - the same list the typed route uses,
+            #  written from the preview instead of retyped by hand.
+            card_list = BASE / "cs-sold-preview.txt"
+            card_list.write_text("\n".join(
+                row["card"] if int(row.get("qty") or 1) == 1
+                else "%s, %d" % (row["card"], row["qty"])
+                for row in rows) + "\n", encoding="utf-8")
+            args = ["--list", str(card_list), "--sold-on", "canadianshopper",
+                    "--checklist", str(CHECKLIST)]
+        else:
+            #  Only the website route needs the keys; a CanadianShopper sale
+            #  is added by title and must not be blocked by a missing file.
+            if not keys_path().is_file() and creds_or_offer() is None:
+                return
+            wanted = sorted({row["id"] or row["order"] for row in rows
+                             if row["id"] or row["order"]})
+            args = ["--woo-keys", str(keys_path()),
+                    "--orders", ",".join(wanted),
+                    "--checklist", str(CHECKLIST)]
+        if do_cs.get():
+            args.extend(["--cs", "--gui-dialogs", "--cs-tool",
+                         TOOL("sold-cards.py"), "--cookie-file",
+                         str(CS_COOKIE_FILE)])
+        added = list(rows)
+
+        def done(rc):
+            #  Remembered only once the checklist tool says it succeeded: a
+            #  preview whose sale was never written must come back next time.
+            if rc != 0:
+                app.console_line("The checklist tool did not finish (exit %s); "
+                                 "these orders will still be previewed next "
+                                 "time." % rc, "err")
+                return False
+            sale_preview.save_seen(SOLD_ORDERS_SEEN,
+                                   sale_preview.remember(seen_numbers(), added))
+            app.console_line("Added %s to the checklist." %
+                             sale_preview.headline(added).rstrip("."), "ok")
+            state["preview"] = []
+            listing.delete(0, "end")
+            list_frame.pack_forget()
+            add_preview_btn.pack_forget()
+            summary.configure(text="Added those cards. Press Preview new orders "
+                                   "again for anything newer.")
+            return True
+
+        app.run_tool("sold-everywhere.py", args,
+                     "Mark the sale(s) everywhere",
+                     cwd=app.settings.get("pipeline_dir", str(WORK)),
+                     on_done=done)
+
+    def source_hint():
+        """One line saying what Preview will read, for the chosen source."""
+        kind = sale_preview.channel_kind(onch.get())
+        if kind == "api":
+            return ("Preview reads your website's orders since the last time "
+                    "you added them. It needs the read-only key in "
+                    "woo-keys.txt, and it is offered only when that is missing.")
+        if kind == "plugin":
+            if TOOL_ACTION(CS_ORDERS_ACTION):
+                return ("Preview asks the CanadianShopper plugin for its own "
+                        "orders, through the session cookie it already uses.")
+            return ("The installed CanadianShopper plugin has no order reader "
+                    "yet, so this source cannot be previewed - use your website "
+                    "or type the card.")
+        return ("%s has no order list this app can read: type the card, or "
+                "search the title in that site." %
+                channel_names.get(onch.get(), "That channel").capitalize())
+
+    ttk.Label(box, text="New orders", style="H2.TLabel").pack(anchor="w")
+    row_top = ttk.Frame(box)
+    row_top.pack(anchor="w", pady=(2, 0))
+    ttk.Button(row_top, text="Preview new orders", style="Task.TButton",
+               command=preview_new).pack(side="left")
+
+    summary = ttk.Label(box, text="Nothing previewed yet.", style="Dim.TLabel",
+                        wraplength=680, justify="left")
+    summary.pack(anchor="w", pady=(2, 0))
+
+    list_frame = ttk.Frame(box)
+    listing = tk.Listbox(list_frame, height=6, exportselection=False)
+    scroll = ttk.Scrollbar(list_frame, orient="vertical",
+                           command=listing.yview)
+    listing.configure(yscrollcommand=scroll.set)
+    listing.pack(side="left", fill="both", expand=True)
+    scroll.pack(side="right", fill="y")
+
+    add_preview_btn = ttk.Button(box, text="Add these to the checklist",
+                                 command=add_previewed)
+    add_preview_btn.pack_forget()
+
+    hint = ttk.Label(box, text=source_hint(), style="Dim.TLabel",
+                     wraplength=680, justify="left")
+    hint.pack(anchor="w", pady=(4, 0))
+
+    def chosen_changed():
+        hint.configure(text=source_hint())
+
+    # --------------------------------------------------- where did it sell?
+    ttk.Label(box, text="Where did it sell?", style="H2.TLabel").pack(
+        anchor="w", pady=(10, 0))
     row = ttk.Frame(box)
-    row.pack(anchor="w", pady=(0, 4))
-    ttk.Label(row, text="Where did it sell?").pack(side="left")
-    for txt, val in (("my website", "website"), ("CanadianShopper", "canadianshopper"),
+    row.pack(anchor="w", pady=(2, 0))
+    for txt, val in (("my website", "website"),
+                     ("CanadianShopper", "canadianshopper"),
                      ("Facebook", "facebook"), ("eBay", "ebay"),
                      ("in person", "inperson"), ("somewhere else", "other")):
-        ttk.Radiobutton(row, text=txt, value=val, variable=onch).pack(
-            side="left", padx=(8, 0))
+        ttk.Radiobutton(row, text=txt, value=val, variable=onch,
+                        command=chosen_changed).pack(side="left", padx=(8, 0))
 
+    # ------------------------------------------------------ how they are named
+    ttk.Label(box, text="Name the cards", style="H2.TLabel").pack(
+        anchor="w", pady=(10, 0))
     row2 = ttk.Frame(box)
-    row2.pack(anchor="w")
-    ttk.Label(row2, text="How do you want to name the cards?").pack(
-        side="left")
+    row2.pack(anchor="w", pady=(2, 0))
     for txt, val in (("type them", "typed"),
                      ("my website's orders CSV", "orders"),
                      ("website API key (woo-keys.txt)", "keys")):
@@ -3626,29 +3936,38 @@ def build_sold(parent, app):
             side="left", padx=(8, 0))
     ttk.Label(
         box,
-        text="These choices provide card names for the core follow-up checklist "
-             "too; they are not CanadianShopper-plugin-only.",
-        style="Dim.TLabel", wraplength=640, justify="left").pack(
+        text="These choices name the cards for the checklist below too; they "
+             "are not plugin-only. Preview is the shortcut when the sale came "
+             "from a site: it already knows the titles.",
+        style="Dim.TLabel", wraplength=680, justify="left").pack(
             anchor="w", pady=(3, 0))
 
+    # -------------------------------------------------- CanadianShopper stock
     if app.cs_addon:
+        ttk.Label(box, text="CanadianShopper stock", style="H2.TLabel").pack(
+            anchor="w", pady=(10, 0))
         ttk.Checkbutton(
             box, variable=do_cs,
             text="Also fix CanadianShopper now (separate from the sale source; "
-                 "preview and approve before writing)").pack(anchor="w", pady=(6, 2))
+                 "preview and approve before writing)",
+            command=lambda: add_preview_btn.configure(
+                text="Add these %d card%s to the checklist%s" % (
+                    len(state["preview"]),
+                    "" if len(state["preview"]) == 1 else "s",
+                    " and fix CanadianShopper" if do_cs.get() else ""))
+        ).pack(anchor="w", pady=(2, 2))
         ttk.Label(
             box,
-            text="The match picker appears only after a valid session is loaded "
-                 "and a title is unmatched or ambiguous. Check the console for "
-                 "cookie/session errors or the preview details.",
-            style="Dim.TLabel", wraplength=640, justify="left").pack(
+            text="A stock comparison is a separate job: nothing here counts "
+                 "your stock on other sites during a sale. The match picker "
+                 "appears only after a valid session is loaded and a title is "
+                 "unmatched or ambiguous.",
+            style="Dim.TLabel", wraplength=680, justify="left").pack(
                 anchor="w", pady=(0, 2))
     else:
         ttk.Label(box, text="Without the plugin, CanadianShopper stock changes "
                   "remain manual checklist tasks.", style="Dim.TLabel",
-                  wraplength=640, justify="left").pack(anchor="w", pady=(6, 2))
-
-    state = {"path": None}
+                  wraplength=680, justify="left").pack(anchor="w", pady=(10, 2))
 
     def source_args():
         """(args-for-sold-everywhere, args-for-sold-cards) or None."""
@@ -3674,7 +3993,7 @@ def build_sold(parent, app):
                 return None
             a = ["--woo-orders-csv", f]
             return a, a
-        kf = BASE / "woo-keys.txt"
+        kf = keys_path()
         if not kf.exists():
             ex = BASE / "woo-keys.txt.example"
             if ex.exists() and messagebox.askyesno(
@@ -3763,21 +4082,6 @@ def build_sold(parent, app):
                                                    "preview"),
                      cwd=app.settings.get("pipeline_dir", str(WORK)))
 
-    ttk.Label(box,
-              text="Typed-sale flow: enter the cards, save the list, then add it to "
-                   "the checklist. Choose the sale source above; the checklist "
-                   "covers the other channels. One typed card opens the remaining "
-                   "seller pages in Edge, including the CanadianShopper store. "
-                   "Paste the copied title into CanadianShopper, eBay and "
-                   "Facebook searches manually; WooCommerce opens the orders list. "
-                   "The plugin-only CanadianShopper stock checkbox is independent; "
-                   "no listing is changed automatically.",
-              style="Dim.TLabel", wraplength=680, justify="left").pack(
-                  anchor="w", pady=(4, 0))
-
-    row3 = ttk.Frame(box)
-    row3.pack(anchor="w", pady=(4, 0))
-
     def type_cards():
         Editor(self_toplevel=box, title="Cards that sold",
                hint="One card per line:\n"
@@ -3796,6 +4100,11 @@ def build_sold(parent, app):
                          "title and returns; then click Add to the checklist.",
                on_saved=lambda p: state.update(path=str(p)))
 
+    # --------------------------------------------------------- manual route
+    ttk.Label(box, text="Type it instead", style="H2.TLabel").pack(
+        anchor="w", pady=(10, 0))
+    row3 = ttk.Frame(box)
+    row3.pack(anchor="w", pady=(2, 0))
     ttk.Button(row3, text="Type the cards...", command=type_cards).pack(
         side="left")
     ttk.Button(row3, text="Add to the checklist (and fix CS if ticked)",
@@ -3807,6 +4116,16 @@ def build_sold(parent, app):
                    "change", command=lambda: fix_cs(False)).pack(side="left")
         ttk.Button(row4, text="Apply the previewed change",
                    command=lambda: fix_cs(True)).pack(side="left", padx=8)
+
+    ttk.Label(box,
+              text="This route is for a sale the app cannot read: enter the "
+                   "cards, save the list, then add it to the checklist. One "
+                   "typed card opens the remaining seller pages in the "
+                   "browser, with the title copied for pasting. The "
+                   "plugin-only CanadianShopper stock checkbox is independent; "
+                   "no listing is changed automatically.",
+              style="Dim.TLabel", wraplength=680, justify="left").pack(
+                  anchor="w", pady=(6, 0))
 
 
 def build_plugins(parent, app):
