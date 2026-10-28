@@ -94,6 +94,7 @@ python test-woo-orders.py
 python test-sale-preview.py
 python test-stock-compare.py
 python test-market-stock.py
+python test-stock-write.py
 python test-order-panel.py
 python test-woo-media.py
 python ..\installer\test-bundled-config.py
@@ -118,7 +119,8 @@ Notes:
 | `test-woo-orders.py` | none - no network | Reading a pasted card list, which card a line means, when the app refuses to guess, and the exact order body that would be sent. |
 | `test-order-panel.py` | Pillow | Drives the real order panel against a stubbed Tk: the pasted list, the picker, new vs existing orders, the discount, and the no-keys fallback. |
 | `test-sale-preview.py` | Pillow | The preview before anything is written: which orders count as sales, what is still to add, the add-these-orders-only arguments, and the key offer when the file is missing. |
-| `test-stock-compare.py` | Pillow | Matching two catalogues card by card (SKU first, then title), the action list of disagreements and one-sided cards, the confirmed write plan (and the refusal when the plugin cannot write), remembered dismissals and their restoration, plus the on-demand comparison panel. |
+| `test-stock-compare.py` | Pillow | Matching two catalogues card by card (SKU first, then title), the action list of disagreements and one-sided cards, the confirmed write plan in both directions (CanadianShopper from the website, and the website from the other site), the refusal when the plugin cannot write, remembered dismissals and their restoration, plus the on-demand comparison panel. |
+| `test-stock-write.py` | none | Setting one count on a website product: the PUT carries only `stock_quantity`, the answer is read back so a 200 that kept the old number is a failure, a read-only key is explained, and one card failing does not stop the rest. |
 | `test-market-stock.py` | Pillow | The eBay/Facebook session and readers: the three ways a cookie gets pasted, eBay rows parsed with their quantities, Facebook states turned into listed/not listed, a login wall told apart from an empty shop, eBay's "Pardon our interruption" page and Facebook's 400 named as the site's check page rather than a stale cookie, the saved-page route, and the panel comparing on demand. |
 | `..\installer\test-bundled-config.py` | nothing | Checks the version/filename/SHA pins agree. |
 

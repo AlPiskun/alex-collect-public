@@ -848,7 +848,79 @@ def test_the_fix_flow():
           any("plugin" in str(payload) for payload in infos), str(infos))
     check("and nothing is run against it", not app.runs, str(app.runs))
 
-    # ---- per-card: the website is the wrong side now and then
+    # ---- the reverse: the website is the wrong side now and then
+    folder, app, parent = build_panel()
+    listing, out = run_comparison(folder, app, parent)
+    set_site = find(parent, gui.ttk.Button,
+                    "Set the website to the selected cards' counts...")
+    check("the reverse fix is offered beside the default one",
+          set_site is not None, "")
+    asked[:] = []
+    harness._BOX.askyesno = lambda title, message, **k: (
+        asked.append((title, message)) or False)
+    writes = []
+    with patch.object(gui.stock_write, "set_counts",
+                      lambda *a, **k: writes.append((a, k)) or
+                      {"updated": [], "failed": []}), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "BASE", folder):
+        set_site.invoke()
+    check("the reverse fix asks before writing to the website",
+          asked and asked[0][0] == "Set the website to these counts?", str(asked))
+    check("and shows the website's count against the new one",
+          asked and "website 2 -> 0" in asked[0][1], str(asked))
+    check("declining sends nothing to the website", not writes, str(writes))
+
+    wrote = {"updated": [{"id": 1, "inventory": 0, "title": "Gretzky"}],
+             "failed": []}
+    writes[:] = []
+    harness._BOX.askyesno = lambda *a, **k: True
+    with patch.object(gui.stock_write, "set_counts",
+                      lambda *a, **k: (writes.append((a, k)) or wrote)), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        set_site.invoke()
+    check("confirming writes that one card's count to the website",
+          writes and writes[0][0][3] == [{"id": 1, "quantity": 0,
+                                          "title": "1989 O-Pee-Chee Wayne "
+                                                   "Gretzky #1 EX-MT 6"}],
+          str(writes[:1]))
+    check("the panel says the website changed, not that it compared",
+          any("1 website count changed" in text for _tag, text in app.lines),
+          str(app.lines[-2:]))
+    check("and the card leaves the list",
+          listing.items == [], str(listing.items))
+
+    # ---- a key that cannot write is named as a key problem, not a mystery
+    folder, app, parent = build_panel()
+    listing, out = run_comparison(folder, app, parent)
+    errors = []
+    harness._BOX.showerror = lambda *a, **k: errors.append(a)
+    harness._BOX.askyesno = lambda *a, **k: True
+    failure = gui.stock_write.StockWriteError(
+        "The website rejected the WooCommerce keys (HTTP 401).",
+        "Writing a stock count needs a key pair with Read/Write access.",
+        status=401)
+    with patch.object(gui.stock_write, "set_counts",
+                      lambda *a, **k: (_ for _ in ()).throw(failure)), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button,
+             "Set the website to the selected cards' counts...").invoke()
+    check("a read-only key is explained, not swallowed",
+          errors and "HTTP 401" in str(errors[-1]) and
+          "Read/Write" in str(errors[-1]), str(errors[-1:]))
+    check("and the card is still on the list, because nothing was written",
+          len(listing.items) == 1, str(listing.items))
+
     folder, app, parent = build_panel()
     listing, out = run_comparison(folder, app, parent)
     app.opened.clear()

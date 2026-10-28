@@ -51,6 +51,7 @@ import market_stock
 import photo_thumbs
 import sale_preview
 import stock_compare
+import stock_write
 import woo_media
 import woo_orders
 from sale_inputs import woo_get
@@ -946,7 +947,7 @@ DOCS["stock"] = """\
 Where the numbers disagree, and where they get put right. One card can sit on
 four sites; when one of them sells it, the others keep offering it until
 somebody changes them. This panel reads a catalogue - your website through its
-read-only API key, and CanadianShopper, eBay or Facebook through a signed-in
+REST API keys, and CanadianShopper, eBay or Facebook through a signed-in
 session - matches the cards, and lists ONLY the ones that need something done:
 a count that differs, or a card that exists on one side only.
 
@@ -1323,7 +1324,8 @@ TOOLTIPS = {
     "Compare stock with Facebook": "Read your Facebook selling page with your session cookie and list only the cards whose numbers disagree",
     "Set CanadianShopper to the website's counts...": "The usual fix: for every card whose two counts differ, set CanadianShopper's count to the website's count - always shown and confirmed first, write permission only",
     "Fix the selected cards...": "Set CanadianShopper to the website's count for just the rows selected in the list, after a confirmation listing them",
-    "Open the selected cards on the website": "Open the website's own product edit page for the selected cards - the way to change the website when it is the one that is wrong; this app never writes to the website",
+    "Set the website to the selected cards' counts...": "The reverse fix: set the website's stock count to the count the other site reports, for the selected cards - always shown and confirmed first; needs WooCommerce keys with Read/Write access",
+    "Open the selected cards on the website": "Open the website's own product edit page for the selected cards - for a count a plugin owns, a variable product, or anything the stock panel should not touch",
     "Ignore the selected cards": "Stop comparing the selected cards: a card that is no longer sold on one site disappears from the list until it is restored; nothing on either site changes",
     "Restore ignored cards...": "Put every ignored card back into comparisons, after showing which ones they are",
     "Read a saved eBay page...": "Read an eBay page you saved from your own signed-in browser (Ctrl+S, HTML only) - the way round eBay's \"Pardon our interruption\" check, using the same reader",
@@ -3971,8 +3973,9 @@ def build_sold(parent, app):
         kind = sale_preview.channel_kind(onch.get())
         if kind == "api":
             return ("Preview reads your website's orders since the last time "
-                    "you added them. It needs the read-only key in "
-                    "woo-keys.txt, and it is offered only when that is missing.")
+                    "you added them. It uses the WooCommerce keys in "
+                    "woo-keys.txt - reading needs no special permission - and "
+                    "it is offered only when the keys are missing.")
         if kind == "plugin":
             if TOOL_ACTION(CS_ORDERS_ACTION):
                 return ("Preview asks the CanadianShopper plugin for its own "
@@ -4288,9 +4291,10 @@ def build_stock(parent, app):
             return site, key, secret
         messagebox.showinfo(
             "One-time setup: your website's API keys",
-            "Comparing stock means reading your website's catalogue, which "
-            "uses the same read-only key as the sale preview - no write "
-            "permission, nothing is changed.\n\n"
+            "Comparing stock reads your website's catalogue with the same "
+            "WooCommerce keys as everything else. Changing a count on the "
+            "website needs a key pair with Read/Write access; a read-only "
+            "pair can still compare and can still fix CanadianShopper.\n\n"
             "woo-keys.txt is about to open. Fill it in, save it, then press "
             "Compare again.")
         open_woo_keys_file(app, app.settings.get("woo_site_url", ""))
@@ -4515,12 +4519,104 @@ def build_stock(parent, app):
     def ignore_selected():
         hide(selected_rows())
 
-    def open_on_website():
-        """The other per-card answer: the website is the one that is wrong.
+    def set_website(rows):
+        """The other direction: the website's count is the one that is wrong.
 
-        Nothing here writes to the website - the keys are read-only on purpose
-        - so this opens the product's own edit page and lets the person change
-        the count where it lives. The list is not touched: compare again after.
+        The keys are the shop's own Read/Write pair - the same ones the photo
+        wiring uses - so this writes the count the other site reports. It is
+        never the default, because the website is right more often than not,
+        and it is always named card by card before anything is sent.
+        """
+        plan = stock_write.plan_from_rows(rows, state["label"])
+        if not plan:
+            messagebox.showinfo(
+                "Nothing to set",
+                "Select a row where the two counts differ and the card exists "
+                "on the website. A card that is only on the other site has "
+                "nothing on the website to change.")
+            return
+        creds = site_creds.get("last") or credentials()
+        if not creds:
+            return
+        site_creds["last"] = creds
+        lines = stock_write.describe(plan, state["label"])
+        body = "\n".join(lines[:12])
+        if len(lines) > 12:
+            body += "\n  ... and %d more" % (len(lines) - 12)
+        question = ("%s\n\n%s\n\nOnly those stock counts change: nothing is "
+                    "added, removed or repriced. Write them to the website "
+                    "now?" % (stock_write.summary(plan, state["label"]), body))
+        if not messagebox.askyesno("Set the website to these counts?",
+                                   question, parent=box.winfo_toplevel()):
+            app.console_line("The website was not changed: the write was not "
+                             "confirmed.", "dim")
+            return
+        summary.configure(text="Setting %d count%s on the website..." %
+                               (len(plan), "" if len(plan) == 1 else "s"))
+        app.console_line("Setting %d count%s on the website from %s..." %
+                         (len(plan), "" if len(plan) == 1 else "s",
+                          state["label"]), "cmd")
+        site, key, secret = creds
+
+        def arrived(result, error):
+            if error is not None:
+                message = getattr(error, "message", str(error))
+                hint = getattr(error, "hint", "")
+                messagebox.showerror(
+                    "The website could not be changed",
+                    message + ("\n\n" + hint if hint else "") +
+                    "\n\nNo count was changed by this attempt.",
+                    parent=box.winfo_toplevel())
+                app.console_line("Website write stopped: %s %s" %
+                                 (message, hint), "err")
+                summary.configure(text="The website could not be changed.")
+                return
+            updated = result.get("updated") or []
+            failed = result.get("failed") or []
+            for entry in failed:
+                app.console_line(
+                    "Not changed: %s - %s %s" %
+                    (entry.get("title") or entry.get("id"), entry.get("why"),
+                     entry.get("hint") or ""), "err")
+            for entry in updated:
+                app.console_line("Website now shows %s: %s" %
+                                 (entry.get("inventory"),
+                                  entry.get("title") or entry.get("id")), "ok")
+            done = {str(entry.get("id")) for entry in updated}
+            state["rows"] = [row for row in state["rows"]
+                             if str(row.get("woo_id")) not in done]
+            listing.delete(0, "end")
+            for row in state["rows"]:
+                listing.insert("end", stock_compare.label_action(
+                    row, state["label"], state["mode"]))
+            if not state["rows"]:
+                list_frame.pack_forget()
+                action_row.pack_forget()
+            text = "%d website count%s changed" % (
+                len(updated), "" if len(updated) == 1 else "s")
+            if failed:
+                text += "; %d could not be changed" % len(failed)
+            summary.configure(text=text + ". Compare again to confirm.")
+            app.console_line(text + ". Compare again to confirm.", "ok")
+
+        in_background(
+            app,
+            lambda: stock_write.set_counts(
+                site, key, secret,
+                [{"id": row["id"], "quantity": row["to"],
+                  "title": row["title"]} for row in plan]),
+            arrived)
+
+    def set_website_selected():
+        set_website(selected_rows())
+
+    def open_on_website():
+        """Look at the product itself rather than changing its count.
+
+        The reverse write is the button beside this one; this one is for the
+        times a number is not the whole story - a variable product, a count a
+        plugin owns, a price to fix while you are there. Nothing is written
+        here, and the list is left alone: compare again afterwards.
         """
         rows = [row for row in selected_rows() if row.get("woo_id")]
         if not rows:
@@ -4946,12 +5042,16 @@ def build_stock(parent, app):
                command=set_selected).pack(side="left", padx=6)
     second = ttk.Frame(action_row)
     second.pack(anchor="w", pady=(3, 0))
+    ttk.Button(second, text="Set the website to the selected cards' counts...",
+               command=set_website_selected).pack(side="left")
     ttk.Button(second, text="Open the selected cards on the website",
-               command=open_on_website).pack(side="left")
-    ttk.Button(second, text="Ignore the selected cards",
-               command=ignore_selected).pack(side="left", padx=6)
-    ttk.Button(second, text="Restore ignored cards...",
-               command=restore_ignored).pack(side="left")
+               command=open_on_website).pack(side="left", padx=6)
+    third = ttk.Frame(action_row)
+    third.pack(anchor="w", pady=(3, 0))
+    ttk.Button(third, text="Ignore the selected cards",
+               command=ignore_selected).pack(side="left")
+    ttk.Button(third, text="Restore ignored cards...",
+               command=restore_ignored).pack(side="left", padx=6)
     action_row.pack_forget()
 
     ttk.Label(box,
@@ -4964,8 +5064,9 @@ def build_stock(parent, app):
                    "other site stops it being compared again, and nothing on "
                    "either site is changed by comparing or by ignoring. When "
                    "the website is the one that is wrong, select the card and "
-                   "open its product page - the website's own screen changes "
-                   "it, because the app's keys can only read.",
+                   "set the website to the other side's count - the same "
+                   "confirmation applies, and Read/Write keys are needed - or "
+                   "open its product page and change it there.",
               style="Dim.TLabel", wraplength=680, justify="left").pack(
                   anchor="w", pady=(6, 0))
 
@@ -5658,8 +5759,9 @@ def build_newphotos(parent, app):
             "Save your website API keys?",
             "Alex Collect can look the card up on your website and open its "
             "product edit page directly.\n\n"
-            "That needs a read-only WooCommerce key pair in woo-keys.txt. It "
-            "is a one-time setup, and every later photo replacement becomes "
+            "That uses the WooCommerce keys in woo-keys.txt - the same pair "
+            "the rest of the app uses, read-only being enough for the lookup. "
+            "It is a one-time setup, and every later photo replacement becomes "
             "one click instead of a search.\n\n"
             "Enter the keys now?", parent=app)
         if not enter:
