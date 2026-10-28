@@ -69,6 +69,11 @@ class FakeWidget:
         return self._kw.get("text", self.value) if key == "text" \
             else self._kw.get(key, "")
     def winfo_children(self): return list(self.children)
+
+    @property
+    def master(self):
+        """Tk's name for the parent widget; panels ask which one holds it."""
+        return self.parent
     def destroy(self):
         #  A destroyed widget leaves its parent: the panel rebuilds its grid
         #  after the pictures are decoded, and the old cells must be gone.
@@ -1034,14 +1039,16 @@ def test_actions_above_the_words():
     help_button = getattr(app, "_doc_button", None)
     doc = getattr(app, "_doc_label", None)
     held = getattr(parent, "_help_frame", None)
+    #  build_newphotos is not pinned, so its title row is still in the panel.
     check("the panel's help is folded until it is asked for",
           help_button is not None and held is not None and not held.packed,
           str(help_button))
     check("the help still holds the real text, so nothing was lost",
           doc is not None and len(str(doc.cget("text"))) > 200,
           str(doc and len(str(doc.cget("text")))))
-    if help_button is not None:
-        help_button.invoke()
+    check("the help frame starts out of the layout",
+          held is not None and not held.packed, "")
+    help_button.invoke()
     check("one click opens it, and it opens underneath",
           held is not None and held.packed and
           help_button.cget("text") == "Hide this help",
@@ -1191,6 +1198,7 @@ def test_every_panel_leads_with_the_work():
         builder = gui.PANEL_BUILDERS.get(pid)
         if builder is None or pid == "welcome":
             continue
+        app._doc_buttons = []          # settings registers one per section
         parent = FakeWidget()
         try:
             builder(parent, app)
@@ -1198,13 +1206,15 @@ def test_every_panel_leads_with_the_work():
             wrong_place.append("%s: %s" % (pid, exc))
             continue
         notes = getattr(parent, "_notes_frame", None)
-        if notes is None:
+        buttons = getattr(app, "_doc_buttons", [])
+        if notes is None and not buttons:
             no_help.append(pid)
             continue
-        inside = set(id(w) for w in notes.walk())
+        inside = set(id(w) for w in notes.walk()) if notes is not None \
+            else set()
         first = next((w for w in parent.walk()
                       if isinstance(w, action_types)), None)
-        if first is not None and id(first) in inside:
+        if notes is not None and first is not None and id(first) in inside:
             wrong_place.append(pid)
         held = getattr(parent, "_help_frame", None)
         if held is not None and held.packed:
@@ -1534,6 +1544,102 @@ def test_settings_save_is_pinned():
     shutil.rmtree(folder, ignore_errors=True)
 
 
+def test_settings_have_their_own_sections():
+    print()
+    print("== 27. the settings page: a section and a help button per job ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    app = FakeApp(folder)
+    parent = FakeWidget()
+    gui.build_cookie(parent, app)
+
+    titles = [w.cget("text") for w in parent.walk()
+              if isinstance(w, gui.ttk.Label) and
+              w.cget("style") == "H2.TLabel"]
+    expected = ["When Alex Collect opens", "Store and AI", "Open the store pages",
+                "Custom AI commands", "Marketplace pages",
+                "eBay Quick List handoff",
+                "Facebook Marketplace export fields",
+                "CanadianShopper CSV defaults", "Working folders",
+                "CanadianShopper connection"]
+    check("every group of settings has its own heading",
+          titles == expected, str(titles))
+    buttons = getattr(app, "_doc_buttons", [])
+    check("every heading has its own help button", len(buttons) == len(expected),
+          str(len(buttons)))
+    labels = getattr(app, "_doc_labels", [])
+    check("each button has its own explanation, not the panel's",
+          len(labels) == len(expected) and
+          len(set(str(l.cget("text")) for l in labels)) == len(expected),
+          str(len(set(str(l.cget("text")) for l in labels))))
+    check("the old page-wide explanation and its button are gone",
+          getattr(app, "_doc_button", None) is None and
+          getattr(app, "_help_frame", None) is None, "")
+    check("no section repeats the old one-size blurb",
+          all(str(l.cget("text")) != gui.DOCS["cookie"] for l in labels), "")
+    check("each explanation covers its own subject",
+          any("prompt" in str(l.cget("text")).lower() for l in labels) and
+          any("cookie" in str(l.cget("text")).lower() for l in labels) and
+          any("eBay" in str(l.cget("text")) for l in labels) and
+          any("scanner folder" in str(l.cget("text")) for l in labels), "")
+    check("each explanation says something substantial",
+          all(len(str(l.cget("text"))) > 80 for l in labels),
+          str([len(str(l.cget("text"))) for l in labels]))
+
+    #  Every button opens its own help, and only its own.
+    for index, button in enumerate(buttons):
+        button.invoke()
+        opened = [i for i, other in enumerate(buttons)
+                  if other.cget("text") == "Hide this help"]
+        check("section %d opens its own help and no other" % (index + 1),
+              opened == [index], str(opened))
+        button.invoke()
+    check("and every one of them closes again",
+          all(b.cget("text") == "What this panel does" for b in buttons), "")
+
+    #  The fields are still all there, in their sections.
+    fields = getattr(app, "_user_setting_vars", {})
+    check("no field was lost in the split", len(fields) >= 40, str(len(fields)))
+    for key in ("store_name", "woo_site_url", "ai_agent_url",
+                "ebay_template_hockey_url", "facebook_feed_condition",
+                "canadianshopper_category", "pipeline_dir", "scan_dir"):
+        check("the %s field is still a field on the page" % key, key in fields,
+              str(sorted(fields)[:6]))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_pinned_help_still_opens():
+    print()
+    print("== 28. a pinned title row's help button works ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    app = FakeApp(folder)
+    parent = FakeWidget()
+    #  A pinned page with a panel-wide explanation: the shape that broke. The
+    #  title row lives in the strip, the help frame in the page, so packing
+    #  "after the title row" raises - and the button did nothing at all.
+    gui.panel_header(parent, app, "newphotos", pin=True)
+    bar = getattr(app, "_action_bar", None)
+    held = getattr(parent, "_help_frame", None)
+    button = getattr(app, "_doc_button", None)
+    check("the panel is pinned into the strip", bar is not None and
+          parent._title_row.parent is bar, "")
+    check("its help frame belongs to the page, not the strip",
+          held is not None and held.parent is parent, "")
+    shown_before = len(_BOX.shown)
+    button.invoke()
+    check("one click still opens the help",
+          held is not None and held.packed and
+          button.cget("text") == "Hide this help", str(button.cget("text")))
+    check("no error dialog was needed to get there",
+          len(_BOX.shown) == shown_before, str(_BOX.shown[shown_before:]))
+    check("the help goes at the top of the page, under the strip",
+          held is not None and held.packed, "")
+    button.invoke()
+    check("and it closes again", held is not None and not held.packed, "")
+    shutil.rmtree(folder, ignore_errors=True)
+
+
 def test_spent_sitting():
     print()
     print("== 17. a sitting with every image used says so ==")
@@ -1580,6 +1686,8 @@ def main():
     test_help_sits_beside_the_title()
     test_the_page_area_is_not_white()
     test_settings_save_is_pinned()
+    test_settings_have_their_own_sections()
+    test_pinned_help_still_opens()
     test_grid_fits_a_small_screen()
     test_loading_is_visible()
     test_spent_sitting()

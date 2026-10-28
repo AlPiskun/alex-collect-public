@@ -59,7 +59,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.57"
+VERSION = "2.58"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -2250,22 +2250,53 @@ def panel_header(parent, app, pid, with_doc=True, pin=False):
         doc.pack(fill="x")
         open_now = pid in getattr(app, "_docs_open", set())
 
+        def open_help():
+            """Put the help right under the title row.
+
+            The row is only a sibling of the help when the panel is not
+            pinned. A pinned row lives in the strip above the page, and
+            asking Tk to pack after a widget in another container raises -
+            which is how the button on User Settings came to do nothing at
+            all. There the help goes to the top of the page instead, which is
+            still directly under the strip and so still under the title.
+            """
+            if held.master is top.master:
+                held.pack(fill="x", pady=(0, 3), after=top)
+                return
+            siblings = [w for w in parent.winfo_children() if w is not held]
+            if siblings:
+                held.pack(fill="x", pady=(0, 3), before=siblings[0])
+            else:
+                held.pack(fill="x", pady=(0, 3))
+
         def toggle():
             showing = pid in getattr(app, "_docs_open", set())
             if showing:
                 app._docs_open = getattr(app, "_docs_open", set()) - {pid}
                 held.pack_forget()
                 help_button.configure(text="What this panel does")
-            else:
-                app._docs_open = getattr(app, "_docs_open", set()) | {pid}
-                held.pack(fill="x", pady=(0, 3), after=top)
+                return
+            app._docs_open = getattr(app, "_docs_open", set()) | {pid}
+            #  A Tk error here would leave the button doing nothing, which is
+            #  exactly the failure this is fixing - so it is never silent.
+            try:
+                open_help()
                 help_button.configure(text="Hide this help")
+            except Exception as exc:
+                app._docs_open = getattr(app, "_docs_open", set()) - {pid}
+                messagebox.showwarning(
+                    "Could not show the help",
+                    "The explanation could not be shown in this window:\n%s"
+                    % exc, parent=app)
 
         help_button = ttk.Button(top, text="Hide this help" if open_now else
                                  "What this panel does", command=toggle)
         help_button.pack(side="right")
         if open_now:
-            held.pack(fill="x", pady=(0, 3), after=top)
+            try:
+                open_help()
+            except Exception:
+                pass
         parent._notes_frame = notes
         parent._help_frame = held
         app._doc_label = doc          # the text itself, for tests and reading
@@ -2292,6 +2323,117 @@ def panel_section(parent, app, pid, expand=True):
     PANEL_BUILDERS[pid](section, app)
     attach_tooltips(section)
     return section
+
+
+SETTINGS_DOCS = {
+    "startup": (
+        "Which view opens when Alex Collect starts. The task menu is the "
+        "shortest way to a job; the tabs view shows a whole group of panels at "
+        "once; the wizard is for a first run. It can be changed at any time "
+        "from the View menu."),
+    "store": (
+        "The store itself and the AI chat page. Store name, currency prefix, "
+        "currency name, description word count and tag count are substituted "
+        "into the AI prompts as {{STORE_NAME}}, {{CURRENCY_PREFIX}} and so on, "
+        "so changing them changes what the AI is asked for. The browser choice "
+        "is used for every page Alex Collect opens; \"Ask me the first "
+        "time\" means it asks once and remembers. Nothing here is uploaded or "
+        "written to the shop."),
+    "store_pages": (
+        "Three shortcuts that save this form first, then open a page: the "
+        "WordPress media uploader, your AI chat, and woo-keys.txt itself. They "
+        "only open a page - no listing, photo or product is changed."),
+    "custom_ai": (
+        "Extra copy-to-clipboard buttons for the pipeline dialog. Each one "
+        "needs a name, a hover note and the command text, and they accept the "
+        "same {{STORE_NAME}}, {{CURRENCY_PREFIX}}, {{CURRENCY_NAME}}, "
+        "{{DESCRIPTION_MIN_WORDS}}, {{TAG_COUNT}} and {{LISTING_CONTEXT}} "
+        "placeholders as the built-in prompts. A custom button copies its "
+        "command - it never sends anything to the AI by itself."),
+    "markets": (
+        "The pages opened after a sale and by the photo panels: your eBay "
+        "active listings, the Facebook selling page, and the CanadianShopper "
+        "vendor page. They are only opened in the browser."),
+    "ebay": (
+        "Defaults for the generated eBay Quick List page. The template URLs "
+        "point at the HTML you already use; the defaults fill in the fields an "
+        "AI answer does not name. Nothing is submitted to eBay from this app - "
+        "the page is a copy-and-drag helper."),
+    "facebook": (
+        "The columns of the Facebook workbook. The templates accept "
+        "{placeholders} filled in per card from the live feed; the description "
+        "is the long text, and its {product_url} is filled with each card's "
+        "own address. Leave the price template as {price} to use the feed's "
+        "price."),
+    "cs_csv": (
+        "Defaults for the CanadianShopper import CSV that the pipeline writes: "
+        "category, where it ships from, and the shipping defaults. They are "
+        "written into the CSV as column values, so the import needs no editing "
+        "afterwards."),
+    "folders": (
+        "Where the tools write and where the scans are read from. The batch "
+        "folder holds card_pipeline.py and its outputs; the scanner folder is "
+        "where the scan dialog opens. Both are used by the GUI and by the "
+        "command-line tools."),
+    "cs_login": (
+        "The CanadianShopper session cookie from a signed-in browser. It is a "
+        "live login: it is stored locally in this folder, it can change stock "
+        "on that site, and it should not be shared. Refresh it when the plugin "
+        "reports that authentication has expired. Without the plugin none of "
+        "these controls appear and CanadianShopper stays a manual import."),
+}
+
+
+def settings_section(app, parent, key, title, doc=""):
+    """One titled group of settings, with its own explanation button.
+
+    The settings page is ten unrelated jobs in one form - the store address,
+    the AI page, the Facebook templates, the eBay defaults, the folders - and
+    one explanation for the whole page described none of them well. Each group
+    now has its own heading, its own rule underneath it, and its own "What
+    this panel does" button for the part it actually covers.
+    """
+    section = ttk.Frame(parent)
+    section.pack(fill="x", pady=(0, 2))
+    header = ttk.Frame(section)
+    header.pack(fill="x", pady=(8, 3))
+    ttk.Label(header, text=title, style="H2.TLabel").pack(side="left")
+    body = ttk.Frame(section)
+    body.pack(fill="x")
+    if doc:
+        held = ttk.Frame(section)
+        label = ttk.Label(held, text=doc, style="Dim.TLabel", wraplength=740,
+                          justify="left")
+        label.pack(fill="x")
+        open_now = key in getattr(app, "_docs_open", set())
+        #  The command is bound through a lambda because toggle() is defined
+        #  below it - and a button whose command is set afterwards is exactly
+        #  the bug this page already had once.
+        button = ttk.Button(header, text="Hide this help" if open_now else
+                            "What this panel does",
+                            command=lambda: toggle())
+
+        def toggle():
+            showing = key in getattr(app, "_docs_open", set())
+            if showing:
+                app._docs_open = (getattr(app, "_docs_open", set()) -
+                                  {key})
+                held.pack_forget()
+                button.configure(text="What this panel does")
+            else:
+                app._docs_open = getattr(app, "_docs_open", set()) | {key}
+                held.pack(fill="x", pady=(0, 3), before=body)
+                button.configure(text="Hide this help")
+
+        button.pack(side="right")
+        if open_now:
+            held.pack(fill="x", pady=(0, 3), before=body)
+        app._doc_labels = list(getattr(app, "_doc_labels", [])) + [label]
+        app._doc_buttons = list(getattr(app, "_doc_buttons", [])) + [button]
+        section._help_frame = held
+        section._doc_button = button
+    ttk.Separator(section).pack(fill="x", pady=(7, 0))
+    return body
 
 
 def panel_note(parent, text, wraplength=780):
@@ -2409,11 +2551,26 @@ def build_cookie(parent, app):
     #  past every field first. The title row goes in the strip above the page
     #  and the Save button sits on that row, so both stay put as the fields
     #  scroll underneath.
-    panel_header(parent, app, "cookie", pin=True)
+    #  No panel-wide explanation: each group below has its own, next to the
+    #  fields it describes. One button for ten unrelated jobs explained none
+    #  of them.
+    panel_header(parent, app, "cookie", pin=True, with_doc=False)
+    #  This page owns its help per section, so it starts the list afresh
+    #  rather than adding to whatever the last panel left behind.
+    app._doc_buttons = []
+    app._doc_labels = []
     scroller = ScrollFrame(parent)
     scroller.pack(fill="both", expand=True)
-    box = ttk.Frame(scroller.inner)
-    box.pack(fill="x", expand=True)
+    page = ttk.Frame(scroller.inner)
+    page.pack(fill="x", expand=True)
+    box = page
+
+    def group(key, title):
+        """Start a section; everything packed into ``box`` after this goes in it."""
+        nonlocal box
+        box = settings_section(app, page, key, title,
+                               SETTINGS_DOCS.get(key, ""))
+        return box
 
     fields = {}
     app._user_setting_vars = fields
@@ -2430,6 +2587,7 @@ def build_cookie(parent, app):
                 row=row + 1, column=1, sticky="w", padx=2, pady=(0, 2))
         return var
 
+    group("startup", "When Alex Collect opens")
     startup_var = tk.StringVar(
         master=box, value=app.settings.get("startup_mode", "menu"))
     startup_row = ttk.Frame(box)
@@ -2439,7 +2597,7 @@ def build_cookie(parent, app):
                  values=("menu", "tabs", "wizard"), width=14).pack(
                      side="left", padx=6)
 
-    ttk.Label(box, text="Store and AI", style="H2.TLabel").pack(anchor="w")
+    group("store", "Store and AI")
     general = ttk.Frame(box)
     general.pack(fill="x", pady=(1, 4))
     general.columnconfigure(1, weight=1)
@@ -2479,6 +2637,7 @@ def build_cookie(parent, app):
     refresh_var = field_row(general, 12, "Feed refresh URL (optional override):",
                             "woo_feed_refresh_url")
 
+    group("store_pages", "Open the store pages")
     row = ttk.Frame(box)
     row.pack(fill="x", pady=(0, 4))
     def open_media_page():
@@ -2513,15 +2672,7 @@ def build_cookie(parent, app):
                command=lambda: open_woo_keys_file(app, fields["woo_site_url"].get())
                ).pack(side="left", padx=(6, 0))
 
-    ttk.Label(box, text="Custom AI commands", style="H2.TLabel").pack(
-        anchor="w", pady=(4, 0))
-    ttk.Label(box, text=(
-        "Create extra copy-to-clipboard buttons for the pipeline dialog. "
-        "Commands can use the same {{STORE_NAME}}, {{CURRENCY_PREFIX}}, "
-        "{{CURRENCY_NAME}}, {{DESCRIPTION_MIN_WORDS}}, {{TAG_COUNT}}, and "
-        "{{LISTING_CONTEXT}} placeholders. Save User Settings after editing."),
-        style="Dim.TLabel", wraplength=760, justify="left").pack(
-            anchor="w", pady=(0, 3))
+    group("custom_ai", "Custom AI commands")
     custom_frame = ttk.Frame(box)
     custom_frame.pack(fill="x", pady=(0, 6))
     custom_frame.columnconfigure(1, weight=1)
@@ -2630,8 +2781,7 @@ def build_cookie(parent, app):
         "remove": remove_custom_item,
     }
 
-    ttk.Label(box, text="Marketplace pages", style="H2.TLabel").pack(
-        anchor="w", pady=(2, 0))
+    group("markets", "Marketplace pages")
     market = ttk.Frame(box)
     market.pack(fill="x", pady=(1, 4))
     market.columnconfigure(1, weight=1)
@@ -2641,8 +2791,7 @@ def build_cookie(parent, app):
     field_row(market, 2, "CanadianShopper vendor page URL:",
               "canadianshopper_store_url")
 
-    ttk.Label(box, text="eBay Quick List handoff", style="H2.TLabel").pack(
-        anchor="w", pady=(2, 0))
+    group("ebay", "eBay Quick List handoff")
     ebay_box = ttk.Frame(box)
     ebay_box.pack(fill="x", pady=(1, 4))
     ebay_box.columnconfigure(1, weight=1)
@@ -2677,8 +2826,7 @@ def build_cookie(parent, app):
         style="Dim.TLabel", wraplength=720, justify="left").grid(
             row=16, column=1, sticky="w", padx=3, pady=(0, 3))
 
-    ttk.Label(box, text="Facebook Marketplace export fields",
-              style="H2.TLabel").pack(anchor="w", pady=(2, 0))
+    group("facebook", "Facebook Marketplace export fields")
     facebook_box = ttk.Frame(box)
     facebook_box.pack(fill="x", pady=(1, 4))
     facebook_box.columnconfigure(1, weight=1)
@@ -2707,8 +2855,7 @@ def build_cookie(parent, app):
         wraplength=720, justify="left").grid(
             row=7, column=1, sticky="w", padx=3, pady=(0, 3))
 
-    ttk.Label(box, text="CanadianShopper CSV defaults", style="H2.TLabel").pack(
-        anchor="w", pady=(2, 0))
+    group("cs_csv", "CanadianShopper CSV defaults")
     cs_config = ttk.Frame(box)
     cs_config.pack(fill="x", pady=(1, 4))
     cs_config.columnconfigure(1, weight=1)
@@ -2728,8 +2875,7 @@ def build_cookie(parent, app):
     field_row(cs_config, 5, "Transit days:",
               "canadianshopper_transit_days", width=16)
 
-    ttk.Label(box, text="Working folders", style="H2.TLabel").pack(
-        anchor="w", pady=(2, 0))
+    group("folders", "Working folders")
     grid = ttk.Frame(box)
     grid.pack(fill="x", pady=(1, 4))
     grid.columnconfigure(1, weight=1)
@@ -2890,9 +3036,7 @@ def build_cookie(parent, app):
     app._save_button = save_button
 
     if app.cs_addon:
-        ttk.Separator(box).pack(fill="x", pady=(1, 4))
-        ttk.Label(box, text="CanadianShopper connection",
-                  style="H2.TLabel").pack(anchor="w")
+        group("cs_login", "CanadianShopper connection")
         ttk.Label(box, text="Session cookie (private login; stored locally):"
                   ).pack(anchor="w", pady=(2, 0))
         txt = tk.Text(box, height=3, wrap="char", font=("Consolas", 9))
