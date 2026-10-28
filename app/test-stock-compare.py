@@ -722,6 +722,46 @@ def test_actions():
           stock_compare.ignored_keys(stock_compare.load_ignored(path)) ==
           ["plain key"], "")
 
+    # ---- what the plugin's result file is allowed to mean
+    one = {"id": 101, "sku": "GR-1", "title": "1989 O-Pee-Chee Wayne Gretzky",
+           "card": "1989 O-Pee-Chee Wayne Gretzky", "from": 0, "to": 2}
+    two = {"id": None, "sku": "BO-35", "title": "1966-67 Topps Bobby Orr #35",
+           "card": "1966-67 Topps Bobby Orr #35", "from": 0, "to": 5}
+    report = stock_compare.plugin_write_report(
+        [one, two], {"updated": [{"id": 101, "inventory": 2}],
+                     "failed": [{"sku": "BO-35", "why": "matched two listings"}]})
+    check("a card the plugin wrote is the only kind called changed",
+          report["changed"] == [one] and not report["unknown"], str(report))
+    check("a card it could not match stays, with the plugin's own reason",
+          report["failed"] == [{"card": "1966-67 Topps Bobby Orr #35",
+                                "why": "matched two listings"}],
+          str(report["failed"]))
+    report = stock_compare.plugin_write_report(
+        [one], {"updated": [], "failed": []})
+    check("a card the result does not mention is unknown, never assumed written",
+          report["changed"] == [] and report["unknown"] == [one], str(report))
+    report = stock_compare.plugin_write_report(
+        [two], {"updated": [{"title": "1966-67 Topps Bobby Orr #35"}]})
+    check("a result that only carries the title still matches the card",
+          report["changed"] == [two], str(report))
+    report = stock_compare.plugin_write_report(
+        [one], {"updated": [{"product_id": 101}],
+                "failed": [{"id": 999, "reason": "gone"}]})
+    check("other spellings of the same keys are understood",
+          report["changed"] == [one] and report["failed"] == [], str(report))
+    report = stock_compare.plugin_write_report(
+        [one], {"failed": [{"id": 101, "error": "no session"}]})
+    check("a card in both lists is a failure, not a coin toss",
+          report["changed"] == [] and
+          report["failed"][0]["why"] == "no session", str(report))
+    report = stock_compare.plugin_write_report(
+        [one], {"failed": [{"id": 101}]})
+    check("a failure with no reason still says so in words",
+          "no reason" in report["failed"][0]["why"], str(report))
+    check("a missing or broken result file means nothing is known",
+          stock_compare.plugin_write_report([one], None)["unknown"] == [one] and
+          stock_compare.plugin_write_report([one], {})["unknown"] == [one], "")
+
     check("a one-sided row says which side it is on",
           "not on CanadianShopper" in
           stock_compare.label_action({"kind": stock_compare.ONLY_WOO,
@@ -820,7 +860,7 @@ def test_the_fix_flow():
                        "card": "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6",
                        "from": 0, "to": 2}], str(written))
     result = folder / "cs-stock-set-result.json"
-    result.write_text(json.dumps({"updated": [{"id": 1, "inventory": 2}]}),
+    result.write_text(json.dumps({"updated": [{"id": 101, "inventory": 2}]}),
                       encoding="utf-8")
     app.runs[0]["on_done"](0)
     check("a finished write is reported with the count",
@@ -843,10 +883,41 @@ def test_the_fix_flow():
         find(parent, gui.ttk.Button,
              "Set CanadianShopper to the website's counts...").invoke()
     check("a plugin without stock.set is told apart from a failure",
-          any("stock.set" in str(payload) for payload in infos), str(infos))
-    check("the dialog points at the plugin contract, not at the person",
+          any("cannot set stock yet" in str(payload) for payload in infos),
+          str(infos))
+    check("and it names the version that can, instead of leaving a dead end",
+          any("1.0.21" in str(payload) for payload in infos), str(infos))
+    check("the dialog points at the plugin, not at the person",
           any("plugin" in str(payload) for payload in infos), str(infos))
     check("and nothing is run against it", not app.runs, str(app.runs))
+
+    # ---- nothing written means nothing leaves the list
+    folder, app, parent = build_panel()
+    listing, out = run_comparison(folder, app, parent)
+    harness._BOX.askyesno = lambda *a, **k: True
+    app.runs.clear()
+    app.lines.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"
+                      if action == gui.CS_STOCK_SET_ACTION else ""), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button,
+             "Set CanadianShopper to the website's counts...").invoke()
+    result = folder / "cs-stock-set-result.json"
+    result.write_text(json.dumps({
+        "updated": [],
+        "failed": [{"id": 101, "title": "1989 O-Pee-Chee Wayne Gretzky #1 "
+                                        "EX-MT 6",
+                    "why": "the session has expired"}]}), encoding="utf-8")
+    app.runs[0]["on_done"](0)
+    check("a card the plugin could not write is not called fixed",
+          len(listing.items) == 1, str(listing.items))
+    check("and the plugin's reason is printed, not summarised away",
+          any("the session has expired" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("a run where every card failed claims no count was set",
+          not any("count set" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
 
     # ---- the reverse: the website is the wrong side now and then
     folder, app, parent = build_panel()

@@ -419,6 +419,69 @@ def plan_set(rows):
     return items
 
 
+def _first(entry, *keys):
+    """The first non-empty value under any of these names.
+
+    The plugin's result file is a contract, not a Python object the core
+    controls: a key renamed between plugin versions must not turn a written
+    count into a silent unknown, and an old name must still be understood.
+    """
+    for key in keys:
+        value = (entry or {}).get(key)
+        if value not in (None, ""):
+            return value
+    return ""
+
+
+def _matches(row, entry):
+    """Whether a result entry is about this plan row: id, then SKU, then title."""
+    entry_id = str(_first(entry, "id", "product_id", "listing_id") or "")
+    if entry_id and str(row.get("id") or "") == entry_id:
+        return True
+    entry_sku = str(_first(entry, "sku") or "").strip().lower()
+    row_sku = str(row.get("sku") or "").strip().lower()
+    if entry_sku and row_sku and entry_sku == row_sku:
+        return True
+    entry_title = str(_first(entry, "title", "card", "name") or "")
+    if entry_title:
+        return card_key(entry_title) == card_key(row.get("title") or
+                                                 row.get("card") or "")
+    return False
+
+
+def plugin_write_report(plan, answer):
+    """What the plugin's ``stock.set`` result says about each planned card.
+
+    ``{"changed": [...], "failed": [{"card", "why"}], "unknown": [...]}``.
+    A card the result does not mention is *unknown*, never assumed written: a
+    count that was not confirmed is exactly what this panel exists to catch,
+    and leaving the row on the screen costs one more click while taking it off
+    costs a wrong number on the shop.
+    """
+    plan = list(plan or [])
+    if not isinstance(answer, dict):
+        answer = {}
+    updated = [entry for entry in (answer.get("updated") or [])
+               if isinstance(entry, dict)]
+    failed = [entry for entry in (answer.get("failed") or [])
+              if isinstance(entry, dict)]
+    changed, could_not, unknown = [], [], []
+    for row in plan:
+        failure = next((entry for entry in failed if _matches(row, entry)), None)
+        success = next((entry for entry in updated if _matches(row, entry)), None)
+        if failure is not None:
+            could_not.append({
+                "card": row.get("title") or row.get("card") or "",
+                "why": str(_first(failure, "why", "reason", "error", "message")
+                           or "the plugin gave no reason"),
+            })
+        elif success is not None:
+            changed.append(row)
+        else:
+            unknown.append(row)
+    return {"changed": changed, "failed": could_not, "unknown": unknown}
+
+
 def describe_plan(plan, other_label="CanadianShopper"):
     """The confirmation: exactly what would be written, one line per card."""
     lines = []

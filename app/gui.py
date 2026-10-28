@@ -4412,46 +4412,59 @@ def build_stock(parent, app):
             return False
 
     def set_arrived(rc, plan, out, action):
-        changed = []
+        answer = {}
         if out.is_file():
             try:
                 answer = json.loads(out.read_text(encoding="utf-8"))
             except Exception:
                 answer = {}
-            updated = answer.get("updated") or []
-            failed = answer.get("failed") or []
-            ids = {str(row.get("id")) for row in updated if row.get("id")}
-            changed = [row for row in plan if str(row.get("id")) in ids]
-            for entry in failed:
-                app.console_line("Not changed: %s (%s)" %
-                                 (entry.get("title") or entry.get("id"),
-                                  entry.get("why") or "no reason given"), "err")
-        if rc == 0:
+        report = stock_compare.plugin_write_report(plan, answer)
+        for entry in report["failed"]:
+            app.console_line("Not changed: %s - %s" %
+                             (entry["card"] or "a card", entry["why"]), "err")
+        if rc != 0:
+            #  The plugin's contract is "attempt nothing" on a non-zero exit, so
+            #  the list is left exactly as it was.
+            app.console_line("The stock change did not finish (exit %s). "
+                             "Nothing was changed." % rc, "err")
+            summary.configure(text="The stock change did not finish (exit %s)."
+                                   % rc)
+            return False
+        changed = report["changed"]
+        unknown = report["unknown"]
+        if unknown:
+            #  A card the plugin did not report on is not called fixed: it
+            #  stays on the list and the console says why it is there.
             app.console_line(
-                "%d CanadianShopper count%s set to the website's count. Press "
-                "Compare again to confirm." %
-                (len(plan), "" if len(plan) == 1 else "s"), "ok")
-            summary.configure(text="%d count%s changed on CanadianShopper. "
-                                   "Compare again to confirm." %
-                                   (len(plan), "" if len(plan) == 1 else "s"))
-            #  The rows just written are gone from the list as they are gone
-            #  from the site; anything the plugin did not report on stays.
-            done = {stock_compare.card_key(row["card"]) for row in
-                    (changed or plan)}
-            state["rows"] = [row for row in state["rows"]
-                             if stock_compare.card_key(row["card"]) not in done]
-            listing.delete(0, "end")
-            for row in state["rows"]:
-                listing.insert("end", stock_compare.label_action(
-                    row, state["label"], state["mode"]))
-            if not state["rows"]:
-                list_frame.pack_forget()
-                action_row.pack_forget()
-            return True
-        app.console_line("The stock change did not finish (exit %s). Nothing "
-                         "else was changed." % rc, "err")
-        summary.configure(text="The stock change did not finish (exit %s)." % rc)
-        return False
+                "%d card%s was not reported on by the plugin, so %s left on "
+                "the list: compare again to see where it stands." %
+                (len(unknown), "" if len(unknown) == 1 else "s",
+                 "it is" if len(unknown) == 1 else "they are"), "err")
+        if changed:
+            text = ("%d CanadianShopper count%s set to the website's count" %
+                    (len(changed), "" if len(changed) == 1 else "s"))
+            if report["failed"]:
+                text += "; %d could not be changed" % len(report["failed"])
+            app.console_line(text + ". Press Compare again to confirm.", "ok")
+            summary.configure(text=text + ". Compare again to confirm.")
+        elif not unknown:
+            app.console_line(
+                "The plugin finished but reported no card as written, so the "
+                "list is unchanged.", "err")
+            summary.configure(text="The plugin reported no card as written.")
+        #  Only the rows the plugin said it wrote leave the list, and only if
+        #  the card really is no longer one this panel has anything to do about.
+        done = {stock_compare.card_key(row["card"]) for row in changed}
+        state["rows"] = [row for row in state["rows"]
+                         if stock_compare.card_key(row["card"]) not in done]
+        listing.delete(0, "end")
+        for row in state["rows"]:
+            listing.insert("end", stock_compare.label_action(
+                row, state["label"], state["mode"]))
+        if not state["rows"]:
+            list_frame.pack_forget()
+            action_row.pack_forget()
+        return bool(changed)
 
     def run_set(rows):
         plan = stock_compare.plan_set(rows)
@@ -4481,8 +4494,9 @@ def build_stock(parent, app):
                 "This plugin cannot set stock yet",
                 "The installed CanadianShopper plugin can list its stock but "
                 "not write it, so nothing was changed.\n\nThe exact changes "
-                "are in the console%s, and the plugin chat has the contract "
-                "for stock.set." % (" and on your clipboard" if copied else ""))
+                "are in the console%s. Update the plugin to 1.0.21 or newer "
+                "and this button will set them for you."
+                % (" and on your clipboard" if copied else ""))
             for line in lines:
                 app.console_line(line, "dim")
             app.console_line(
