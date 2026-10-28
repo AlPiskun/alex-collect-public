@@ -59,7 +59,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.56"
+VERSION = "2.57"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1681,7 +1681,19 @@ class App(tk.Tk):
         self._input_enable(False)
 
     # ------------------------------------------------------------ modes
+    def clear_action_bar(self):
+        """Empty the pinned strip; a stale Save button is worse than none."""
+        bar = getattr(self, "_action_bar", None)
+        if bar is not None:
+            try:
+                if bar.winfo_exists():
+                    bar.destroy()
+            except Exception:
+                pass
+        self._action_bar = None
+
     def show_mode(self, mode):
+        self.clear_action_bar()
         if self._mode_frame is not None:
             self._mode_frame.destroy()
         wrap = ScrollFrame(self.body)
@@ -2160,7 +2172,37 @@ BLURBS = {
 }
 
 
-def panel_header(parent, app, pid, with_doc=True):
+def action_bar(app, parent=None):
+    """The strip above the page that does not scroll with it.
+
+    A panel that puts its title row in here keeps its buttons in view however
+    far down the page the reader is - the scrolling area is packed below this
+    strip, so the header cannot be scrolled away. It is created only when a
+    panel asks for it, so pages that do not pin anything keep every pixel.
+    """
+    bar = getattr(app, "_action_bar", None)
+    try:
+        if bar is not None and bar.winfo_exists():
+            return bar
+    except Exception:
+        pass
+    body = getattr(app, "body", None)
+    if body is None or parent is None:
+        return None
+    try:
+        bar = ttk.Frame(body)
+        where = {"fill": "x", "side": "top", "padx": 6, "pady": (2, 3)}
+        mode_frame = getattr(app, "_mode_frame", None)
+        if mode_frame is not None and mode_frame is not body:
+            where["before"] = mode_frame
+        bar.pack(**where)
+    except Exception:
+        return None
+    app._action_bar = bar
+    return bar
+
+
+def panel_header(parent, app, pid, with_doc=True, pin=False):
     """Title and its help button on one row; the help opens right below it.
 
     Two earlier arrangements were wrong for the same reason. The help used to
@@ -2181,8 +2223,15 @@ def panel_header(parent, app, pid, with_doc=True):
     #  Inside a section the frame itself carries the title, and printing it
     #  again would give the panel two headings a few pixels apart.
     sectioned = getattr(parent, "_section_titled", False)
-    top = ttk.Frame(parent)
+    #  A wizard page already has its own step heading, so pinning the panel's
+    #  title above it would stack two headings and put the button above the
+    #  step it belongs to.
+    pinned = (pin and not getattr(parent, "_wizard_page", False) and
+              action_bar(app, parent) is not None)
+    holder = action_bar(app, parent) if pinned else parent
+    top = ttk.Frame(holder)
     top.pack(fill="x", pady=(0, 2))
+    parent._title_row = top
     if not sectioned:
         ttk.Label(top, text=titles[pid], style="H2.TLabel").pack(side="left")
     if with_doc:
@@ -2355,7 +2404,12 @@ class ProgressWindow:
 # ---- individual panel builders (parent = container frame) ----------------
 
 def build_cookie(parent, app):
-    panel_header(parent, app, "cookie")
+    #  Pinned: the settings page is the longest form in the app, and its Save
+    #  button used to be at the very bottom of it - so saving meant scrolling
+    #  past every field first. The title row goes in the strip above the page
+    #  and the Save button sits on that row, so both stay put as the fields
+    #  scroll underneath.
+    panel_header(parent, app, "cookie", pin=True)
     scroller = ScrollFrame(parent)
     scroller.pack(fill="both", expand=True)
     box = ttk.Frame(scroller.inner)
@@ -2820,8 +2874,20 @@ def build_cookie(parent, app):
         return True
 
     app._save_user_settings_callback = save_user_settings
-    ttk.Button(box, text="Save user settings", command=save_user_settings).pack(
-        anchor="w", pady=(1, 4))
+    #  Beside the title, not at the end of the form: everything above this
+    #  line is the page the button applies to. In the wizard, where the title
+    #  row is not pinned, it stays the plain button under the fields.
+    title_row = getattr(parent, "_title_row", None)
+    save_button = ttk.Button(title_row if title_row is not None else box,
+                             text="Save user settings",
+                             command=save_user_settings,
+                             style="Task.TButton")
+    if title_row is not None:
+        save_button.pack(side="right", padx=(0, 6))
+    else:
+        save_button.pack(anchor="w", pady=(1, 4))
+    add_tooltip(save_button, tip_for("Save user settings"))
+    app._save_button = save_button
 
     if app.cs_addon:
         ttk.Separator(box).pack(fill="x", pady=(1, 4))
@@ -6092,6 +6158,7 @@ class TasksFrame(ttk.Frame):
         attach_tooltips(self.menu)
 
     def show_panel(self, pid):
+        self.app.clear_action_bar()
         self.menu.destroy()
         wrap = ttk.Frame(self)
         wrap.pack(fill="both", expand=True)
@@ -6140,6 +6207,8 @@ class WizardFrame(ttk.Frame):
         self.render()
 
     def render(self):
+        self.app.clear_action_bar()
+        self.content._wizard_page = True
         for w in self.content.winfo_children():
             w.destroy()
         pid = WIZARD_PAGES[self.page]

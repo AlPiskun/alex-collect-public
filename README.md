@@ -1,4 +1,4 @@
-# Alex Collect 2.56
+# Alex Collect 2.57
 
 Alex Collect is a local desktop control panel for organizing a small trading-card selling workflow. It brings together the card pipeline, WooCommerce order inputs, a sale checklist, photo utilities, and optional plugins.
 
@@ -6,7 +6,7 @@ Alex Collect is a local desktop control panel for organizing a small trading-car
 
 - Run the card pipeline from a Tkinter desktop window.
 - Prepare WooCommerce sale checklists from a typed list or an orders CSV.
-- Configure the store URL, AI page, preferred browser, prompt preferences, custom AI commands, seller links, output/scanner folders, Facebook workbook fields, and eBay Quick List templates/defaults from **User Settings** in the menu bar.
+- Configure the store URL, AI page, preferred browser, prompt preferences, custom AI commands, seller links, output/scanner folders, Facebook workbook fields, and eBay Quick List templates/defaults from **User Settings** in the menu bar. Its **Save user settings** button sits beside the title, in a strip above the form that does not scroll - the settings page is the longest in the app, and saving used to mean scrolling past every field first.
 - Copy the built-in **Add grades to titles** and **No grades in titles** prompts, or create, edit, and remove custom AI command buttons in User Settings; hover notes clarify each command’s purpose.
 - Review the initial nine-card category plan in compact one-row-per-card output; the larger, screen-adaptive console keeps the confirmation visible without scrolling.
 - Use the compact task launcher with fixed-width buttons in clearly separated Sell, After a sale, Photos, and Re-run a marketplace sections; there is no extra headline above the buttons. Plugins and Logs & reports are direct menu items. Hover task buttons for short tips. The output pane always follows new output and entered replies so prompts remain visible.

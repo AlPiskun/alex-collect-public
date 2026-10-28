@@ -54,6 +54,7 @@ class FakeWidget:
 
     def pack(self, *a, **k):
         self.packed = True
+        self._kw_pack = dict(k)
         return self
 
     def pack_forget(self, *a, **k):
@@ -71,6 +72,7 @@ class FakeWidget:
     def destroy(self):
         #  A destroyed widget leaves its parent: the panel rebuilds its grid
         #  after the pictures are decoded, and the old cells must be gone.
+        self.packed = False
         parent = getattr(self, "parent", None)
         if parent is not None and hasattr(parent, "children"):
             try:
@@ -223,6 +225,8 @@ from PIL import Image                          # noqa: E402
 # --------------------------------------------------------------- app stand-in
 class FakeApp:
     def __init__(self, folder):
+        self.body = FakeWidget()          # the page area a panel pins into
+        self._mode_frame = None
         self.settings = {"browser_name": "system", "scan_dir": str(folder),
                          "pipeline_dir": str(folder),
                          "woo_site_url": "https://shop.example",
@@ -245,6 +249,13 @@ class FakeApp:
 
     def wait_window(self, window):
         window.wait_window()
+
+    def clear_action_bar(self):
+        """The real app destroys the pinned strip when the page changes."""
+        bar = getattr(self, "_action_bar", None)
+        if bar is not None:
+            bar.destroy()
+        self._action_bar = None
 
     def winfo_screenwidth(self):
         return 800          # the small screen the picker has to fit on
@@ -1438,6 +1449,91 @@ def test_the_page_area_is_not_white():
     shutil.rmtree(folder, ignore_errors=True)
 
 
+def test_settings_save_is_pinned():
+    print()
+    print("== 26. Save user settings lives beside the title, above the scroll ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    app = FakeApp(folder)
+    parent = FakeWidget()
+    gui.build_cookie(parent, app)
+
+    bar = getattr(app, "_action_bar", None)
+    save = getattr(app, "_save_button", None)
+    check("the settings page pins a strip above the page", bar is not None, "")
+    check("the title row moved into it",
+          bar is not None and getattr(parent, "_title_row", None) is not None and
+          parent._title_row.parent is bar, "")
+    check("the strip is packed above the scrolling page",
+          bar is not None and bar._kw_pack.get("side") == "top",
+          str(bar and bar._kw_pack))
+    check("Save user settings is on that row",
+          save is not None and save.parent is parent._title_row, "")
+    check("the title is on the same row",
+          bar is not None and gui.TITLES["cookie"] in
+          [w.cget("text") for w in parent._title_row.walk()], "")
+
+    #  The strip is outside the scroll area, so the button cannot scroll away.
+    scroller = next((w for w in parent.walk()
+                     if isinstance(w, gui.ScrollFrame)), None)
+    check("the fields scroll below the strip",
+          scroller is not None and save is not None and
+          save not in list(scroller.inner.walk()), "")
+    check("nothing in the scrolling area saves the form",
+          scroller is not None and
+          not any(w.cget("text") == "Save user settings"
+                  for w in scroller.inner.walk()), "")
+
+    fields = getattr(app, "_user_setting_vars", {})
+    check("the saved-panel fields still all exist", len(fields) > 8,
+          str(len(fields)))
+    #  The form refuses to save when the prompt numbers are unusable, so the
+    #  fixture states them the way a real settings file would.
+    fields["description_min_words"].set("30")
+    fields["tag_count"].set("5")
+    for key, value in (("canadianshopper_shipping_flat", "9.95"),
+                       ("canadianshopper_handling_days", "1"),
+                       ("canadianshopper_transit_days", "3")):
+        if key in fields:
+            fields[key].set(value)
+    if hasattr(app, "_pipeline_var"):
+        app._pipeline_var.set(str(app.settings.get("pipeline_dir", folder)))
+    if hasattr(app, "_scan_var"):
+        app._scan_var.set(str(folder))
+    saved, refused = [], []
+    with patch.object(gui, "save_settings", lambda *a, **k: saved.append(1)), \
+            patch.object(gui, "sync_site_url_to_woo_keys", lambda *a, **k: None), \
+            patch.object(gui.messagebox, "showwarning",
+                         lambda *a, **k: refused.append(a)):
+        save.invoke()
+    check("an unusable form is still refused, not saved", not refused or saved,
+          str(refused))
+    check("pressing it still saves the settings", bool(saved), str(saved))
+    check("it has its hover explanation too",
+          gui.tip_for("Save user settings") in
+          str(getattr(save, "_alex_tooltip", None) and
+              save._alex_tooltip.text), "")
+
+    #  The wizard has its own step heading, so there the button stays put in
+    #  the form instead of jumping above the step it belongs to.
+    wizard_app = FakeApp(folder)
+    page = FakeWidget()
+    page._wizard_page = True
+    gui.build_cookie(page, wizard_app)
+    check("a wizard page is not given a pinned strip",
+          getattr(wizard_app, "_action_bar", None) is None, "")
+    check("there the button sits beside the title inside the page",
+          getattr(wizard_app, "_save_button", None) is not None and
+          wizard_app._save_button.parent is getattr(page, "_title_row", None),
+          "")
+
+    #  Changing page must take the strip with it.
+    app.clear_action_bar()
+    check("changing page clears the strip",
+          getattr(app, "_action_bar", None) is None and not bar.packed, "")
+    shutil.rmtree(folder, ignore_errors=True)
+
+
 def test_spent_sitting():
     print()
     print("== 17. a sitting with every image used says so ==")
@@ -1483,6 +1579,7 @@ def main():
     test_every_button_explains_itself()
     test_help_sits_beside_the_title()
     test_the_page_area_is_not_white()
+    test_settings_save_is_pinned()
     test_grid_fits_a_small_screen()
     test_loading_is_visible()
     test_spent_sitting()
