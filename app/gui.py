@@ -49,6 +49,7 @@ import photo_pool
 import photo_replace
 import photo_thumbs
 import sale_preview
+import stock_compare
 import woo_media
 import woo_orders
 from sale_inputs import woo_get
@@ -60,7 +61,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.60"
+VERSION = "2.61"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -82,6 +83,9 @@ CS_PHOTO_REPLACE = "batch.photo_replace"
 #  previewed before it is written. Optional: a plugin without it
 #  still sells cards, the panel just says what is missing.
 CS_ORDERS_ACTION = "after_sale.orders"
+#  Listing CanadianShopper's whole catalogue with its inventory, so the
+#  two sites can be compared without opening either dashboard.
+CS_STOCK_ACTION = "stock.list"
 #  batch.photo_replace existed in 1.0.14 but only matched a staged CSV
 #  row. The CSV-free --mode replace arrived in 1.0.15, so the action ID
 #  alone cannot tell the two apart - the version has to be checked.
@@ -934,6 +938,21 @@ quantity 0 gets archived (reversible - it can be reactivated later).
 Useful after you sold the last copies in person. Preview shows the
 list first; nothing is archived without the second click."""
 
+DOCS["stock"] = """\
+Where the numbers disagree. One card can sit on four sites; when one of them
+sells it, the others keep offering it until somebody changes them. This panel
+reads the two catalogues - your website through its read-only API key,
+CanadianShopper through the plugin - matches the cards, and lists ONLY the ones
+whose counts differ, as website count against CanadianShopper count.
+
+Nothing is changed here. Cards that appear on one side only are counted as
+"not compared" rather than reported as wrong, and a pair is only made when a
+shared SKU or the title identifies the same card - a wrong pair would accuse a
+card that is fine.
+
+Facebook and eBay are not part of this comparison: they need a signed-in
+session, which is a separate job."""
+
 DOCS["square"] = """\
 Square up a photo (or a whole folder) by padding it onto a white
 square - for the occasional card you upload by hand through the
@@ -1287,6 +1306,7 @@ TOOLTIPS = {
     "Clear": "Empty this list; the files on disk are left alone",
     "Type the cards...": "Open the editor for typing what sold, one card per line",
     "Add these": "Add only the orders shown above to the checklist - the rest of the website is left alone",
+    "Compare stock": "Read both catalogues and list only the cards whose counts disagree; nothing is changed",
     "Preview new orders": "Read the orders that came in since you last looked, and write nothing",
     "Open plugins folder": "Open the folder plugins are installed into",
     "Open the tools folder": "Open the folder holding this app's tools",
@@ -2147,12 +2167,13 @@ class App(tk.Tk):
 #  A panel = title + doc + controls. The same builder is used by the task
 #  menu, the tabs view and the wizard pages.
 PANEL_ORDER = ["cookie", "pipeline", "combine", "stage", "importpanel",
-               "wire", "rerun", "sold", "checklist", "zerostock", "square",
+               "wire", "rerun", "sold", "checklist", "stock", "zerostock",
+               "square",
                "newphotos", "ordertext", "markets", "logs", "plugins"]
 GROUPS_FULL = [("Sell to a customer", ["ordertext"]),
                ("Sell a new batch", ["pipeline", "combine", "stage",
                                      "importpanel", "wire"]),
-               ("After a sale", ["sold", "checklist", "zerostock"]),
+               ("After a sale", ["sold", "checklist", "stock", "zerostock"]),
                ("Photos", ["square", "rerun", "newphotos"]),
                ("Re-run a marketplace", ["markets"])]
 
@@ -2180,6 +2201,7 @@ TITLES = {
     "rerun": "Re-point photos",
     "sold": "A card sold - mark it everywhere",
     "checklist": "The tick-off checklist",
+    "stock": "Stock on every site",
     "zerostock": "Archive CanadianShopper listings already at 0",
     "square": "Square up a photo (manual upload)",
     "plugins": "Plugins",
@@ -2198,6 +2220,7 @@ MENU_LABELS = {
     "rerun": "Re-point photos",
     "sold": "A card sold",
     "checklist": "The checklist",
+    "stock": "Compare stock",
     "zerostock": "Archive listings at 0",
     "square": "Square up a photo",
     "newphotos": "Replace card photos",
@@ -2216,6 +2239,8 @@ BLURBS = {
     "rerun": "CanadianShopper plugin: restore cached front/back photos after an import. No Woo export or image uploads needed; preview before applying.",
     "sold": "Record where the sale happened and follow up on the other listings.",
     "checklist": "See what is still outstanding and tick it off.",
+    "stock": "Find the cards whose counts disagree between your website "
+             "and CanadianShopper.",
     "zerostock": "Sweep: archive everything sitting at quantity 0.",
     "square": "Pad a photo onto a white square for a manual dashboard upload.",
     "plugins": "Install and manage optional plugins.",
@@ -4146,6 +4171,161 @@ def build_sold(parent, app):
                   anchor="w", pady=(6, 0))
 
 
+def build_stock(parent, app):
+    #  One job, on demand: which cards have a different number on the two
+    #  sites. Nothing here runs during a sale - the sale panel says plainly
+    #  that comparing is a separate job - and nothing in here writes stock.
+    panel_header(parent, app, "stock")
+    box = ttk.Frame(parent)
+    box.pack(fill="x")
+
+    def stock_action():
+        return TOOL_ACTION(CS_STOCK_ACTION)
+
+    def credentials():
+        site, key, secret = read_woo_credentials()
+        site = site or app.settings.get("woo_site_url", "")
+        if site and key and secret:
+            return site, key, secret
+        messagebox.showinfo(
+            "One-time setup: your website's API keys",
+            "Comparing stock means reading your website's catalogue, which "
+            "uses the same read-only key as the sale preview - no write "
+            "permission, nothing is changed.\n\n"
+            "woo-keys.txt is about to open. Fill it in, save it, then press "
+            "Compare again.")
+        open_woo_keys_file(app, app.settings.get("woo_site_url", ""))
+        return None
+
+    def show(rows, pairs, only_woo, only_other, skipped):
+        listing.delete(0, "end")
+        for row in rows:
+            listing.insert("end", stock_compare.label(row))
+        if rows:
+            list_frame.pack(anchor="w", fill="x", pady=(3, 4))
+            for line in stock_compare.describe(rows):
+                app.console_line(line, "dim")
+        else:
+            list_frame.pack_forget()
+        summary.configure(text=stock_compare.summary(rows, pairs, only_woo,
+                                                     only_other))
+        if skipped:
+            app.console_line(
+                "%d products were not compared: no stock count "
+                "(unmanaged or variable)." % skipped, "dim")
+        app.console_line(
+            "Compared %d matched cards; %d disagree. Nothing was changed on "
+            "either site." % (len(pairs), len(rows)), "ok")
+
+    def website_arrived(items, products, error):
+        if error is not None:
+            message = getattr(error, "message", str(error))
+            hint = getattr(error, "hint", "")
+            messagebox.showerror("Could not read your website",
+                                 message + ("\n\n" + hint if hint else ""),
+                                 parent=box.winfo_toplevel())
+            app.console_line("Stock comparison stopped: %s %s" % (message,
+                                                                  hint), "err")
+            summary.configure(text="Could not read your website: " + message)
+            clear_list()
+            return
+        woo, skipped = stock_compare.woo_items(products)
+        pairs, only_woo, only_other = stock_compare.pair(woo, items)
+        rows = stock_compare.differences(pairs)
+        show(rows, pairs, only_woo, only_other, skipped)
+
+    def clear_list():
+        #  An old comparison must never stay on screen looking like today's.
+        listing.delete(0, "end")
+        list_frame.pack_forget()
+
+    def plugin_arrived(rc, out, creds):
+        if rc != 0:
+            app.console_line("The CanadianShopper stock read failed (exit %s); "
+                             "nothing was compared." % rc, "err")
+            summary.configure(text="CanadianShopper could not be read.")
+            clear_list()
+            return False
+        items = stock_compare.read_stock_file(out)
+        if items is None:
+            messagebox.showerror(
+                "Could not read CanadianShopper's stock",
+                "The plugin finished but left no stock list to read.\n\n"
+                "Nothing was compared and nothing was changed.",
+                parent=box.winfo_toplevel())
+            app.console_line("No CanadianShopper stock list was written, so "
+                             "nothing was compared.", "err")
+            summary.configure(text="CanadianShopper wrote no stock list.")
+            clear_list()
+            return False
+        site, key, secret = creds
+        summary.configure(text="CanadianShopper: %d listings. Reading your "
+                               "website..." % len(items))
+        app.console_line("CanadianShopper: %d listings. Reading your website's "
+                         "catalogue..." % len(items), "cmd")
+        in_background(
+            app,
+            lambda: stock_compare.read_woo_stock(woo_get, site, key, secret),
+            lambda products, error: website_arrived(items, products, error))
+        return True
+
+    def compare():
+        action = stock_action()
+        if not action:
+            messagebox.showinfo(
+                "CanadianShopper stock list",
+                "Comparing against CanadianShopper needs the plugin's stock "
+                "reader, and the installed plugin does not have it yet.\n\n"
+                "Nothing is wrong with the rest of the app: the plugin updates "
+                "stock on a sale, it just cannot list the whole catalogue for "
+                "comparison yet.")
+            app.console_line(
+                "This CanadianShopper plugin cannot list its stock yet (%s)."
+                % CS_STOCK_ACTION, "dim")
+            return
+        creds = credentials()
+        if not creds:
+            return
+        out = BASE / "cs-stock.json"
+        try:
+            out.unlink()
+        except FileNotFoundError:
+            pass
+        summary.configure(text="Reading CanadianShopper's stock...")
+        app.console_line("Reading CanadianShopper's stock...", "cmd")
+        app.run_tool(action, ["--stock-out", str(out)],
+                     "CanadianShopper stock",
+                     cwd=app.settings.get("pipeline_dir", str(WORK)),
+                     on_done=lambda rc: plugin_arrived(rc, out, creds))
+
+    row = ttk.Frame(box)
+    row.pack(anchor="w", pady=(2, 0))
+    ttk.Button(row, text="Compare stock (WooCommerce and CanadianShopper)",
+               style="Task.TButton", command=compare).pack(side="left")
+    summary = ttk.Label(box, text="Nothing compared yet.", style="Dim.TLabel",
+                        wraplength=680, justify="left")
+    summary.pack(anchor="w", pady=(2, 0))
+
+    list_frame = ttk.Frame(box)
+    listing = tk.Listbox(list_frame, height=8, exportselection=False)
+    scroll = ttk.Scrollbar(list_frame, orient="vertical",
+                           command=listing.yview)
+    listing.configure(yscrollcommand=scroll.set)
+    listing.pack(side="left", fill="both", expand=True)
+    scroll.pack(side="right", fill="y")
+
+    ttk.Label(box,
+              text="Reads both catalogues and shows only the cards whose "
+                   "numbers disagree - website count and CanadianShopper "
+                   "count, side by side. A card that appears on one side only "
+                   "is counted as not compared, never reported as wrong, and "
+                   "a pair is only made when a shared SKU or the title says "
+                   "it is the same card. Facebook and eBay are not included: "
+                   "they need a signed-in session, which is a separate job.",
+              style="Dim.TLabel", wraplength=680, justify="left").pack(
+                  anchor="w", pady=(6, 0))
+
+
 def build_plugins(parent, app):
     panel_header(parent, app, "plugins")
     box = ttk.Frame(parent)
@@ -5974,6 +6154,7 @@ PANEL_BUILDERS = {
     "rerun": build_rerun,
     "sold": build_sold,
     "checklist": build_checklist,
+    "stock": build_stock,
     "zerostock": build_zerostock,
     "square": build_square,
     "newphotos": build_newphotos,

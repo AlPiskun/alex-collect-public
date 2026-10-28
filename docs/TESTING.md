@@ -92,6 +92,7 @@ python test-photo-replace.py
 python test-photo-panel.py
 python test-woo-orders.py
 python test-sale-preview.py
+python test-stock-compare.py
 python test-order-panel.py
 python test-woo-media.py
 python ..\installer\test-bundled-config.py
@@ -116,6 +117,7 @@ Notes:
 | `test-woo-orders.py` | none - no network | Reading a pasted card list, which card a line means, when the app refuses to guess, and the exact order body that would be sent. |
 | `test-order-panel.py` | Pillow | Drives the real order panel against a stubbed Tk: the pasted list, the picker, new vs existing orders, the discount, and the no-keys fallback. |
 | `test-sale-preview.py` | Pillow | The preview before anything is written: which orders count as sales, what is still to add, the add-these-orders-only arguments, and the key offer when the file is missing. |
+| `test-stock-compare.py` | Pillow | Matching two catalogues card by card (SKU first, then title) and reporting only the disagreements, plus the on-demand comparison panel. |
 | `..\installer\test-bundled-config.py` | nothing | Checks the version/filename/SHA pins agree. |
 
 Every script must end in `PASS` / `OK` / `ALL ... PASSED` and exit 0.
