@@ -107,6 +107,14 @@ class FakeWidget:
     def unbind_all(self, *a, **k): return None
     def winfo_containing(self, *a, **k): return None
     def winfo_toplevel(self): return self
+    def add(self, child, **kwargs):
+        """ttk.Notebook.add: remember the tab and its label."""
+        self.tabs = getattr(self, "tabs", [])
+        self.tabs.append((child, kwargs.get("text", "")))
+        return child
+
+    def select(self, *a, **k): return None
+
     def columnconfigure(self, *a, **k): return None
     def rowconfigure(self, *a, **k): return None
     def grid_columnconfigure(self, *a, **k): return None
@@ -152,20 +160,31 @@ class FakeToplevel(FakeWidget):
 PICKER = {"press": lambda window: None}
 
 
+def widget_class(name, base=FakeWidget):
+    """A fake that stands in for one Tk class, so isinstance() still works.
+
+    Everything used to be the same FakeWidget, which made "is this a Button
+    or a LabelFrame?" unanswerable - and the tabs view is laid out entirely in
+    LabelFrame sections, so the difference is exactly what a test needs.
+    """
+    return type("Fake" + name, (base,), {})
+
+
 def install_tk():
     tk = types.ModuleType("tkinter")
-    for name, obj in dict(Frame=FakeWidget, Label=FakeWidget, Button=FakeWidget,
-                          Entry=FakeWidget, Text=FakeWidget, Listbox=FakeWidget,
-                          Toplevel=FakeToplevel, Canvas=FakeWidget,
-                          StringVar=FakeVar, BooleanVar=FakeVar,
-                          IntVar=FakeVar, Tk=FakeWidget).items():
-        setattr(tk, name, obj)
+    for name, base in dict(Frame=FakeWidget, Label=FakeWidget,
+                           Button=FakeWidget, Entry=FakeWidget,
+                           Text=FakeWidget, Listbox=FakeWidget,
+                           Toplevel=FakeToplevel, Canvas=FakeWidget,
+                           StringVar=FakeVar, BooleanVar=FakeVar,
+                           IntVar=FakeVar, Tk=FakeWidget).items():
+        setattr(tk, name, widget_class(name, base))
     tk.font = types.SimpleNamespace(nametofont=lambda *a, **k: FakeWidget())
     ttk = types.ModuleType("tkinter.ttk")
     for name in ("Frame", "Label", "Button", "Entry", "LabelFrame", "Notebook",
                  "Scrollbar", "Checkbutton", "Radiobutton", "Combobox",
                  "Treeview", "Separator", "Progressbar"):
-        setattr(ttk, name, FakeWidget)
+        setattr(ttk, name, widget_class(name))
     ttk.Style = lambda *a, **k: types.SimpleNamespace(
         configure=lambda *a, **k: None, lookup=lambda *a, **k: "22",
         theme_use=lambda *a, **k: None, map=lambda *a, **k: None)
@@ -1185,6 +1204,72 @@ def test_every_panel_leads_with_the_work():
     shutil.rmtree(folder, ignore_errors=True)
 
 
+def _labels_below(widget):
+    """Every Label under a widget, not counting the widget itself."""
+    found = []
+    for child in widget.walk():
+        if child is widget:
+            continue
+        if isinstance(child, gui.ttk.Label) and child.cget("text"):
+            found.append(child.cget("text"))
+    return found
+
+
+def test_tabs_are_sections():
+    print()
+    print("== 22. the tabs view: one bordered section per panel ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    app = FakeApp(folder)
+    parent = FakeWidget()
+    gui.TabsFrame(parent, app)
+    notebook = next((w for w in parent.walk()
+                     if isinstance(w, gui.ttk.Notebook)), None)
+    check("the tabs view builds a notebook of the groups",
+          notebook is not None and
+          [name for _tab, name in getattr(notebook, "tabs", [])] ==
+          [group for group, _ids in gui.groups_for(app.cs_addon)],
+          str([name for _tab, name in getattr(notebook, "tabs", [])]))
+    sections, problems, repeated = [], [], []
+    for tab, group in getattr(notebook, "tabs", []):
+        ids = dict(gui.groups_for(app.cs_addon))[group]
+        frames = [w for w in tab.walk() if isinstance(w, gui.ttk.LabelFrame)]
+        sections.extend(frames)
+        if [f.cget("text") for f in frames] != [gui.TITLES[pid] for pid in ids]:
+            problems.append((group, [f.cget("text") for f in frames]))
+        for pid, frame in zip(ids, frames):
+            if frame.cget("style") != "PanelSection.TLabelframe":
+                problems.append((pid, frame.cget("style")))
+            if gui.TITLES[pid] in _labels_below(frame):
+                repeated.append(pid)
+    check("every panel in a group has its own section, in order",
+          not problems, str(problems))
+    check("a section carries the panel's title on its border",
+          len(sections) == sum(len(ids) for _g, ids in
+                               gui.groups_for(app.cs_addon)) and
+          all(s.cget("text") for s in sections),
+          str([s.cget("text") for s in sections]))
+    check("the title is not printed twice inside the section",
+          not repeated, str(repeated))
+    photos = next((s for s in sections
+                   if s.cget("text") == gui.TITLES["newphotos"]), None)
+    check("the panel's buttons are inside its section",
+          photos is not None and
+          any(w.cget("text") == "Find the card..." for w in photos.walk()), "")
+    check("so is its folded help",
+          photos is not None and
+          any(w.cget("text") == "What this panel does"
+              for w in photos.walk()), "")
+
+    #  The task menu shows one panel with no section around it, so there the
+    #  title still has to be drawn by the panel itself.
+    bare = FakeWidget()
+    gui.PANEL_BUILDERS["newphotos"](bare, app)
+    check("a panel outside a section still prints its own title",
+          gui.TITLES["newphotos"] in _labels_below(bare), "")
+    shutil.rmtree(folder, ignore_errors=True)
+
+
 def test_spent_sitting():
     print()
     print("== 17. a sitting with every image used says so ==")
@@ -1226,6 +1311,7 @@ def main():
     test_assign_window()
     test_actions_above_the_words()
     test_every_panel_leads_with_the_work()
+    test_tabs_are_sections()
     test_grid_fits_a_small_screen()
     test_loading_is_visible()
     test_spent_sitting()

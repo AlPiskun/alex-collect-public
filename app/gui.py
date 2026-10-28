@@ -59,7 +59,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.53"
+VERSION = "2.54"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1225,6 +1225,13 @@ class App(tk.Tk):
         st.configure("Task.TButton", padding=(7, 3))
         st.configure("TaskGroup.TLabelframe", padding=(10, 7),
                      borderwidth=2, relief="groove")
+        #  One bordered box per panel in the tabs view: a heavier border than
+        #  a group box, so the boundary between two panels is unmistakable.
+        st.configure("PanelSection.TLabelframe", padding=(8, 6),
+                     borderwidth=2, relief="groove")
+        st.configure("PanelSection.TLabelframe.Label",
+                     font=("TkDefaultFont", 10, "bold"),
+                     foreground="#24476b")
         st.configure("TaskGroup.TLabelframe.Label",
                      font=("TkDefaultFont", 10, "bold"),
                      foreground="#24476b")
@@ -1930,9 +1937,14 @@ def panel_header(parent, app, pid, with_doc=True):
     core = not getattr(app, "cs_addon", True)
     titles = TITLES
     docs = {**DOCS, **(DOCS_CORE if core else {})}
-    top = ttk.Frame(parent)
-    top.pack(fill="x", pady=(0, 3))
-    ttk.Label(top, text=titles[pid], style="H2.TLabel").pack(anchor="w")
+    #  Inside a section the frame itself carries the title, and printing it
+    #  again would give the panel two headings a few pixels apart.
+    if not getattr(parent, "_section_titled", False):
+        top = ttk.Frame(parent)
+        top.pack(fill="x", pady=(0, 3))
+        ttk.Label(top, text=titles[pid], style="H2.TLabel").pack(anchor="w")
+    else:
+        top = None
     if with_doc:
         text = docs.get(pid, DOCS.get(pid, "")).strip()
         #  Packed before the builder adds anything and against the bottom, so
@@ -1969,6 +1981,26 @@ def panel_header(parent, app, pid, with_doc=True):
         app._doc_label = doc          # the text itself, for tests and reading
         app._doc_button = help_button
     return top
+
+
+def panel_section(parent, app, pid, expand=True):
+    """Build one panel inside its own bordered, titled section.
+
+    The tabs view used to stack a group's panels one after another with
+    nothing between them but a heading, so five panels read as one long page
+    and it was hard to tell where one job ended and the next began. Each panel
+    now lives in its own groove-bordered box, the panel's own title on the
+    border, a gap between boxes - so scrolling the group still shows several
+    panels, but every one of them is visibly its own thing.
+    """
+    section = ttk.LabelFrame(parent, text=TITLES[pid],
+                             style="PanelSection.TLabelframe",
+                             padding=(8, 4, 8, 6))
+    section.pack(fill="both" if expand else "x", expand=expand,
+                 padx=2, pady=(0, 10))
+    section._section_titled = True      # panel_header keeps its heading off
+    PANEL_BUILDERS[pid](section, app)
+    return section
 
 
 def panel_note(parent, text, wraplength=780):
@@ -5826,12 +5858,10 @@ class TabsFrame(ttk.Frame):
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True)
         for group, ids in groups_for(app.cs_addon):
-            tab = ttk.Frame(nb, padding=(5, 3))
+            tab = ttk.Frame(nb, padding=(6, 5))
             nb.add(tab, text=group)
             for pid in ids:
-                box = ttk.Frame(tab, padding=(2, 1))
-                box.pack(fill="x", pady=(0, 4))
-                PANEL_BUILDERS[pid](box, app)
+                panel_section(tab, app, pid, expand=False)
 
 
 # --------------------------------------------------------------- wizard

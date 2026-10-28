@@ -1,4 +1,4 @@
-# Alex Collect 2.53
+# Alex Collect 2.54
 
 Alex Collect is a local desktop control panel for organizing a small trading-card selling workflow. It brings together the card pipeline, WooCommerce order inputs, a sale checklist, photo utilities, and optional plugins.
 
@@ -10,7 +10,7 @@ Alex Collect is a local desktop control panel for organizing a small trading-car
 - Copy the built-in **Add grades to titles** and **No grades in titles** prompts, or create, edit, and remove custom AI command buttons in User Settings; hover notes clarify each command’s purpose.
 - Review the initial nine-card category plan in compact one-row-per-card output; the larger, screen-adaptive console keeps the confirmation visible without scrolling.
 - Use the compact task launcher with fixed-width buttons in clearly separated Sell, After a sale, Photos, and Re-run a marketplace sections; there is no extra headline above the buttons. Plugins and Logs & reports are direct menu items. Hover task buttons for short tips. The output pane always follows new output and entered replies so prompts remain visible.
-- Every panel leads with its work: buttons and input fields sit together at the top under the title, and the explanation is folded into a **What this panel does** button at the bottom, one click from being read. A panel is opened to do something with it, not to read eight lines first - and at 800x600 the prose used to push the buttons off the bottom of the window. Long steps now say so while they run instead of leaving the window blank, and no window opens bigger than the screen it opens on.
+- Every panel leads with its work: buttons and input fields sit together at the top under the title, and the explanation is folded into a **What this panel does** button at the bottom, one click from being read. A panel is opened to do something with it, not to read eight lines first - and at 800x600 the prose used to push the buttons off the bottom of the window. Long steps now say so while they run instead of leaving the window blank, and no window opens bigger than the screen it opens on. In the tabs view each panel sits in its own bordered, titled section with a gap between boxes, so a group holding five panels no longer reads as one long page.
 - Marketplace results are separated into Facebook, WooCommerce, CanadianShopper, and eBay folders. Woo/CS CSVs and eBay Quick List pages roll older batches into history on their next output run. Use Logs & reports to preview/move existing root-level files. See `app/pipeline/OUTPUT-FILES.md` for the accumulation audit.
 - See `docs/facebook-feed-settings.md` for the Facebook workbook field templates and placeholder reference.
 - Open the configured WordPress media upload page during the listing pipeline, then open the Facebook workbook, its folder, and the configured Facebook review page after export.
