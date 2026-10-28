@@ -97,6 +97,18 @@ def test_rows():
               {"name": "", "quantity": 1}]}]) == [], "")
     check("a junk order record does not crash the reader",
           sale_preview.order_rows([None, "x", {"number": "9"}]) == [], "")
+    check("an order with no number at all is not turned into a row",
+          sale_preview.order_rows([{"status": "completed", "line_items": [
+              {"name": "Unnamed card", "quantity": 1}]}]) == [], "")
+    repeated = sale_preview.order_rows(
+        PLUGIN_ORDERS["orders"] + PLUGIN_ORDERS["orders"], statuses=())
+    check("the same order sent twice is one row, not two",
+          len(repeated) == 1, str(repeated))
+    split = sale_preview.order_rows([{"number": "9", "items": [
+        {"title": "Same card", "qty": 1, "sku": "S"},
+        {"title": "same card", "qty": 2, "sku": "S"}]}], statuses=())
+    check("a card split over two line items keeps its whole quantity",
+          len(split) == 1 and split[0]["qty"] == 3, str(split))
     plugin_rows = sale_preview.order_rows(PLUGIN_ORDERS["orders"],
                                           statuses=())
     check("the plugin's items/qty/title shape is read too",
@@ -164,8 +176,8 @@ def test_plugin_file():
     print("== 4. the plugin answers with a file, not with console text ==")
     folder = Path(tempfile.mkdtemp())
     path = folder / "cs-orders.json"
-    check("a missing file is nothing to show",
-          sale_preview.read_orders_file(path) == [], "")
+    check("a missing file cannot be read at all",
+          sale_preview.read_orders_file(path) is None, "")
     path.write_text(json.dumps(PLUGIN_ORDERS), encoding="utf-8")
     check("an object holding orders is read",
           len(sale_preview.read_orders_file(path)) == 1, "")
@@ -173,7 +185,10 @@ def test_plugin_file():
     check("a bare list is read as well",
           len(sale_preview.read_orders_file(path)) == 1, "")
     path.write_text("{oops", encoding="utf-8")
-    check("unreadable JSON is nothing to show, not a crash",
+    check("unreadable JSON is a failed read, not an empty day",
+          sale_preview.read_orders_file(path) is None, "")
+    path.write_text(json.dumps({"orders": []}), encoding="utf-8")
+    check("an empty list is a real answer meaning nothing sold",
           sale_preview.read_orders_file(path) == [], "")
 
 
@@ -441,6 +456,9 @@ def test_preview_failure():
           not any(w.packed for w in parent.walk()
                   if isinstance(w, gui.ttk.Button)
                   and str(w.cget("text")).startswith("Add these")), "")
+    check("and any earlier list is cleared, not left looking current",
+          all(not getattr(w, "items", []) for w in parent.walk()
+              if isinstance(w, gui.tk.Listbox)), "")
     check("and nothing is remembered", not marker.exists(), str(marker))
 
 
@@ -586,6 +604,7 @@ def test_cs_channel():
               not listing.items, str(listing.items))
         out.write_text(json.dumps(PLUGIN_ORDERS), encoding="utf-8")
         app.runs[0]["on_done"](0)
+    reader = app.runs[0]          # the plugin run, kept: adding starts its own
     check("the plugin's orders appear in the list",
           listing.items and "CS-77" in listing.items[0], str(listing.items))
     check("the console names the CanadianShopper sale",
@@ -617,6 +636,50 @@ def test_cs_channel():
           "Pro Set Brett Hull" in written.read_text(encoding="utf-8"),
           written.read_text(encoding="utf-8") if written and
           written.is_file() else "")
+
+    # ---- what plugin 1.0.19 actually writes: its own statuses, its own keys
+    real = {"orders": [
+        {"number": "CS-90", "status": "Completed",
+         "date": "2026-10-28 09:00:00",
+         "items": [{"title": "1951 Parkhurst Gordie Howe #8", "qty": 2,
+                    "sku": ""}]},
+        {"number": "CS-89", "status": "processing",
+         "date": "2026-10-27 15:00:00",
+         "items": [{"title": "1966-67 Topps Bobby Orr #35", "qty": 1,
+                    "sku": "BO-35"}]}]}
+    out.write_text(json.dumps(real), encoding="utf-8")
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "SOLD_ORDERS_SEEN", marker), \
+            patch.object(gui, "TOOL_ACTION",
+                         lambda action: "/plugins/cs/sold-cards.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie):
+        reader["on_done"](0)
+    check("the plugin's own statuses are accepted as sales",
+          len(listing.items) == 2, str(listing.items))
+    check("its newest order is listed first",
+          listing.items and listing.items[0].startswith("#CS-90"),
+          str(listing.items))
+    check("a two-card order keeps its quantity in the row",
+          listing.items and "x2" in listing.items[0], str(listing.items))
+
+    # ---- exit 0 with nothing written is a failure, not a quiet day
+    harness._BOX.shown.clear()
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "SOLD_ORDERS_SEEN", marker), \
+            patch.object(gui, "TOOL_ACTION",
+                         lambda action: "/plugins/cs/sold-cards.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie):
+        preview.invoke()
+        if out.exists():
+            out.unlink()          # exactly what a broken reader leaves behind
+        rc = app.runs[-1]["on_done"](0)
+    errors = [a for kind, a in harness._BOX.shown if kind == "showerror"]
+    check("a plugin that writes no file is reported, not shrugged off",
+          rc is False and errors, str(errors))
+    check("the message says nothing was changed",
+          any("Nothing was changed" in str(a) for a in errors), str(errors))
+    check("and the list is emptied rather than left showing old orders",
+          not listing.items, str(listing.items))
 
 
 def test_follow_up_pages():

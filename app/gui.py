@@ -3730,6 +3730,13 @@ def build_sold(parent, app):
                                  ("\n\n" + hint if hint else ""),
                                  parent=box.winfo_toplevel())
             app.console_line("Preview failed: %s %s" % (message, hint), "err")
+            #  A failed read empties the list: an old preview must never stay
+            #  on screen looking like today's answer, ready to be added.
+            state["preview"] = []
+            state["preview_source"] = ""
+            listing.delete(0, "end")
+            list_frame.pack_forget()
+            add_preview_btn.pack_forget()
             summary.configure(text="Could not read your orders: " + message)
             return
         rows = sale_preview.unseen(
@@ -3764,7 +3771,7 @@ def build_sold(parent, app):
             return
         out = BASE / "cs-orders.json"
         try:
-            out.unlink()
+            out.unlink()      # so an old answer can never be mistaken for this one
         except FileNotFoundError:
             pass
         args = ["--orders-out", str(out),
@@ -3782,9 +3789,20 @@ def build_sold(parent, app):
             #  No status filter: WooCommerce's statuses are not
             #  CanadianShopper's, and the plugin already returns the orders it
             #  considers sold. Filtering here would silently drop every one.
-            preview_arrived(sale_preview.read_orders_file(out), None,
-                            "CanadianShopper", source="canadianshopper",
-                            statuses=())
+            orders = sale_preview.read_orders_file(out)
+            if orders is None:
+                #  Exit 0 with no readable file is a failure, not an empty
+                #  day: the plugin promised an answer and did not give one.
+                preview_arrived(None, sale_preview.PreviewError(
+                    "The CanadianShopper plugin finished but left no order "
+                    "list to read.",
+                    "Nothing was changed. The console above shows what the "
+                    "plugin said."),
+                    "CanadianShopper", source="canadianshopper",
+                    statuses=())
+                return False
+            preview_arrived(orders, None, "CanadianShopper",
+                            source="canadianshopper", statuses=())
             return True
 
         app.run_tool(action, args, "CanadianShopper orders",

@@ -79,6 +79,11 @@ def order_rows(orders, statuses=DEFAULT_STATUSES, source=""):
         if not isinstance(order, dict):
             continue
         number = str(order.get("number") or order.get("id") or "").strip()
+        if not number:
+            #  Without a number there is nothing to remember the order by, so
+            #  it would either be added twice or never again. Both the website
+            #  and the plugin always send one; a record that does not is junk.
+            continue
         status = str(order.get("status") or "").strip().lower()
         if wanted and status and status not in wanted:
             continue
@@ -98,6 +103,17 @@ def order_rows(orders, statuses=DEFAULT_STATUSES, source=""):
                          "date": date, "status": status, "card": name,
                          "qty": qty, "sku": str(item.get("sku") or "").strip(),
                          "key": ("%s:%s" % (source, number)) if source else number})
+    merged = {}
+    for row in rows:
+        #  A plugin may send the same order twice, or split one card across
+        #  two line items. Either way it is one row with one quantity: two rows
+        #  would add the card to the checklist twice.
+        ident = (row["key"], row["card"].lower(), row["sku"])
+        if ident in merged:
+            merged[ident]["qty"] += row["qty"]
+        else:
+            merged[ident] = row
+    rows = list(merged.values())
     rows.sort(key=lambda r: (r["date"] or "", r["order"] or ""), reverse=True)
     return rows
 
@@ -203,20 +219,21 @@ def read_orders(fetch, base, key, secret, days=DEFAULT_DAYS,
 def read_orders_file(path):
     """Orders a plugin wrote as JSON: a list, or an object holding one.
 
-    The file is the plugin's way of answering without core parsing console
-    output, so anything unreadable is an empty list rather than a crash - the
-    panel then says there was nothing to show.
+    ``None`` means the file is missing or is not the expected JSON, which is a
+    different answer from an empty list: "I could not read it" must never be
+    shown as "nothing sold", because the sale that is missing is exactly the
+    one the person came to record.
     """
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except Exception:
-        return []
+        return None
     if isinstance(data, dict):
         for key in ("orders", "results", "data"):
             if isinstance(data.get(key), list):
                 return data[key]
-        return []
-    return data if isinstance(data, list) else []
+        return None
+    return data if isinstance(data, list) else None
 
 
 def load_seen(path):
