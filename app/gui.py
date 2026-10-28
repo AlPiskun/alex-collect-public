@@ -59,7 +59,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.52"
+VERSION = "2.53"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1177,10 +1177,13 @@ class App(tk.Tk):
             pass
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
-        width = min(1160, max(940, screen_width - 80))
-        height = min(920, max(660, screen_height - 80))
+        #  Small screens get a small window: the old minimums (940x660) were
+        #  larger than an 800x600 display, so the app opened bigger than the
+        #  screen and the bottom of every panel was off it.
+        width = min(1160, max(760, screen_width - 60))
+        height = min(920, max(540, screen_height - 70))
         self.geometry("%dx%d" % (width, height))
-        self.minsize(min(880, width), min(680, height))
+        self.minsize(min(720, width), min(500, height))
         self.runner = Runner(self)
         self._saw_dangling_prompt = False
         self._hinted = set()
@@ -1911,7 +1914,19 @@ BLURBS = {
 
 
 def panel_header(parent, app, pid, with_doc=True):
-    """Title + doc text shared by every panel view (core-aware)."""
+    """Title on top; the panel's help collected underneath the actions.
+
+    The help used to sit directly below the title, which pushed the buttons
+    and fields it explains towards the bottom of the window - at 800x600 they
+    were off-screen until the panel was scrolled. A title is a heading, not an
+    explanation, so it stays where it is; everything the help says is packed
+    against the *bottom* edge, which means every widget the builder adds lands
+    above it and is seen first.
+
+    The help is folded until asked for. It is reference text: a panel is
+    opened to do something with it, not to read it, and eight lines of prose
+    always on screen is eight lines not given to the work.
+    """
     core = not getattr(app, "cs_addon", True)
     titles = TITLES
     docs = {**DOCS, **(DOCS_CORE if core else {})}
@@ -1920,13 +1935,147 @@ def panel_header(parent, app, pid, with_doc=True):
     ttk.Label(top, text=titles[pid], style="H2.TLabel").pack(anchor="w")
     if with_doc:
         text = docs.get(pid, DOCS.get(pid, "")).strip()
-        doc = ttk.Label(top, text=text, style="Dim.TLabel", wraplength=780,
+        #  Packed before the builder adds anything and against the bottom, so
+        #  it stays underneath whatever the builder puts in the panel.
+        notes = ttk.Frame(parent)
+        notes.pack(side="bottom", fill="x", pady=(6, 0))
+        #  Builders put their own explanations here (panel_note), so they end
+        #  up below the work but above the help toggle.
+        body = ttk.Frame(notes)
+        body.pack(fill="x")
+        foot = ttk.Frame(notes)
+        foot.pack(fill="x")
+        doc = ttk.Label(foot, text=text, style="Dim.TLabel", wraplength=780,
                         justify="left")
-        doc.pack(fill="x", pady=(1, 4))
-        # The panel help is a Label, not a Text widget; keep a reference so
-        # tests (and anything else) can read what was actually rendered.
-        app._doc_label = doc
+        open_now = pid in getattr(app, "_docs_open", set())
+
+        def toggle():
+            showing = pid in getattr(app, "_docs_open", set())
+            if showing:
+                app._docs_open = getattr(app, "_docs_open", set()) - {pid}
+                doc.pack_forget()
+                help_button.configure(text="What this panel does")
+            else:
+                app._docs_open = getattr(app, "_docs_open", set()) | {pid}
+                doc.pack(fill="x", pady=(2, 4))
+                help_button.configure(text="Hide this help")
+
+        help_button = ttk.Button(foot, text="Hide this help" if open_now else
+                                 "What this panel does", command=toggle)
+        help_button.pack(anchor="w")
+        if open_now:
+            doc.pack(fill="x", pady=(2, 4), before=help_button)
+        parent._notes_frame = body
+        app._doc_label = doc          # the text itself, for tests and reading
+        app._doc_button = help_button
     return top
+
+
+def panel_note(parent, text, wraplength=780):
+    """An explanation, in the panel's help area below the actions.
+
+    Anything the panel needs to *say* goes here rather than above the buttons:
+    reading is what you do after the job, not before it.
+    """
+    holder = getattr(parent, "_notes_frame", parent)
+    label = ttk.Label(holder, text=text, style="Dim.TLabel",
+                      wraplength=wraplength, justify="left")
+    label.pack(anchor="w", pady=(1, 0))
+    return label
+
+
+class ProgressWindow:
+    """A small "working..." window for a step that takes seconds.
+
+    Splitting a high-resolution scan is slow, and the app used to do it with
+    nothing on screen at all: no dialog, no bar, no change - which is exactly
+    what a hung program looks like. This puts the step on screen and moves a
+    bar as it goes, pumping the event loop so Windows keeps painting the
+    window instead of greying it out as "Not Responding".
+
+    It never blocks and it never fails the job: anything it cannot draw (a
+    headless test run, a window that will not open) is dropped on the floor,
+    because a progress display must not be able to stop the work.
+    """
+
+    def __init__(self, parent, title="Working...", text="", total=None):
+        self.window = None
+        self.bar = None
+        self.label = None
+        try:
+            self.window = tk.Toplevel(parent)
+            self.window.title(title)
+            self.window.transient(parent)
+            self.window.resizable(False, False)
+            try:
+                self.window.grab_set()
+            except Exception:
+                pass
+            frame = ttk.Frame(self.window, padding=14)
+            frame.pack(fill="both", expand=True)
+            self.label = ttk.Label(frame, text=text or title, wraplength=420,
+                                   justify="left")
+            self.label.pack(anchor="w", pady=(0, 8))
+            mode = "determinate" if total else "indeterminate"
+            self.bar = ttk.Progressbar(frame, length=380, mode=mode,
+                                       maximum=100)
+            self.bar.pack(fill="x")
+            self.window.geometry("+%d+%d" % self._corner(parent))
+            if total:
+                self.bar.configure(value=0)
+            else:
+                try:
+                    self.bar.start(12)
+                except Exception:
+                    pass
+            self.pump()
+        except Exception:
+            self.window = None
+
+    @staticmethod
+    def _corner(parent):
+        """Near the middle, so it is noticed without covering the window."""
+        try:
+            x = parent.winfo_rootx() + max(0, (parent.winfo_width() - 440) // 2)
+            y = parent.winfo_rooty() + max(0, (parent.winfo_height() - 120) // 2)
+            return int(x), int(y)
+        except Exception:
+            return 200, 200
+
+    def pump(self):
+        """Let Tk draw and answer the OS, without entering its main loop."""
+        try:
+            self.window.update_idletasks()
+            self.window.update()
+        except Exception:
+            pass
+
+    def step(self, text=None, done=None, total=None):
+        """Say what is happening now, and how far along it is."""
+        if self.window is None:
+            return
+        try:
+            if text:
+                self.label.configure(text=text)
+            if done is not None and total:
+                self.bar.configure(mode="determinate", maximum=total,
+                                   value=done)
+        except Exception:
+            pass
+        self.pump()
+
+    def close(self):
+        try:
+            if self.bar is not None:
+                self.bar.stop()
+        except Exception:
+            pass
+        try:
+            if self.window is not None:
+                self.window.destroy()
+        except Exception:
+            pass
+        self.window = None
 
 
 # ---- individual panel builders (parent = container frame) ----------------
@@ -3135,12 +3284,11 @@ def build_plugins(parent, app):
     panel_header(parent, app, "plugins")
     box = ttk.Frame(parent)
     box.pack(fill="both", expand=True)
-    ttk.Label(box, text=(
+    panel_note(parent, (
         "Plugins are optional code packages. Install only ZIPs from a "
         "source you trust; a plugin can access files and accounts available "
         "to this Windows user. The app checks metadata but does not sandbox "
-        "plugin code."), style="Dim.TLabel", wraplength=780,
-        justify="left").pack(anchor="w", pady=(0, 8))
+        "plugin code."))
 
     listing = ttk.Frame(box)
     listing.pack(fill="both", expand=True, pady=(2, 8))
@@ -3372,15 +3520,15 @@ def build_ordertext(parent, app):
     box = ttk.Frame(parent)
     box.pack(fill="both", expand=True)
 
-    ttk.Label(box, text="Paste the list - one card per line. Numbering, "
-                        "bullets and a trailing price are ignored.",
-              style="Dim.TLabel").pack(anchor="w")
     text = tk.Text(box, height=11, wrap="word", font=("Consolas", 9))
     text.pack(fill="both", expand=True, pady=(2, 4))
 
     row = ttk.Frame(box)
     row.pack(fill="x")
-    status = ttk.Label(box, text="", style="Dim.TLabel", wraplength=760,
+    notes = getattr(parent, "_notes_frame", None) or box
+    panel_note(parent, "Paste the list - one card per line. Numbering, "
+               "bullets and a trailing price are ignored.")
+    status = ttk.Label(notes, text="", style="Dim.TLabel", wraplength=760,
                        justify="left")
     status.pack(anchor="w", pady=(3, 0))
 
@@ -3765,11 +3913,14 @@ def build_newphotos(parent, app):
     panel_header(parent, app, "newphotos")
     box = ttk.Frame(parent)
     box.pack(fill="x")
+    #  What the panel *says* lives underneath the work: the sheets summary and
+    #  the running status are read after the card is found, not before.
+    notes = getattr(parent, "_notes_frame", None) or box
 
     keys_file = BASE / "woo-keys.txt"
     term = tk.StringVar(master=box)
     sheets_text = {"label": None}     # set once the strip is built below
-    hint = ttk.Label(box, text="", style="Dim.TLabel", wraplength=760,
+    hint = ttk.Label(notes, text="", style="Dim.TLabel", wraplength=760,
                      justify="left")
 
     def status(text):
@@ -3911,13 +4062,36 @@ def build_newphotos(parent, app):
         chosen = list(chosen) if not isinstance(chosen, str) else [chosen]
         pool.tiles_dir = replace_dir()
         failed, added = [], 0
-        for path in chosen:
-            try:
-                pool.add_sheet(path, index=len(pool.sheets))
-            except photo_pool.PhotoPoolError as exc:
-                failed.append("%s: %s" % (Path(path).name, exc))
-                continue
-            added += 1
+        #  Splitting a high-resolution scan takes seconds, and this used to run
+        #  with nothing on screen at all - no dialog, no bar, no change - which
+        #  is indistinguishable from a hung program. The window names the sheet
+        #  being worked on and the bar moves once per sheet.
+        total = len(chosen)
+        status("Reading %d scan%s - a big one takes a few seconds..." % (
+            total, "" if total == 1 else "s"))
+        try:
+            app.update_idletasks()
+        except Exception:
+            pass
+        progress = ProgressWindow(
+            app, "Reading your scans",
+            "Splitting %s into card images. A high-resolution scan takes a "
+            "few seconds; nothing is saved until it is done."
+            % Path(chosen[0]).name, total=total)
+        try:
+            for index, path in enumerate(chosen, start=1):
+                progress.step("Splitting %s (%d of %d)..." %
+                              (Path(path).name, index, total),
+                              done=index - 1, total=total)
+                try:
+                    pool.add_sheet(path, index=len(pool.sheets))
+                except photo_pool.PhotoPoolError as exc:
+                    failed.append("%s: %s" % (Path(path).name, exc))
+                    continue
+                added += 1
+                progress.step(done=index, total=total)
+        finally:
+            progress.close()
         refresh_sheets()
         if failed:
             messagebox.showwarning(
@@ -3943,6 +4117,10 @@ def build_newphotos(parent, app):
 
     def clear_sheets():
         pool.clear()
+        #  The pictures belong to the sheets that just went away, so they go
+        #  too rather than being kept for names that will never come back.
+        if getattr(app, "_tile_thumbs", None) is not None:
+            app._tile_thumbs.clear()
         refresh_sheets()
         status("Sheets cleared.")
 
@@ -4116,14 +4294,41 @@ def build_newphotos(parent, app):
             return candidates[0]
 
         tiles_by_path = {str(t.get("path")): t for t in candidates}
-        thumbs = photo_thumbs.Thumbnails()
+        #  Decoding nine tiles is quick, but it used to happen before the
+        #  window existed - so a slow first decode showed nothing at all and
+        #  the program looked hung. One cache per sitting also means the
+        #  second card reuses these pictures instead of reading them again.
+        thumbs = getattr(app, "_tile_thumbs", None)
+        if thumbs is None:
+            thumbs = photo_thumbs.Thumbnails()
+            app._tile_thumbs = thumbs
         keep = {}                     # PhotoImage objects Tk must not free
         pictures = {}
-        for key in tiles_by_path:
-            photo = photo_thumbs.as_photo(thumbs.get(key))
-            if photo is not None:
-                keep[key] = photo
-                pictures[key] = photo
+        sheet_order = list(dict.fromkeys(str(t.get("sheet_path") or
+                                             t.get("sheet") or "")
+                                         for t in candidates))
+        mixed_sheets = len([x for x in sheet_order if x]) > 1
+        mixed_sides = len({t.get("side") or "" for t in candidates}) > 1
+
+        def short_caption(tile):
+            """Slot and side, and the sheet only when the grid mixes them."""
+            sheet = ""
+            if mixed_sheets:
+                key = str(tile.get("sheet_path") or tile.get("sheet") or "")
+                if key in sheet_order:
+                    sheet = "S%d" % (sheet_order.index(key) + 1)
+            return photo_thumbs.caption(tile, sheet=sheet, side=mixed_sides)
+
+        #  One picture, made before the window exists, decides whether this
+        #  run can show pictures at all: Tk without image support falls back
+        #  to the same choices as a plain list. It is also the slowest single
+        #  decode, and it is cached, so the grid does not repeat it.
+        if candidates:
+            first_key = str(candidates[0].get("path"))
+            first = photo_thumbs.as_photo(thumbs.get(first_key))
+            if first is not None:
+                keep[first_key] = first
+                pictures[first_key] = first
 
         top = tk.Toplevel(app)
         top.title("Which image?")
@@ -4133,18 +4338,39 @@ def build_newphotos(parent, app):
         shown = {"tiles": list(candidates)}
 
         def by_picture():
-            """The grid of pictures: click one, then Use this image."""
-            top.geometry("840x580")
-            ttk.Label(top, text=question, wraplength=800,
-                      justify="left").pack(anchor="w", padx=10, pady=(10, 2))
-            ttk.Label(top, text="These are the card images on your sheets - "
-                      "pick the one that belongs to this card.",
-                      style="Dim.TLabel").pack(anchor="w", padx=10,
-                                               pady=(0, 6))
-            holder = ttk.Frame(top)
+            """Actions on top, the grid in the middle, the words underneath.
+
+            The buttons used to sit below a grid that could be taller than the
+            window, so at 800x600 they were simply off-screen; the grid now
+            scrolls instead, and every button is reachable without scrolling.
+            """
+            width = min(900, max(560, app.winfo_screenwidth() - 60))
+            height = min(640, max(430, app.winfo_screenheight() - 90))
+            top.geometry("%dx%d" % (width, height))
+            bar = ttk.Frame(top)
+            bar.pack(fill="x", padx=10, pady=(10, 4))
+            accept_button = ttk.Button(bar, text="Use this image",
+                                       command=lambda: accept())
+            accept_button.pack(side="right")
+            ttk.Button(bar, text="Cancel", command=top.destroy).pack(
+                side="right", padx=8)
+            if more_scan is not None:
+                ttk.Button(bar, text="Another scan...",
+                           command=lambda: another()).pack(side="right",
+                                                          padx=8)
+            chosen_line = ttk.Label(bar, text="", style="Dim.TLabel")
+            chosen_line.pack(side="left")
+
+            holder = ScrollFrame(top)
             holder.pack(fill="both", expand=True, padx=10, pady=(0, 4))
             cells = {}
             state = {"key": None}
+
+            def accept(*_event):
+                tile = tiles_by_path.get(state["key"] or "")
+                if tile is not None:
+                    chosen["tile"] = tile
+                top.destroy()
 
             def choose(key):
                 state["key"] = key
@@ -4153,20 +4379,16 @@ def build_newphotos(parent, app):
                     cell.configure(
                         highlightbackground="#2f6fd0" if picked else "#d8dce2",
                         highlightthickness=3 if picked else 1)
-
-            def accept(*_event):
-                tile = tiles_by_path.get(state["key"] or "")
-                if tile is not None:
-                    chosen["tile"] = tile
-                top.destroy()
+                tile = tiles_by_path.get(key or "")
+                chosen_line.configure(text=short_caption(tile) if tile else "")
 
             def draw(tiles):
-                for child in holder.winfo_children():
+                for child in holder.inner.winfo_children():
                     child.destroy()
                 cells.clear()
                 shown["tiles"] = list(tiles)
                 for row in photo_thumbs.rows(tiles):
-                    line = ttk.Frame(holder)
+                    line = ttk.Frame(holder.inner)
                     line.pack(anchor="w", pady=4)
                     for tile in row:
                         key = str(tile.get("path"))
@@ -4177,7 +4399,7 @@ def build_newphotos(parent, app):
                         if key in pictures:
                             label.configure(image=pictures[key])
                         label.pack(padx=2, pady=(2, 0))
-                        caption = photo_thumbs.caption(tile)
+                        caption = short_caption(tile)
                         if preselect is not None and \
                                 str(preselect.get("path")) == key:
                             caption += "  \u00b7 proposed"
@@ -4197,29 +4419,53 @@ def build_newphotos(parent, app):
                         wanted = str(preselect.get("path"))
                     choose(wanted or str(shown["tiles"][0].get("path")))
 
-            draw(candidates)
-            buttons = ttk.Frame(top)
-            buttons.pack(fill="x", padx=10, pady=8)
-            ttk.Button(buttons, text="Use this image",
-                       command=accept).pack(side="right")
-            ttk.Button(buttons, text="Cancel",
-                       command=top.destroy).pack(side="right", padx=8)
-            if more_scan is not None:
-                def another():
-                    tiles = more_scan()
-                    if not tiles:
-                        return
-                    for tile in tiles:
-                        key = str(tile.get("path"))
-                        tiles_by_path[key] = tile
-                        photo = photo_thumbs.as_photo(thumbs.get(key))
-                        if photo is not None:
-                            keep[key] = photo
-                            pictures[key] = photo
-                    draw(tiles)
+            def load_pictures(tiles):
+                """Fill in the pictures after the window is on screen."""
+                for index, tile in enumerate(tiles, start=1):
+                    key = str(tile.get("path"))
+                    if key in pictures:
+                        continue
+                    photo = photo_thumbs.as_photo(thumbs.get(key))
+                    if photo is not None:
+                        keep[key] = photo
+                        pictures[key] = photo
+                        if index % 3 == 0:
+                            #  Paint the ones already done rather than
+                            #  showing an empty grid until the last tile.
+                            try:
+                                top.update_idletasks()
+                            except Exception:
+                                pass
 
-                ttk.Button(buttons, text="Another scan...",
-                           command=another).pack(side="left")
+            draw(candidates)
+            #  The window is up and answering before the first picture is
+            #  decoded, so even a slow scan shows "opening" instead of nothing.
+            try:
+                top.update_idletasks()
+            except Exception:
+                pass
+            load_pictures(shown["tiles"])
+            draw(shown["tiles"])
+
+            def another():
+                tiles = more_scan()
+                if not tiles:
+                    return
+                for tile in tiles:
+                    tiles_by_path[str(tile.get("path"))] = tile
+                draw(tiles)
+                load_pictures(tiles)
+                draw(tiles)
+
+            ttk.Label(top, text=question, wraplength=max(500, width - 40),
+                      justify="left").pack(anchor="w", padx=10)
+            ttk.Label(top, text="These are the card images on your sheets - "
+                      "pick the one that belongs to this card. The grid "
+                      "scrolls; double-click a picture to use it straight "
+                      "away.", style="Dim.TLabel",
+                      wraplength=max(500, width - 40),
+                      justify="left").pack(anchor="w", padx=10, pady=(0, 8))
+            accept_button.configure(command=accept)
             top.bind("<Return>", accept)
             app.wait_window(top)
             return chosen["tile"]
@@ -4587,7 +4833,11 @@ def build_newphotos(parent, app):
         app.photo_assign_window = top      # kept so a test can drive it
         top.title("Assign the images to cards")
         top.transient(app)
-        top.geometry("860x560")
+        #  Never bigger than the screen it opens on: this window used to be
+        #  860 wide, which does not fit an 800x600 display at all.
+        width = min(880, max(560, app.winfo_screenwidth() - 60))
+        height = min(600, max(420, app.winfo_screenheight() - 90))
+        top.geometry("%dx%d" % (width, height))
         method = tk.StringVar(master=top, value="titles")
         text = tk.Text(top, height=7, wrap="word")
         listing = tk.Listbox(top, height=10, exportselection=False)
@@ -4696,10 +4946,9 @@ def build_newphotos(parent, app):
                                                                 padx=12)
         ttk.Radiobutton(choices, text="One at a time (the card search below)",
                         variable=method, value="one").pack(side="left")
-        ttk.Label(top, text="Paste here - an AI answer read off the sheet, or "
-                  "your cards in the order they were scanned:",
-                  style="Dim.TLabel", wraplength=820).pack(anchor="w", padx=10,
-                                                           pady=(8, 2))
+        ttk.Label(top, text="The AI's answer, or your cards in the order they "
+                  "were scanned:", style="Dim.TLabel",
+                  wraplength=width - 40).pack(anchor="w", padx=10, pady=(6, 2))
         text.pack(fill="x", padx=10)
         buttons = ttk.Frame(top)
         buttons.pack(fill="x", padx=10, pady=6)
@@ -4743,9 +4992,6 @@ def build_newphotos(parent, app):
                command=clear_sheets).pack(side="left", padx=6)
     ttk.Button(sheets_row, text="Assign photos to cards...",
                command=open_assign_window).pack(side="left", padx=(10, 0))
-    sheets_text["label"] = ttk.Label(box, text="", style="Dim.TLabel",
-                                     wraplength=780, justify="left")
-    sheets_text["label"].pack(anchor="w", pady=(2, 0))
 
     row = ttk.Frame(box)
     row.pack(anchor="w", pady=4)
@@ -4763,6 +5009,9 @@ def build_newphotos(parent, app):
                        "Connection panel." %
                        app.settings.get("scan_dir", DEFAULT_SCAN_DIR)))
                ).pack(side="left", padx=8)
+    sheets_text["label"] = ttk.Label(notes, text="", style="Dim.TLabel",
+                                     wraplength=780, justify="left")
+    sheets_text["label"].pack(anchor="w", pady=(2, 0))
     hint.pack(anchor="w", pady=(2, 0))
     refresh_sheets()
 
@@ -4772,11 +5021,9 @@ def build_logs(parent, app):
     box = ttk.Frame(parent)
     box.pack(fill="x")
 
-    ttk.Label(box, text=(
+    panel_note(parent, (
         "Move older root-level marketplace outputs into their folders. "
-        "Preview first; this organizer never deletes or overwrites files."),
-        style="Dim.TLabel", wraplength=780, justify="left").pack(
-            anchor="w", pady=(0, 3))
+        "Preview first; this organizer never deletes or overwrites files."))
     organizer = BASE / "pipeline" / "organize_pipeline_outputs.py"
 
     def run_organizer(apply=False):

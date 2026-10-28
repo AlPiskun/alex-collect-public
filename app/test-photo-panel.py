@@ -42,6 +42,7 @@ def check(name, cond, extra=""):
 class FakeWidget:
     def __init__(self, *args, **kwargs):
         self._kw = dict(kwargs)
+        self.packed = False
         self.children = []
         self.command = kwargs.get("command")
         self.value = kwargs.get("text", "")
@@ -51,7 +52,13 @@ class FakeWidget:
         if self.parent is not None and hasattr(self.parent, "children"):
             self.parent.children.append(self)
 
-    def pack(self, *a, **k): return self
+    def pack(self, *a, **k):
+        self.packed = True
+        return self
+
+    def pack_forget(self, *a, **k):
+        self.packed = False
+
     def grid(self, *a, **k): return self
     def place(self, *a, **k): return self
     def bind(self, *a, **k): return self
@@ -61,7 +68,16 @@ class FakeWidget:
         return self._kw.get("text", self.value) if key == "text" \
             else self._kw.get(key, "")
     def winfo_children(self): return list(self.children)
-    def destroy(self): pass
+    def destroy(self):
+        #  A destroyed widget leaves its parent: the panel rebuilds its grid
+        #  after the pictures are decoded, and the old cells must be gone.
+        parent = getattr(self, "parent", None)
+        if parent is not None and hasattr(parent, "children"):
+            try:
+                parent.children.remove(self)
+            except ValueError:
+                pass
+
     def focus_set(self): pass
     def yview(self, *a, **k): return (0.0, 1.0)
     def xview(self, *a, **k): return (0.0, 1.0)
@@ -82,6 +98,24 @@ class FakeWidget:
     def invoke(self):
         if self.command:
             self.command()
+    # -- the handful of calls a scrollable canvas makes ---------------------
+    def create_window(self, *a, **k): return 1
+    def itemconfigure(self, *a, **k): return None
+    def bbox(self, *a, **k): return (0, 0, 200, 200)
+    def yview_scroll(self, *a, **k): return None
+    def bind_all(self, *a, **k): return None
+    def unbind_all(self, *a, **k): return None
+    def winfo_containing(self, *a, **k): return None
+    def winfo_toplevel(self): return self
+    def columnconfigure(self, *a, **k): return None
+    def rowconfigure(self, *a, **k): return None
+    def grid_columnconfigure(self, *a, **k): return None
+    def update(self): return None
+    def update_idletasks(self): return None
+    def winfo_rootx(self): return 0
+    def winfo_rooty(self): return 0
+    def winfo_width(self): return 800
+    def winfo_height(self): return 600
     def walk(self):
         yield self
         for child in self.children:
@@ -100,11 +134,16 @@ class FakeToplevel(FakeWidget):
     def __init__(self, *a, **k):
         super().__init__(*a, **k)
         self._title = k.get("title", "")
+        self._geometry = ""
+        self.resizable = lambda *a, **k: self
     def title(self, value=None):
         if value is not None: self._title = value
         return self._title
     def transient(self, *a, **k): return self
-    def geometry(self, *a, **k): return self
+    def geometry(self, value=None):
+        if value is not None:
+            self._geometry = value
+        return self._geometry
     def grab_set(self, *a, **k): return self
     def wait_window(self, *a, **k):
         PICKER["press"](self)
@@ -158,6 +197,7 @@ _TK, _TTK, _DIALOG, _BOX = install_tk()
 import gui                                     # noqa: E402
 import photo_pool                              # noqa: E402
 import photo_replace                           # noqa: E402
+import photo_thumbs as panel_thumbs            # noqa: E402
 from PIL import Image                          # noqa: E402
 
 
@@ -186,6 +226,17 @@ class FakeApp:
 
     def wait_window(self, window):
         window.wait_window()
+
+    def winfo_screenwidth(self):
+        return 800          # the small screen the picker has to fit on
+
+    def winfo_screenheight(self):
+        return 600
+
+    def winfo_rootx(self): return 0
+    def winfo_rooty(self): return 0
+    def winfo_width(self): return 800
+    def winfo_height(self): return 600
 
 
 PRODUCT = {"id": 42,
@@ -931,6 +982,209 @@ def test_website_first():
           UPLOADS[0]["keep_ids"] == [9], str(UPLOADS))
 
 
+def test_actions_above_the_words():
+    print()
+    print("== 20. the work sits on top; the words sit underneath ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    app = FakeApp(folder)
+    parent = FakeWidget()
+    gui.build_newphotos(parent, app)
+    widgets = list(parent.walk())
+    notes = getattr(parent, "_notes_frame", None)
+    find = next(w for w in widgets if w.cget("text") == "Find the card...")
+    add = next(w for w in widgets if w.cget("text") == "Add sheets...")
+    check("the buttons are not in the notes area",
+          notes is not None and find not in list(notes.walk()) and
+          add not in list(notes.walk()), str(notes))
+    check("the sheet summary and the status line are",
+          notes is not None and
+          any("No replacement sheets loaded" in w.cget("text")
+              for w in notes.walk()), "")
+    help_button = getattr(app, "_doc_button", None)
+    doc = getattr(app, "_doc_label", None)
+    check("the panel's help is folded until it is asked for",
+          help_button is not None and doc is not None and not doc.packed,
+          str(help_button))
+    check("the help still holds the real text, so nothing was lost",
+          doc is not None and len(str(doc.cget("text"))) > 200,
+          str(doc and len(str(doc.cget("text")))))
+    if help_button is not None:
+        help_button.invoke()
+    check("one click opens it, and it opens underneath",
+          doc is not None and doc.packed and
+          help_button.cget("text") == "Hide this help",
+          str(help_button and help_button.cget("text")))
+    if help_button is not None:
+        help_button.invoke()
+    check("and one click folds it again",
+          doc is not None and not doc.packed, str(doc and doc.packed))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_grid_fits_a_small_screen():
+    print()
+    print("== 18. nine cards on an 800x600 screen: scroll, and say so ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    #  A full sheet: nine cards, no blanks - the case that overflowed.
+    sheet = make_sheet(folder / "Scan-full.jpg", blanks=())
+    app = FakeApp(folder)
+    seen = []
+
+    def press(window):
+        """Look at the grid as the user would, then take the first picture."""
+        seen.append(window)
+        for widget in window.walk():
+            if widget.cget("text") == "Use this image":
+                widget.invoke()
+                return
+        window.destroy()
+
+    #  A build that can draw pictures: without this the picker correctly
+    #  falls back to the plain list, which is not what is under test.
+    dummy = object()
+    with patch.object(panel_thumbs, "as_photo", lambda image: dummy):
+        drive(app, sheet, press=press, nocancel=False, cards=1)
+
+    check("the picker was drawn as a grid, not a list", bool(seen), str(seen))
+    grid = seen[0].walk() if seen else ()
+    widgets = list(grid)
+    check("the grid scrolls instead of running off the window",
+          any(isinstance(w, gui.ScrollFrame) for w in widgets), "")
+    scroller = next((w for w in widgets if isinstance(w, gui.ScrollFrame)),
+                    None)
+    captions = [w.cget("text") for w in (scroller.inner.walk() if scroller
+                                         else [])
+                if w.cget("text")]
+    slots = [c for c in captions if c.startswith("Slot ")]
+    check("every card on the sheet is offered, all nine",
+          len(slots) == 9, str(slots))
+    check("a caption is the slot, not a file name",
+          slots and all(".jpg" not in c and ".webp" not in c for c in slots),
+          str(slots))
+    check("the buttons sit above the grid, so they never scroll away",
+          _first_action_row(seen[0]) is not None, "")
+    check("the window fits the small screen",
+          _fits(seen[0]._geometry, 800, 600), seen[0]._geometry)
+    check("the pictures are kept for the next card",
+          getattr(app, "_tile_thumbs", None) is not None and
+          len(app._tile_thumbs._cache) >= 1,
+          str(getattr(app, "_tile_thumbs", None)))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def _fits(geometry, width, height):
+    """Whether a Tk geometry string (WxH+X+Y) fits inside a screen."""
+    try:
+        size = str(geometry).split("+")[0]
+        w, h = [int(x) for x in size.split("x")]
+    except Exception:
+        return False
+    return w <= width and h <= height
+
+
+def _first_action_row(window):
+    """The first Button in the window's walk order, if any."""
+    for widget in window.walk():
+        if isinstance(widget, gui.ttk.Button):
+            return widget
+    return None
+
+
+class ProgressRecorder:
+    """Stands in for ProgressWindow and remembers what it was asked to say."""
+
+    calls = []
+
+    def __init__(self, parent, title="", text="", total=None):
+        self.title, self.text, self.total = title, text, total
+        self.steps, self.closed = [], False
+        ProgressRecorder.calls.append(self)
+
+    def step(self, text=None, done=None, total=None):
+        self.steps.append((text, done, total))
+
+    def close(self):
+        self.closed = True
+
+    def pump(self):
+        pass
+
+
+def test_loading_is_visible():
+    print()
+    print("== 19. reading a big scan says so instead of looking hung ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    first = make_sheet(folder / "Scan-a.jpg", blanks=(2, 4, 9))
+    second = make_sheet(folder / "Scan-b.jpg", blanks=(2, 4, 9))
+    app = FakeApp(folder)
+    parent = FakeWidget()
+    gui.build_newphotos(parent, app)
+    widgets = list(parent.walk())
+    add = next(w for w in widgets if w.cget("text") == "Add sheets...")
+    _DIALOG.askopenfilenames = lambda **k: (str(first), str(second))
+    ProgressRecorder.calls.clear()
+    with patch.object(gui, "ProgressWindow", ProgressRecorder):
+        add.invoke()
+    made = ProgressRecorder.calls
+    check("a working window is shown while the scans are split",
+          len(made) == 1, str(made))
+    check("it says how many scans are being read",
+          made and made[0].total == 2, str(made and made[0].total))
+    check("it names the sheet being split",
+          made and any(step[0] and "Scan-a.jpg" in step[0]
+                       for step in made[0].steps),
+          str(made[0].steps if made else ""))
+    check("the bar moves once per sheet",
+          made and [s[1] for s in made[0].steps if s[1] is not None] ==
+          [0, 1, 1, 2], str(made[0].steps if made else ""))
+    check("the window is taken down again",
+          made and made[0].closed, str(made and made[0].closed))
+    check("both sheets were loaded", len(app.photo_pool.sheets) == 2,
+          str(len(app.photo_pool.sheets)))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_every_panel_leads_with_the_work():
+    print()
+    print("== 21. every panel: the work first, the words underneath ==")
+    folder = Path(tempfile.mkdtemp())
+    app = FakeApp(folder)
+    action_types = (gui.ttk.Button, gui.ttk.Entry, gui.ttk.Combobox,
+                    gui.ttk.Checkbutton, gui.ttk.Radiobutton, gui.tk.Text,
+                    gui.tk.Listbox)
+    wrong_place, folded, no_help = [], [], []
+    for pid in gui.PANEL_ORDER:
+        builder = gui.PANEL_BUILDERS.get(pid)
+        if builder is None or pid == "welcome":
+            continue
+        parent = FakeWidget()
+        try:
+            builder(parent, app)
+        except Exception as exc:
+            wrong_place.append("%s: %s" % (pid, exc))
+            continue
+        notes = getattr(parent, "_notes_frame", None)
+        if notes is None:
+            no_help.append(pid)
+            continue
+        inside = set(id(w) for w in notes.walk())
+        first = next((w for w in parent.walk()
+                      if isinstance(w, action_types)), None)
+        if first is not None and id(first) in inside:
+            wrong_place.append(pid)
+        if getattr(app, "_doc_label", None) is not None and app._doc_label.packed:
+            folded.append(pid)
+    check("every panel keeps its work above its help area",
+          not wrong_place, str(wrong_place))
+    check("every panel's help starts folded",
+          not folded, str(folded))
+    check("every panel has a help area", not no_help, str(no_help))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
 def test_spent_sitting():
     print()
     print("== 17. a sitting with every image used says so ==")
@@ -970,6 +1224,10 @@ def main():
     test_old_back_cancelled()
     test_replacements_folder_opens()
     test_assign_window()
+    test_actions_above_the_words()
+    test_every_panel_leads_with_the_work()
+    test_grid_fits_a_small_screen()
+    test_loading_is_visible()
     test_spent_sitting()
     test_empty_sheet()
     test_website_first()

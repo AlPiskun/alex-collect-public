@@ -59,11 +59,17 @@ class Thumbnails:
         self._cache = {}
         self.failures = []
 
+    LIMIT = 48          # a long sitting is a handful of sheets, not a library
+
     def get(self, path):
         """The picture for ``path``, or None when it cannot be read."""
         key = str(path)
         if key in self._cache:
             return self._cache[key]
+        if len(self._cache) >= self.LIMIT:
+            #  Small pictures, but a whole afternoon of sheets would still
+            #  add up; the ones being looked at are the ones worth keeping.
+            self._cache.clear()
         try:
             image = thumbnail(path, self.size)
         except ThumbnailError as exc:
@@ -102,18 +108,26 @@ def rows(items, columns=GRID_COLUMNS):
     return [items[i:i + columns] for i in range(0, len(items), columns)]
 
 
-def caption(tile):
-    """The line under a tile's picture: where it came from, not its filename."""
-    position = tile.get("position")
-    sheet = tile.get("sheet") or ""
-    side = tile.get("side") or ""
+def caption(tile, sheet="", side=True):
+    """The line under a tile's picture: where it came from, in a few words.
+
+    The sheet's file name is deliberately not part of it. Under every picture
+    it costs a wrapped line - and at 800x600 that line is the difference
+    between nine cards on screen and six - while saying nothing the picture
+    and the picker's own question do not already say. ``sheet`` is passed in
+    only when the grid really does mix sheets and the reader could not tell
+    otherwise, and ``side`` when it mixes fronts and backs.
+    """
     parts = []
+    if sheet:
+        parts.append(str(sheet))
+    position = tile.get("position")
     if position:
         parts.append("Slot %d" % position)
     if side:
-        parts.append(side)
-    if sheet:
-        parts.append(sheet)
+        name = tile.get("side") or ""
+        if name:
+            parts.append(name)
     return " \u00b7 ".join(parts) if parts else Path(
         str(tile.get("path") or "")).name
 
@@ -121,4 +135,5 @@ def caption(tile):
 def describe(tile):
     """A tile in one line, used when there is no picture to show."""
     name = Path(str(tile.get("path") or "")).name
-    return "%s   (%s)" % (caption(tile), name) if caption(tile) else name
+    line = caption(tile, sheet=tile.get("sheet") or "")
+    return "%s   (%s)" % (line, name) if line else name

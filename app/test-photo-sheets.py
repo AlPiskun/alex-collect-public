@@ -102,9 +102,18 @@ def test_thumbnails(root):
 
     tile = {"position": 4, "sheet": "Scan-01.jpg", "side": "front",
             "path": usable[0]["path"]}
-    check("a tile is captioned by where it came from",
-          photo_thumbs.caption(tile) == "Slot 4 \u00b7 front \u00b7 Scan-01.jpg",
+    check("a tile is captioned by its slot, not its file name",
+          photo_thumbs.caption(tile) == "Slot 4 \u00b7 front",
           photo_thumbs.caption(tile))
+    check("the sheet is named only when the grid mixes sheets",
+          photo_thumbs.caption(tile, sheet="S2") == "S2 \u00b7 Slot 4 \u00b7 front"
+          and photo_thumbs.caption(tile, sheet="", side=False) == "Slot 4",
+          photo_thumbs.caption(tile, sheet="S2"))
+    tile_name = Path(tile["path"]).name
+    check("the plain list still names the file, so the tiles stay apart",
+          tile_name in photo_thumbs.describe(tile) and
+          "Scan-01.jpg" in photo_thumbs.describe(tile),
+          photo_thumbs.describe(tile))
     check("no filename is the first thing shown",
           Path(usable[0]["path"]).name not in photo_thumbs.caption(tile),
           photo_thumbs.caption(tile))
