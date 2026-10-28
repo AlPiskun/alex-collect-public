@@ -489,6 +489,87 @@ def test_panel():
           not listing.items, str(listing.items))
 
 
+def test_the_cookies_canadian_shopper_is_told_about():
+    print()
+    print("== 8b. the stock read is told which cookie to use ==")
+    folder, app, parent = build_panel()
+    compare = find(parent, gui.ttk.Button, "Compare stock", exact=False)
+    cookie = folder / "cookie.txt"
+
+    def fetch_ok(base, path, params, key, secret):
+        return (200, PRODUCTS) if params["page"] == 1 else (200, [])
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "woo_get", fetch_ok), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        compare.invoke()
+    args = app.runs[0]["args"] if app.runs else []
+    check("with no cookie file, no cookie argument is invented",
+          "--cookie-file" not in args, str(args))
+    check("and the panel says a cookie is needed first",
+          any("paste a CanadianShopper cookie" in text
+              for _tag, text in app.lines), str(app.lines[:3]))
+
+    cookie.write_text("session=abc123\n", encoding="utf-8")
+    app.runs.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "woo_get", fetch_ok), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        compare.invoke()
+    args = app.runs[0]["args"] if app.runs else []
+    check("the refreshed cookie is the one the reader is told to use",
+          "--cookie-file" in args and args[args.index("--cookie-file") + 1] ==
+          str(cookie), str(args))
+
+    # ---- a plugin whose reader predates --cookie-file
+    app.runs.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "BASE", folder):
+        compare.invoke()
+        check("the first attempt carries the cookie", len(app.runs) == 1 and
+              "--cookie-file" in app.runs[0]["args"], str(app.runs))
+        app.runs[0]["on_done"](2)        # argparse usage error
+        check("a reader that rejects the flag is asked again without it",
+              len(app.runs) == 2 and "--cookie-file" not in app.runs[1]["args"],
+              str([r["args"] for r in app.runs]))
+        check("and it is not asked a third time",
+              app.runs[1]["on_done"](2) is False and len(app.runs) == 2,
+              str(len(app.runs)))
+
+    # ---- a failure says which cookie was sent
+    app.runs.clear()
+    app.lines[:] = []
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "BASE", folder):
+        compare.invoke()
+        app.runs[0]["on_done"](1)
+    check("a failed read names the file, its size and when it was saved",
+          any("cookie.txt" in text and "bytes" in text and "saved" in text
+              for _tag, text in app.lines), str(app.lines[-3:]))
+
+
 def test_one_card():
     print()
     print("== 9. one card, handed over from the sale panel ==")
@@ -568,6 +649,7 @@ def main():
     test_differences()
     test_words()
     test_panel()
+    test_the_cookies_canadian_shopper_is_told_about()
     test_one_card()
     print()
     if FAIL:

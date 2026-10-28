@@ -40,6 +40,29 @@ SITES = {
                  "page": "fb-selling.html"},
 }
 
+#  An HTTP header is latin-1 by definition. A cookie copied out of a page (or
+#  out of a chat window) can carry a tick, a curly quote or a non-breaking
+#  space - and the request then dies with "latin-1 codec can't encode", which
+#  says nothing about the file that needs fixing.
+_COOKIE_SAFE = "".join(chr(c) for c in range(0x20, 0x7f))
+
+
+def clean_header_value(value):
+    """A string a browser could actually put in a header: printable ASCII."""
+    text = str(value or "").replace("\r", "").replace("\n", "")
+    return "".join(ch for ch in text if ch in _COOKIE_SAFE)
+
+
+def dropped_characters(value):
+    """The characters in ``value`` that no header can carry, without repeats."""
+    text = str(value or "").replace("\r", "").replace("\n", "")
+    out = []
+    for ch in text:
+        if ch not in _COOKIE_SAFE and ch not in out:
+            out.append(ch)
+    return out
+
+
 #  Sites answer a browser; they often refuse a bare urllib request outright.
 BROWSER_HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -290,20 +313,36 @@ def read_cookie(path):
     the cookie - a cookie that contains the instructions fails as a login wall,
     which is a confusing way to learn that.
     """
+    return read_cookie_report(path)[0]
+
+
+def read_cookie_report(path):
+    """``(cookie, dropped)``: the header to send, and what could not be sent.
+
+    ``dropped`` lists the characters that were removed because no header can
+    carry them. They are removed rather than raised on, because a cookie with a
+    stray tick pasted into it usually still works - but the caller says so, in
+    case the session then does not.
+    """
     text = Path(path).read_text(encoding="utf-8-sig", errors="replace")
     #  A file saved by an editor that adds its own BOM can carry a second one;
     #  it would otherwise become part of the first cookie name and the site
     #  would say the session is invalid for no visible reason.
     text = text.lstrip("\ufeff")
-    pairs = []
+    pairs, dropped = [], []
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         if line.lower().startswith("cookie:"):
             line = line.split(":", 1)[1].strip()
-        pairs.append(line.rstrip(";"))
-    return "; ".join(part for part in pairs if part)
+        for ch in dropped_characters(line):
+            if ch not in dropped:
+                dropped.append(ch)
+        line = clean_header_value(line).rstrip(";")
+        if line:
+            pairs.append(line)
+    return "; ".join(pairs), dropped
 
 
 def fetch(url, cookie, timeout=30, opener=None):
@@ -319,6 +358,13 @@ def fetch(url, cookie, timeout=30, opener=None):
     if not cookie:
         raise MarketError("No cookie is saved for this site.",
                           "Paste one into the site's cookie file first.")
+    #  Belt and braces: whatever came from the file, the header is ASCII by the
+    #  time it leaves here, so a stray tick can never become a codec error.
+    cookie = clean_header_value(cookie)
+    if not cookie:
+        raise MarketError(
+            "The saved cookie has nothing a browser could send in it.",
+            "Re-copy the Cookie request header and paste it into the file.")
     headers = dict(BROWSER_HEADERS)
     headers["Cookie"] = cookie
     request = urllib.request.Request(url, headers=headers)
@@ -340,6 +386,13 @@ def fetch(url, cookie, timeout=30, opener=None):
             "Could not reach %s." % url,
             "%s. Check the address and this computer's connection."
             % getattr(exc, "reason", exc))
+    except UnicodeEncodeError as exc:
+        #  Only reachable if a caller passes a cookie straight through without
+        #  clean_header_value; the message names the real culprit anyway.
+        raise MarketError(
+            "The saved cookie contains a character a browser never sends.",
+            "%r cannot go in a request header. Re-copy the Cookie header into "
+            "the file." % exc.object[exc.start:exc.end])
     return int(status), _text(body)
 
 

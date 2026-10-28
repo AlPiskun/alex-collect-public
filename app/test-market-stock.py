@@ -89,6 +89,58 @@ def test_cookies():
           market_stock.read_cookie(path) == "", market_stock.read_cookie(path))
 
 
+def test_header_safety():
+    print()
+    print("== 1b. a cookie copied out of a page cannot break the request ==")
+    folder = Path(tempfile.mkdtemp())
+    path = folder / "ebay-cookie.txt"
+    #  A tick, a curly quote and a real non-breaking space, as a copy from a
+    #  rendered page or a chat window brings.
+    path.write_text("SID=abc\u2713; tok=\u2019en; nb\u00a0=1\n", encoding="utf-8")
+    cookie, dropped = market_stock.read_cookie_report(path)
+    check("the cookie keeps every part that can be sent",
+          cookie == "SID=abc; tok=en; nb=1", cookie)
+    check("the characters that cannot be sent are reported",
+          set(dropped) == {"\u2713", "\u2019", "\u00a0"}, str(dropped))
+    check("a header value is printable ASCII only",
+          all(" " <= ch <= "~" for ch in cookie), repr(cookie))
+    check("a newline cannot smuggle a second header in",
+          "\n" not in market_stock.clean_header_value("a=1\nb=2") and
+          "\r" not in market_stock.clean_header_value("a=1\rb=2"), "")
+
+    seen = {}
+
+    class Response(io.BytesIO):
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def opener(request, timeout=None):
+        #  What http.client actually does with a header, and what used to raise.
+        #  urllib normalises header names, so ask for it the way the wire does.
+        seen["cookie"] = request.get_header("Cookie").encode("latin-1")
+        return Response(LISTINGS_PAGE.encode("utf-8"))
+
+    status, _text = market_stock.fetch("https://x/lst", cookie, opener=opener)
+    check("the request is made with the cleaned cookie", status == 200 and
+          seen["cookie"] == b"SID=abc; tok=en; nb=1", str(seen))
+
+    path.write_text("\u2713\u2713\u2713\n", encoding="utf-8")
+    cookie, _dropped = market_stock.read_cookie_report(path)
+    check("a file with nothing sendable in it reads as no cookie",
+          cookie == "", cookie)
+    try:
+        market_stock.fetch("https://x/lst", cookie, opener=opener)
+        check("and is refused before a request is attempted", False, "")
+    except market_stock.MarketError as exc:
+        check("and is refused before a request is attempted",
+              "No cookie is saved" in exc.message, exc.message)
+
+
 def test_fetch():
     print()
     print("== 2. one request, and what the site said ==")
@@ -243,6 +295,30 @@ FB_PAGE = """<html><head><title>Facebook</title></head><body>
 <div><div><span>1973-74 O-Pee-Chee Rod Seiling #9 Dark Back NY Rangers NHL
  Trading Card</span><span>CA$6</span><span>Draft</span></div></div>
 </body></html>"""
+
+
+def test_panel_with_a_stray_character():
+    print()
+    print("== 5a. the panel says what it removed from the cookie ==")
+    folder, app, parent = build_panel()
+    (folder / "ebay-cookie.txt").write_text("SID=abc\u2713\n", encoding="utf-8")
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(market_stock, "fetch",
+                         lambda url, cookie: (200, EBAY_PAGE)), \
+            patch.object(stock_compare, "read_woo_stock",
+                         lambda *a, **k: WOO_PRODUCTS), \
+            patch.object(gui, "in_background", sync_background):
+        find(parent, gui.ttk.Button, "Compare stock with eBay").invoke()
+    check("a cookie with a tick still reads the page",
+          any("removed" in text and "\u2713" in text
+              for _tag, text in app.lines),
+          str([t for _tag, t in app.lines][:3]))
+    check("and the comparison still happened",
+          any("matched cards against eBay" in text
+              for _tag, text in app.lines), str(app.lines[-2:]))
 
 
 def test_parsing():
@@ -613,10 +689,12 @@ def test_cookie_file():
 
 def main():
     test_cookies()
+    test_header_safety()
     test_fetch()
     test_pages()
     test_parsing()
     test_pages_of_ebay()
+    test_panel_with_a_stray_character()
     test_site_rows()
     test_panel()
     test_one_card_market()

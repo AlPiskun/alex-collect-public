@@ -62,7 +62,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.63"
+VERSION = "2.64"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -4321,10 +4321,38 @@ def build_stock(parent, app):
         clear_list()
 
     # ------------------------------------------------------- CanadianShopper
-    def plugin_arrived(rc, out, creds):
+    def plugin_arrived(rc, out, creds, sent_cookie=False):
+        if rc == 2 and sent_cookie:
+            #  Exit 2 from a Python tool is a usage error: this plugin's reader
+            #  predates --cookie-file. Ask again without it rather than telling
+            #  the person to do something about a flag.
+            app.console_line(
+                "This plugin's stock reader does not take --cookie-file; "
+                "asking it again without one.", "dim")
+            app.run_tool(TOOL_ACTION(CS_STOCK_ACTION),
+                         ["--stock-out", str(out)], "CanadianShopper stock",
+                         cwd=app.settings.get("pipeline_dir", str(WORK)),
+                         on_done=lambda code: plugin_arrived(code, out, creds,
+                                                             False))
+            return False
         if rc != 0:
             app.console_line("The CanadianShopper stock read failed (exit %s); "
                              "nothing was compared." % rc, "err")
+            if CS_COOKIE_FILE.is_file():
+                #  Say exactly what was sent, so a cookie problem is not a
+                #  guessing game: the file, its age, and its size.
+                try:
+                    stamp = datetime.fromtimestamp(
+                        CS_COOKIE_FILE.stat().st_mtime).strftime(
+                            "%Y-%m-%d %H:%M")
+                    size = CS_COOKIE_FILE.stat().st_size
+                except OSError:
+                    stamp, size = "?", 0
+                app.console_line(
+                    "The cookie sent was %s (%d bytes, saved %s). If that is "
+                    "the one you just refreshed, the plugin is not reading it; "
+                    "if it is old, paste a fresh one in User Settings."
+                    % (CS_COOKIE_FILE.name, size, stamp), "dim")
             summary.configure(text="CanadianShopper could not be read.")
             clear_list()
             return False
@@ -4386,12 +4414,23 @@ def build_stock(parent, app):
             out.unlink()
         except FileNotFoundError:
             pass
+        cookie = CS_COOKIE_FILE if CS_COOKIE_FILE.is_file() else None
+        args = ["--stock-out", str(out)]
+        if cookie is not None:
+            #  The same cookie the sale tools already use. Without this the
+            #  reader falls back to whatever session the plugin itself last
+            #  saw - which is why refreshing the app's cookie changed nothing.
+            args += ["--cookie-file", str(cookie)]
         summary.configure(text="Reading CanadianShopper's stock...")
         app.console_line("Reading CanadianShopper's stock...", "cmd")
-        app.run_tool(action, ["--stock-out", str(out)],
-                     "CanadianShopper stock",
+        if cookie is None:
+            app.console_line(
+                "No %s yet: paste a CanadianShopper cookie in User Settings "
+                "first." % CS_COOKIE_FILE.name, "dim")
+        app.run_tool(action, args, "CanadianShopper stock",
                      cwd=app.settings.get("pipeline_dir", str(WORK)),
-                     on_done=lambda rc: plugin_arrived(rc, out, creds))
+                     on_done=lambda rc: plugin_arrived(rc, out, creds,
+                                                       cookie is not None))
 
     # ------------------------------------------------------- eBay / Facebook
     #  Neither site offers a list this app can ask for, so the page the seller
@@ -4516,9 +4555,19 @@ def build_stock(parent, app):
         url = str(app.settings.get("%s_selling_url" % site_id, "") or "").strip()
         cookie_path = BASE / info["cookie"]
         try:
-            cookie = market_stock.read_cookie(cookie_path)
+            cookie, dropped = market_stock.read_cookie_report(cookie_path)
         except Exception:
-            cookie = ""
+            cookie, dropped = "", []
+        if cookie and dropped:
+            #  A tick or a curly quote pasted in with the cookie cannot go in a
+            #  request; dropping it usually still works, so it is said rather
+            #  than refused - and said here, before the site claims the session
+            #  is bad.
+            app.console_line(
+                "%s: removed %s from the saved cookie - no header can carry "
+                "them. If the site then says you are signed out, copy the "
+                "Cookie header again." %
+                (info["label"], ", ".join(repr(ch) for ch in dropped)), "dim")
         if not cookie:
             messagebox.showinfo(
                 "%s needs your session cookie" % info["label"],
