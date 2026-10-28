@@ -1307,6 +1307,8 @@ TOOLTIPS = {
     "Type the cards...": "Open the editor for typing what sold, one card per line",
     "Add these": "Add only the orders shown above to the checklist - the rest of the website is left alone",
     "Compare stock": "Read both catalogues and list only the cards whose counts disagree; nothing is changed",
+    "Compare this card": "Open the stock panel pointed at the one card this sale is about",
+    "Compare the whole catalogue instead": "Drop the one-card filter and compare everything",
     "Preview new orders": "Read the orders that came in since you last looked, and write nothing",
     "Open plugins folder": "Open the folder plugins are installed into",
     "Open the tools folder": "Open the folder holding this app's tools",
@@ -4125,6 +4127,33 @@ def build_sold(parent, app):
                                                    "preview"),
                      cwd=app.settings.get("pipeline_dir", str(WORK)))
 
+    def compare_this_card():
+        """Hand one card to the stock panel, which does the comparing."""
+        card = ""
+        if len(state["preview"]) == 1:
+            card = state["preview"][0]["card"]
+        elif state["path"]:
+            try:
+                lines = [line.strip() for line in Path(state["path"]).read_text(
+                    encoding="utf-8", errors="replace").splitlines()]
+            except Exception as exc:
+                log("could not read typed sale list: %s" % exc)
+                lines = []
+            lines = [line for line in lines
+                     if line and not line.startswith("##")]
+            if len(lines) == 1:
+                card = lines[0].split(",")[0].strip()
+        if not card:
+            messagebox.showinfo(
+                "Which card?",
+                "This opens the stock panel for ONE card. Either preview the "
+                "sale first (so the card is known), or type the card on its "
+                "own with \"Type the cards...\".\n\nFor the whole catalogue "
+                "at once, use the Stock panel from the After a sale menu.")
+            return
+        app._stock_filter = card
+        app.show_panel("stock")
+
     def type_cards():
         Editor(self_toplevel=box, title="Cards that sold",
                hint="One card per line:\n"
@@ -4152,6 +4181,8 @@ def build_sold(parent, app):
         side="left")
     ttk.Button(row3, text="Add to the checklist (and fix CS if ticked)",
                style="Task.TButton", command=add_rows).pack(side="left", padx=8)
+    ttk.Button(row3, text="Compare this card's stock...",
+               command=compare_this_card).pack(side="left")
     if app.cs_addon:
         row4 = ttk.Frame(box)
         row4.pack(anchor="w", pady=(4, 0))
@@ -4178,6 +4209,12 @@ def build_stock(parent, app):
     panel_header(parent, app, "stock")
     box = ttk.Frame(parent)
     box.pack(fill="x")
+
+    #  A one-shot hand-off from the sale panel: "this card, please". It is
+    #  consumed here so reopening the panel from the menu compares everything.
+    focus = str(getattr(app, "_stock_filter", "") or "").strip()
+    app._stock_filter = ""
+    focus_box = {"card": focus}
 
     def stock_action():
         return TOOL_ACTION(CS_STOCK_ACTION)
@@ -4207,8 +4244,10 @@ def build_stock(parent, app):
                 app.console_line(line, "dim")
         else:
             list_frame.pack_forget()
-        summary.configure(text=stock_compare.summary(rows, pairs, only_woo,
-                                                     only_other))
+        text = stock_compare.summary(rows, pairs, only_woo, only_other)
+        if focus_box["card"]:
+            text = "%s  (only this card)" % text.rstrip(".")
+        summary.configure(text=text)
         if skipped:
             app.console_line(
                 "%d products were not compared: no stock count "
@@ -4230,6 +4269,15 @@ def build_stock(parent, app):
             clear_list()
             return
         woo, skipped = stock_compare.woo_items(products)
+        wanted = focus_box["card"]
+        if wanted:
+            #  One card: keep only the listings on either side that answer to
+            #  that title, so the answer is about the card that was asked
+            #  about and not about the catalogue.
+            woo = [item for item in woo
+                   if woo_orders.score(wanted, item["name"]) >= 0.5]
+            items = [item for item in items
+                     if woo_orders.score(wanted, item["name"]) >= 0.5]
         pairs, only_woo, only_other = stock_compare.pair(woo, items)
         rows = stock_compare.differences(pairs)
         show(rows, pairs, only_woo, only_other, skipped)
@@ -4302,6 +4350,22 @@ def build_stock(parent, app):
     row.pack(anchor="w", pady=(2, 0))
     ttk.Button(row, text="Compare stock (WooCommerce and CanadianShopper)",
                style="Task.TButton", command=compare).pack(side="left")
+
+    if focus:
+        focus_label = ttk.Label(box, text="Only this card: " + focus,
+                                style="H2.TLabel", wraplength=680,
+                                justify="left")
+        focus_label.pack(anchor="w", pady=(4, 0))
+
+        def compare_everything():
+            focus_box["card"] = ""
+            focus_label.pack_forget()
+            clear_btn.pack_forget()
+            app.console_line("Comparing the whole catalogue now.", "dim")
+
+        clear_btn = ttk.Button(box, text="Compare the whole catalogue instead",
+                               command=compare_everything)
+        clear_btn.pack(anchor="w", pady=(2, 0))
     summary = ttk.Label(box, text="Nothing compared yet.", style="Dim.TLabel",
                         wraplength=680, justify="left")
     summary.pack(anchor="w", pady=(2, 0))

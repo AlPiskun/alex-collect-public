@@ -423,6 +423,41 @@ def test_panel():
     check("it says the cards were added",
           "Added" in summary.cget("text"), summary.cget("text"))
 
+    # ---- the card can be handed to the stock panel instead
+    handed = find(parent, gui.ttk.Button, "Compare this card", exact=False)
+    check("the sale panel offers a one-card stock comparison",
+          handed is not None, "")
+    single = [{"id": 45, "number": "1045", "status": "processing",
+               "date_created": "2026-10-28T07:00:00",
+               "line_items": [{"name": "1989 O-Pee-Chee Wayne Gretzky #1",
+                               "quantity": 1, "sku": "GR-1"}]}]
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck_a", "cs_b")), \
+            patch.object(gui, "woo_get", lambda *a, **k: (200, single)), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "SOLD_ORDERS_SEEN", marker):
+        preview.invoke()          # one card, so there is no doubt which
+        handed.invoke()
+    check("it hands the card over and opens the stock panel",
+          getattr(app, "_stock_filter", "") and
+          getattr(app, "panels", [])[-1:] == ["stock"],
+          "%r %r" % (getattr(app, "_stock_filter", ""),
+                     getattr(app, "panels", [])))
+    check("and it hands over the card, not the order",
+          "#1042" not in app._stock_filter and
+          "Gretzky" in app._stock_filter, app._stock_filter)
+
+    # ---- with several cards on screen it asks which one, instead of guessing
+    other_app = harness.FakeApp(folder)
+    other_parent = harness.FakeWidget()
+    gui.build_sold(other_parent, other_app)
+    asked = []
+    harness._BOX.showinfo = lambda *a, **k: asked.append(a)
+    find(other_parent, gui.ttk.Button, "Compare this card", exact=False).invoke()
+    check("with nothing to go on it says which card it needs",
+          any("Which card?" in str(a) for a in asked), str(asked))
+    check("and it opens no panel", not getattr(other_app, "panels", []), "")
+
 
 def test_preview_failure():
     print()

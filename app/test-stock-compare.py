@@ -215,6 +215,50 @@ def test_pairing():
           "")
 
 
+def test_spellings():
+    print()
+    print("== 5b. the two sites spell a set differently ==")
+    woo = [{"name": "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6", "sku": "",
+            "qty": 1, "id": 1},
+           {"name": "1990-91 Upper Deck Jaromir Jagr #356", "sku": "",
+            "qty": 1, "id": 2}]
+    other = [{"name": "1989 OPC Wayne Gretzky #1", "sku": "", "qty": 0},
+             {"name": "1990-91 UD Jaromir Jagr #356", "sku": "", "qty": 0}]
+    pairs, only_woo, only_other = stock_compare.pair(woo, other)
+    check("O-Pee-Chee on the website matches OPC on the listing",
+          len(pairs) == 2, str(pairs))
+    check("so does Upper Deck against UD",
+          pairs and all(row["by"] == "title" for row in pairs), str(pairs))
+    check("nothing is left unmatched", only_woo == [] and only_other == [],
+          str((only_woo, only_other)))
+    check("the fold is visible in one place", stock_compare.fold(
+        "1989 O-Pee-Chee Gretzky #1") == "1989 opeechee Gretzky #1",
+        stock_compare.fold("1989 O-Pee-Chee Gretzky #1"))
+    check("a different card number is still a different card",
+          stock_compare.pair(woo[:1], [{"name": "1989 OPC Wayne Gretzky #2",
+                                        "sku": "", "qty": 0}])[0] == [], "")
+
+
+def test_big_catalogue():
+    print()
+    print("== 5c. a real catalogue is compared in a second, not a minute ==")
+    import time
+    woo = [{"name": "19%02d O-Pee-Chee Player %d #%d" % (70 + i % 30, i, i),
+            "sku": "", "qty": 1, "id": i} for i in range(400)]
+    other = [{"name": "19%02d OPC Player %d #%d" % (70 + i % 30, i, i),
+              "sku": "", "qty": 0} for i in range(1500)]
+    started = time.time()
+    pairs, only_woo, _only_other = stock_compare.pair(woo, other)
+    elapsed = time.time() - started
+    check("all 400 cards are matched", len(pairs) == 400, str(len(pairs)))
+    check("and it finishes quickly", elapsed < 3.0, "%.2fs" % elapsed)
+    check("each website card is used once",
+          len({row["woo"]["id"] for row in pairs}) == 400, "")
+    check("the listing with the same number is the one that matched",
+          all(row["other"]["name"].endswith("#%d" % row["woo"]["id"])
+              for row in pairs), str(pairs[:2]))
+
+
 def test_differences():
     print()
     print("== 6. only the disagreements come out ==")
@@ -378,15 +422,84 @@ def test_panel():
           not listing.items, str(listing.items))
 
 
+def test_one_card():
+    print()
+    print("== 9. one card, handed over from the sale panel ==")
+    folder = Path(tempfile.mkdtemp())
+    harness.install_plugin("1.0.20", folder / "plugin")
+    app = harness.FakeApp(folder)
+    app._stock_filter = "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6"
+    parent = harness.FakeWidget()
+    gui.build_stock(parent, app)
+    check("the panel says it was opened for one card",
+          find(parent, gui.ttk.Label, "Only this card:", exact=False)
+          is not None, "")
+    check("the hand-off is used once, not kept",
+          getattr(app, "_stock_filter", None) == "", str(app._stock_filter))
+    compare = find(parent, gui.ttk.Button, "Compare stock", exact=False)
+    out = folder / "cs-stock.json"
+
+    def fetch_ok(base, path, params, key, secret):
+        return (200, PRODUCTS) if params["page"] == 1 else (200, [])
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_ok), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        compare.invoke()
+        out.write_text(json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+        app.runs[0]["on_done"](0)
+    listing = next(w for w in parent.walk() if isinstance(w, gui.tk.Listbox))
+    check("only the card that was asked about is compared",
+          len(listing.items) == 1, str(listing.items))
+    summary = [w for w in parent.walk()
+               if isinstance(w, gui.ttk.Label)
+               and "(only this card)" in str(w.cget("text"))]
+    check("the summary says the answer is about one card",
+          bool(summary), str([w.cget("text") for w in parent.walk()
+                              if isinstance(w, gui.ttk.Label)]))
+
+    clear = find(parent, gui.ttk.Button,
+                 "Compare the whole catalogue instead", exact=False)
+    check("there is a way back to the whole catalogue", clear is not None, "")
+    label = find(parent, gui.ttk.Label, "Only this card:", exact=False)
+    clear.invoke()
+    check("clearing the filter takes the one-card label off the page",
+          label is not None and not label.packed, "")
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_ok), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        compare.invoke()
+        out.write_text(json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+    check("and the next comparison covers everything",
+          len(listing.items) == 1 and
+          "only this card" not in
+          find(parent, gui.ttk.Label, "1 of", exact=False).cget("text"),
+          str(listing.items))
+
+
 def main():
     test_woo_items()
     test_plugin_items()
     test_stock_file()
     test_reading_woo()
     test_pairing()
+    test_spellings()
+    test_big_catalogue()
     test_differences()
     test_words()
     test_panel()
+    test_one_card()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))

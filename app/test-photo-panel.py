@@ -294,6 +294,11 @@ class FakeApp:
     def wait_window(self, window):
         window.wait_window()
 
+    def show_panel(self, panel_id):
+        """Opening another panel, recorded instead of drawn."""
+        self.panels = getattr(self, "panels", [])
+        self.panels.append(panel_id)
+
     def clear_action_bar(self):
         """The real app destroys the pinned strip when the page changes."""
         bar = getattr(self, "_action_bar", None)

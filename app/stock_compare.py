@@ -20,6 +20,7 @@ nothing). A card that cannot be matched is reported as not compared, never as
 a disagreement.
 """
 
+import re
 from pathlib import Path
 
 import woo_orders
@@ -151,9 +152,48 @@ def read_stock_file(path):
     return plugin_items(rows)
 
 
+#  The two sites do not spell a set the same way: the website says
+#  "O-Pee-Chee", a listing often says "OPC"; the website says "Upper Deck",
+#  a listing says "UD". Those are the same card, and the order panel's word
+#  weighing cannot know that - so the spellings are folded into one before
+#  anything is weighed. Without this, a catalogue of real listings matches
+#  only the handful whose titles happen to be worded identically.
+_ALIASES = (
+    (re.compile(r"\bo[\s._-]?pee[\s._-]?chee\b", re.I), " opeechee "),
+    (re.compile(r"\bopc\b", re.I), " opeechee "),
+    (re.compile(r"\bupper[\s._-]?deck\b", re.I), " upperdeck "),
+    (re.compile(r"\bud\b", re.I), " upperdeck "),
+    (re.compile(r"\bparkie?s?\b", re.I), " parkhurst "),
+    (re.compile(r"\bpro[\s._-]?set\b", re.I), " proset "),
+    (re.compile(r"\btops\b", re.I), " topps "),
+)
+
+
+def fold(name):
+    """A title with the set names spelled one way, before weighing."""
+    text = str(name or "")
+    for pattern, replacement in _ALIASES:
+        text = pattern.sub(replacement, text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _digits(name):
-    return {word for word in woo_orders.normalise(name).split()
+    return {word for word in woo_orders.normalise(fold(name)).split()
             if word.isdigit()}
+
+
+def _tokens(name):
+    """The words a card is recognised by, for a cheap pre-sorting only."""
+    return {word for word in woo_orders.normalise(fold(name)).split()
+            if len(word) > 2 or word.isdigit()}
+
+
+#  Scored candidates per website card. A catalogue has hundreds of products
+#  and two thousand listings; without a cap the comparison becomes minute-long
+#  arithmetic on the window's thread. The pre-filter below keeps only the
+#  listings that could plausibly be the same card, so this cap is never
+#  reached by a real catalogue - it is a guard, not a filter.
+MAX_CANDIDATES = 25
 
 
 def pair(woo, other, minimum=DEFAULT_MIN_SCORE):
@@ -182,19 +222,39 @@ def pair(woo, other, minimum=DEFAULT_MIN_SCORE):
         else:
             left.append(item)
 
+    #  Prepared once per card rather than once per pair: the inner loop is the
+    #  whole catalogue, and normalising a title there is what makes a
+    #  comparison take a minute instead of a second.
+    prepared = [(index, _digits(row["name"]), _tokens(row["name"]))
+                for index, row in enumerate(other)]
+
     scored = []
     for item in left:
         numbers = _digits(item["name"])
-        for index, candidate in enumerate(other):
+        words = _tokens(item["name"])
+        candidates = []
+        for index, digits, tokens in prepared:
             if index in used_other:
                 continue
-            #  Cheap rejection: two cards whose numbers share nothing are two
-            #  different cards, and a catalogue is mostly cards.
-            if numbers and _digits(candidate["name"]) and \
-                    not (numbers & _digits(candidate["name"])):
+            #  Two cards whose numbers share nothing are two different cards,
+            #  and a catalogue is mostly cards.
+            if numbers and digits and not (numbers & digits):
                 continue
-            value, numbers_ok = woo_orders.analyse(item["name"],
-                                                   candidate["name"])
+            candidates.append((len(words & tokens), index))
+        if len(candidates) > MAX_CANDIDATES:
+            candidates.sort(reverse=True)
+            candidates = candidates[:MAX_CANDIDATES]
+        for _shared, index in candidates:
+            #  Both directions, best one wins. The website title carries the
+            #  grade ("EX-MT 6") and the listing usually does not, so a title
+            #  that only accounts for the other one way round is still the
+            #  same card - what matters is that one side names everything the
+            #  other side says.
+            here, other_name = fold(item["name"]), fold(other[index]["name"])
+            forward, forward_numbers = woo_orders.analyse(here, other_name)
+            backward, backward_numbers = woo_orders.analyse(other_name, here)
+            value = max(forward, backward)
+            numbers_ok = forward_numbers or backward_numbers
             if value < minimum:
                 continue
             scored.append((value, numbers_ok, item, index))
