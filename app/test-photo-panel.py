@@ -1270,6 +1270,117 @@ def test_tabs_are_sections():
     shutil.rmtree(folder, ignore_errors=True)
 
 
+def test_every_button_explains_itself():
+    print()
+    print("== 23. every button has a hover explanation ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    app = FakeApp(folder)
+    missing = {}
+    for pid in gui.PANEL_ORDER:
+        if pid == "welcome":
+            continue
+        parent = FakeWidget()
+        gui.PANEL_BUILDERS[pid](parent, app)
+        for text in gui.tips_missing(parent):
+            missing.setdefault(text, set()).add(pid)
+    for view, cls in (("menu", gui.TasksFrame), ("tabs", gui.TabsFrame)):
+        parent = FakeWidget()
+        cls(parent, app)
+        for text in gui.tips_missing(parent):
+            missing.setdefault(text, set()).add(view)
+    check("every button in every panel and view has one",
+          not missing,
+          str({k: sorted(v) for k, v in missing.items()}))
+
+    sheet = make_sheet(folder / "Scan-1.jpg")
+    parent = FakeWidget()
+    gui.build_newphotos(parent, app)
+    widgets = list(parent.walk())
+    assign = next(w for w in widgets
+                  if w.cget("text") == "Assign photos to cards...")
+    _DIALOG.askopenfilenames = lambda **k: (str(sheet),)
+    with patch.object(gui, "has_woo_credentials", lambda path=None: False):
+        assign.invoke()
+    window = getattr(app, "photo_assign_window", None)
+    check("the assignment window's buttons are explained too",
+          window is not None and not gui.tips_missing(window),
+          str(window and gui.tips_missing(window)))
+
+    #  A dialog is not built here: every literal button caption in the source
+    #  is checked against the table instead, so a new dialog button cannot
+    #  ship without its sentence.
+    import re
+    source = (APP / "gui.py").read_text(encoding="utf-8")
+    literals = set()
+    for block in re.findall(r"ttk\.Button\(([\s\S]{0,240}?)\)", source):
+        for literal in re.findall(r'text="((?:[^"\\]|\\.)*)"', block):
+            literals.add(literal)
+    def explanation(literal):
+        """The tip for a literal, allowing for a line split mid-caption.
+
+        Three captions are written across two lines of source, so the regex
+        sees only the first half; a table key that starts with it is the
+        explanation for the whole.
+        """
+        found = gui.tip_for(literal)
+        if found:
+            return found
+        for key in gui.TOOLTIPS:
+            if key.startswith(literal.strip()) and literal.strip():
+                return gui.TOOLTIPS[key]
+        return ""
+
+    unexplained = sorted(t for t in literals if not explanation(t))
+    check("every button caption written in the source is explained",
+          not unexplained, str(unexplained))
+    check("the explanations say something, not just the caption",
+          all(len(explanation(t)) > 12 for t in literals),
+          str([t for t in literals if len(explanation(t)) <= 12]))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_help_sits_beside_the_title():
+    print()
+    print("== 24. the help button is beside the title, not at the bottom ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    app = FakeApp(folder)
+    parent = FakeWidget()
+    gui.build_newphotos(parent, app)
+    button = getattr(app, "_doc_button", None)
+    doc = getattr(app, "_doc_label", None)
+    check("the panel has a help button", button is not None, str(button))
+    if button is not None:
+        row = button.parent
+        titles = [w.cget("text") for w in row.walk()
+                  if isinstance(w, gui.ttk.Label)]
+        check("it shares the title's row",
+              gui.TITLES["newphotos"] in titles, str(titles))
+        check("the help text opens from that row, right under it",
+              doc is not None and doc.parent.parent is row, str(doc))
+        check("and it starts folded", doc is not None and not doc.packed, "")
+        button.invoke()
+        check("one click opens it under the title",
+              doc is not None and doc.packed and doc.parent.parent is row, "")
+        button.invoke()
+        check("one click folds it again", doc is not None and not doc.packed,
+              "")
+
+    #  Inside a section the frame carries the title, so the button sits at the
+    #  top of the section instead of beside a label that is not there.
+    outer = FakeWidget()
+    section = gui.panel_section(outer, app, "newphotos")
+    section_buttons = [w for w in section.walk()
+                       if isinstance(w, gui.ttk.Button) and
+                       w.cget("text") == "What this panel does"]
+    check("a sectioned panel still gets its help button",
+          len(section_buttons) == 1, str(len(section_buttons)))
+    check("and it is the first thing in the section",
+          section_buttons and section_buttons[0].parent.parent is section, "")
+    shutil.rmtree(folder, ignore_errors=True)
+
+
 def test_spent_sitting():
     print()
     print("== 17. a sitting with every image used says so ==")
@@ -1312,6 +1423,8 @@ def main():
     test_actions_above_the_words()
     test_every_panel_leads_with_the_work()
     test_tabs_are_sections()
+    test_every_button_explains_itself()
+    test_help_sits_beside_the_title()
     test_grid_fits_a_small_screen()
     test_loading_is_visible()
     test_spent_sitting()

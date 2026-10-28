@@ -59,7 +59,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.54"
+VERSION = "2.55"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1159,6 +1159,216 @@ def add_tooltip(widget, text):
     return widget
 
 
+#  What every button does, in one place. The task page has had hover notes
+#  since it was written; everywhere else the explanation lived only in the
+#  panel's help text, so a button had to be pressed to find out what it did.
+#  Keys are the button's text; a formatted one ("Put one back on sale...")
+#  matches on its prefix, so a variant does not need its own entry.
+TOOLTIPS = {
+    # -- moving around ----------------------------------------------------
+    "<- All tasks": "Go back to the list of task groups",
+    "<- Back": "Go back to the previous wizard step",
+    "Next step ->": "Save this step and continue the wizard",
+    "Skip the wizard (task menu)": "Close the wizard and go straight to the task menu",
+    "Finish": "Save the startup choice and open the task menu",
+    "What this panel does": "Show what this panel is for, without leaving it",
+    "Hide this help": "Fold the explanation away again",
+    # -- connecting and settings -----------------------------------------
+    "Test connection": "Check the saved store address and keys answer, without changing anything",
+    "Save cookie": "Save the pasted cookie so the CanadianShopper tools can sign in",
+    "Save user settings": "Save every field on this panel to gui-settings.json",
+    "Save & open AI page": "Save the AI address and open it in your browser",
+    "Open WooCommerce API keys": "Open woo-keys.txt so the store keys can be edited; the file persists across updates",
+    "Open WordPress media upload": "Open the WordPress media library to upload by hand",
+    "Pick a folder...": "Choose a folder and save it in the settings",
+    "Browse...": "Choose a file or folder and save its path",
+    "Use this browser": "Use the selected browser for every page Alex Collect opens",
+    # -- selling to a customer -------------------------------------------
+    "Build the order": "Match the pasted list to products and preview the order before writing it",
+    "Create the order": "Write the previewed order to the store as pending; nothing is charged",
+    "Open the order list": "Open the WooCommerce order screen to paste the list by hand",
+    "Search": "Search the store for the typed card and list the matches",
+    # -- a sale -----------------------------------------------------------
+    "A card sold": "Open the sold panel: type what sold and tick off the other marketplaces",
+    "Add to the checklist (and fix CS if ticked)": "Record the sale and add the other listings to the tick-off checklist",
+    "CanadianShopper only: preview the stock change": "Show what the CanadianShopper plugin would change, without writing anything",
+    "What is outstanding? (--status)": "List the cards still waiting to be ticked off",
+    "Open the checklist viewer (tick things off)": "Open the checklist window and tick off what has been done",
+    "Open the checklist (sold-cards-checklist.csv)": "Open the checklist file itself in your spreadsheet",
+    "Open the stock report (sold-cards-report.csv)": "Open the report of sales that were applied",
+    "Put one back on sale (--reactivate is in SoldCards.bat)": "Take a card off the checklist and put it back on sale",
+    # -- a new batch ------------------------------------------------------
+    "Run the card pipeline": "Open the pipeline dialog: choose the scans and run split then listing",
+    "Split the scans and build the CSV": "Split the scans and run the listing step with the AI answer on the clipboard",
+    "Split the scans only": "Split the scans into card images and stop, so the AI steps can be done on their own",
+    "Combine CSVs": "Join the marketplace CSVs into one import batch",
+    "Combine now": "Join the CSVs now, after the preview",
+    "Stage the photos": "Square, host and wire the batch photos through the plugin",
+    "Stage the photos (square + host + rewrite CSVs)": "Square the photos, host them and rewrite the CSVs with their URLs",
+    "Import / publish drafts": "Import the batch and preview or publish the vendor drafts",
+    "Preview drafts": "Show what would be published; nothing is changed",
+    "Publish ready drafts": "Publish the ready drafts after typing PUBLISH to confirm",
+    "Wire the photos": "Set the batch photos on their listings without rebuilding anything",
+    "Wire for real": "Apply the wiring instead of only reporting what it would do",
+    "Re-point photos": "Point the listings at photos that are already hosted, from the cache",
+    "Preview cached changes": "Show what the re-point would change, using cached URLs only",
+    "Preview (--dry-run)": "Report what the combine would write, without creating the CSV",
+    "Apply the previewed change": "Write exactly what the preview listed",
+    "Clear": "Empty this list; the files on disk are left alone",
+    "Type the cards...": "Open the editor for typing what sold, one card per line",
+    "Open plugins folder": "Open the folder plugins are installed into",
+    "Open the tools folder": "Open the folder holding this app's tools",
+    "Dry-run (writes nothing)": "Report what would happen without writing anything",
+    # -- after a sale / archives -----------------------------------------
+    "Preview: what sits at 0?": "List the CanadianShopper listings already at zero stock",
+    "Archive listings at 0": "Archive those listings, one at a time, without deleting them",
+    "Archive them": "Archive the listed zero-stock listings",
+    "Refresh list": "Read the file again and rebuild this list",
+    "Refresh": "Read the plugin list again",
+    # -- photos -----------------------------------------------------------
+    "Replace card photos": "Open the photo panel: find the card and replace its pictures",
+    "Find the card...": "Look the card up on the store and start the replacement",
+    "Add sheets...": "Load the scan sheets for this sitting; they stay loaded for the next card too",
+    "Assign photos to cards...": "Line a whole sheet up with cards and replace them in a batch",
+    "Read these": "Read the pasted titles or cards and fill one row per image",
+    "Choose a card for this row": "Search the store for the card this image belongs to",
+    "Apply the ready ones": "Replace the photos for every row that is unambiguously matched",
+    "Square up a photo": "Crop one photo to the card and save a square copy for manual upload",
+    "Pick photo(s)...": "Choose the photos this panel works on",
+    "Use this image": "Take the picture selected above as this card's image",
+    "Another scan...": "Load a different scan when the image is not on these sheets",
+    # -- dialogs ----------------------------------------------------------
+    "Cancel": "Close this window and change nothing",
+    "Close": "Close this window",
+    "Not now": "Skip this offer; nothing is changed",
+    "Use this card": "Take the selected card as the one being replaced",
+    "Use this product": "Take the selected product as the one whose photos change",
+    "Use selected listing": "Use the listing selected above",
+    "Replace the selected row": "Replace that gallery row with the new photo",
+    "Remove this photo from the product": "Take that row off the product; the image file stays in the media library",
+    "Keep every existing photo": "Add the new photo beside the old ones instead of replacing any",
+    "No old back - keep every row and add the new back": "Leave the gallery as it is and add the new back beside it",
+    "Leave this card unmatched": "Skip this card; nothing is written for it",
+    "Leave remaining unmatched": "Finish with the cards matched so far and skip the rest",
+    "Apply these changes": "Write the changes listed above",
+    "Skip this one": "Leave this card for later and move to the next",
+    "Cancel this card": "Stop this card; anything already written stays written",
+    "Cancel all": "Stop the whole run; anything already written stays written",
+    "Tick the selected ones": "Mark the selected checklist rows as done",
+    "Tick EVERYTHING": "Mark every outstanding row as done, after a confirmation",
+    "Open the selected row's link": "Open the marketplace page for the selected checklist row",
+    # -- re-runs ----------------------------------------------------------
+    "WooCommerce CSV": "Rebuild only the WooCommerce import CSV from the AI answer on disk",
+    "CanadianShopper CSV": "Rebuild only the CanadianShopper CSV and its staged photos",
+    "Facebook feed + xlsx": "Rebuild only the Facebook feed and the Marketplace delta workbook",
+    "eBay Quick List": "Rebuild only the eBay Quick List page",
+    "Choose a different AI text...": "Point this re-run at a different saved AI answer",
+    "Re-run a marketplace": "Open the panel that rebuilds one marketplace at a time",
+    # -- logs, reports and plugins ---------------------------------------
+    "Preview old pipeline files": "List the older output files and where they would be moved",
+    "Move old files into folders": "Move those files after a confirmation; nothing is deleted or overwritten",
+    "Open the GUI log (gui-log.txt)": "Open this app's own log",
+    "Open the pipeline output-file audit": "Open the list of every file the pipeline writes",
+    "Open the publish report": "Open the report from the last draft publish",
+    "Open the image-sync report": "Open the report from the last photo wiring",
+    "Open the stock report (sold-cards-report.csv)": "Open the report of applied sales",
+    "Open the CSV file": "Open this batch's CSV in your spreadsheet",
+    "Open the CSV": "Open that CSV in your spreadsheet",
+    "Open the batch folder": "Open the folder holding this batch's files",
+    "Open the cs-ready folder": "Open the folder of photos prepared for CanadianShopper",
+    "Open the Facebook feed folder (the delta xlsx lives here)": "Open the folder holding the Facebook feed and workbook",
+    "Open the plugins folder": "Open the folder plugins are installed into",
+    "Open the scanner folder": "Open the folder your scans are saved to",
+    "Open the report (cs-image-report.csv)": "Open the report from the last image sync",
+    "Open canadianshopper.ca": "Open the CanadianShopper site in your browser",
+    "Your eBay listings": "Open your active eBay listings",
+    "Your Facebook listings": "Open your Facebook Marketplace selling page",
+    "Install from ZIP...": "Install a plugin from a ZIP you trust; plugin code runs as you",
+    "Enable": "Turn this plugin back on",
+    "Disable": "Turn this plugin off without uninstalling it",
+    "Remove...": "Uninstall this plugin after a confirmation",
+    "Remove selected": "Remove the selected item from this list",
+    "New command": "Add a custom AI command button for the pipeline dialog",
+    "Add / update button": "Save this command as a new button, or update the selected one",
+    "Run the Facebook feed updater": "Run the Facebook feed companion on its own",
+    "Split the scans and build the CSV": "Split the scans and run the listing step",
+    # -- console ----------------------------------------------------------
+    "Send": "Send what you typed to the running tool",
+    "Enter": "Send a bare Enter to the running tool",
+    "Stop": "Stop the running tool; anything already written stays written",
+}
+
+
+def tip_for(text):
+    """The hover explanation for a button's text, or "" when there is none."""
+    text = str(text or "").strip()
+    if text in TOOLTIPS:
+        return TOOLTIPS[text]
+    best = ""
+    for key in TOOLTIPS:
+        if text.startswith(key) and len(key) > len(best):
+            best = key
+    return TOOLTIPS[best] if best else ""
+
+
+def _descendants(widget):
+    """Every widget under ``widget``, parents before children."""
+    try:
+        children = widget.winfo_children()
+    except Exception:
+        return
+    for child in children:
+        yield child
+        yield from _descendants(child)
+
+
+def tips_missing(root):
+    """Button texts under ``root`` that have no hover explanation."""
+    missing = []
+    for widget in _descendants(root):
+        text = button_text(widget)
+        if text is None:
+            continue
+        existing = getattr(widget, "_alex_tooltip", None)
+        if existing is not None and getattr(existing, "text", ""):
+            continue
+        if not tip_for(text):
+            missing.append(text)
+    return missing
+
+
+def button_text(widget):
+    """A button's caption, or None when the widget is not a button."""
+    try:
+        if not isinstance(widget, (ttk.Button, tk.Button)):
+            return None
+        return str(widget.cget("text") or "")
+    except Exception:
+        return None
+
+
+def attach_tooltips(root):
+    """Give every button under ``root`` a hover explanation it does not have.
+
+    Called once a window or panel is built. A button that already carries an
+    explanation (the task menu's own, or one written for a specific case) is
+    left alone, so nothing is explained twice.
+    """
+    added = 0
+    for widget in _descendants(root):
+        text = button_text(widget)
+        if text is None:
+            continue
+        existing = getattr(widget, "_alex_tooltip", None)
+        if existing is not None and getattr(existing, "text", ""):
+            continue
+        tip = tip_for(text)
+        if tip:
+            add_tooltip(widget, tip)
+            added += 1
+    return added
+
+
 # --------------------------------------------------------------------- app
 class App(tk.Tk):
     def __init__(self, settings=None, scans=None):
@@ -1675,6 +1885,7 @@ class App(tk.Tk):
         top.protocol("WM_DELETE_WINDOW", leave_rest)
         render()
         entry.focus_set()
+        attach_tooltips(top)
         self.wait_window(top)
         return chosen
 
@@ -1767,6 +1978,7 @@ class App(tk.Tk):
                    command=cancel).pack(side="right")
         listing.bind("<Double-Button-1>", take_row)
         top.protocol("WM_DELETE_WINDOW", cancel)
+        attach_tooltips(top)
         self.wait_window(top)
         if answer["choice"] == "row" and answer["row"] is not None:
             return {"row": answer["row"]}
@@ -1812,6 +2024,7 @@ class App(tk.Tk):
             side="right", padx=(0, 8))
         top.protocol("WM_DELETE_WINDOW", top.destroy)
         top.grab_set()
+        attach_tooltips(top)
         self.wait_window(top)
         return result["browser"]
 
@@ -1921,43 +2134,39 @@ BLURBS = {
 
 
 def panel_header(parent, app, pid, with_doc=True):
-    """Title on top; the panel's help collected underneath the actions.
+    """Title and its help button on one row; the help opens right below it.
 
-    The help used to sit directly below the title, which pushed the buttons
-    and fields it explains towards the bottom of the window - at 800x600 they
-    were off-screen until the panel was scrolled. A title is a heading, not an
-    explanation, so it stays where it is; everything the help says is packed
-    against the *bottom* edge, which means every widget the builder adds lands
-    above it and is seen first.
+    Two earlier arrangements were wrong for the same reason. The help used to
+    sit under the title as eight lines of always-on prose, which pushed the
+    buttons it explains off the bottom of the window; then it went to the
+    bottom edge with its button, which meant the button that opens it was
+    itself at the bottom of the panel, several screens below the title on a
+    long one.
 
-    The help is folded until asked for. It is reference text: a panel is
-    opened to do something with it, not to read it, and eight lines of prose
-    always on screen is eight lines not given to the work.
+    Now the button sits beside the title, where a reader looks for "more about
+    this", and the text it opens appears directly beneath that row - so
+    clicking it always shows something at the point where the click happened.
+    It still starts folded: a panel is opened to do something with it.
     """
     core = not getattr(app, "cs_addon", True)
     titles = TITLES
     docs = {**DOCS, **(DOCS_CORE if core else {})}
     #  Inside a section the frame itself carries the title, and printing it
     #  again would give the panel two headings a few pixels apart.
-    if not getattr(parent, "_section_titled", False):
-        top = ttk.Frame(parent)
-        top.pack(fill="x", pady=(0, 3))
-        ttk.Label(top, text=titles[pid], style="H2.TLabel").pack(anchor="w")
-    else:
-        top = None
+    sectioned = getattr(parent, "_section_titled", False)
+    top = ttk.Frame(parent)
+    top.pack(fill="x", pady=(0, 2))
+    if not sectioned:
+        ttk.Label(top, text=titles[pid], style="H2.TLabel").pack(side="left")
     if with_doc:
         text = docs.get(pid, DOCS.get(pid, "")).strip()
-        #  Packed before the builder adds anything and against the bottom, so
-        #  it stays underneath whatever the builder puts in the panel.
+        #  Builders put their own explanations here (panel_note), so they end
+        #  up below the work rather than between it and the title.
         notes = ttk.Frame(parent)
         notes.pack(side="bottom", fill="x", pady=(6, 0))
-        #  Builders put their own explanations here (panel_note), so they end
-        #  up below the work but above the help toggle.
-        body = ttk.Frame(notes)
-        body.pack(fill="x")
-        foot = ttk.Frame(notes)
-        foot.pack(fill="x")
-        doc = ttk.Label(foot, text=text, style="Dim.TLabel", wraplength=780,
+        held = ttk.Frame(top)         # the open help, under the title row
+        held.pack(fill="x", pady=(3, 2))
+        doc = ttk.Label(held, text=text, style="Dim.TLabel", wraplength=780,
                         justify="left")
         open_now = pid in getattr(app, "_docs_open", set())
 
@@ -1969,15 +2178,15 @@ def panel_header(parent, app, pid, with_doc=True):
                 help_button.configure(text="What this panel does")
             else:
                 app._docs_open = getattr(app, "_docs_open", set()) | {pid}
-                doc.pack(fill="x", pady=(2, 4))
+                doc.pack(fill="x")
                 help_button.configure(text="Hide this help")
 
-        help_button = ttk.Button(foot, text="Hide this help" if open_now else
+        help_button = ttk.Button(top, text="Hide this help" if open_now else
                                  "What this panel does", command=toggle)
-        help_button.pack(anchor="w")
+        help_button.pack(side="right")
         if open_now:
-            doc.pack(fill="x", pady=(2, 4), before=help_button)
-        parent._notes_frame = body
+            doc.pack(fill="x")
+        parent._notes_frame = notes
         app._doc_label = doc          # the text itself, for tests and reading
         app._doc_button = help_button
     return top
@@ -2000,6 +2209,7 @@ def panel_section(parent, app, pid, expand=True):
                  padx=2, pady=(0, 10))
     section._section_titled = True      # panel_header keeps its heading off
     PANEL_BUILDERS[pid](section, app)
+    attach_tooltips(section)
     return section
 
 
@@ -3627,6 +3837,7 @@ def build_ordertext(parent, app):
         ttk.Button(buttons, text="Cancel", command=top.destroy).pack(
             side="right", padx=8)
         top.protocol("WM_DELETE_WINDOW", top.destroy)
+        attach_tooltips(top)
         app.wait_window(top)
         return result["ok"]
 
@@ -3745,6 +3956,7 @@ def build_ordertext(parent, app):
         listing.bind("<Double-Button-1>", use)
         entry.bind("<Return>", lambda *_: do_search())
         show(candidates)
+        attach_tooltips(top)
         app.wait_window(top)
         return chosen["product"]
 
@@ -4008,6 +4220,7 @@ def build_newphotos(parent, app):
         ttk.Button(buttons, text="Cancel",
                    command=top.destroy).pack(side="right", padx=8)
         listing.bind("<Double-Button-1>", accept)
+        attach_tooltips(top)
         app.wait_window(top)
         return chosen["row"]
 
@@ -4499,6 +4712,7 @@ def build_newphotos(parent, app):
                       justify="left").pack(anchor="w", padx=10, pady=(0, 8))
             accept_button.configure(command=accept)
             top.bind("<Return>", accept)
+            attach_tooltips(top)
             app.wait_window(top)
             return chosen["tile"]
 
@@ -4554,6 +4768,7 @@ def build_newphotos(parent, app):
                 ttk.Button(row, text="Another scan...",
                            command=another).pack(side="left")
             listing.bind("<Double-Button-1>", accept)
+            attach_tooltips(top)
             app.wait_window(top)
             return chosen["tile"]
 
@@ -4622,6 +4837,7 @@ def build_newphotos(parent, app):
             side="right")
         listing.bind("<Double-Button-1>", take_row)
         top.protocol("WM_DELETE_WINDOW", cancel)
+        attach_tooltips(top)
         app.wait_window(top)
         return answer
 
@@ -4994,6 +5210,7 @@ def build_newphotos(parent, app):
             side="right", padx=8)
         listing.pack(fill="both", expand=True, padx=10, pady=(0, 4))
         said.pack(anchor="w", padx=10, pady=(0, 8))
+        attach_tooltips(top)
         render()
 
     def start():
@@ -5270,6 +5487,7 @@ class PipelineDialog(tk.Toplevel):
         self.status = ttk.Label(box, text="", foreground="#1b5e20",
                                 wraplength=740, justify="left")
         self.status.pack(fill="x")
+        attach_tooltips(self)
 
         ttk.Separator(box).pack(fill="x", pady=5)
         ttk.Label(box, text="3) The AI's answer", style="H2.TLabel").pack(
@@ -5839,6 +6057,7 @@ class TasksFrame(ttk.Frame):
                 button.grid(row=row, column=column, sticky="w",
                             padx=(0, 8 if column == 0 else 0), pady=3)
                 add_tooltip(button, BLURBS[pid])
+        attach_tooltips(self.menu)
 
     def show_panel(self, pid):
         self.menu.destroy()
@@ -5848,6 +6067,7 @@ class TasksFrame(ttk.Frame):
                    command=lambda: self.app.show_mode("menu")).pack(
                        anchor="w", pady=(2, 6))
         PANEL_BUILDERS[pid](wrap, self.app)
+        attach_tooltips(wrap)
 
 
 # --------------------------------------------------------------- tabs
@@ -5927,6 +6147,7 @@ class WizardFrame(ttk.Frame):
                 self.app.show_mode("menu")
             ttk.Button(self.content, text="Finish", style="Task.TButton",
                        command=finish).pack(anchor="w")
+            attach_tooltips(self.content)
             return
         if pid == "welcome":
             ttk.Label(self.content, text="Welcome", style="H1.TLabel").pack(
