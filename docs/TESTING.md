@@ -119,7 +119,7 @@ Notes:
 | `test-order-panel.py` | Pillow | Drives the real order panel against a stubbed Tk: the pasted list, the picker, new vs existing orders, the discount, and the no-keys fallback. |
 | `test-sale-preview.py` | Pillow | The preview before anything is written: which orders count as sales, what is still to add, the add-these-orders-only arguments, and the key offer when the file is missing. |
 | `test-stock-compare.py` | Pillow | Matching two catalogues card by card (SKU first, then title) and reporting only the disagreements, plus the on-demand comparison panel. |
-| `test-market-stock.py` | Pillow | The eBay/Facebook session: the three ways a cookie gets pasted, a login wall told apart from a listings page, and the panel saving a copy instead of pretending to read it. |
+| `test-market-stock.py` | Pillow | The eBay/Facebook session and readers: the three ways a cookie gets pasted, eBay rows parsed with their quantities, Facebook states turned into listed/not listed, a login wall told apart from an empty shop, and the panel comparing on demand. |
 | `..\installer\test-bundled-config.py` | nothing | Checks the version/filename/SHA pins agree. |
 
 Every script must end in `PASS` / `OK` / `ALL ... PASSED` and exit 0.

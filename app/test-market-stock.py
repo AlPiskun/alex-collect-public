@@ -44,6 +44,7 @@ def load_harness():
 harness = load_harness()
 gui = harness.gui
 import market_stock                                  # noqa: E402
+import stock_compare                                 # noqa: E402
 
 LISTINGS_PAGE = """<!DOCTYPE html><html><head>
 <title>Active listings | eBay</title></head><body>
@@ -184,6 +185,175 @@ def test_pages():
           page.is_file() and "Gretzky" in page.read_text(encoding="utf-8"), "")
 
 
+EBAY_PAGE = """<html><head><title>Manage active listings - eBay Seller Hub</title>
+</head><body><table><tbody>
+<tr data-id="389440929928" data-site="2" class="grid-row">
+<td class="shui-dt--selector"><div class="checkbox"><input aria-label="Select
+ this item for performing bulk action - #75 Bert Campaneris"></div></td>
+<td class="shui-dt-column__title shui-dt--left"><div class="cell-wrapper">
+<div class="column-title"><div class="column-title__text-wrapper">
+<div class="column-title__text"><a href="https://www.ebay.ca/itm/389440929928">
+#75 Bert Campaneris 1967 O-Pee-Chee Baseball Card</a></div>
+<div class="column-title__subtext"><span>Buy It Now &middot; 389440929928</span>
+</div></div></div></div></td>
+<td class="shui-dt-column__listingSKU shui-dt--left"><div class="cell-wrapper">
+<div class="shui-dt--text-column"><div><span></span></div></div></div></td>
+<td class="shui-dt-column__price shui-dt--right"><div class="cell-wrapper">
+<div class="col-price"><div class="col-price__current"><span>C $34.10</span>
+</div></div></div></td>
+<td class="shui-dt-column__availableQuantity shui-dt--right"><div
+ class="cell-wrapper"><div class="shui-dt--text-column"><div><span>1</span>
+</div></div></div></td>
+<td class="shui-dt-column__visitCount shui-dt--right">0</td></tr>
+<tr data-id="389440982416" data-site="2" class="grid-row">
+<td class="shui-dt-column__title shui-dt--left"><div class="cell-wrapper">
+<div class="column-title"><div class="column-title__text-wrapper">
+<div class="column-title__text"><a href="https://www.ebay.ca/itm/389440982416">
+#189 Gene Tenace 1972 O-Pee-Chee Baseball Card</a></div></div></div></div></td>
+<td class="shui-dt-column__listingSKU shui-dt--left"><div class="cell-wrapper">
+<div class="shui-dt--text-column"><div><span>GT-189</span></div></div></div></td>
+<td class="shui-dt-column__availableQuantity shui-dt--right"><div
+ class="cell-wrapper"><div class="shui-dt--text-column"><div><span>3</span>
+</div></div></div></td></tr>
+<tr data-id="389441056820" data-site="2" class="grid-row">
+<td class="shui-dt-column__title shui-dt--left"><div class="cell-wrapper">
+<div class="column-title"><div class="column-title__text-wrapper">
+<div class="column-title__text"><a href="https://www.ebay.ca/itm/389441056820">
+#149 Chico Maki (EX) 1970-71 O-Pee-Chee Hockey Card</a></div></div></div>
+</div></td>
+<td class="shui-dt-column__availableQuantity shui-dt--right"><div
+ class="cell-wrapper"><div class="shui-dt--text-column"><div><span>0</span>
+</div></div></div></td></tr>
+</tbody></table></body></html>"""
+
+FB_PAGE = """<html><head><title>Facebook</title></head><body>
+<div><span>Status</span><span>All</span><span>Available &amp; in stock</span>
+<span>Sold &amp; out of stock</span><span>Pending</span><span>Draft</span></div>
+<div><a aria-label="1973-74 O-Pee-Chee Walt Tkaczuk #25 New York Rangers Center
+ EX-MT Dark Back Trading Card" href="/marketplace/item/1"></a>
+<div><span>1973-74 O-Pee-Chee Walt Tkaczuk #25 NY Rangers Center EX-MT Dark
+ Back Trading Card</span><span>CA$8</span><span>Active</span>
+<span>&middot; Listed on 10/25</span><span>Mark as sold</span></div></div>
+<div><div><span>1973-74 O-Pee-Chee Joe Watson #91 Flyers Defense EX-MT
+ Dark Back Trading Card</span><span>CA$5</span><span>Sold</span>
+<span>&middot; Listed on 10/20</span></div></div>
+<div><div><span>1973-74 O-Pee-Chee Real Lemieux #122 LA Kings LW EX-MT Light
+ Back Trading Card</span><span>CA$4</span><span>Pending</span>
+</div></div>
+<div><div><span>1973-74 O-Pee-Chee Rod Seiling #9 Dark Back NY Rangers NHL
+ Trading Card</span><span>CA$6</span><span>Draft</span></div></div>
+</body></html>"""
+
+
+def test_parsing():
+    print()
+    print("== 4. reading the two pages ==")
+    items = market_stock.parse_ebay_listings(EBAY_PAGE)
+    check("every row on an eBay page becomes a listing", len(items) == 3,
+          str(items))
+    check("the title is the row's own title",
+          items[0]["name"] == "#75 Bert Campaneris 1967 O-Pee-Chee Baseball Card",
+          items[0]["name"])
+    check("the listing id comes with it", items[0]["id"] == "389440929928",
+          items[0]["id"])
+    check("the available quantity is a number",
+          [item["qty"] for item in items] == [1, 3, 0],
+          str([item["qty"] for item in items]))
+    check("a zero is a listing at zero, not a missing row",
+          items[2]["qty"] == 0, str(items[2]))
+    check("a custom label is read when the seller uses one",
+          items[1]["sku"] == "GT-189", items[1]["sku"])
+    check("an empty custom label is empty, not a stray word",
+          items[0]["sku"] == "", repr(items[0]["sku"]))
+
+    broken = EBAY_PAGE.replace("<span>3</span>", "<span>out of stock</span>")
+    check("a row whose quantity cannot be read is skipped, never counted as 0",
+          [item["qty"] for item in market_stock.parse_ebay_listings(broken)]
+          == [1, 0], str(market_stock.parse_ebay_listings(broken)))
+    check("a page with no rows is an empty list, not a crash",
+          market_stock.parse_ebay_listings("<html></html>") == [], "")
+    check("junk is an empty list too",
+          market_stock.parse_ebay_listings(None) == [], "")
+
+    fb = market_stock.parse_facebook_listings(FB_PAGE)
+    check("each Facebook listing becomes a row", len(fb) == 3, str(fb))
+    check("an Active listing counts as one",
+          fb[0]["status"] == "Active" and fb[0]["qty"] == 1, str(fb[0]))
+    check("a Sold listing counts as none",
+          fb[1]["status"] == "Sold" and fb[1]["qty"] == 0, str(fb[1]))
+    check("a Pending listing still counts as one, and says Pending",
+          fb[2]["status"] == "Pending" and fb[2]["qty"] == 1, str(fb[2]))
+    check("a Draft is not on the site, so it is left out",
+          all("Rod Seiling" not in item["name"] for item in fb), str(fb))
+    check("the title is the line above the price",
+          fb[0]["name"].startswith("1973-74 O-Pee-Chee Walt Tkaczuk #25"),
+          fb[0]["name"])
+    check("the price is kept for the record", fb[0]["price"] == "CA$8",
+          fb[0]["price"])
+    check("the status filter's own words are not mistaken for a listing",
+          all(item["name"] not in ("All", "Sold & out of stock")
+              for item in fb), str(fb))
+    check("one dispatcher serves both sites",
+          len(market_stock.parse_listings("ebay", EBAY_PAGE)) == 3 and
+          len(market_stock.parse_listings("facebook", FB_PAGE)) == 3, "")
+
+
+def test_pages_of_ebay():
+    print()
+    print("== 4b. eBay is read page by page ==")
+    check("an offset is added to the address",
+          market_stock.page_url("https://www.ebay.ca/sh/lst/active", 200)
+          .endswith("?offset=200"),
+          market_stock.page_url("https://www.ebay.ca/sh/lst/active", 200))
+    check("an offset already in the address is replaced, not doubled",
+          market_stock.page_url("https://x/sh/lst/active?offset=0&a=1", 400)
+          == "https://x/sh/lst/active?a=1&offset=400",
+          market_stock.page_url("https://x/sh/lst/active?offset=0&a=1", 400))
+
+    def full_page(base, count=200):
+        rows = "".join(
+            '<tr data-id="%d" class="grid-row"><td class="shui-dt-column__'
+            'title"><div class="column-title__text"><a href="#">#%d Card</a>'
+            '</div></td><td class="shui-dt-column__availableQuantity"><div>'
+            '<span>1</span></div></td></tr>' % (base + i, base + i)
+            for i in range(count))
+        return "<html><table><tbody>%s</tbody></table></html>" % rows
+
+    asked = []
+
+    def fetch_page(url, cookie):
+        asked.append(url)
+        page = len(asked) - 1
+        return 200, (full_page(1000) if page == 0 else full_page(2000, 5))
+
+    items, pages, _text = market_stock.read_ebay(fetch_page, "https://x/lst", "c")
+    check("a full first page is followed by the next one", pages == 2,
+          str(pages))
+    check("both pages' listings are kept", len(items) == 205, str(len(items)))
+    check("the second page is asked for by offset",
+          "offset=200" in asked[1], str(asked))
+    check("a short page ends the walk", pages == 2, str(pages))
+
+    def repeats(url, cookie):
+        return 200, full_page(1000, 200)
+
+    items, pages, _ = market_stock.read_ebay(repeats, "https://x/lst", "c")
+    check("a site that keeps serving the same page cannot loop forever",
+          pages == 2 and len(items) == 200, "%d pages, %d items" %
+          (pages, len(items)))
+
+    def refused(url, cookie):
+        return 403, "denied"
+
+    try:
+        market_stock.read_ebay(refused, "https://x/lst", "c")
+        check("a refused page is reported, not read as an empty shop", False, "")
+    except market_stock.MarketError as exc:
+        check("a refused page is reported, not read as an empty shop",
+              "403" in exc.message and "expired" in exc.hint,
+              exc.message + " / " + exc.hint)
+
+
 def test_site_rows():
     print()
     print("== 4. the two sites are declared in one place ==")
@@ -228,19 +398,45 @@ def sync_background(app, work, done):
     return done(result, error)
 
 
+def sync_background(app, work, done):
+    try:
+        result, error = work(), None
+    except Exception as exc:
+        result, error = None, exc
+    return done(result, error)
+
+
+EBAY_FIRST_PAGE = EBAY_PAGE          # three rows: qty 1, 3, 0
+
+WOO_PRODUCTS = [
+    {"id": 1, "name": "#75 Bert Campaneris 1967 O-Pee-Chee Baseball Card",
+     "sku": "", "manage_stock": True, "stock_quantity": 1, "type": "simple"},
+    {"id": 2, "name": "#189 Gene Tenace 1972 O-Pee-Chee Baseball Card",
+     "sku": "", "manage_stock": True, "stock_quantity": 1, "type": "simple"},
+    {"id": 3, "name": "#149 Chico Maki 1970-71 O-Pee-Chee Hockey Card",
+     "sku": "", "manage_stock": True, "stock_quantity": 0, "type": "simple"},
+]
+
+
 def test_panel():
     print()
-    print("== 5. the panel checks a session instead of pretending ==")
+    print("== 5. the panel compares eBay and Facebook on demand ==")
     folder, app, parent = build_panel()
-    ebay = find(parent, gui.ttk.Button, "Check eBay and save the page")
-    facebook = find(parent, gui.ttk.Button, "Check Facebook and save the page")
-    check("there is one button per site", ebay is not None and
-          facebook is not None, "")
-    check("both start unchecked",
-          find(parent, gui.ttk.Label, "not checked yet") is not None, "")
+    ebay = find(parent, gui.ttk.Button, "Compare stock with eBay")
+    fb = find(parent, gui.ttk.Button, "Compare stock with Facebook")
+    check("there is one comparison button per site",
+          ebay is not None and fb is not None, "")
+    check("the CanadianShopper comparison is still there",
+          find(parent, gui.ttk.Button,
+               "Compare stock (WooCommerce and CanadianShopper)") is not None,
+          "")
+    check("both sites show they have no session yet",
+          len([w for w in parent.walk() if isinstance(w, gui.ttk.Label)
+               and str(w.cget("text")) == "no session saved"]) == 2,
+          str([w.cget("text") for w in parent.walk()
+               if isinstance(w, gui.ttk.Label)]))
 
-    opened = []
-    shown = []
+    opened, shown = [], []
     harness._BOX.showinfo = lambda *a, **k: shown.append(a)
     with patch.object(gui, "BASE", folder), \
             patch.object(gui, "open_market_cookie",
@@ -248,47 +444,91 @@ def test_panel():
         ebay.invoke()
     check("with no cookie it offers the private file",
           opened == ["ebay"], str(opened))
-    check("and says what to paste",
+    check("and says every cookie can be pasted at once",
           any("Cookie header" in str(a) for a in shown), str(shown))
     check("nothing is fetched without a cookie", not app.runs, "")
 
-    (folder / "ebay-cookie.txt").write_text("SID=abc\n", encoding="utf-8")
+    (folder / "ebay-cookie.txt").write_text("SID=abc; token=xyz\n",
+                                            encoding="utf-8")
     with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
             patch.object(market_stock, "fetch",
-                         lambda url, cookie: (200, LISTINGS_PAGE)), \
+                         lambda url, cookie: (200, EBAY_FIRST_PAGE)), \
+            patch.object(stock_compare, "read_woo_stock",
+                         lambda *a, **k: WOO_PRODUCTS), \
             patch.object(gui, "in_background", sync_background):
         ebay.invoke()
-    saved = folder / "ebay-active.html"
-    check("a good answer is saved beside the app",
-          saved.is_file() and "Gretzky" in saved.read_text(encoding="utf-8"),
-          str(saved))
-    check("and the panel says it kept a copy",
-          find(parent, gui.ttk.Label, "saved a copy") is not None,
+    listing = next((w for w in parent.walk()
+                    if isinstance(w, gui.tk.Listbox)), None)
+    check("the disagreement between eBay and the website is listed",
+          listing is not None and len(listing.items) == 1,
+          str(listing and listing.items))
+    check("the row names eBay and both counts",
+          listing and "eBay 3" in listing.items[0], str(listing and listing.items))
+    check("the summary counts it against eBay",
+          find(parent, gui.ttk.Label, "1 of 3 matched cards disagree.")
+          is not None,
           str([w.cget("text") for w in parent.walk()
-               if isinstance(w, gui.ttk.Label)]))
-    check("the console says nothing on the site was changed",
-          any("nothing on eBay was changed" in text
+               if isinstance(w, gui.ttk.Label)][:4]))
+    saved = folder / "ebay-active.html"
+    check("the page read is kept beside the app",
+          saved.is_file() and "Bert Campaneris" in
+          saved.read_text(encoding="utf-8"), str(saved))
+    check("the status shows how many listings were read",
+          find(parent, gui.ttk.Label, "3 listings") is not None, "")
+    check("nothing on the site was changed",
+          any("Nothing was changed on either site" in text
               for _tag, text in app.lines), str(app.lines[-2:]))
+    check("no tool was started: both reads are plain page reads",
+          not app.runs, str(app.runs))
 
+    # ---- a login wall is a login wall, not an empty shop
     warned = []
     real_warning = harness._BOX.showwarning
     harness._BOX.showwarning = lambda *a, **k: warned.append(a)
     (folder / "fb-cookie.txt").write_text("c_user=1; xs=2\n", encoding="utf-8")
     with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
             patch.object(market_stock, "fetch",
                          lambda url, cookie: (200, LOGIN_PAGE)), \
             patch.object(gui, "in_background", sync_background):
-        facebook.invoke()
-    check("a login wall is reported as a stale cookie",
-          warned and "expired" in str(warned[0]), str(warned))
+        fb.invoke()
+    check("an expired Facebook cookie is reported as a sign-in page",
+          warned and "sign-in page" in str(warned[0]), str(warned))
+    check("the dialog says how to fix it",
+          warned and "fresh Cookie header" in str(warned[0]), str(warned))
+    check("and that nothing was read or changed",
+          warned and "Nothing was read" in str(warned[0]), str(warned))
     check("the status says it is not signed in",
           find(parent, gui.ttk.Label, "not signed in") is not None, "")
-    check("nothing is compared from a login page",
-          not any(w.packed for w in parent.walk()
-                  if isinstance(w, gui.tk.Listbox)
-                  and getattr(w, "items", [])), "")
+    check("the old eBay list is cleared rather than left looking current",
+          not listing.items, str(listing.items))
     harness._BOX.showwarning = real_warning
 
+    # ---- a page nobody understands says so, and keeps the copy
+    warned[:] = []
+    harness._BOX.showwarning = lambda *a, **k: warned.append(a)
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(market_stock, "fetch",
+                         lambda url, cookie: (200, "<html><body>nothing"
+                                                    " here</body></html>")), \
+            patch.object(gui, "in_background", sync_background):
+        fb.invoke()
+    harness._BOX.showwarning = real_warning
+    check("a page with no readable listing is not called an empty shop",
+          warned and "no listing on it could be read" in str(warned[0]),
+          str(warned))
+    check("and the saved copy is pointed at",
+          warned and "fb-selling.html" in str(warned[0]), str(warned))
+
+    # ---- a site that cannot be reached
     errors = []
     real_error = harness._BOX.showerror
     harness._BOX.showerror = lambda *a, **k: errors.append(a)
@@ -298,14 +538,46 @@ def test_panel():
                                        "Check the address.")
 
     with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
             patch.object(market_stock, "fetch", offline), \
             patch.object(gui, "in_background", sync_background):
-        facebook.invoke()
+        fb.invoke()
     harness._BOX.showerror = real_error
     check("a site that cannot be reached is reported",
           errors and "Could not reach" in str(errors[0]), str(errors))
-    check("and the status does not claim a copy was kept",
-          find(parent, gui.ttk.Label, "could not be reached") is not None, "")
+    check("and it does not claim a copy was kept",
+          find(parent, gui.ttk.Label, "could not be read") is not None, "")
+
+
+def test_one_card_market():
+    print()
+    print("== 5b. one card, for eBay too ==")
+    folder = Path(tempfile.mkdtemp())
+    harness.install_plugin("1.0.20", folder / "plugin")
+    app = harness.FakeApp(folder)
+    app._stock_filter = "#189 Gene Tenace 1972 O-Pee-Chee Baseball Card"
+    parent = harness.FakeWidget()
+    gui.build_stock(parent, app)
+    (folder / "ebay-cookie.txt").write_text("SID=abc\n", encoding="utf-8")
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(market_stock, "fetch",
+                         lambda url, cookie: (200, EBAY_FIRST_PAGE)), \
+            patch.object(stock_compare, "read_woo_stock",
+                         lambda *a, **k: WOO_PRODUCTS), \
+            patch.object(gui, "in_background", sync_background):
+        find(parent, gui.ttk.Button, "Compare stock with eBay").invoke()
+    listing = next(w for w in parent.walk() if isinstance(w, gui.tk.Listbox))
+    check("the one-card hand-off narrows the eBay comparison too",
+          len(listing.items) == 1 and "#189" in listing.items[0],
+          str(listing.items))
+    check("and the summary says so",
+          any("(only this card)" in str(w.cget("text")) for w in parent.walk()
+              if isinstance(w, gui.ttk.Label)), "")
 
 
 def test_cookie_file():
@@ -322,6 +594,8 @@ def test_cookie_file():
     text = path.read_text(encoding="utf-8")
     check("it says what to paste and how to find it",
           "Cookie" in text and "Network" in text, text[:80])
+    check("it says a site sends many cookies, not one",
+          "MANY cookies" in text and "semicolons" in text, text[:200])
     check("its explanation is ignored when the cookie is read",
           market_stock.read_cookie(path) == "",
           market_stock.read_cookie(path))
@@ -341,8 +615,11 @@ def main():
     test_cookies()
     test_fetch()
     test_pages()
+    test_parsing()
+    test_pages_of_ebay()
     test_site_rows()
     test_panel()
+    test_one_card_market()
     test_cookie_file()
     print()
     if FAIL:

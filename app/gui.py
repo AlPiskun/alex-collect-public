@@ -62,7 +62,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.62"
+VERSION = "2.63"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1310,8 +1310,10 @@ TOOLTIPS = {
     "Compare stock": "Read both catalogues and list only the cards whose counts disagree; nothing is changed",
     "Compare this card": "Open the stock panel pointed at the one card this sale is about",
     "Compare the whole catalogue instead": "Drop the one-card filter and compare everything",
-    "Check eBay and save the page": "Fetch your signed-in eBay active listings once and keep a copy; nothing is changed",
-    "Check Facebook and save the page": "Fetch your signed-in Facebook selling page once and keep a copy; nothing is changed",
+    "Compare stock with eBay": "Read your eBay active listings with your session cookie and list only the cards whose numbers disagree",
+    "Compare stock with Facebook": "Read your Facebook selling page with your session cookie and list only the cards whose numbers disagree",
+    "Open the eBay cookie file": "Open ebay-cookie.txt so the eBay session cookie can be pasted; the file stays on this computer",
+    "Open the Facebook cookie file": "Open fb-cookie.txt so the Facebook session cookie can be pasted; the file stays on this computer",
     "Preview new orders": "Read the orders that came in since you last looked, and write nothing",
     "Open plugins folder": "Open the folder plugins are installed into",
     "Open the tools folder": "Open the folder holding this app's tools",
@@ -2872,7 +2874,10 @@ def build_cookie(parent, app):
     market.pack(fill="x", pady=(1, 4))
     market.columnconfigure(1, weight=1)
     field_row(market, 0, "eBay active listings URL:", "ebay_selling_url")
-    field_row(market, 1, "Facebook listing/review page URL:",
+    #  Stock comparison reads these pages. The label says which one, because
+    #  the create-a-listing page is the one a person lands on first and it has
+    #  no stock on it at all.
+    field_row(market, 1, "Facebook selling page URL:",
               "facebook_selling_url")
     field_row(market, 2, "CanadianShopper vendor page URL:",
               "canadianshopper_store_url")
@@ -3209,9 +3214,14 @@ def open_market_cookie(app, site_id):
         path.write_text(
             "# Paste your %s session cookie below, then save this file.\n"
             "#\n"
+            "# A signed-in site sends MANY cookies, not one - paste all of them.\n"
             "# In the browser: sign in, press F12, open the Network tab, reload\n"
-            "# the page, click the page request itself and copy the whole value\n"
-            "# of the 'Cookie' request header. It can be one long line.\n"
+            "# the page, click the page request itself, and copy the whole value\n"
+            "# of the 'Cookie' request header. It is one long line of\n"
+            "# name=value pairs separated by semicolons; paste it as it is.\n"
+            "#\n"
+            "# Several lines work too: each is joined into the same header, and a\n"
+            "# line may start with 'Cookie:' - that part is removed for you.\n"
             "#\n"
             "# Lines starting with # are ignored, so this explanation is safe to\n"
             "# leave in place. The file stays on this computer and is never\n"
@@ -4245,9 +4255,7 @@ def build_stock(parent, app):
     focus = str(getattr(app, "_stock_filter", "") or "").strip()
     app._stock_filter = ""
     focus_box = {"card": focus}
-
-    def stock_action():
-        return TOOL_ACTION(CS_STOCK_ACTION)
+    statuses = {}
 
     def credentials():
         site, key, secret = read_woo_credentials()
@@ -4264,17 +4272,25 @@ def build_stock(parent, app):
         open_woo_keys_file(app, app.settings.get("woo_site_url", ""))
         return None
 
-    def show(rows, pairs, only_woo, only_other, skipped):
+    def clear_list():
+        #  An old comparison must never stay on screen looking like today's.
+        listing.delete(0, "end")
+        list_frame.pack_forget()
+
+    def show_result(rows, pairs, only_woo, only_other, skipped, label,
+                    mode="count"):
+        """Put one comparison on screen; the only place results are drawn."""
         listing.delete(0, "end")
         for row in rows:
-            listing.insert("end", stock_compare.label(row))
+            listing.insert("end", stock_compare.label(row, label, mode))
         if rows:
             list_frame.pack(anchor="w", fill="x", pady=(3, 4))
-            for line in stock_compare.describe(rows):
+            for line in stock_compare.describe(rows, other_label=label,
+                                               mode=mode):
                 app.console_line(line, "dim")
         else:
             list_frame.pack_forget()
-        text = stock_compare.summary(rows, pairs, only_woo, only_other)
+        text = stock_compare.summary(rows, pairs, only_woo, only_other, label)
         if focus_box["card"]:
             text = "%s  (only this card)" % text.rstrip(".")
         summary.configure(text=text)
@@ -4283,40 +4299,28 @@ def build_stock(parent, app):
                 "%d products were not compared: no stock count "
                 "(unmanaged or variable)." % skipped, "dim")
         app.console_line(
-            "Compared %d matched cards; %d disagree. Nothing was changed on "
-            "either site." % (len(pairs), len(rows)), "ok")
+            "Compared %d matched cards against %s; %d disagree. Nothing was "
+            "changed on either site." % (len(pairs), label, len(rows)), "ok")
 
-    def website_arrived(items, products, error):
-        if error is not None:
-            message = getattr(error, "message", str(error))
-            hint = getattr(error, "hint", "")
-            messagebox.showerror("Could not read your website",
-                                 message + ("\n\n" + hint if hint else ""),
-                                 parent=box.winfo_toplevel())
-            app.console_line("Stock comparison stopped: %s %s" % (message,
-                                                                  hint), "err")
-            summary.configure(text="Could not read your website: " + message)
-            clear_list()
-            return
-        woo, skipped = stock_compare.woo_items(products)
+    def narrow(woo, items):
+        """Keep only the one card this panel was opened for, if any."""
         wanted = focus_box["card"]
-        if wanted:
-            #  One card: keep only the listings on either side that answer to
-            #  that title, so the answer is about the card that was asked
-            #  about and not about the catalogue.
-            woo = [item for item in woo
-                   if woo_orders.score(wanted, item["name"]) >= 0.5]
-            items = [item for item in items
-                     if woo_orders.score(wanted, item["name"]) >= 0.5]
-        pairs, only_woo, only_other = stock_compare.pair(woo, items)
-        rows = stock_compare.differences(pairs)
-        show(rows, pairs, only_woo, only_other, skipped)
+        if not wanted:
+            return woo, items
+        keep = lambda rows: [item for item in rows
+                             if woo_orders.score(wanted, item["name"]) >= 0.5]
+        return keep(woo), keep(items)
 
-    def clear_list():
-        #  An old comparison must never stay on screen looking like today's.
-        listing.delete(0, "end")
-        list_frame.pack_forget()
+    def failed(what, message, hint):
+        messagebox.showerror("Could not compare with %s" % what,
+                             message + ("\n\n" + hint if hint else ""),
+                             parent=box.winfo_toplevel())
+        app.console_line("Stock comparison stopped: %s %s" % (message, hint),
+                         "err")
+        summary.configure(text="Could not read %s: %s" % (what, message))
+        clear_list()
 
+    # ------------------------------------------------------- CanadianShopper
     def plugin_arrived(rc, out, creds):
         if rc != 0:
             app.console_line("The CanadianShopper stock read failed (exit %s); "
@@ -4341,14 +4345,27 @@ def build_stock(parent, app):
                                "website..." % len(items))
         app.console_line("CanadianShopper: %d listings. Reading your website's "
                          "catalogue..." % len(items), "cmd")
+
+        def arrived(products, error):
+            if error is not None:
+                failed("CanadianShopper",
+                       getattr(error, "message", str(error)),
+                       getattr(error, "hint", ""))
+                return
+            woo, skipped = stock_compare.woo_items(products)
+            woo, items_here = narrow(woo, items)
+            pairs, only_woo, only_other = stock_compare.pair(woo, items_here)
+            show_result(stock_compare.differences(pairs), pairs, only_woo,
+                        only_other, skipped, "CanadianShopper")
+
         in_background(
             app,
             lambda: stock_compare.read_woo_stock(woo_get, site, key, secret),
-            lambda products, error: website_arrived(items, products, error))
+            arrived)
         return True
 
-    def compare():
-        action = stock_action()
+    def compare_cs():
+        action = TOOL_ACTION(CS_STOCK_ACTION)
         if not action:
             messagebox.showinfo(
                 "CanadianShopper stock list",
@@ -4376,10 +4393,173 @@ def build_stock(parent, app):
                      cwd=app.settings.get("pipeline_dir", str(WORK)),
                      on_done=lambda rc: plugin_arrived(rc, out, creds))
 
+    # ------------------------------------------------------- eBay / Facebook
+    #  Neither site offers a list this app can ask for, so the page the seller
+    #  is already signed in to is read instead - with their own cookie, once,
+    #  on demand. A login wall is reported as a login wall, never as "you have
+    #  nothing listed".
+    def market_read(site_id, info, url, cookie):
+        """Read the site's own page. Runs on the worker thread."""
+        if site_id == "ebay":
+            items, pages, text = market_stock.read_ebay(
+                market_stock.fetch, url, cookie)
+            return {"items": items, "pages": pages, "text": text}
+        status, text = market_stock.fetch(url, cookie)
+        if status != 200:
+            raise market_stock.MarketError(
+                "%s answered HTTP %s for that page." % (info["label"], status),
+                "That is usually a session that has expired: sign in and paste "
+                "a fresh cookie into %s." % (BASE / info["cookie"]),
+                kind="session")
+        if market_stock.looks_like_login(text):
+            raise market_stock.MarketError(
+                "%s answered with a sign-in page, not your listings." %
+                info["label"],
+                "The saved cookie has expired. Sign in, copy a fresh Cookie "
+                "header into %s, and press the button again." %
+                (BASE / info["cookie"]), kind="session")
+        return {"items": market_stock.parse_listings(site_id, text), "pages": 1,
+                "text": text}
+
+    def market_done(site_id, info, result, error, creds):
+        statuses[site_id].configure(text="not read")
+        if error is not None:
+            message = getattr(error, "message", str(error))
+            hint = getattr(error, "hint", "")
+            if getattr(error, "kind", "") == "session":
+                #  Not a failure to explain and hide: an expired cookie is
+                #  something the person fixes in a minute, so it is said in
+                #  those words, with the file to fix.
+                statuses[site_id].configure(text="not signed in")
+                messagebox.showwarning(
+                    "%s did not answer as a signed-in seller" % info["label"],
+                    message + ("\n\n" + hint if hint else "") +
+                    "\n\nNothing was read and nothing was changed.",
+                    parent=box.winfo_toplevel())
+                app.console_line("%s: %s %s" % (info["label"], message, hint),
+                                 "err")
+                summary.configure(text="%s is not signed in." % info["label"])
+                clear_list()
+                return
+            statuses[site_id].configure(text="could not be read")
+            failed(info["label"], message, hint)
+            return
+        page = market_stock.save_page(BASE / info["page"], result["text"])
+        items = result["items"]
+        if not items:
+            #  A signed-in page with no listing in it that this reader can
+            #  recognise: the page's wording changed, and the saved copy is
+            #  how that gets fixed. Saying "nothing is listed" would be a lie.
+            statuses[site_id].configure(text="page not understood")
+            messagebox.showwarning(
+                "Nothing on the %s page could be read" % info["label"],
+                "The page came back as %s, but no listing on it could be read."
+                "\n\nNothing was compared and nothing was changed. The copy "
+                "saved beside the app is what the reader is repaired against:\n"
+                "\n  %s" % (market_stock.describe(result["text"], 200), page),
+                parent=box.winfo_toplevel())
+            app.console_line(
+                "%s: the page loaded but no listing could be read; a copy is "
+                "at %s" % (info["label"], page), "err")
+            clear_list()
+            summary.configure(text="%s's page could not be understood." %
+                                   info["label"])
+            return
+        statuses[site_id].configure(
+            text="%d listing%s" % (len(items), "" if len(items) == 1 else "s"))
+        site, key, secret = creds
+        summary.configure(text="%s: %d listings. Reading your website..." %
+                               (info["label"], len(items)))
+        app.console_line(
+            "%s: %d listings read from %s (page copy at %s). Reading your "
+            "website's catalogue..." %
+            (info["label"], len(items), market_stock.describe(result["text"]),
+             page), "cmd")
+
+        def arrived(products, woo_error):
+            if woo_error is not None:
+                failed("your website", getattr(woo_error, "message",
+                                               str(woo_error)),
+                       getattr(woo_error, "hint", ""))
+                return
+            woo, skipped = stock_compare.woo_items(products)
+            woo, items_here = narrow(woo, items)
+            pairs, only_woo, only_other = stock_compare.pair(woo, items_here)
+            show_result(stock_compare.differences(pairs), pairs, only_woo,
+                        only_other, skipped, info["label"],
+                        "listed" if site_id == "facebook" else "count")
+            if site_id == "facebook":
+                app.console_line(
+                    "Facebook has no quantity: an Active listing counts as 1 "
+                    "and a Sold one as 0, so a card listed once never matches "
+                    "a website stock of 2 on the number alone.", "dim")
+
+        in_background(
+            app,
+            lambda: stock_compare.read_woo_stock(woo_get, site, key, secret),
+            arrived)
+
+    def market_work(site_id, info, url, cookie, creds):
+        """Both reads, on one worker thread, so nothing nests."""
+        done = market_read(site_id, info, url, cookie)
+        return done
+
+    def market_started(site_id, info, result, error):
+        #  The first half (the site) is done; the catalogue is asked for next.
+        creds = site_creds.get(site_id)
+        market_done(site_id, info, result, error, creds)
+
+    site_creds = {}
+
+    def compare_market(site_id):
+        info = market_stock.SITES[site_id]
+        url = str(app.settings.get("%s_selling_url" % site_id, "") or "").strip()
+        cookie_path = BASE / info["cookie"]
+        try:
+            cookie = market_stock.read_cookie(cookie_path)
+        except Exception:
+            cookie = ""
+        if not cookie:
+            messagebox.showinfo(
+                "%s needs your session cookie" % info["label"],
+                "%s publishes no list this app can ask for, so it reads the "
+                "page you are already signed in to - and that needs your "
+                "session cookie, pasted once into:\n\n  %s\n\n"
+                "That file is about to open. Paste the whole Cookie header "
+                "(all of its cookies are fine, on one line or several), save "
+                "it, then press this button again."
+                % (info["label"], cookie_path))
+            open_market_cookie(app, site_id)
+            return
+        if not url:
+            messagebox.showinfo(
+                "No address saved for %s" % info["label"],
+                "Set the %s page address in User Settings first." % info["label"])
+            return
+        creds = credentials()
+        if not creds:
+            return
+        site_creds[site_id] = creds
+        statuses[site_id].configure(text="reading...")
+        summary.configure(text="Reading %s ..." % info["label"])
+        app.console_line("Reading %s ..." % url, "cmd")
+        in_background(
+            app,
+            lambda: market_read(site_id, info, url, cookie),
+            lambda result, error: market_done(site_id, info, result, error,
+                                              creds))
+
+    # --------------------------------------------------------------- layout
+    ttk.Label(box, text="Compare with your website", style="H2.TLabel").pack(
+        anchor="w")
     row = ttk.Frame(box)
     row.pack(anchor="w", pady=(2, 0))
     ttk.Button(row, text="Compare stock (WooCommerce and CanadianShopper)",
-               style="Task.TButton", command=compare).pack(side="left")
+               style="Task.TButton", command=compare_cs).pack(side="left")
+    ttk.Button(row, text="Compare stock with eBay",
+               command=lambda: compare_market("ebay")).pack(side="left", padx=8)
+    ttk.Button(row, text="Compare stock with Facebook",
+               command=lambda: compare_market("facebook")).pack(side="left")
 
     if focus:
         focus_label = ttk.Label(box, text="Only this card: " + focus,
@@ -4396,6 +4576,7 @@ def build_stock(parent, app):
         clear_btn = ttk.Button(box, text="Compare the whole catalogue instead",
                                command=compare_everything)
         clear_btn.pack(anchor="w", pady=(2, 0))
+
     summary = ttk.Label(box, text="Nothing compared yet.", style="Dim.TLabel",
                         wraplength=680, justify="left")
     summary.pack(anchor="w", pady=(2, 0))
@@ -4409,116 +4590,43 @@ def build_stock(parent, app):
     scroll.pack(side="right", fill="y")
 
     ttk.Label(box,
-              text="Reads both catalogues and shows only the cards whose "
-                   "numbers disagree - website count and CanadianShopper "
-                   "count, side by side. A card that appears on one side only "
-                   "is counted as not compared, never reported as wrong, and "
-                   "a pair is only made when a shared SKU or the title says "
-                   "it is the same card.",
+              text="Each button reads the other site and your website and "
+                   "shows only the cards whose numbers disagree - website "
+                   "count and the other site's count, side by side. A card "
+                   "that appears on one side only is counted as not compared, "
+                   "never reported as wrong, and a pair is only made when a "
+                   "shared SKU, the same card number, or the title says it is "
+                   "the same card. Nothing is changed on either site.",
               style="Dim.TLabel", wraplength=680, justify="left").pack(
                   anchor="w", pady=(6, 0))
 
-    # -------------------------------------------------- Facebook and eBay
-    #  These two have no catalogue to ask for. The only truthful source is the
-    #  page the seller is already signed in to, so the app fetches that page
-    #  once, says whether the session is still good, and keeps a copy. Nothing
-    #  is compared until a reader has seen a real page from each site.
-    ttk.Label(box, text="Facebook and eBay", style="H2.TLabel").pack(
-        anchor="w", pady=(12, 0))
-    statuses = {}
-
-    def open_cookie(site_id):
-        open_market_cookie(app, site_id)
-
-    def check_arrived(site_id, info, result, error):
-        status_label = statuses[site_id]
-        if error is not None:
-            message = getattr(error, "message", str(error))
-            hint = getattr(error, "hint", "")
-            status_label.configure(text="could not be reached")
-            messagebox.showerror("%s could not be checked" % info["label"],
-                                 message + ("\n\n" + hint if hint else ""),
-                                 parent=box.winfo_toplevel())
-            app.console_line("%s: %s %s" % (info["label"], message, hint), "err")
-            return
-        status, text = result
-        page = market_stock.save_page(BASE / info["page"], text)
-        if status != 200 or market_stock.looks_like_login(text):
-            status_label.configure(text="not signed in")
-            messagebox.showwarning(
-                "%s did not answer as a signed-in seller" % info["label"],
-                "The page came back as %s.\n\nNothing was read and nothing "
-                "was changed. That is what an expired cookie looks like: open "
-                "the site, sign in, and paste a fresh one into\n%s."
-                % (market_stock.describe(text, status),
-                   BASE / info["cookie"]),
-                parent=box.winfo_toplevel())
-            app.console_line("%s answered with %s - the cookie is stale or the "
-                             "address is wrong." %
-                             (info["label"], market_stock.describe(text, status)),
-                             "err")
-            return
-        status_label.configure(text="saved a copy")
-        app.console_line(
-            "Saved %s to %s. The listing reader is written against that page; "
-            "nothing on %s was changed." %
-            (market_stock.describe(text, status), page, info["label"]), "ok")
-
-    def check(site_id):
-        info = market_stock.SITES[site_id]
-        url = str(app.settings.get("%s_selling_url" % site_id, "") or "").strip()
-        cookie_path = BASE / info["cookie"]
-        try:
-            cookie = market_stock.read_cookie(cookie_path)
-        except Exception:
-            cookie = ""
-        if not cookie:
-            messagebox.showinfo(
-                "%s needs your session cookie" % info["label"],
-                "%s publishes no list this app can ask for, so it reads the "
-                "page you are already signed in to - and that needs your "
-                "session cookie, pasted once into:\n\n  %s\n\n"
-                "That file is about to open. Paste the Cookie header, save "
-                "it, then press this button again."
-                % (info["label"], cookie_path))
-            open_market_cookie(app, site_id)
-            return
-        if not url:
-            messagebox.showinfo(
-                "No address saved for %s" % info["label"],
-                "Set the %s page address in User Settings first." %
-                info["label"])
-            return
-        statuses[site_id].configure(text="checking...")
-        app.console_line("Checking %s ..." % url, "cmd")
-        in_background(
-            app,
-            lambda: market_stock.fetch(url, cookie),
-            lambda result, error: check_arrived(site_id, info, result, error))
-
-    #  The two captions are written out, not formatted from the site name: the
-    #  "every button has a sentence" check reads the source, and a caption it
-    #  cannot see is a caption nobody explains.
-    for site_id, caption in (("ebay", "Check eBay and save the page"),
-                             ("facebook", "Check Facebook and save the page")):
+    # ---------------------------------------------------------- sessions
+    ttk.Label(box, text="Your eBay and Facebook sessions", style="H2.TLabel"
+              ).pack(anchor="w", pady=(12, 0))
+    for site_id, caption in (("ebay", "Open the eBay cookie file"),
+                             ("facebook", "Open the Facebook cookie file")):
         info = market_stock.SITES[site_id]
         line = ttk.Frame(box)
         line.pack(anchor="w", pady=(2, 0))
         ttk.Button(line, text=caption,
-                   command=lambda s=site_id: check(s)).pack(side="left")
-        label = ttk.Label(line, text="not checked yet", style="Dim.TLabel")
+                   command=lambda s=site_id: open_market_cookie(app, s)
+                   ).pack(side="left")
+        label = ttk.Label(line, text="no session saved" if not (
+            BASE / info["cookie"]).is_file() else "session saved",
+            style="Dim.TLabel")
         label.pack(side="left", padx=(6, 0))
         statuses[site_id] = label
 
     ttk.Label(box,
-              text="Neither site offers a list this app can ask for, so it "
-                   "reads the page you are signed in to. Press one of these "
-                   "and it fetches that page once, tells you whether the "
-                   "session still works, and keeps a copy beside the app - "
-                   "that copy is what the reader is built against, and it is "
-                   "never sent anywhere. The cookie lives in "
-                   "ebay-cookie.txt / fb-cookie.txt, which never leaves this "
-                   "computer.",
+              text="Both sites need a signed-in session because neither "
+                   "publishes a list this app can ask for. The cookie goes in "
+                   "ebay-cookie.txt or fb-cookie.txt beside the app; the whole "
+                   "Cookie header can be pasted at once, on one line or "
+                   "several. When the session expires the button says so and "
+                   "nothing is compared. A copy of each page read is kept "
+                   "beside the app (ebay-active.html, fb-selling.html) so a "
+                   "page that changes shape can be diagnosed; that copy is "
+                   "never sent anywhere.",
               style="Dim.TLabel", wraplength=680, justify="left").pack(
                   anchor="w", pady=(6, 0))
 

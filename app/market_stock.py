@@ -22,8 +22,10 @@ No Tk, no writes to a site, and the request is injected so this can be tested
 without a network or an account.
 """
 
+import html
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -65,14 +67,208 @@ _LOGIN_MARKERS = (
 
 TITLE = re.compile(r"(?is)<title[^>]*>(.*?)</title>")
 
+#  eBay's Seller Hub renders one <tr> per listing in this shape:
+#    <tr data-id="389440929928" ... class="grid-row">
+#      ... <td class="shui-dt-column__title ..."> <a ...>TITLE</a>
+#      ... <td class="shui-dt-column__listingSKU ..."><span>SKU</span>
+#      ... <td class="shui-dt-column__availableQuantity ..."><span>3</span>
+#  Every one of the 200 rows on a saved page has a title and a quantity; the
+#  SKU is empty unless the seller uses custom labels. Read from the saved page
+#  itself, not from guesses about it.
+_EBAY_ROW = re.compile(r'<tr\s+data-id="(\d+)"[^>]*class="[^"]*grid-row', re.I)
+_EBAY_PER_PAGE = 200
+
 
 class MarketError(Exception):
-    """A page could not be read, with a sentence saying why."""
+    """A page could not be read, with a sentence saying why.
 
-    def __init__(self, message, hint=""):
+    ``kind`` separates the two things that go wrong here, because they deserve
+    different words on screen: ``session`` means the site answered, but not as
+    a signed-in seller - an expired cookie, which the person can fix in a
+    minute - and anything else is a real failure.
+    """
+
+    def __init__(self, message, hint="", kind=""):
         super().__init__(message)
         self.message = str(message)
         self.hint = str(hint or "")
+        self.kind = str(kind or "")
+
+
+def _cell(row, column):
+    """The text of one table cell, by its eBay column name."""
+    match = re.search(r'<td class="[^"]*shui-dt-column__%s[^"]*"[^>]*>'
+                      r'(.*?)(?=<td class=|</tr>)' % column, row, re.S | re.I)
+    if not match:
+        return ""
+    text = html.unescape(re.sub(r"<[^>]+>", " ", match.group(1)))
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def parse_ebay_listings(text):
+    """Every listing on a saved eBay Seller Hub active-listings page.
+
+    A row without a title is skipped rather than guessed at, and a row whose
+    quantity is not a number is skipped too: a listing the reader cannot count
+    must not turn into a comparison that says "0".
+    """
+    text = str(text or "")
+    items = []
+    for match in _EBAY_ROW.finditer(text):
+        start = match.start()
+        end = text.find("</tr>", start)
+        #  The closing tag is kept: it is what tells the last cell in the row
+        #  where it ends, and the last cell of a row is usually the quantity.
+        row = text[start:end + 5 if end != -1 else len(text)]
+        title = re.search(r'<div class="column-title__text">\s*<a[^>]*>(.*?)</a>',
+                          row, re.S | re.I)
+        if not title:
+            continue
+        name = html.unescape(re.sub(r"<[^>]+>", "", title.group(1)))
+        name = re.sub(r"\s+", " ", name).strip()
+        if not name:
+            continue
+        quantity = _cell(row, "availableQuantity")
+        if not re.fullmatch(r"\d+", quantity or ""):
+            continue
+        items.append({"id": match.group(1), "name": name,
+                      "sku": _cell(row, "listingSKU"), "qty": int(quantity)})
+    return items
+
+
+#  Facebook renders each listing as plain text in this order, with the title
+#  on the line above the price and the state on the line below it:
+#    1973-74 O-Pee-Chee Walt Tkaczuk #25 ... Trading Card
+#    CA$8
+#    Active
+#    ·  Listed on 10/25 ...
+#  The class names are machine-generated and change without notice, so the
+#  page's own words are what the reader reads.
+_PRICE = re.compile(r"^(?:CA|US|C|A|\u00a3|\u20ac)?\s?\$\s?\d[\d,]*(?:\.\d{1,2})?$")
+_FB_STATES = {"active": ("Active", 1),
+              "pending": ("Pending", 1),
+              "sold": ("Sold", 0),
+              "out of stock": ("Sold", 0)}
+
+
+def _page_lines(text):
+    """The page as visible lines, the way a person reads it."""
+    stripped = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ",
+                      str(text or ""))
+    stripped = html.unescape(re.sub(r"<[^>]+>", "\n", stripped))
+    return [line.strip() for line in stripped.splitlines() if line.strip()]
+
+
+_TITLE_HINT = re.compile(r"#\s*\d+")
+
+
+def _looks_like_a_listing_title(line):
+    """Whether a line could be a listing's title rather than page furniture.
+
+    A price followed by a state word is a card; the same two lines appear in
+    Facebook's own status filter and in promo panels, where the line above the
+    price is a heading like "Your listings". Requiring a card number or a
+    real length keeps those out - and a title that has neither is better left
+    unlisted than reported as the wrong card.
+    """
+    line = str(line or "").strip()
+    return bool(_TITLE_HINT.search(line)) or len(line) >= 25
+
+
+def _title_before(lines, index):
+    """The listing's title, which sits on the line above its price.
+
+    A long title can land on two lines when the page wraps it, so a line that
+    is too short to be a title is joined with the one above it - but only when
+    the result looks like a title and the fragment itself is short enough to be
+    a wrap rather than a separate row.
+    """
+    line = lines[index - 1]
+    if _looks_like_a_listing_title(line):
+        return line
+    if index >= 2 and len(line) < 40:
+        joined = "%s %s" % (lines[index - 2], line)
+        if _looks_like_a_listing_title(joined):
+            return joined
+    return ""
+
+
+def parse_facebook_listings(text):
+    """Every listing on a saved Facebook Marketplace selling page.
+
+    Facebook has no quantity: a listing is one item, so an Active or Pending
+    listing counts as 1 and a Sold one as 0. Drafts are not on the site yet and
+    are left out rather than compared as if they were.
+    """
+    lines = _page_lines(text)
+    items = []
+    for index, line in enumerate(lines):
+        if not _PRICE.match(line) or index == 0 or index + 1 >= len(lines):
+            continue
+        state = _FB_STATES.get(lines[index + 1].strip().lower())
+        if not state:
+            continue
+        name = _title_before(lines, index)
+        if not name:
+            continue
+        status, qty = state
+        if status == "Draft":
+            continue
+        items.append({"name": name, "price": line,
+                      "status": status, "qty": qty, "sku": ""})
+    return items
+
+
+def parse_listings(site_id, text):
+    """The listings on a saved page for one site, in one shape."""
+    if site_id == "ebay":
+        return parse_ebay_listings(text)
+    if site_id == "facebook":
+        return parse_facebook_listings(text)
+    raise MarketError("Unknown marketplace: %s" % site_id,
+                      "Expected one of: %s." % ", ".join(sorted(SITES)))
+
+
+def page_url(url, offset):
+    """The same address with eBay's offset set, so page two can be asked for."""
+    parts = urllib.parse.urlsplit(url)
+    query = [(k, v) for k, v in urllib.parse.parse_qsl(parts.query)
+             if k.lower() != "offset"]
+    if offset:
+        query.append(("offset", str(offset)))
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path,
+                                    urllib.parse.urlencode(query),
+                                    parts.fragment))
+
+
+def read_ebay(fetch_page, url, cookie, max_pages=10):
+    """Every page of active listings, through an injected page fetcher.
+
+    ``fetch_page(url, cookie)`` returns ``(status, text)``. Pages are followed
+    until one comes back short, empty or identical to the last - never by
+    counting to a fixed total, because the total is the site's business.
+    """
+    items, pages, text = [], 0, ""
+    seen = set()
+    offset = 0
+    while pages < max(1, max_pages):
+        status, text = fetch_page(page_url(url, offset), cookie)
+        if status != 200:
+            raise MarketError(
+                "eBay answered HTTP %s for the listings page." % status,
+                "That is usually a session that has expired: sign in and paste "
+                "a fresh cookie.", kind="session")
+        page_items = parse_ebay_listings(text)
+        fresh = [item for item in page_items if item["id"] not in seen]
+        pages += 1
+        if not fresh:
+            break
+        seen.update(item["id"] for item in fresh)
+        items.extend(fresh)
+        if len(page_items) < _EBAY_PER_PAGE:
+            break
+        offset += _EBAY_PER_PAGE
+    return items, pages, text
 
 
 def site(name):

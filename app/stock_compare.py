@@ -177,6 +177,21 @@ def fold(name):
     return re.sub(r"\s+", " ", text).strip()
 
 
+_CARD_NUMBER = re.compile(r"#\s*(\d+)")
+
+
+def card_number(name):
+    """The card's number as both sites write it ("#25"), or "" when absent.
+
+    A number is the closest thing to a shared key a card title has: the two
+    sites word everything else differently, but #25 is #25. eBay puts it at the
+    front of the title, the website puts it at the end, and neither is more
+    right - so it is searched for rather than sliced off an end.
+    """
+    match = _CARD_NUMBER.search(str(name or ""))
+    return match.group(1) if match else ""
+
+
 def _digits(name):
     return {word for word in woo_orders.normalise(fold(name)).split()
             if word.isdigit()}
@@ -244,6 +259,7 @@ def pair(woo, other, minimum=DEFAULT_MIN_SCORE):
         if len(candidates) > MAX_CANDIDATES:
             candidates.sort(reverse=True)
             candidates = candidates[:MAX_CANDIDATES]
+        number = card_number(item["name"])
         for _shared, index in candidates:
             #  Both directions, best one wins. The website title carries the
             #  grade ("EX-MT 6") and the listing usually does not, so a title
@@ -251,22 +267,36 @@ def pair(woo, other, minimum=DEFAULT_MIN_SCORE):
             #  same card - what matters is that one side names everything the
             #  other side says.
             here, other_name = fold(item["name"]), fold(other[index]["name"])
+            other_number = card_number(other[index]["name"])
+            if number and other_number and number != other_number:
+                #  Two different card numbers are two different cards, however
+                #  alike the rest of the words are - a set has one #25.
+                continue
             forward, forward_numbers = woo_orders.analyse(here, other_name)
             backward, backward_numbers = woo_orders.analyse(other_name, here)
             value = max(forward, backward)
             numbers_ok = forward_numbers or backward_numbers
+            shared_number = bool(number) and number == other_number
+            if shared_number:
+                #  The same card number in the same set is the strongest
+                #  evidence after a SKU, and it rescues the pairs whose wording
+                #  is furthest apart ("#75 Bert Campaneris 1967 O-Pee-Chee").
+                value = min(1.0, value + 0.2)
+                if value < minimum and value >= minimum - 0.15:
+                    value = minimum
             if value < minimum:
                 continue
-            scored.append((value, numbers_ok, item, index))
+            scored.append((value, numbers_ok, item, index,
+                           "number" if shared_number else "title"))
     scored.sort(key=lambda row: (-row[0], not row[1]))
 
     used_woo = set()
-    for value, _numbers_ok, item, index in scored:
+    for value, _numbers_ok, item, index, how in scored:
         if index in used_other or id(item) in used_woo:
             continue
         used_other.add(index)
         used_woo.add(id(item))
-        pairs.append({"woo": item, "other": other[index], "by": "title"})
+        pairs.append({"woo": item, "other": other[index], "by": how})
 
     matched = {id(pair_row["woo"]) for pair_row in pairs}
     only_woo = [item for item in woo if id(item) not in matched]
@@ -290,7 +320,7 @@ def differences(pairs):
     return rows
 
 
-def summary(rows, pairs, only_woo, only_other):
+def summary(rows, pairs, only_woo, only_other, other_label="CanadianShopper"):
     """One sentence a person can act on."""
     if not pairs:
         return "Nothing matched on both sites, so there is nothing to compare."
@@ -301,26 +331,40 @@ def summary(rows, pairs, only_woo, only_other):
     if only_woo:
         left_out.append("%d only on your website" % len(only_woo))
     if only_other:
-        left_out.append("%d only on CanadianShopper" % len(only_other))
+        left_out.append("%d only on %s" % (len(only_other), other_label))
     if left_out:
         line += " Not compared: " + ", ".join(left_out) + "."
     return line
 
 
-def describe(rows, limit=40):
-    """Console lines for the disagreements."""
+def describe(rows, limit=40, other_label="CanadianShopper", mode="count"):
+    """Console lines for the disagreements.
+
+    ``mode`` is how the other site expresses stock: "count" for a site that
+    keeps a number (eBay, CanadianShopper), "listed" for one that only knows
+    whether the card is being offered (Facebook).
+    """
     lines = []
     for row in rows:
         gap = "" if row["gap"] == 0 else "  (%+d)" % row["gap"]
-        lines.append("  %-52s website %-4d CanadianShopper %-4d%s" % (
-            row["card"][:52], row["woo"], row["other"], gap))
+        if mode == "listed":
+            state = "listed" if row["other"] else "not listed"
+            lines.append("  %-52s website %-4d %s %s" % (
+                row["card"][:52], row["woo"], other_label, state))
+        else:
+            lines.append("  %-52s website %-4d %s %-4d%s" % (
+                row["card"][:52], row["woo"], other_label, row["other"], gap))
     if len(lines) > limit:
         hidden = len(lines) - limit
         lines = lines[:limit] + ["  ... and %d more." % hidden]
     return lines
 
 
-def label(row):
+def label(row, other_label="CanadianShopper", mode="count"):
     """One disagreement as it appears in the panel list."""
-    return "%s  -  website %d  /  CanadianShopper %d" % (
-        row["card"], row["woo"], row["other"])
+    if mode == "listed":
+        return "%s  -  website %d  /  %s %s" % (
+            row["card"], row["woo"], other_label,
+            "listed" if row["other"] else "not listed")
+    return "%s  -  website %d  /  %s %d" % (
+        row["card"], row["woo"], other_label, row["other"])

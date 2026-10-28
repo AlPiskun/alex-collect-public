@@ -1,4 +1,4 @@
-# Alex Collect 2.62
+# Alex Collect 2.63
 
 Alex Collect is a local desktop control panel for organizing a small trading-card selling workflow. It brings together the card pipeline, WooCommerce order inputs, a sale checklist, photo utilities, and optional plugins.
 
@@ -6,7 +6,7 @@ Alex Collect is a local desktop control panel for organizing a small trading-car
 
 - Run the card pipeline from a Tkinter desktop window.
 - Preview the orders that sold since the last check, then add only those to the sale checklist.
-- Compare stock between the website and CanadianShopper on demand, and see only the cards whose counts disagree.
+- Compare stock between the website and CanadianShopper, eBay or Facebook on demand, and see only the cards whose counts disagree.
 - Prepare WooCommerce sale checklists from a typed list or an orders CSV.
 - Configure the store URL, AI page, preferred browser, prompt preferences, custom AI commands, seller links, output/scanner folders, Facebook workbook fields, and eBay Quick List templates/defaults from **User Settings** in the menu bar. Its **Save user settings** button sits beside the title, in a strip above the form that does not scroll - the settings page is the longest in the app, and saving used to mean scrolling past every field first. The page is split into ten groups - when the app opens, the store and AI, the store pages, custom AI commands, marketplace pages, the eBay handoff, the Facebook fields, the CanadianShopper CSV, the folders, and the CanadianShopper login - and each group has its own heading and its own **What this panel does** button covering just that group, instead of one explanation trying to describe the whole page. Each page now fills the window rather than stopping at the height of its own widgets, and the output console takes fewer lines on a small screen, so a long form has the room to be scrolled through.
 - Copy the built-in **Add grades to titles** and **No grades in titles** prompts, or create, edit, and remove custom AI command buttons in User Settings; hover notes clarify each command’s purpose.

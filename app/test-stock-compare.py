@@ -183,8 +183,8 @@ def test_pairing():
     check("both cards are matched", len(pairs) == 2, str(pairs))
     check("a shared SKU is what matched the first one",
           pairs[0]["by"] == "sku", str(pairs[0]))
-    check("the second one matched on its title",
-          pairs[1]["by"] == "title", str(pairs[1]))
+    check("the second one matched on its card number, not its wording",
+          pairs[1]["by"] == "number", str(pairs[1]))
     check("nothing is left over on either side",
           only_woo == [] and only_other == [], str((only_woo, only_other)))
 
@@ -228,7 +228,7 @@ def test_spellings():
     check("O-Pee-Chee on the website matches OPC on the listing",
           len(pairs) == 2, str(pairs))
     check("so does Upper Deck against UD",
-          pairs and all(row["by"] == "title" for row in pairs), str(pairs))
+          pairs and all(row["other"]["qty"] == 0 for row in pairs), str(pairs))
     check("nothing is left unmatched", only_woo == [] and only_other == [],
           str((only_woo, only_other)))
     check("the fold is visible in one place", stock_compare.fold(
@@ -237,6 +237,41 @@ def test_spellings():
     check("a different card number is still a different card",
           stock_compare.pair(woo[:1], [{"name": "1989 OPC Wayne Gretzky #2",
                                         "sku": "", "qty": 0}])[0] == [], "")
+
+
+def test_card_numbers():
+    print()
+    print("== 5a. the card number is the closest thing to a shared key ==")
+    check("a number is found wherever the site puts it",
+          stock_compare.card_number("#75 Bert Campaneris 1967 O-Pee-Chee") ==
+          "75" and
+          stock_compare.card_number("1967 O-Pee-Chee Bert Campaneris #75") ==
+          "75", "")
+    check("a title with no number has none",
+          stock_compare.card_number("Wayne Gretzky rookie card") == "", "")
+
+    woo = [{"name": "1970-71 O-Pee-Chee Chico Maki Hockey Card #149 EX",
+            "sku": "", "qty": 1, "id": 1}]
+    ebay = [{"name": "#149 Chico Maki (EX) 1970-71 O-Pee-Chee Hockey Card",
+             "sku": "", "qty": 1, "id": "a"}]
+    pairs, only_woo, only_other = stock_compare.pair(woo, ebay)
+    check("the same card, worded two ways, is matched",
+          len(pairs) == 1 and pairs[0]["other"]["id"] == "a", str(pairs))
+    check("and it says the number is what matched",
+          pairs and pairs[0]["by"] == "number", str(pairs))
+
+    other_number = [{"name": "#150 Chico Maki (EX) 1970-71 O-Pee-Chee Hockey Card",
+                     "sku": "", "qty": 1, "id": "b"}]
+    check("a different card number is never matched, however alike the rest",
+          stock_compare.pair(woo, other_number)[0] == [], "")
+
+    whole_set = [{"name": "#%d Player %d 1970-71 O-Pee-Chee Hockey Card" %
+                  (n, n), "sku": "", "qty": 1, "id": str(n)}
+                 for n in range(140, 160)]
+    pairs, only_woo, only_other = stock_compare.pair(woo, whole_set)
+    check("a set full of neighbours still matches only the right card",
+          len(pairs) == 1 and pairs[0]["other"]["id"] == "149",
+          str([(p["woo"]["id"], p["other"]["id"]) for p in pairs]))
 
 
 def test_big_catalogue():
@@ -257,6 +292,38 @@ def test_big_catalogue():
     check("the listing with the same number is the one that matched",
           all(row["other"]["name"].endswith("#%d" % row["woo"]["id"])
               for row in pairs), str(pairs[:2]))
+
+
+def test_other_labels():
+    print()
+    print("== 6b. the compared site is named, not assumed ==")
+    pairs = [{"woo": {"name": "Card #1", "qty": 1},
+              "other": {"name": "Card #1", "qty": 3}, "by": "number"}]
+    rows = stock_compare.differences(pairs)
+    check("a count site is named in the row",
+          stock_compare.label(rows[0], "eBay") ==
+          "Card #1  -  website 1  /  eBay 3",
+          stock_compare.label(rows[0], "eBay"))
+    check("a site with no quantity says listed, not a number",
+          stock_compare.label(rows[0], "Facebook", "listed") ==
+          "Card #1  -  website 1  /  Facebook listed",
+          stock_compare.label(rows[0], "Facebook", "listed"))
+    check("a sold Facebook card says not listed",
+          stock_compare.label({"card": "Card #2", "woo": 2, "other": 0,
+                               "gap": 2}, "Facebook", "listed") ==
+          "Card #2  -  website 2  /  Facebook not listed",
+          stock_compare.label({"card": "Card #2", "woo": 2, "other": 0,
+                               "gap": 2}, "Facebook", "listed"))
+    line = stock_compare.describe(rows, other_label="eBay")[0]
+    check("the console line uses the same name", "eBay 3" in line, line)
+    check("the summary names the site that has extra",
+          "only on Facebook" in stock_compare.summary(
+              rows, pairs, [], [{"name": "x"}], "Facebook"),
+          stock_compare.summary(rows, pairs, [], [{"name": "x"}], "Facebook"))
+    check("and with nothing left over it stays the plain sentence",
+          stock_compare.summary(rows, pairs, [], [], "eBay") ==
+          "1 of 1 matched cards disagree.",
+          stock_compare.summary(rows, pairs, [], [], "eBay"))
 
 
 def test_differences():
@@ -495,7 +562,9 @@ def main():
     test_reading_woo()
     test_pairing()
     test_spellings()
+    test_card_numbers()
     test_big_catalogue()
+    test_other_labels()
     test_differences()
     test_words()
     test_panel()
