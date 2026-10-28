@@ -47,6 +47,7 @@ from process_utils import no_window_kwargs
 import photo_assign
 import photo_pool
 import photo_replace
+import market_stock
 import photo_thumbs
 import sale_preview
 import stock_compare
@@ -61,7 +62,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.61"
+VERSION = "2.62"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1309,6 +1310,8 @@ TOOLTIPS = {
     "Compare stock": "Read both catalogues and list only the cards whose counts disagree; nothing is changed",
     "Compare this card": "Open the stock panel pointed at the one card this sale is about",
     "Compare the whole catalogue instead": "Drop the one-card filter and compare everything",
+    "Check eBay and save the page": "Fetch your signed-in eBay active listings once and keep a copy; nothing is changed",
+    "Check Facebook and save the page": "Fetch your signed-in Facebook selling page once and keep a copy; nothing is changed",
     "Preview new orders": "Read the orders that came in since you last looked, and write nothing",
     "Open plugins folder": "Open the folder plugins are installed into",
     "Open the tools folder": "Open the folder holding this app's tools",
@@ -3193,6 +3196,33 @@ def in_background(app, work, done):
     threading.Thread(target=runner, daemon=True).start()
 
 
+def open_market_cookie(app, site_id):
+    """Create/open the private cookie file for eBay or Facebook.
+
+    The file is a paste target, not a form: the shipped lines explain what to
+    copy, and every line starting with '#' is ignored when it is read, so the
+    explanation cannot end up inside the cookie.
+    """
+    info = market_stock.SITES[site_id]
+    path = BASE / info["cookie"]
+    if not path.exists():
+        path.write_text(
+            "# Paste your %s session cookie below, then save this file.\n"
+            "#\n"
+            "# In the browser: sign in, press F12, open the Network tab, reload\n"
+            "# the page, click the page request itself and copy the whole value\n"
+            "# of the 'Cookie' request header. It can be one long line.\n"
+            "#\n"
+            "# Lines starting with # are ignored, so this explanation is safe to\n"
+            "# leave in place. The file stays on this computer and is never\n"
+            "# included in the app or in a report.\n" % info["label"],
+            encoding="utf-8")
+    restrict_file_permissions(path)
+    open_path(path)
+    app.console_line("Opened the private %s cookie file; keep it out of public "
+                     "repos and messages." % info["label"], "dim")
+
+
 def open_woo_keys_file(app, current_site_url=""):
     """Create/open the local Woo REST-key file without exposing keys in GUI."""
     path = BASE / "woo-keys.txt"
@@ -4384,8 +4414,111 @@ def build_stock(parent, app):
                    "count, side by side. A card that appears on one side only "
                    "is counted as not compared, never reported as wrong, and "
                    "a pair is only made when a shared SKU or the title says "
-                   "it is the same card. Facebook and eBay are not included: "
-                   "they need a signed-in session, which is a separate job.",
+                   "it is the same card.",
+              style="Dim.TLabel", wraplength=680, justify="left").pack(
+                  anchor="w", pady=(6, 0))
+
+    # -------------------------------------------------- Facebook and eBay
+    #  These two have no catalogue to ask for. The only truthful source is the
+    #  page the seller is already signed in to, so the app fetches that page
+    #  once, says whether the session is still good, and keeps a copy. Nothing
+    #  is compared until a reader has seen a real page from each site.
+    ttk.Label(box, text="Facebook and eBay", style="H2.TLabel").pack(
+        anchor="w", pady=(12, 0))
+    statuses = {}
+
+    def open_cookie(site_id):
+        open_market_cookie(app, site_id)
+
+    def check_arrived(site_id, info, result, error):
+        status_label = statuses[site_id]
+        if error is not None:
+            message = getattr(error, "message", str(error))
+            hint = getattr(error, "hint", "")
+            status_label.configure(text="could not be reached")
+            messagebox.showerror("%s could not be checked" % info["label"],
+                                 message + ("\n\n" + hint if hint else ""),
+                                 parent=box.winfo_toplevel())
+            app.console_line("%s: %s %s" % (info["label"], message, hint), "err")
+            return
+        status, text = result
+        page = market_stock.save_page(BASE / info["page"], text)
+        if status != 200 or market_stock.looks_like_login(text):
+            status_label.configure(text="not signed in")
+            messagebox.showwarning(
+                "%s did not answer as a signed-in seller" % info["label"],
+                "The page came back as %s.\n\nNothing was read and nothing "
+                "was changed. That is what an expired cookie looks like: open "
+                "the site, sign in, and paste a fresh one into\n%s."
+                % (market_stock.describe(text, status),
+                   BASE / info["cookie"]),
+                parent=box.winfo_toplevel())
+            app.console_line("%s answered with %s - the cookie is stale or the "
+                             "address is wrong." %
+                             (info["label"], market_stock.describe(text, status)),
+                             "err")
+            return
+        status_label.configure(text="saved a copy")
+        app.console_line(
+            "Saved %s to %s. The listing reader is written against that page; "
+            "nothing on %s was changed." %
+            (market_stock.describe(text, status), page, info["label"]), "ok")
+
+    def check(site_id):
+        info = market_stock.SITES[site_id]
+        url = str(app.settings.get("%s_selling_url" % site_id, "") or "").strip()
+        cookie_path = BASE / info["cookie"]
+        try:
+            cookie = market_stock.read_cookie(cookie_path)
+        except Exception:
+            cookie = ""
+        if not cookie:
+            messagebox.showinfo(
+                "%s needs your session cookie" % info["label"],
+                "%s publishes no list this app can ask for, so it reads the "
+                "page you are already signed in to - and that needs your "
+                "session cookie, pasted once into:\n\n  %s\n\n"
+                "That file is about to open. Paste the Cookie header, save "
+                "it, then press this button again."
+                % (info["label"], cookie_path))
+            open_market_cookie(app, site_id)
+            return
+        if not url:
+            messagebox.showinfo(
+                "No address saved for %s" % info["label"],
+                "Set the %s page address in User Settings first." %
+                info["label"])
+            return
+        statuses[site_id].configure(text="checking...")
+        app.console_line("Checking %s ..." % url, "cmd")
+        in_background(
+            app,
+            lambda: market_stock.fetch(url, cookie),
+            lambda result, error: check_arrived(site_id, info, result, error))
+
+    #  The two captions are written out, not formatted from the site name: the
+    #  "every button has a sentence" check reads the source, and a caption it
+    #  cannot see is a caption nobody explains.
+    for site_id, caption in (("ebay", "Check eBay and save the page"),
+                             ("facebook", "Check Facebook and save the page")):
+        info = market_stock.SITES[site_id]
+        line = ttk.Frame(box)
+        line.pack(anchor="w", pady=(2, 0))
+        ttk.Button(line, text=caption,
+                   command=lambda s=site_id: check(s)).pack(side="left")
+        label = ttk.Label(line, text="not checked yet", style="Dim.TLabel")
+        label.pack(side="left", padx=(6, 0))
+        statuses[site_id] = label
+
+    ttk.Label(box,
+              text="Neither site offers a list this app can ask for, so it "
+                   "reads the page you are signed in to. Press one of these "
+                   "and it fetches that page once, tells you whether the "
+                   "session still works, and keeps a copy beside the app - "
+                   "that copy is what the reader is built against, and it is "
+                   "never sent anywhere. The cookie lives in "
+                   "ebay-cookie.txt / fb-cookie.txt, which never leaves this "
+                   "computer.",
               style="Dim.TLabel", wraplength=680, justify="left").pack(
                   anchor="w", pady=(6, 0))
 

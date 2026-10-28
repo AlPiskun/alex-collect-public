@@ -7,6 +7,10 @@ venv/
 # Local credentials and account-specific state
 app/cookie.txt
 app/woo-keys.txt
+app/ebay-cookie.txt
+app/fb-cookie.txt
+app/ebay-active.html
+app/fb-selling.html
 app/gui-settings.json
 app/woo-keys.txt.local
 app/*history.xlsx
