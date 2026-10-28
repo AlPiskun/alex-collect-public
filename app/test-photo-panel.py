@@ -1483,16 +1483,25 @@ def test_settings_save_is_pinned():
           bar is not None and gui.TITLES["cookie"] in
           [w.cget("text") for w in parent._title_row.walk()], "")
 
-    #  The strip is outside the scroll area, so the button cannot scroll away.
-    scroller = next((w for w in parent.walk()
-                     if isinstance(w, gui.ScrollFrame)), None)
-    check("the fields scroll below the strip",
-          scroller is not None and save is not None and
-          save not in list(scroller.inner.walk()), "")
-    check("nothing in the scrolling area saves the form",
-          scroller is not None and
+    #  The strip is outside the page, so the button cannot scroll away; the
+    #  form is the page, so it scrolls under the strip.
+    #  The strip holds the title row and its button - not the form. Save is
+    #  meant to be in the strip; the sections are meant not to be.
+    in_bar = [w.cget("text") for w in (bar.walk() if bar is not None else [])
+              if isinstance(w, gui.ttk.Label) and w.cget("text")]
+    check("the strip holds the title and the button, not the form",
+          "Store and AI" not in in_bar and "Working folders" not in in_bar,
+          str(in_bar))
+    check("the page has no second scroll area of its own",
+          not any(isinstance(w, gui.ScrollFrame) for w in parent.walk()), "")
+    sections = [w for w in parent.walk() if isinstance(w, gui.ttk.Label) and
+                w.cget("style") == "H2.TLabel"]
+    check("the sections are in the page, so they scroll under the strip",
+          sections and not any(w in list(bar.walk()) for w in sections),
+          str(len(sections)))
+    check("nothing in the form saves it from a distance",
           not any(w.cget("text") == "Save user settings"
-                  for w in scroller.inner.walk()), "")
+                  for w in parent.walk() if w is not save), "")
 
     fields = getattr(app, "_user_setting_vars", {})
     check("the saved-panel fields still all exist", len(fields) > 8,
@@ -1640,6 +1649,83 @@ def test_pinned_help_still_opens():
     shutil.rmtree(folder, ignore_errors=True)
 
 
+def test_the_page_fills_the_window():
+    print()
+    print("== 29. a short page fills the window instead of leaving a band ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    app = FakeApp(folder)
+
+    #  A canvas that reports a window-sized viewport and a page that asks for
+    #  a third of it - the settings page used to stop exactly here.
+    class Canvas(FakeWidget):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.items = {"inner": {"width": 0, "height": 0}}
+            self.region = None
+        def winfo_width(self): return 900
+        def winfo_height(self): return 620
+        def itemconfigure(self, tag, **k):
+            if tag == "inner":
+                self.items["inner"].update(k)
+        def bbox(self, tag):
+            size = self.items["inner"]
+            return (0, 0, size["width"], size["height"])
+        def configure(self, **k):
+            if "scrollregion" in k:
+                self.region = k["scrollregion"]
+            return self
+
+    holder = FakeWidget()
+    scroller = gui.ScrollFrame(holder)
+    scroller.canvas = Canvas()
+    scroller.inner.winfo_reqheight = lambda: 200
+    scroller._last_size = (0, 0)
+    scroller._resize()
+    size = scroller.canvas.items["inner"]
+    check("the page is stretched to the window, not to its own content",
+          (size["width"], size["height"]) == (900, 620), str(size))
+    check("so there is nothing to scroll when it all fits",
+          scroller.canvas.region == (0, 0, 900, 620), str(scroller.canvas.region))
+
+    #  Once the content is taller than the window the page keeps its real
+    #  height, and the scrollbar has somewhere to go.
+    scroller.inner.winfo_reqheight = lambda: 1500
+    scroller._resize()
+    size = scroller.canvas.items["inner"]
+    check("a long page is left at its own height",
+          (size["width"], size["height"]) == (900, 1500), str(size))
+    check("and the scroll region covers all of it",
+          scroller.canvas.region == (0, 0, 900, 1500), str(scroller.canvas.region))
+    scroller._resize()
+    check("re-measuring the same page changes nothing",
+          scroller.canvas.items["inner"]["height"] == 1500, "")
+
+    #  The settings form itself: one page, no second scroll area, sections
+    #  stacked so there is more to scroll through than before.
+    app2 = FakeApp(folder)
+    parent = FakeWidget()
+    gui.build_cookie(parent, app2)
+    check("the settings form is one continuous page",
+          not any(isinstance(w, gui.ScrollFrame) for w in parent.walk()), "")
+    headings = [w.cget("text") for w in parent.walk()
+                if isinstance(w, gui.ttk.Label) and
+                w.cget("style") == "H2.TLabel"]
+    check("a screen too small for twenty console lines gets fewer",
+          gui.console_lines_for(700) == 8 and
+          gui.console_lines_for(900) == 12 and
+          gui.console_lines_for(1440) == 16,
+          str([gui.console_lines_for(h) for h in (700, 900, 1440)]))
+    check("all ten sections are on it, in order",
+          headings == ["When Alex Collect opens", "Store and AI",
+                       "Open the store pages", "Custom AI commands",
+                       "Marketplace pages", "eBay Quick List handoff",
+                       "Facebook Marketplace export fields",
+                       "CanadianShopper CSV defaults", "Working folders",
+                       "CanadianShopper connection"], str(headings))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
 def test_spent_sitting():
     print()
     print("== 17. a sitting with every image used says so ==")
@@ -1688,6 +1774,7 @@ def main():
     test_settings_save_is_pinned()
     test_settings_have_their_own_sections()
     test_pinned_help_still_opens()
+    test_the_page_fills_the_window()
     test_grid_fits_a_small_screen()
     test_loading_is_visible()
     test_spent_sitting()

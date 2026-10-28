@@ -59,7 +59,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.58"
+VERSION = "2.59"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1044,6 +1044,17 @@ mystery: gui-log.txt (this window's runs), sold-cards-report.csv
 image-sync reports from the staging/wiring runs."""
 
 
+def console_lines_for(screen_height):
+    """How many lines of output the window can spare.
+
+    The console is a fixed number of lines of text, so on a small screen it
+    used to take half the window and leave the page above it with almost
+    nothing. It keeps its size on a big screen and gives room back on a small
+    one - the console scrolls, the page needs the space.
+    """
+    return 8 if screen_height < 800 else (12 if screen_height < 1000 else 16)
+
+
 def theme_background(widget):
     """The window colour the current ttk theme paints, so nothing is white."""
     try:
@@ -1081,19 +1092,42 @@ class ScrollFrame(ttk.Frame):
         vsb = ttk.Scrollbar(self, orient="vertical",
                             command=self.canvas.yview)
         self.inner = ttk.Frame(self.canvas, padding=(2, 2))
-        self.inner.bind("<Configure>",
-                        lambda e: self.canvas.configure(
-                            scrollregion=self.canvas.bbox("all")))
+        self._last_size = (0, 0)
+        self.inner.bind("<Configure>", self._resize)
         self.canvas.create_window((0, 0), window=self.inner, anchor="nw",
                                   tags="inner")
         self.canvas.configure(yscrollcommand=vsb.set)
         self.canvas.pack(fill="both", expand=True, side="left")
         vsb.pack(fill="y", side="right")
-        self.canvas.bind("<Configure>",
-                         lambda e: self.canvas.itemconfigure("inner",
-                                                             width=e.width))
+        #  The page is stretched to at least the height of the window, not
+        #  only to its own content. Without that a page shorter than the
+        #  window left a dead band above the console, and a panel that itself
+        #  expands - the settings form did - only claimed the height its
+        #  widgets asked for, leaving most of the window unused.
+        self.canvas.bind("<Configure>", self._resize)
         self.bind("<Enter>", lambda e: self._wheel(True))
         self.bind("<Leave>", lambda e: self._wheel(False))
+
+    def _resize(self, _event=None):
+        """Stretch the page to fill the window, then say how tall it is."""
+        try:
+            width = self.canvas.winfo_width()
+            height = self.canvas.winfo_height()
+            natural = self.inner.winfo_reqheight()
+        except Exception:
+            return
+        wanted = (width, max(natural or 0, height or 0))
+        if wanted != self._last_size:
+            self._last_size = wanted
+            try:
+                self.canvas.itemconfigure("inner", width=wanted[0],
+                                          height=wanted[1])
+            except Exception:
+                pass
+        try:
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        except Exception:
+            pass
 
     def _wheel(self, on):
         def scroll(e):
@@ -1555,8 +1589,17 @@ class App(tk.Tk):
         box = ttk.LabelFrame(self, text="Output (scrollback)",
                              padding=(4, 2))
         box.pack(fill="x", side="bottom", padx=6, pady=(1, 2))
+        #  The console is a fixed number of lines, and on a small screen
+        #  twenty of them were half the window - the page above got what was
+        #  left. It keeps its share on a big screen and gives the page its
+        #  room back on a small one; it still scrolls to everything.
+        try:
+            screen = self.winfo_screenheight()
+        except Exception:
+            screen = 900
+        lines = console_lines_for(screen)
         self.console = tk.Text(
-            box, height=20, state="disabled", wrap="word", bg="#141414",
+            box, height=lines, state="disabled", wrap="word", bg="#141414",
             fg="#e8e8e8", insertbackground="#e8e8e8",
             font=("Consolas", 9) if sys.platform == "win32"
                  else "TkFixedFont")
@@ -2559,10 +2602,12 @@ def build_cookie(parent, app):
     #  rather than adding to whatever the last panel left behind.
     app._doc_buttons = []
     app._doc_labels = []
-    scroller = ScrollFrame(parent)
-    scroller.pack(fill="both", expand=True)
-    page = ttk.Frame(scroller.inner)
-    page.pack(fill="x", expand=True)
+    #  The sections go straight into the page. This used to add a second
+    #  scroll area inside the page's own, and a nested canvas only claims the
+    #  height its own widgets ask for - so the settings stopped a third of the
+    #  way down the window and the rest of it sat empty above the console.
+    page = ttk.Frame(parent)
+    page.pack(fill="both", expand=True)
     box = page
 
     def group(key, title):
