@@ -29,6 +29,16 @@ import woo_orders
 #  panel's search threshold on purpose: that list is a suggestion a person
 #  picks from, this one is an accusation.
 DEFAULT_MIN_SCORE = 0.55
+IGNORED_FILE = "stock-ignored.json"
+
+#  Every row of the action list is one of these three, because they need
+#  different things done about them:
+#    a disagreement can be corrected by writing the website's count across;
+#    a card on one side only cannot - it is either expected (the card sold out
+#    there) and gets ignored, or it is a mistake to look at.
+FIX = "fix"
+ONLY_WOO = "only-woo"
+ONLY_OTHER = "only-other"
 
 
 class StockError(Exception):
@@ -306,18 +316,194 @@ def pair(woo, other, minimum=DEFAULT_MIN_SCORE):
 
 
 def differences(pairs):
-    """The pairs whose quantities disagree, worst gap first."""
+    """The pairs whose quantities disagree, worst gap first.
+
+    Each row carries both sides' identity, not just their numbers, because the
+    list is now the place the correction is made: the other site's listing id,
+    SKU and title are what a write needs, and the website side has to be named
+    in the confirmation.
+    """
     rows = []
     for row in pairs or []:
         woo_qty = int(row["woo"].get("qty") or 0)
         other_qty = int(row["other"].get("qty") or 0)
         if woo_qty == other_qty:
             continue
-        rows.append({"card": row["woo"].get("name") or row["other"].get("name") or "",
-                     "woo": woo_qty, "other": other_qty,
-                     "gap": woo_qty - other_qty, "by": row.get("by", "title")})
+        rows.append(difference(row["woo"], row["other"], row.get("by", "title")))
     rows.sort(key=lambda row: (-abs(row["gap"]), row["card"].lower()))
     return rows
+
+
+def difference(woo, other, by="title"):
+    """One disagreement, with everything a correction needs to name it."""
+    woo_qty = int(woo.get("qty") or 0)
+    other_qty = int(other.get("qty") or 0)
+    return {"card": woo.get("name") or other.get("name") or "",
+            "woo": woo_qty, "other": other_qty, "gap": woo_qty - other_qty,
+            "by": by, "kind": FIX,
+            "woo_id": woo.get("id"), "woo_sku": woo.get("sku") or "",
+            "other_id": other.get("id"), "other_name": other.get("name") or "",
+            "other_sku": other.get("sku") or ""}
+
+
+def card_key(name):
+    """A card's identity for the ignore list: the words, in a fixed order.
+
+    The two sites put the same card's words in a different order ("#75 Bert
+    Campaneris 1967 O-Pee-Chee" against "1967 O-Pee-Chee Bert Campaneris
+    #75"), so sorting the words makes one key out of both. It is deliberately
+    strict about everything else: an ignored card whose title is later edited
+    comes back, which is the right way round - a card nobody asked to hide
+    should not be hidden.
+    """
+    words = set(woo_orders.normalise(fold(name)).split())
+    return " ".join(sorted(words))
+
+
+def action_list(pairs, only_woo, only_other, ignored=(), other_label=""):
+    """Everything the panel can act on, as one list of rows.
+
+    Ignored cards are left out of all three kinds: the point of ignoring a card
+    that only exists on one side is to stop being asked about it.
+    """
+    hidden = set(ignored or ())
+    rows = differences(pairs)
+    for item in only_woo or []:
+        rows.append({"card": item.get("name") or "", "woo": int(item.get("qty") or 0),
+                     "other": None, "gap": int(item.get("qty") or 0),
+                     "by": "", "kind": ONLY_WOO, "woo_id": item.get("id"),
+                     "woo_sku": item.get("sku") or "", "other_id": None,
+                     "other_name": "", "other_sku": ""})
+    for item in only_other or []:
+        rows.append({"card": item.get("name") or "", "woo": None,
+                     "other": int(item.get("qty") or 0),
+                     "gap": -int(item.get("qty") or 0), "by": "",
+                     "kind": ONLY_OTHER, "woo_id": None, "woo_sku": "",
+                     "other_id": item.get("id"),
+                     "other_name": item.get("name") or "",
+                     "other_sku": item.get("sku") or ""})
+    visible = [row for row in rows if card_key(row["card"]) not in hidden]
+    visible.sort(key=lambda row: (row["kind"] != FIX, -abs(row["gap"]),
+                                  row["card"].lower()))
+    return visible
+
+
+def hidden_count(pairs, only_woo, only_other, ignored):
+    """How many rows the ignore list is keeping off the screen."""
+    hidden = set(ignored or ())
+    if not hidden:
+        return 0
+    total = (len(differences(pairs)) + len(only_woo or []) +
+             len(only_other or []))
+    return total - len(action_list(pairs, only_woo, only_other, ignored))
+
+
+def plan_set(rows):
+    """What to write so the other site matches the website, card by card.
+
+    Only rows where both sides exist can be written: a card that is missing
+    from the other site has nothing to set. Every entry names the listing three
+    ways, because the plugin may know it by id, by SKU or only by its title.
+    """
+    items = []
+    for row in rows or []:
+        if row.get("kind") != FIX:
+            continue
+        if int(row.get("woo") or 0) == int(row.get("other") or 0):
+            continue
+        items.append({"id": row.get("other_id"), "sku": row.get("other_sku") or "",
+                      "title": row.get("other_name") or row.get("card") or "",
+                      "card": row.get("card") or "",
+                      "from": int(row.get("other") or 0),
+                      "to": int(row.get("woo") or 0)})
+    return items
+
+
+def describe_plan(plan, other_label="CanadianShopper"):
+    """The confirmation: exactly what would be written, one line per card."""
+    lines = []
+    for item in plan or []:
+        lines.append("  %s\n      %s %d -> %d" % (
+            item["card"][:90], other_label, item["from"], item["to"]))
+    return lines
+
+
+def plan_summary(plan, other_label="CanadianShopper"):
+    """One sentence saying how much the plan would change."""
+    count = len(plan or [])
+    if not count:
+        return "Nothing to change."
+    return "%d card%s on %s would be set to the website's count." % (
+        count, "" if count == 1 else "s", other_label)
+
+
+def label_action(row, other_label="CanadianShopper", mode="count"):
+    """One row of the action list, as it is shown."""
+    if row.get("kind") == ONLY_WOO:
+        return "%s  -  website %s only, not on %s" % (
+            row["card"], row["woo"], other_label)
+    if row.get("kind") == ONLY_OTHER:
+        return "%s  -  %s only, not on your website" % (row["card"], other_label)
+    if mode == "listed":
+        return label(row, other_label, mode)
+    return "%s  -  website %d  /  %s %d" % (
+        row["card"], row["woo"], other_label, row["other"])
+
+
+def load_ignored(path):
+    """The dismissed cards, as ``[{"key","title"}]``; unreadable hides nothing."""
+    import json
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if isinstance(data, dict):
+        data = data.get("cards") or []
+    entries = []
+    for entry in data or []:
+        if isinstance(entry, dict):
+            key = str(entry.get("key") or "").strip()
+            title = str(entry.get("title") or "").strip()
+            why = str(entry.get("why") or "").strip()
+        else:
+            key, title, why = str(entry).strip(), "", ""
+        if key:
+            entries.append({"key": key, "title": title, "why": why})
+    return entries
+
+
+def ignored_keys(entries):
+    """Just the keys, for filtering a comparison."""
+    return [entry.get("key") for entry in entries or [] if entry.get("key")]
+
+
+def save_ignored(path, entries):
+    """Write the dismissed cards. ``entries`` is ``[{"key","title"}]``."""
+    import json
+    path = Path(path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"cards": list(entries or [])}, indent=1,
+                                   ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
+def remember_ignored(entries, rows):
+    """The ignore entries plus these rows, without duplicates."""
+    known = {entry.get("key") for entry in entries or []}
+    out = list(entries or [])
+    for row in rows or []:
+        #  Rows from the list carry "card"; a raw catalogue item carries "name".
+        title = row.get("card") or row.get("name") or ""
+        key = card_key(title)
+        if not key or key in known:
+            continue
+        known.add(key)
+        out.append({"key": key, "title": title,
+                    "why": row.get("kind") or ""})
+    return out
 
 
 def summary(rows, pairs, only_woo, only_other, other_label="CanadianShopper"):

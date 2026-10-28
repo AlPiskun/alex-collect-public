@@ -75,6 +75,23 @@ BROWSER_HEADERS = {
 
 #  What a signed-out answer looks like. These are page markers, not guesses:
 #  every one of them appears on a login wall and on no listing page.
+#  What a site's automatic-check page says. eBay calls it "Pardon our
+#  interruption", Facebook answers 400 with a script shell. Neither is a
+#  listing page, and saying "nothing is listed" about one of them would be a
+#  lie the person would act on.
+_BLOCK_MARKERS = (
+    "pardon our interruption",
+    "unusual traffic",
+    "are you a robot",
+    "verify you are a human",
+    "enable javascript",
+    "please turn on javascript",
+    "javascript is disabled",
+    "request blocked",
+    "access denied",
+    "sorry, something went wrong",
+)
+
 _LOGIN_MARKERS = (
     "log in to facebook",
     "log into facebook",
@@ -276,11 +293,17 @@ def read_ebay(fetch_page, url, cookie, max_pages=10):
     offset = 0
     while pages < max(1, max_pages):
         status, text = fetch_page(page_url(url, offset), cookie)
-        if status != 200:
-            raise MarketError(
-                "eBay answered HTTP %s for the listings page." % status,
-                "That is usually a session that has expired: sign in and paste "
-                "a fresh cookie.", kind="session")
+        #  Seller Hub answers a scripted request with its "Pardon our
+        #  interruption" check page and HTTP 200, so the page itself has to be
+        #  looked at: parsing it yields no listings, and reporting "you have
+        #  none" about a page that was never a listing page would be a lie the
+        #  person would act on.
+        if status != 200 or looks_like_login(text) or looks_like_blocked(text):
+            if pages:
+                #  Some pages were read before the site started checking: keep
+                #  them rather than throw the work away.
+                break
+            raise describe_refusal("eBay", status, text)
         page_items = parse_ebay_listings(text)
         fresh = [item for item in page_items if item["id"] not in seen]
         pages += 1
@@ -408,6 +431,53 @@ def looks_like_login(text):
     return any(marker in low for marker in _LOGIN_MARKERS)
 
 
+def looks_like_blocked(text):
+    """Whether a page is the site's automatic-check page, not its content."""
+    low = str(text or "").lower()
+    return any(marker in low for marker in _BLOCK_MARKERS)
+
+
+def describe_refusal(site_label, status, text, cookie_path=""):
+    """The error for a site that answered with something other than a page.
+
+    Three different things need three different sentences: a session that has
+    expired (fix the file), a request the site refused as automated (the app
+    cannot fetch this one - save the page instead), and the site being down.
+    A 400 with a script shell is the second, which is what Facebook does.
+    """
+    #  A sign-in page can arrive with HTTP 200, so the page itself is asked
+    #  first: an answer that is a login form is an expired session whatever
+    #  number came with it, and saying "HTTP 200" about one would send the
+    #  person looking for a server fault.
+    if looks_like_login(text) or status in (401, 403):
+        kind = "session"
+    elif looks_like_blocked(text) or status == 400:
+        kind = "blocked"
+    else:
+        kind = "http"
+    if kind == "session":
+        return MarketError(
+            "%s sent %s back instead of your listings - it does not accept "
+            "that session." % (site_label, describe(text, status)),
+            "The saved cookie has expired. Sign in, copy a fresh Cookie header "
+            "into %s, and try again." %
+            (cookie_path or "the site's cookie file"), kind="session")
+    if kind == "blocked":
+        title = page_title(text)
+        return MarketError(
+            "%s answered with its automatic check page%s, not your listings - "
+            "the app's request was refused before the page was served." %
+            (site_label, " (\"%s\")" % title if title else ""),
+            "Nothing is wrong with your cookie. Open the page in your browser, "
+            "save it with Ctrl+S (HTML only), and use \"Read a saved %s "
+            "page\" below." % site_label, kind="blocked")
+    return MarketError(
+        "%s answered HTTP %s." % (site_label, status),
+        "Nothing was read. Try again, and if it repeats, save the page from "
+        "your browser and use \"Read a saved %s page\"." % site_label,
+        kind="http")
+
+
 def page_title(text):
     """The page's own title, for saying what came back."""
     match = TITLE.search(str(text or ""))
@@ -422,6 +492,8 @@ def describe(text, status=200):
     size = len(text or "")
     if status != 200:
         return "HTTP %d - %s (%d characters)" % (status, title, size)
+    if looks_like_blocked(text):
+        return "the site's check page (%s)" % title
     if looks_like_login(text):
         return "a sign-in page (%s)" % title
     return "%s (%d characters)" % (title, size)

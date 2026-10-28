@@ -62,7 +62,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.64"
+VERSION = "2.65"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -87,6 +87,9 @@ CS_ORDERS_ACTION = "after_sale.orders"
 #  Listing CanadianShopper's whole catalogue with its inventory, so the
 #  two sites can be compared without opening either dashboard.
 CS_STOCK_ACTION = "stock.list"
+#  The write half. It is asked for exactly as the plugin names it, so an
+#  older plugin that cannot set stock is detected rather than assumed.
+CS_STOCK_SET_ACTION = "stock.set"
 #  batch.photo_replace existed in 1.0.14 but only matched a staged CSV
 #  row. The CSV-free --mode replace arrived in 1.0.15, so the action ID
 #  alone cannot tell the two apart - the version has to be checked.
@@ -940,19 +943,25 @@ Useful after you sold the last copies in person. Preview shows the
 list first; nothing is archived without the second click."""
 
 DOCS["stock"] = """\
-Where the numbers disagree. One card can sit on four sites; when one of them
-sells it, the others keep offering it until somebody changes them. This panel
-reads the two catalogues - your website through its read-only API key,
-CanadianShopper through the plugin - matches the cards, and lists ONLY the ones
-whose counts differ, as website count against CanadianShopper count.
+Where the numbers disagree, and where they get put right. One card can sit on
+four sites; when one of them sells it, the others keep offering it until
+somebody changes them. This panel reads a catalogue - your website through its
+read-only API key, and CanadianShopper, eBay or Facebook through a signed-in
+session - matches the cards, and lists ONLY the ones that need something done:
+a count that differs, or a card that exists on one side only.
 
-Nothing is changed here. Cards that appear on one side only are counted as
-"not compared" rather than reported as wrong, and a pair is only made when a
-shared SKU or the title identifies the same card - a wrong pair would accuse a
-card that is fine.
+The list is the work, not a report. The website is right far more often than
+not, so the first button sets every differing CanadianShopper count to the
+website's count - and it always shows the exact changes and asks before writing
+anything. Select rows to fix or ignore just those, and when the website is the
+wrong side, select the card and open its product page: the app's keys can only
+read, so the website is changed on the website's own screen. A card that is no
+longer sold on the other site is ignored, which stops it being compared again
+until it is restored.
 
-Facebook and eBay are not part of this comparison: they need a signed-in
-session, which is a separate job."""
+A pair is only made when a shared SKU or the title identifies the same card - a
+wrong pair would accuse a card that is fine - and an unpaired card is never
+called wrong, only "on one side"."""
 
 DOCS["square"] = """\
 Square up a photo (or a whole folder) by padding it onto a white
@@ -1312,6 +1321,13 @@ TOOLTIPS = {
     "Compare the whole catalogue instead": "Drop the one-card filter and compare everything",
     "Compare stock with eBay": "Read your eBay active listings with your session cookie and list only the cards whose numbers disagree",
     "Compare stock with Facebook": "Read your Facebook selling page with your session cookie and list only the cards whose numbers disagree",
+    "Set CanadianShopper to the website's counts...": "The usual fix: for every card whose two counts differ, set CanadianShopper's count to the website's count - always shown and confirmed first, write permission only",
+    "Fix the selected cards...": "Set CanadianShopper to the website's count for just the rows selected in the list, after a confirmation listing them",
+    "Open the selected cards on the website": "Open the website's own product edit page for the selected cards - the way to change the website when it is the one that is wrong; this app never writes to the website",
+    "Ignore the selected cards": "Stop comparing the selected cards: a card that is no longer sold on one site disappears from the list until it is restored; nothing on either site changes",
+    "Restore ignored cards...": "Put every ignored card back into comparisons, after showing which ones they are",
+    "Read a saved eBay page...": "Read an eBay page you saved from your own signed-in browser (Ctrl+S, HTML only) - the way round eBay's \"Pardon our interruption\" check, using the same reader",
+    "Read a saved Facebook page...": "Read a Facebook selling page you saved from your own signed-in browser (Ctrl+S, HTML only) - the way round Facebook's HTTP 400, using the same reader",
     "Open the eBay cookie file": "Open ebay-cookie.txt so the eBay session cookie can be pasted; the file stays on this computer",
     "Open the Facebook cookie file": "Open fb-cookie.txt so the Facebook session cookie can be pasted; the file stays on this computer",
     "Preview new orders": "Read the orders that came in since you last looked, and write nothing",
@@ -4243,9 +4259,15 @@ def build_sold(parent, app):
 
 
 def build_stock(parent, app):
-    #  One job, on demand: which cards have a different number on the two
-    #  sites. Nothing here runs during a sale - the sale panel says plainly
-    #  that comparing is a separate job - and nothing in here writes stock.
+    #  One job, on demand: which cards have a different number on two sites,
+    #  and then the correction. Nothing here runs during a sale - the sale
+    #  panel says plainly that comparing is a separate job.
+    #
+    #  The list is the place the work happens, not a report: the usual answer
+    #  is "the website is right", so setting the other site to the website's
+    #  count is one confirmed click for the whole list, a selection for the
+    #  exceptions, and a card that only exists on one side can be dismissed so
+    #  it stops coming back.
     panel_header(parent, app, "stock")
     box = ttk.Frame(parent)
     box.pack(fill="x")
@@ -4254,7 +4276,9 @@ def build_stock(parent, app):
     #  consumed here so reopening the panel from the menu compares everything.
     focus = str(getattr(app, "_stock_filter", "") or "").strip()
     app._stock_filter = ""
-    focus_box = {"card": focus}
+    state = {"card": focus, "rows": [], "pairs": [], "only_woo": [],
+             "only_other": [], "label": "CanadianShopper", "mode": "count",
+             "skipped": 0}
     statuses = {}
 
     def credentials():
@@ -4272,44 +4296,268 @@ def build_stock(parent, app):
         open_woo_keys_file(app, app.settings.get("woo_site_url", ""))
         return None
 
-    def clear_list():
-        #  An old comparison must never stay on screen looking like today's.
-        listing.delete(0, "end")
-        list_frame.pack_forget()
+    # --------------------------------------------------------- the ignore list
+    def ignored_path():
+        return BASE / stock_compare.IGNORED_FILE
 
-    def show_result(rows, pairs, only_woo, only_other, skipped, label,
-                    mode="count"):
-        """Put one comparison on screen; the only place results are drawn."""
+    def ignored_entries():
+        return stock_compare.load_ignored(ignored_path())
+
+    def hide(rows):
+        """Dismiss these cards so they are not compared again."""
+        if not rows:
+            messagebox.showinfo("Nothing selected",
+                                "Select one or more rows in the list first.")
+            return
+        entries = stock_compare.remember_ignored(ignored_entries(), rows)
+        if not stock_compare.save_ignored(ignored_path(), entries):
+            messagebox.showerror(
+                "Could not save the list",
+                "The list of cards to stop asking about could not be written "
+                "to %s." % ignored_path(), parent=box.winfo_toplevel())
+            return
+        for row in rows:
+            app.console_line("Ignoring %s - it will not be compared again."
+                             % row["card"], "dim")
+        app.console_line("%d card%s now ignored. Restore them with \"Restore "
+                         "ignored cards...\"." %
+                         (len(rows), "" if len(rows) == 1 else "s"), "ok")
+        redraw()
+
+    def restore_ignored():
+        entries = ignored_entries()
+        if not entries:
+            messagebox.showinfo("Nothing is ignored",
+                                "No card has been dismissed, so there is "
+                                "nothing to restore.")
+            return
+        names = [entry.get("title") or entry.get("key") for entry in entries]
+        shown = "\n".join("  " + name[:80] for name in names[:12])
+        if len(names) > 12:
+            shown += "\n  ... and %d more" % (len(names) - 12)
+        if not messagebox.askyesno(
+                "Restore %d ignored card%s?" % (len(names),
+                                                "" if len(names) == 1 else "s"),
+                "These cards are being left out of comparisons:\n\n%s\n\n"
+                "Restore all of them, so they are compared again?" % shown,
+                parent=box.winfo_toplevel()):
+            return
+        stock_compare.save_ignored(ignored_path(), [])
+        app.console_line("%d ignored card%s restored; press Compare again to "
+                         "see them." % (len(names),
+                                        "" if len(names) == 1 else "s"), "ok")
+        summary.configure(text="Ignored cards restored. Press Compare again.")
+
+    # ------------------------------------------------------------- the list
+    def selected_rows():
+        try:
+            indexes = list(listing.curselection())
+        except Exception:
+            indexes = []
+        rows = state["rows"]
+        return [rows[i] for i in indexes if 0 <= i < len(rows)]
+
+    def redraw():
+        rows = stock_compare.action_list(state["pairs"], state["only_woo"],
+                                         state["only_other"],
+                                         stock_compare.ignored_keys(
+                                             ignored_entries()),
+                                         state["label"])
+        state["rows"] = rows
         listing.delete(0, "end")
         for row in rows:
-            listing.insert("end", stock_compare.label(row, label, mode))
+            listing.insert("end", stock_compare.label_action(
+                row, state["label"], state["mode"]))
         if rows:
             list_frame.pack(anchor="w", fill="x", pady=(3, 4))
-            for line in stock_compare.describe(rows, other_label=label,
-                                               mode=mode):
-                app.console_line(line, "dim")
+            action_row.pack(anchor="w", pady=(0, 4))
         else:
             list_frame.pack_forget()
-        text = stock_compare.summary(rows, pairs, only_woo, only_other, label)
-        if focus_box["card"]:
+            action_row.pack_forget()
+        hidden = stock_compare.hidden_count(state["pairs"], state["only_woo"],
+                                            state["only_other"],
+                                            stock_compare.ignored_keys(
+                                                ignored_entries()))
+        fixable = len([row for row in rows
+                       if row["kind"] == stock_compare.FIX])
+        text = stock_compare.summary([row for row in rows
+                                      if row["kind"] == stock_compare.FIX],
+                                     state["pairs"], state["only_woo"],
+                                     state["only_other"], state["label"])
+        if rows and not fixable:
+            text = "No counts disagree; %d card%s only on one side." % (
+                len(rows), "" if len(rows) == 1 else "s")
+        if hidden:
+            text += "  %d ignored." % hidden
+        if state["card"]:
             text = "%s  (only this card)" % text.rstrip(".")
         summary.configure(text=text)
-        if skipped:
-            app.console_line(
-                "%d products were not compared: no stock count "
-                "(unmanaged or variable)." % skipped, "dim")
-        app.console_line(
-            "Compared %d matched cards against %s; %d disagree. Nothing was "
-            "changed on either site." % (len(pairs), label, len(rows)), "ok")
+        return rows
 
-    def narrow(woo, items):
-        """Keep only the one card this panel was opened for, if any."""
-        wanted = focus_box["card"]
-        if not wanted:
-            return woo, items
-        keep = lambda rows: [item for item in rows
-                             if woo_orders.score(wanted, item["name"]) >= 0.5]
-        return keep(woo), keep(items)
+    # ------------------------------------------------------- writing a change
+    def copy_plan(plan):
+        lines = ["%s -> %s %d" % (item["card"], state["label"], item["to"])
+                 for item in plan]
+        try:
+            app.clipboard_clear()
+            app.clipboard_append("\n".join(lines))
+            app.update_idletasks()
+            return True
+        except Exception as exc:
+            log("could not copy the stock plan: %s" % exc)
+            return False
+
+    def set_arrived(rc, plan, out, action):
+        changed = []
+        if out.is_file():
+            try:
+                answer = json.loads(out.read_text(encoding="utf-8"))
+            except Exception:
+                answer = {}
+            updated = answer.get("updated") or []
+            failed = answer.get("failed") or []
+            ids = {str(row.get("id")) for row in updated if row.get("id")}
+            changed = [row for row in plan if str(row.get("id")) in ids]
+            for entry in failed:
+                app.console_line("Not changed: %s (%s)" %
+                                 (entry.get("title") or entry.get("id"),
+                                  entry.get("why") or "no reason given"), "err")
+        if rc == 0:
+            app.console_line(
+                "%d CanadianShopper count%s set to the website's count. Press "
+                "Compare again to confirm." %
+                (len(plan), "" if len(plan) == 1 else "s"), "ok")
+            summary.configure(text="%d count%s changed on CanadianShopper. "
+                                   "Compare again to confirm." %
+                                   (len(plan), "" if len(plan) == 1 else "s"))
+            #  The rows just written are gone from the list as they are gone
+            #  from the site; anything the plugin did not report on stays.
+            done = {stock_compare.card_key(row["card"]) for row in
+                    (changed or plan)}
+            state["rows"] = [row for row in state["rows"]
+                             if stock_compare.card_key(row["card"]) not in done]
+            listing.delete(0, "end")
+            for row in state["rows"]:
+                listing.insert("end", stock_compare.label_action(
+                    row, state["label"], state["mode"]))
+            if not state["rows"]:
+                list_frame.pack_forget()
+                action_row.pack_forget()
+            return True
+        app.console_line("The stock change did not finish (exit %s). Nothing "
+                         "else was changed." % rc, "err")
+        summary.configure(text="The stock change did not finish (exit %s)." % rc)
+        return False
+
+    def run_set(rows):
+        plan = stock_compare.plan_set(rows)
+        if not plan:
+            messagebox.showinfo(
+                "Nothing to set",
+                "Only a card that is on both sites can have its count set. "
+                "Select one of the rows where the two numbers differ, or use "
+                "\"Set CanadianShopper to the website's counts...\".")
+            return
+        lines = stock_compare.describe_plan(plan, state["label"])
+        body = "\n".join(lines[:12])
+        if len(lines) > 12:
+            body += "\n  ... and %d more" % (len(lines) - 12)
+        question = ("%s\n\n%s\n\nOnly those counts change: nothing is "
+                    "added, removed or repriced. Write them now?" %
+                    (stock_compare.plan_summary(plan, state["label"]), body))
+        if not messagebox.askyesno("Set CanadianShopper to these counts?",
+                                   question, parent=box.winfo_toplevel()):
+            app.console_line("The stock change was not confirmed; nothing was "
+                             "written.", "dim")
+            return
+        action = TOOL_ACTION(CS_STOCK_SET_ACTION)
+        if not action:
+            copied = copy_plan(plan)
+            messagebox.showinfo(
+                "This plugin cannot set stock yet",
+                "The installed CanadianShopper plugin can list its stock but "
+                "not write it, so nothing was changed.\n\nThe exact changes "
+                "are in the console%s, and the plugin chat has the contract "
+                "for stock.set." % (" and on your clipboard" if copied else ""))
+            for line in lines:
+                app.console_line(line, "dim")
+            app.console_line(
+                "stock.set is not declared by the installed plugin (%s)." %
+                CS_STOCK_SET_ACTION, "dim")
+            return
+        plan_path = BASE / "cs-stock-set.json"
+        out = BASE / "cs-stock-set-result.json"
+        try:
+            out.unlink()
+        except FileNotFoundError:
+            pass
+        plan_path.write_text(
+            json.dumps({"items": plan}, indent=1, ensure_ascii=False),
+            encoding="utf-8")
+        args = ["--set-file", str(plan_path), "--set-out", str(out)]
+        if CS_COOKIE_FILE.is_file():
+            args += ["--cookie-file", str(CS_COOKIE_FILE)]
+        summary.configure(text="Setting %d count%s on CanadianShopper..." %
+                               (len(plan), "" if len(plan) == 1 else "s"))
+        app.console_line("Setting %d count%s on CanadianShopper..." %
+                         (len(plan), "" if len(plan) == 1 else "s"), "cmd")
+        app.run_tool(action, args, "Set CanadianShopper stock",
+                     cwd=app.settings.get("pipeline_dir", str(WORK)),
+                     on_done=lambda rc: set_arrived(rc, plan, out, action))
+
+    def set_all():
+        run_set([row for row in state["rows"]
+                 if row["kind"] == stock_compare.FIX])
+
+    def set_selected():
+        run_set(selected_rows())
+
+    def ignore_selected():
+        hide(selected_rows())
+
+    def open_on_website():
+        """The other per-card answer: the website is the one that is wrong.
+
+        Nothing here writes to the website - the keys are read-only on purpose
+        - so this opens the product's own edit page and lets the person change
+        the count where it lives. The list is not touched: compare again after.
+        """
+        rows = [row for row in selected_rows() if row.get("woo_id")]
+        if not rows:
+            messagebox.showinfo(
+                "Nothing to open",
+                "Select a row that exists on the website first. A card that is "
+                "only on CanadianShopper or eBay has no website product to "
+                "open, and one that is only on the website has nothing to set "
+                "on the other side.")
+            return
+        urls = []
+        for row in rows[:8]:
+            url = product_edit_url(row["woo_id"], app.settings)
+            if url:
+                urls.append(url)
+        if not urls:
+            messagebox.showinfo(
+                "No website address saved",
+                "Set the store's address in User Settings first.")
+            return
+        app.open_webpages(urls)
+        app.console_line(
+            "Opening %d website product page%s. Change the count there, then "
+            "compare again - nothing was changed by this app." %
+            (len(urls), "" if len(urls) == 1 else "s"), "ok")
+        if len(rows) > len(urls):
+            app.console_line(
+                "%d more selected card%s not opened: change those in the "
+                "product list." % (len(rows) - len(urls),
+                                   "" if len(rows) - len(urls) == 1 else "s"),
+                "dim")
+
+    # ---------------------------------------------------------- read results
+    def clear_list():
+        listing.delete(0, "end")
+        list_frame.pack_forget()
+        action_row.pack_forget()
 
     def failed(what, message, hint):
         messagebox.showerror("Could not compare with %s" % what,
@@ -4319,6 +4567,59 @@ def build_stock(parent, app):
                          "err")
         summary.configure(text="Could not read %s: %s" % (what, message))
         clear_list()
+
+    def show(rows_source, skipped):
+        """Draw one comparison: ``rows_source`` is (pairs, only_woo, only_other)."""
+        state["pairs"], state["only_woo"], state["only_other"] = rows_source
+        state["skipped"] = skipped
+        if skipped:
+            app.console_line(
+                "%d products were not compared: no stock count "
+                "(unmanaged or variable)." % skipped, "dim")
+        rows = redraw()
+        fixable = [row for row in rows if row["kind"] == stock_compare.FIX]
+        for row in fixable:
+            app.console_line(stock_compare.describe(
+                [{"card": row["card"], "woo": row["woo"], "other": row["other"],
+                  "gap": row["gap"]}], other_label=state["label"],
+                mode=state["mode"])[0], "dim")
+        app.console_line(
+            "Compared %d matched cards against %s; %d disagree, %d only on one "
+            "side. Nothing was changed on either site yet." %
+            (len(state["pairs"]), state["label"], len(fixable),
+             len(rows) - len(fixable)), "ok")
+
+    def narrow(woo, items):
+        """Keep only the one card this panel was opened for, if any."""
+        wanted = state["card"]
+        if not wanted:
+            return woo, items
+        keep = lambda rows: [item for item in rows
+                             if woo_orders.score(wanted, item["name"]) >= 0.5]
+        return keep(woo), keep(items)
+
+    def compare_items(items, label, mode, creds):
+        """Compare a list read from somewhere against the website."""
+        site, key, secret = creds
+        summary.configure(text="%s: %d listings. Reading your website..." %
+                               (label, len(items)))
+        app.console_line("%s: %d listings. Reading your website's catalogue..."
+                         % (label, len(items)), "cmd")
+
+        def arrived(products, error):
+            if error is not None:
+                failed("your website", getattr(error, "message", str(error)),
+                       getattr(error, "hint", ""))
+                return
+            woo, skipped = stock_compare.woo_items(products)
+            woo, items_here = narrow(woo, items)
+            pairs, only_woo, only_other = stock_compare.pair(woo, items_here)
+            show((pairs, only_woo, only_other), skipped)
+
+        in_background(
+            app,
+            lambda: stock_compare.read_woo_stock(woo_get, site, key, secret),
+            arrived)
 
     # ------------------------------------------------------- CanadianShopper
     def plugin_arrived(rc, out, creds, sent_cookie=False):
@@ -4368,28 +4669,8 @@ def build_stock(parent, app):
             summary.configure(text="CanadianShopper wrote no stock list.")
             clear_list()
             return False
-        site, key, secret = creds
-        summary.configure(text="CanadianShopper: %d listings. Reading your "
-                               "website..." % len(items))
-        app.console_line("CanadianShopper: %d listings. Reading your website's "
-                         "catalogue..." % len(items), "cmd")
-
-        def arrived(products, error):
-            if error is not None:
-                failed("CanadianShopper",
-                       getattr(error, "message", str(error)),
-                       getattr(error, "hint", ""))
-                return
-            woo, skipped = stock_compare.woo_items(products)
-            woo, items_here = narrow(woo, items)
-            pairs, only_woo, only_other = stock_compare.pair(woo, items_here)
-            show_result(stock_compare.differences(pairs), pairs, only_woo,
-                        only_other, skipped, "CanadianShopper")
-
-        in_background(
-            app,
-            lambda: stock_compare.read_woo_stock(woo_get, site, key, secret),
-            arrived)
+        state["label"], state["mode"] = "CanadianShopper", "count"
+        compare_items(items, "CanadianShopper", "count", creds)
         return True
 
     def compare_cs():
@@ -4434,68 +4715,62 @@ def build_stock(parent, app):
 
     # ------------------------------------------------------- eBay / Facebook
     #  Neither site offers a list this app can ask for, so the page the seller
-    #  is already signed in to is read instead - with their own cookie, once,
-    #  on demand. A login wall is reported as a login wall, never as "you have
-    #  nothing listed".
+    #  is already signed in to is read instead. Both sites check whether the
+    #  request comes from a browser, and both can refuse it - so a saved page
+    #  is a first-class route here, not a last resort.
     def market_read(site_id, info, url, cookie):
-        """Read the site's own page. Runs on the worker thread."""
         if site_id == "ebay":
             items, pages, text = market_stock.read_ebay(
                 market_stock.fetch, url, cookie)
             return {"items": items, "pages": pages, "text": text}
         status, text = market_stock.fetch(url, cookie)
-        if status != 200:
-            raise market_stock.MarketError(
-                "%s answered HTTP %s for that page." % (info["label"], status),
-                "That is usually a session that has expired: sign in and paste "
-                "a fresh cookie into %s." % (BASE / info["cookie"]),
-                kind="session")
-        if market_stock.looks_like_login(text):
-            raise market_stock.MarketError(
-                "%s answered with a sign-in page, not your listings." %
-                info["label"],
-                "The saved cookie has expired. Sign in, copy a fresh Cookie "
-                "header into %s, and press the button again." %
-                (BASE / info["cookie"]), kind="session")
+        if status != 200 or market_stock.looks_like_login(text) or \
+                market_stock.looks_like_blocked(text):
+            raise market_stock.describe_refusal(
+                info["label"], status, text, BASE / info["cookie"])
         return {"items": market_stock.parse_listings(site_id, text), "pages": 1,
                 "text": text}
 
     def market_done(site_id, info, result, error, creds):
-        statuses[site_id].configure(text="not read")
         if error is not None:
             message = getattr(error, "message", str(error))
             hint = getattr(error, "hint", "")
-            if getattr(error, "kind", "") == "session":
-                #  Not a failure to explain and hide: an expired cookie is
-                #  something the person fixes in a minute, so it is said in
-                #  those words, with the file to fix.
-                statuses[site_id].configure(text="not signed in")
+            kind = getattr(error, "kind", "")
+            statuses[site_id].configure(
+                text={"session": "not signed in", "blocked": "blocked"
+                      }.get(kind, "could not be read"))
+            if kind in ("session", "blocked"):
                 messagebox.showwarning(
-                    "%s did not answer as a signed-in seller" % info["label"],
+                    "%s could not be read" % info["label"],
                     message + ("\n\n" + hint if hint else "") +
                     "\n\nNothing was read and nothing was changed.",
                     parent=box.winfo_toplevel())
                 app.console_line("%s: %s %s" % (info["label"], message, hint),
                                  "err")
-                summary.configure(text="%s is not signed in." % info["label"])
+                summary.configure(text="%s could not be read. %s" %
+                                       (info["label"],
+                                        "Save the page from your browser and "
+                                        "press \"Read a saved %s page\"."
+                                        % info["label"]
+                                        if kind == "blocked" else
+                                        "It is not signed in."))
                 clear_list()
                 return
-            statuses[site_id].configure(text="could not be read")
             failed(info["label"], message, hint)
             return
         page = market_stock.save_page(BASE / info["page"], result["text"])
         items = result["items"]
         if not items:
-            #  A signed-in page with no listing in it that this reader can
-            #  recognise: the page's wording changed, and the saved copy is
-            #  how that gets fixed. Saying "nothing is listed" would be a lie.
+            #  A page with no listing in it that this reader can recognise: the
+            #  page's wording changed, and the saved copy is how that gets
+            #  fixed. Saying "nothing is listed" would be a lie.
             statuses[site_id].configure(text="page not understood")
             messagebox.showwarning(
                 "Nothing on the %s page could be read" % info["label"],
                 "The page came back as %s, but no listing on it could be read."
                 "\n\nNothing was compared and nothing was changed. The copy "
-                "saved beside the app is what the reader is repaired against:\n"
-                "\n  %s" % (market_stock.describe(result["text"], 200), page),
+                "saved beside the app is what the reader is repaired against:"
+                "\n\n  %s" % (market_stock.describe(result["text"], 200), page),
                 parent=box.winfo_toplevel())
             app.console_line(
                 "%s: the page loaded but no listing could be read; a copy is "
@@ -4504,49 +4779,19 @@ def build_stock(parent, app):
             summary.configure(text="%s's page could not be understood." %
                                    info["label"])
             return
-        statuses[site_id].configure(
-            text="%d listing%s" % (len(items), "" if len(items) == 1 else "s"))
-        site, key, secret = creds
-        summary.configure(text="%s: %d listings. Reading your website..." %
-                               (info["label"], len(items)))
+        statuses[site_id].configure(text="%d listings" % len(items))
+        state["label"] = info["label"]
+        state["mode"] = "listed" if site_id == "facebook" else "count"
         app.console_line(
-            "%s: %d listings read from %s (page copy at %s). Reading your "
-            "website's catalogue..." %
+            "%s: %d listings read from %s (page copy at %s)." %
             (info["label"], len(items), market_stock.describe(result["text"]),
              page), "cmd")
-
-        def arrived(products, woo_error):
-            if woo_error is not None:
-                failed("your website", getattr(woo_error, "message",
-                                               str(woo_error)),
-                       getattr(woo_error, "hint", ""))
-                return
-            woo, skipped = stock_compare.woo_items(products)
-            woo, items_here = narrow(woo, items)
-            pairs, only_woo, only_other = stock_compare.pair(woo, items_here)
-            show_result(stock_compare.differences(pairs), pairs, only_woo,
-                        only_other, skipped, info["label"],
-                        "listed" if site_id == "facebook" else "count")
-            if site_id == "facebook":
-                app.console_line(
-                    "Facebook has no quantity: an Active listing counts as 1 "
-                    "and a Sold one as 0, so a card listed once never matches "
-                    "a website stock of 2 on the number alone.", "dim")
-
-        in_background(
-            app,
-            lambda: stock_compare.read_woo_stock(woo_get, site, key, secret),
-            arrived)
-
-    def market_work(site_id, info, url, cookie, creds):
-        """Both reads, on one worker thread, so nothing nests."""
-        done = market_read(site_id, info, url, cookie)
-        return done
-
-    def market_started(site_id, info, result, error):
-        #  The first half (the site) is done; the catalogue is asked for next.
-        creds = site_creds.get(site_id)
-        market_done(site_id, info, result, error, creds)
+        compare_items(items, info["label"], state["mode"], creds)
+        if site_id == "facebook":
+            app.console_line(
+                "Facebook has no quantity: an Active listing counts as 1 and a "
+                "Sold one as 0, so a card listed once never matches a website "
+                "stock of 2 on the number alone.", "dim")
 
     site_creds = {}
 
@@ -4598,6 +4843,49 @@ def build_stock(parent, app):
             lambda result, error: market_done(site_id, info, result, error,
                                               creds))
 
+    def read_saved_page(site_id):
+        """Read a page the person saved from their own signed-in browser.
+
+        This is how eBay and Facebook are read when the site refuses the app's
+        request: the browser has the page, Ctrl+S keeps it, and the parser
+        here is the same one that reads a fetched page.
+        """
+        info = market_stock.SITES[site_id]
+        path = filedialog.askopenfilename(
+            title="Choose the %s page you saved from your browser" %
+                  info["label"],
+            initialdir=str(BASE),
+            filetypes=[("Saved page", "*.html *.htm"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            messagebox.showerror("Could not open that file", str(exc),
+                                 parent=box.winfo_toplevel())
+            return
+        items = market_stock.parse_listings(site_id, text)
+        if not items:
+            messagebox.showwarning(
+                "No listing could be read from that page",
+                "%s looks like %s, but no listing in it could be read.\n\n"
+                "Make sure it is the signed-in %s page itself, not the sign-in "
+                "page or a listing form." %
+                (Path(path).name, market_stock.describe(text),
+                 info["label"]), parent=box.winfo_toplevel())
+            app.console_line("%s: %s has no listing this reader recognises."
+                             % (info["label"], Path(path).name), "err")
+            return
+        creds = credentials()
+        if not creds:
+            return
+        statuses[site_id].configure(text="%d listings" % len(items))
+        state["label"] = info["label"]
+        state["mode"] = "listed" if site_id == "facebook" else "count"
+        app.console_line("%s: %d listings read from the saved page %s." %
+                         (info["label"], len(items), Path(path).name), "cmd")
+        compare_items(items, info["label"], state["mode"], creds)
+
     # --------------------------------------------------------------- layout
     ttk.Label(box, text="Compare with your website", style="H2.TLabel").pack(
         anchor="w")
@@ -4610,6 +4898,14 @@ def build_stock(parent, app):
     ttk.Button(row, text="Compare stock with Facebook",
                command=lambda: compare_market("facebook")).pack(side="left")
 
+    row_saved = ttk.Frame(box)
+    row_saved.pack(anchor="w", pady=(2, 0))
+    ttk.Button(row_saved, text="Read a saved eBay page...",
+               command=lambda: read_saved_page("ebay")).pack(side="left")
+    ttk.Button(row_saved, text="Read a saved Facebook page...",
+               command=lambda: read_saved_page("facebook")).pack(
+                   side="left", padx=8)
+
     if focus:
         focus_label = ttk.Label(box, text="Only this card: " + focus,
                                 style="H2.TLabel", wraplength=680,
@@ -4617,7 +4913,7 @@ def build_stock(parent, app):
         focus_label.pack(anchor="w", pady=(4, 0))
 
         def compare_everything():
-            focus_box["card"] = ""
+            state["card"] = ""
             focus_label.pack_forget()
             clear_btn.pack_forget()
             app.console_line("Comparing the whole catalogue now.", "dim")
@@ -4631,21 +4927,45 @@ def build_stock(parent, app):
     summary.pack(anchor="w", pady=(2, 0))
 
     list_frame = ttk.Frame(box)
-    listing = tk.Listbox(list_frame, height=8, exportselection=False)
+    listing = tk.Listbox(list_frame, height=9, exportselection=False,
+                         selectmode="extended")
     scroll = ttk.Scrollbar(list_frame, orient="vertical",
                            command=listing.yview)
     listing.configure(yscrollcommand=scroll.set)
     listing.pack(side="left", fill="both", expand=True)
     scroll.pack(side="right", fill="y")
 
+    #  The actions belong to the list and sit right under it, so "fix this" is
+    #  never a scroll away from what it fixes.
+    action_row = ttk.Frame(box)
+    first = ttk.Frame(action_row)
+    first.pack(anchor="w")
+    ttk.Button(first, text="Set CanadianShopper to the website's counts...",
+               style="Task.TButton", command=set_all).pack(side="left")
+    ttk.Button(first, text="Fix the selected cards...",
+               command=set_selected).pack(side="left", padx=6)
+    second = ttk.Frame(action_row)
+    second.pack(anchor="w", pady=(3, 0))
+    ttk.Button(second, text="Open the selected cards on the website",
+               command=open_on_website).pack(side="left")
+    ttk.Button(second, text="Ignore the selected cards",
+               command=ignore_selected).pack(side="left", padx=6)
+    ttk.Button(second, text="Restore ignored cards...",
+               command=restore_ignored).pack(side="left")
+    action_row.pack_forget()
+
     ttk.Label(box,
-              text="Each button reads the other site and your website and "
-                   "shows only the cards whose numbers disagree - website "
-                   "count and the other site's count, side by side. A card "
-                   "that appears on one side only is counted as not compared, "
-                   "never reported as wrong, and a pair is only made when a "
-                   "shared SKU, the same card number, or the title says it is "
-                   "the same card. Nothing is changed on either site.",
+              text="The list is what needs attention: a card whose two counts "
+                   "differ, or a card that exists on one side only. The "
+                   "website is usually the right one, so the first button sets "
+                   "every differing count to the website's - after showing "
+                   "exactly what would change and asking. Select rows to fix "
+                   "or ignore just those; ignoring a card that is not on the "
+                   "other site stops it being compared again, and nothing on "
+                   "either site is changed by comparing or by ignoring. When "
+                   "the website is the one that is wrong, select the card and "
+                   "open its product page - the website's own screen changes "
+                   "it, because the app's keys can only read.",
               style="Dim.TLabel", wraplength=680, justify="left").pack(
                   anchor="w", pady=(6, 0))
 
@@ -4667,17 +4987,20 @@ def build_stock(parent, app):
         statuses[site_id] = label
 
     ttk.Label(box,
-              text="Both sites need a signed-in session because neither "
-                   "publishes a list this app can ask for. The cookie goes in "
-                   "ebay-cookie.txt or fb-cookie.txt beside the app; the whole "
-                   "Cookie header can be pasted at once, on one line or "
-                   "several. When the session expires the button says so and "
-                   "nothing is compared. A copy of each page read is kept "
-                   "beside the app (ebay-active.html, fb-selling.html) so a "
-                   "page that changes shape can be diagnosed; that copy is "
-                   "never sent anywhere.",
+              text="Both sites need a signed-in session, and both check "
+                   "whether a request comes from a browser - eBay answers "
+                   "with a \"Pardon our interruption\" page and Facebook with "
+                   "HTTP 400. When that happens the app says so and changes "
+                   "nothing: save the page from your browser with Ctrl+S "
+                   "(HTML only) and use the \"Read a saved page\" button, which "
+                   "uses the same reader. The cookie goes in ebay-cookie.txt "
+                   "or fb-cookie.txt; the whole Cookie header can be pasted at "
+                   "once, on one line or several. A copy of every page read is "
+                   "kept beside the app (ebay-active.html, fb-selling.html) "
+                   "and is never sent anywhere.",
               style="Dim.TLabel", wraplength=680, justify="left").pack(
                   anchor="w", pady=(6, 0))
+
 
 
 def build_plugins(parent, app):

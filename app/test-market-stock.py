@@ -55,6 +55,20 @@ LOGIN_PAGE = """<html><head><title>Sign in to eBay</title></head>
 <body><h1>Please sign in</h1><p>You must log in to continue.</p></body></html>"""
 
 
+#  eBay's actual answer to a scripted request, and Facebook's: neither is a
+#  listing page, and neither can be turned into one by a better parser.
+EBAY_WALL = """<!DOCTYPE html><html><head>
+<title>Pardon Our Interruption</title></head><body>
+<h1>Pardon our interruption...</h1>
+<p>Before you continue, please verify you are a human by completing the
+verification below.</p><div id="challenge"></div></body></html>"""
+
+FB_400 = """<!DOCTYPE html><html><head><title>Error</title></head><body>
+<div id="mount"></div><script>window.__error={"code":1357004};</script>
+<noscript>Please turn on JavaScript in your browser.</noscript>
+</body></html>"""
+
+
 def test_cookies():
     print("== 1. the three ways a person pastes a cookie ==")
     folder = Path(tempfile.mkdtemp())
@@ -687,6 +701,162 @@ def test_cookie_file():
           path.read_text(encoding="utf-8") == "keep me\n", "")
 
 
+def test_the_walls_have_names():
+    print()
+    print("== 9. a site that refuses the app is named, not misread ==")
+    check("eBay's check page is recognised by its own title",
+          market_stock.looks_like_blocked(EBAY_WALL), "")
+    check("and a real listing page is not mistaken for one",
+          not market_stock.looks_like_blocked(EBAY_PAGE), "")
+    check("a check page is described as the site's check page",
+          market_stock.describe(EBAY_WALL).startswith("the site's check page"),
+          market_stock.describe(EBAY_WALL))
+    check("a Facebook 400 answers with a script shell, not a shop",
+          market_stock.looks_like_blocked(FB_400), "")
+
+    session = market_stock.describe_refusal("eBay", 200, LOGIN_PAGE, "f.txt")
+    check("a sign-in page with HTTP 200 is an expired session, not a 200",
+          session.kind == "session" and "HTTP 200" not in session.message,
+          session.message)
+    check("and it says which file to put a fresh cookie in",
+          "fresh Cookie header" in session.hint and "f.txt" in session.hint,
+          session.hint)
+
+    wall = market_stock.describe_refusal("eBay", 200, EBAY_WALL, "f.txt")
+    check("eBay's wall is reported as a wall",
+          wall.kind == "blocked" and "check page" in wall.message, wall.message)
+    check("and the person is not told their cookie is stale",
+          "expired" not in wall.message and "expired" not in wall.hint,
+          wall.message + wall.hint)
+    check("the way round it is the saved page, named with its button",
+          "Read a saved eBay page" in wall.hint, wall.hint)
+
+    face = market_stock.describe_refusal("Facebook", 400, FB_400)
+    check("Facebook's HTTP 400 is the same wall, not a bad cookie",
+          face.kind == "blocked" and "Nothing is wrong with your cookie"
+          in face.hint, face.hint)
+    check("a plain server error is neither of those",
+          market_stock.describe_refusal("eBay", 500, "<html>oops</html>").kind
+          == "http", "")
+
+    try:
+        market_stock.read_ebay(lambda url, cookie: (200, EBAY_WALL),
+                               "https://www.ebay.ca/sh/lst/active", "a=1")
+        check("the eBay reader refuses a wall instead of calling it an empty shop",
+              False, "")
+    except market_stock.MarketError as exc:
+        check("the eBay reader refuses a wall instead of calling it an empty shop",
+              exc.kind == "blocked" and "check page" in exc.message,
+              exc.message)
+
+    try:
+        market_stock.read_ebay(lambda url, cookie: (403, LOGIN_PAGE),
+                               "https://www.ebay.ca/sh/lst/active", "a=1")
+        check("a 403 with a sign-in page is a session, not a blocked page",
+              False, "")
+    except market_stock.MarketError as exc:
+        check("a 403 with a sign-in page is a session, not a blocked page",
+              exc.kind == "session", exc.message)
+
+    pages = []
+
+    def wall_after_one(url, cookie):
+        pages.append(url)
+        return (200, EBAY_PAGE) if len(pages) == 1 else (200, EBAY_WALL)
+    #  A page shorter than the site's page size ends the paging unless the
+    #  page size itself is the test's - here a 3-row page is a full one, so the
+    #  second request is made and meets the wall.
+    with patch.object(market_stock, "_EBAY_PER_PAGE", 3):
+        items, count, text = market_stock.read_ebay(
+            wall_after_one, "https://www.ebay.ca/sh/lst/active", "a=1")
+    check("a wall part-way through keeps what was already read",
+          len(items) == 3 and count == 1 and len(pages) == 2,
+          str((len(items), count, len(pages))))
+
+
+def test_panel_names_the_wall():
+    print()
+    print("== 10. the panel says what the site did, and offers the way round ==")
+    folder, app, parent = build_panel()
+    (folder / "ebay-cookie.txt").write_text("SID=abc\n", encoding="utf-8")
+    warned, errors = [], []
+    harness._BOX.showwarning = lambda *a, **k: warned.append(a)
+    harness._BOX.showerror = lambda *a, **k: errors.append(a)
+
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(market_stock, "fetch",
+                         lambda url, cookie: (200, EBAY_WALL)), \
+            patch.object(gui, "in_background", sync_background):
+        find(parent, gui.ttk.Button, "Compare stock with eBay").invoke()
+    check("the eBay wall is named by its own words, not called unreadable",
+          warned and "automatic check page" in str(warned[-1]) and
+          "Pardon Our Interruption" in str(warned[-1]), str(warned))
+    check("and not an error about the page being unreadable",
+          not errors, str(errors))
+    check("the status says the site blocked it",
+          find(parent, gui.ttk.Label, "blocked") is not None,
+          str([w.cget("text") for w in parent.walk()
+               if isinstance(w, gui.ttk.Label)][:6]))
+    check("nothing was compared and nothing ran",
+          not app.runs, str(app.runs))
+
+    warned[:] = []
+    (folder / "fb-cookie.txt").write_text("c_user=1\n", encoding="utf-8")
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(market_stock, "fetch",
+                         lambda url, cookie: (400, FB_400)), \
+            patch.object(gui, "in_background", sync_background):
+        find(parent, gui.ttk.Button, "Compare stock with Facebook").invoke()
+    check("Facebook's 400 is reported as a refusal, not a stale cookie",
+          warned and "Nothing is wrong with your cookie" in str(warned[-1]),
+          str(warned))
+    check("and it does not say the session expired",
+          warned and "expired" not in str(warned[-1]).lower(), str(warned))
+
+    # ---- the way round: a page saved from the browser
+    saved_copy = folder / "fb-selling.html"
+    saved_copy.write_text(FB_PAGE, encoding="utf-8")
+    app.lines.clear()
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui.filedialog, "askopenfilename",
+                         lambda **k: str(saved_copy)), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(stock_compare, "read_woo_stock",
+                         lambda *a, **k: WOO_PRODUCTS), \
+            patch.object(gui, "in_background", sync_background):
+        find(parent, gui.ttk.Button, "Read a saved Facebook page...").invoke()
+    check("a saved page is read by the same reader",
+          any("read from the saved page" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and the comparison runs from it",
+          any("matched cards against Facebook" in text
+              for _tag, text in app.lines), str(app.lines[-3:]))
+
+    saved_copy.write_text("<html><body>not a listing page</body></html>",
+                          encoding="utf-8")
+    harness._BOX.shown.clear()
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui.filedialog, "askopenfilename",
+                         lambda **k: str(saved_copy)), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "in_background", sync_background):
+        find(parent, gui.ttk.Button, "Read a saved Facebook page...").invoke()
+    check("a wrong saved page says so instead of comparing nothing",
+          any("no listing in it could be read" in str(payload)
+              for payload in warned), str(warned[-1:]))
+
+
+
 def main():
     test_cookies()
     test_header_safety()
@@ -699,6 +869,8 @@ def main():
     test_panel()
     test_one_card_market()
     test_cookie_file()
+    test_the_walls_have_names()
+    test_panel_names_the_wall()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))

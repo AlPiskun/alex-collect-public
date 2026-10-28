@@ -55,9 +55,10 @@ PRODUCTS = [
 ]
 
 CS_ITEMS = [
-    {"title": "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6", "sku": "GR-1",
+    {"id": 101, "title": "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6",
+     "sku": "GR-1", "inventory": 0},
+    {"id": 102, "title": "1966-67 Topps Bobby Orr #35", "sku": "",
      "inventory": 0},
-    {"title": "1966-67 Topps Bobby Orr #35", "sku": "", "inventory": 0},
 ]
 OTHER = stock_compare.plugin_items(CS_ITEMS)     # what the panel compares with
 
@@ -636,6 +637,285 @@ def test_one_card():
           str(listing.items))
 
 
+def test_actions():
+    print()
+    print("== 10. the list is the work: fix rows, one-sided rows, dismissals ==")
+    woo, _ = stock_compare.woo_items(PRODUCTS)
+    extra_woo = {"id": 9, "name": "1972-73 O-Pee-Chee Guy Lafleur #79",
+                 "sku": "LA-79", "qty": 3}
+    extra_other = {"id": 77, "name": "1972-73 O-Pee-Chee Ken Dryden #10",
+                   "sku": "", "qty": 1}
+    pairs, only_woo, only_other = stock_compare.pair(woo, OTHER)
+    only_woo = only_woo + [extra_woo]
+    only_other = only_other + [extra_other]
+    rows = stock_compare.action_list(pairs, only_woo, only_other)
+    kinds = [row["kind"] for row in rows]
+    check("a disagreement can be fixed, a one-sided card cannot",
+          kinds and kinds[0] == stock_compare.FIX and
+          stock_compare.ONLY_WOO in kinds and
+          stock_compare.ONLY_OTHER in kinds, str(kinds))
+    check("the fixable rows come first, worst gap first",
+          kinds == sorted(kinds, key=lambda k: k != stock_compare.FIX),
+          str(kinds))
+    fix = rows[0]
+    check("a fix row carries both sides' identity, not just the numbers",
+          fix["woo_id"] == 1 and fix["other_id"] == 101 and
+          fix["woo_sku"] == "GR-1" and fix["other_name"].startswith("1989"),
+          str(fix))
+
+    plan = stock_compare.plan_set(rows)
+    check("only the disagreements are written",
+          len(plan) == 1 and plan[0]["from"] == 0 and plan[0]["to"] == 2,
+          str(plan))
+    check("one sentence says how much would change",
+          stock_compare.plan_summary(plan) ==
+          "1 card on CanadianShopper would be set to the website's count.",
+          stock_compare.plan_summary(plan))
+    check("and an empty plan says nothing would change",
+          stock_compare.plan_summary([]) == "Nothing to change.", "")
+    lines = stock_compare.describe_plan(plan)
+    check("the confirmation names the card and both counts",
+          len(lines) == 1 and "Gretzky" in lines[0] and "0 -> 2" in lines[0],
+          str(lines))
+    check("a row that already agrees is not written again",
+          stock_compare.plan_set([{"kind": stock_compare.FIX, "woo": 2,
+                                   "other": 2}]) == [], "")
+
+    check("a card's key ignores the word order the two sites use",
+          stock_compare.card_key("#75 Bert Campaneris 1967 O-Pee-Chee") ==
+          stock_compare.card_key("1967 O-Pee-Chee Bert Campaneris #75"), "")
+    check("and two different cards never share one",
+          stock_compare.card_key("1972 O-Pee-Chee #1") !=
+          stock_compare.card_key("1972 O-Pee-Chee #2"), "")
+    check("editing a title brings the card back - nothing is hidden for good",
+          stock_compare.card_key("1972 O-Pee-Chee Ken Dryden #10") !=
+          stock_compare.card_key("1973 O-Pee-Chee Ken Dryden #10"), "")
+
+    keys = [stock_compare.card_key(extra_woo["name"])]
+    kept = stock_compare.action_list(pairs, only_woo, only_other, keys)
+    check("an ignored card is out of the list",
+          all(row["card"] != extra_woo["name"] for row in kept) and
+          len(kept) == len(rows) - 1, str([row["card"] for row in kept]))
+    check("and the panel can say how many it is hiding",
+          stock_compare.hidden_count(pairs, only_woo, only_other, keys) == 1, "")
+
+    folder = Path(tempfile.mkdtemp())
+    path = folder / stock_compare.IGNORED_FILE
+    entries = stock_compare.remember_ignored([], [extra_woo])
+    check("dismissing remembers the card as well as its key",
+          entries and entries[0]["title"] == extra_woo["name"] and
+          entries[0]["key"] == stock_compare.card_key(extra_woo["name"]),
+          str(entries))
+    check("with no duplicates when it is dismissed twice",
+          len(stock_compare.remember_ignored(entries, [extra_woo])) == 1, "")
+    check("the list is written and read back whole",
+          stock_compare.save_ignored(path, entries) and
+          stock_compare.load_ignored(path) == entries,
+          str(stock_compare.load_ignored(path)))
+    check("a missing file hides nothing",
+          stock_compare.load_ignored(folder / "nope.json") == [], "")
+    path.write_text("{not json", encoding="utf-8")
+    check("an unreadable file is not treated as \"everything is hidden\"",
+          stock_compare.load_ignored(path) == [], "")
+    path.write_text(json.dumps({"cards": ["plain key"]}), encoding="utf-8")
+    check("an old-style list of plain keys still works",
+          stock_compare.ignored_keys(stock_compare.load_ignored(path)) ==
+          ["plain key"], "")
+
+    check("a one-sided row says which side it is on",
+          "not on CanadianShopper" in
+          stock_compare.label_action({"kind": stock_compare.ONLY_WOO,
+                                      "card": "X", "woo": 3}),
+          "")
+    check("and the reverse names the website",
+          "not on your website" in
+          stock_compare.label_action({"kind": stock_compare.ONLY_OTHER,
+                                      "card": "X", "other": 1}), "")
+    check("a fix row shows both counts and the site",
+          stock_compare.label_action({"kind": stock_compare.FIX, "card": "C",
+                                      "woo": 2, "other": 0}) ==
+          "C  -  website 2  /  CanadianShopper 0", "")
+
+
+def run_comparison(folder, app, parent, label="Compare stock (WooCommerce and "
+                                                 "CanadianShopper)"):
+    """Press Compare and hand back the plugin's answer, the way the app does."""
+    button = find(parent, gui.ttk.Button, label)
+
+    def fetch_ok(base, path, params, key, secret):
+        return (200, PRODUCTS) if params["page"] == 1 else (200, [])
+
+    out = folder / "cs-stock.json"
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_ok), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        button.invoke()
+        out.write_text(json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+    listing = next((w for w in parent.walk()
+                    if isinstance(w, gui.tk.Listbox)), None)
+    return listing, out
+
+
+def test_the_fix_flow():
+    print()
+    print("== 11. the fix is one confirmed click, and nothing else changes ==")
+    folder, app, parent = build_panel()
+    listing, out = run_comparison(folder, app, parent)
+    check("the disagreement is listed before anything is offered",
+          listing is not None and len(listing.items) == 1, str(listing.items))
+    missing_tips = [str(w.cget("text")) for w in parent.walk()
+                    if isinstance(w, gui.ttk.Button)
+                    and not gui.tip_for(str(w.cget("text")))]
+    check("every button on the panel explains itself on hover",
+          not missing_tips, str(missing_tips))
+    set_all = find(parent, gui.ttk.Button,
+                   "Set CanadianShopper to the website's counts...")
+    fix_one = find(parent, gui.ttk.Button, "Fix the selected cards...")
+    check("both the whole-list fix and the per-card fix are on the page",
+          set_all is not None and fix_one is not None, "")
+
+    asked = []
+    harness._BOX.askyesno = lambda title, message, **k: (
+        asked.append((title, message)) or False)
+    app.runs.clear()
+    with patch.object(gui, "BASE", folder):
+        set_all.invoke()
+    check("the whole list asks before writing anything",
+          asked and "Set CanadianShopper to these counts?" == asked[0][0],
+          str(asked))
+    check("and the question lists the exact card and both counts",
+          asked and "Gretzky" in asked[0][1] and "0 -> 2" in asked[0][1],
+          str(asked))
+    check("declining writes nothing at all", not app.runs, str(app.runs))
+    check("and says so, rather than failing silently",
+          any("not confirmed" in text for _tag, text in app.lines),
+          str(app.lines[-2:]))
+
+    asked[:] = []
+    harness._BOX.askyesno = lambda title, message, **k: (
+        asked.append((title, message)) or True)
+    app.runs.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"
+                      if action == gui.CS_STOCK_SET_ACTION else ""), \
+            patch.object(gui, "BASE", folder):
+        set_all.invoke()
+    args = app.runs[0]["args"] if app.runs else []
+    plan_file = folder / "cs-stock-set.json"
+    check("confirming asks the plugin to set the stock",
+          app.runs and args[args.index("--set-file") + 1] == str(plan_file),
+          str(args))
+    written = json.loads(plan_file.read_text(encoding="utf-8"))["items"]
+    #  The id the plugin gave the listing is the one written back; its SKU and
+    #  title travel with it so an older plugin can match by those instead.
+    check("the plan file carries the website's count, not the site's",
+          written == [{"id": 101, "sku": "GR-1",
+                       "title": "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6",
+                       "card": "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6",
+                       "from": 0, "to": 2}], str(written))
+    result = folder / "cs-stock-set-result.json"
+    result.write_text(json.dumps({"updated": [{"id": 1, "inventory": 2}]}),
+                      encoding="utf-8")
+    app.runs[0]["on_done"](0)
+    check("a finished write is reported with the count",
+          any("1 CanadianShopper count set" in text for _tag, text in app.lines),
+          str(app.lines[-2:]))
+    check("and the card leaves the list, because it is no longer disagreeing",
+          listing.items == [], str(listing.items))
+
+    # ---- a plugin that cannot write: say so, do not pretend
+    folder, app, parent = build_panel()
+    listing, out = run_comparison(folder, app, parent)
+    check("the fresh comparison is back on the page",
+          len(listing.items) == 1, str(listing.items))
+    infos = []
+    harness._BOX.showinfo = lambda *a, **k: infos.append(a)
+    harness._BOX.askyesno = lambda *a, **k: True
+    app.runs.clear()
+    with patch.object(gui, "TOOL_ACTION", lambda action: ""), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button,
+             "Set CanadianShopper to the website's counts...").invoke()
+    check("a plugin without stock.set is told apart from a failure",
+          any("stock.set" in str(payload) for payload in infos), str(infos))
+    check("the dialog points at the plugin contract, not at the person",
+          any("plugin" in str(payload) for payload in infos), str(infos))
+    check("and nothing is run against it", not app.runs, str(app.runs))
+
+    # ---- per-card: the website is the wrong side now and then
+    folder, app, parent = build_panel()
+    listing, out = run_comparison(folder, app, parent)
+    app.opened.clear()
+    with patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button,
+             "Open the selected cards on the website").invoke()
+    check("opening a card goes to the website's own product page",
+          app.opened and "post=1" in app.opened[0], str(app.opened))
+    check("and the app says it changed nothing there",
+          any("nothing was changed by this app" in text
+              for _tag, text in app.lines), str(app.lines[-2:]))
+
+    folder, app, parent = build_panel()
+    listing, out = run_comparison(folder, app, parent)
+    asked[:] = []
+    harness._BOX.askyesno = lambda title, message, **k: (
+        asked.append((title, message)) or True)
+    app.runs.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"
+                      if action == gui.CS_STOCK_SET_ACTION else ""), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button, "Fix the selected cards...").invoke()
+    check("fixing a selected card writes only that card",
+          app.runs and str(folder / "cs-stock-set.json") in app.runs[0]["args"],
+          str(app.runs))
+    check("the one-card fix is a confirmation too",
+          asked and asked[0][0] == "Set CanadianShopper to these counts?", "")
+
+
+def test_ignoring():
+    print()
+    print("== 12. a card that is gone from the other site stops asking ==")
+    folder, app, parent = build_panel()
+    listing, out = run_comparison(folder, app, parent)
+    ignore = find(parent, gui.ttk.Button, "Ignore the selected cards")
+    restore = find(parent, gui.ttk.Button, "Restore ignored cards...")
+    check("there is a way to stop being asked, and a way back",
+          ignore is not None and restore is not None, "")
+
+    before = list(listing.items)
+    with patch.object(gui, "BASE", folder):
+        ignore.invoke()
+    path = folder / stock_compare.IGNORED_FILE
+    saved = json.loads(path.read_text(encoding="utf-8"))["cards"] \
+        if path.is_file() else []
+    check("the dismissal is remembered on disk", len(saved) == 1, str(saved))
+    check("and the row is off the list at once",
+          listing.items == before[1:], str(listing.items))
+    check("the panel says how many it is hiding",
+          any("1 ignored" in str(w.cget("text")) for w in parent.walk()
+              if isinstance(w, gui.ttk.Label)),
+          str([w.cget("text") for w in parent.walk()
+               if isinstance(w, gui.ttk.Label)][:6]))
+
+    asked = []
+    harness._BOX.askyesno = lambda title, message, **k: (
+        asked.append((title, message)) or True)
+    with patch.object(gui, "BASE", folder):
+        restore.invoke()
+    check("restoring asks first and lists what comes back",
+          asked and "Restore 1 ignored card?" == asked[0][0] and
+          "Gretzky" in asked[0][1], str(asked))
+    check("and the ignore list is emptied",
+          json.loads(path.read_text(encoding="utf-8"))["cards"] == [], "")
+
+
 def main():
     test_woo_items()
     test_plugin_items()
@@ -651,6 +931,9 @@ def main():
     test_panel()
     test_the_cookies_canadian_shopper_is_told_about()
     test_one_card()
+    test_actions()
+    test_the_fix_flow()
+    test_ignoring()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))
