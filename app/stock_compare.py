@@ -434,14 +434,23 @@ def _first(entry, *keys):
 
 
 def _matches(row, entry):
-    """Whether a result entry is about this plan row: id, then SKU, then title."""
+    """Whether a result entry is about this plan row.
+
+    The id decides whenever both sides have one: an entry that names the same
+    card but a different listing is a different listing, and letting a title
+    override that would mark one row written because another one was - the
+    cards in a catalogue are exactly similar enough for that to happen. SKU and
+    title are the fallback only when one side has no id at all, which is what a
+    plugin that does not report ids, or a plan built without them, looks like.
+    """
     entry_id = str(_first(entry, "id", "product_id", "listing_id") or "")
-    if entry_id and str(row.get("id") or "") == entry_id:
-        return True
+    row_id = str(row.get("id") or "")
+    if entry_id and row_id:
+        return entry_id == row_id
     entry_sku = str(_first(entry, "sku") or "").strip().lower()
     row_sku = str(row.get("sku") or "").strip().lower()
-    if entry_sku and row_sku and entry_sku == row_sku:
-        return True
+    if entry_sku and row_sku:
+        return entry_sku == row_sku
     entry_title = str(_first(entry, "title", "card", "name") or "")
     if entry_title:
         return card_key(entry_title) == card_key(row.get("title") or

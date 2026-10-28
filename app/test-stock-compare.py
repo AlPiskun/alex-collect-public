@@ -749,6 +749,37 @@ def test_actions():
                 "failed": [{"id": 999, "reason": "gone"}]})
     check("other spellings of the same keys are understood",
           report["changed"] == [one] and report["failed"] == [], str(report))
+    #  Plugin 1.0.22 sends id + title + inventory on updated entries and
+    #  id + title + why on failed ones. The title must never beat the id: two
+    #  cards in one set are similar enough to swap rows otherwise.
+    report = stock_compare.plugin_write_report(
+        [one], {"updated": [{"id": 101,
+                             "title": "1989 O-Pee-Chee Wayne Gretzky",
+                             "inventory": 2}]})
+    check("the enriched result still matches the card by its id",
+          report["changed"] == [one], str(report))
+    other = {"id": 102, "sku": "", "title": "1966-67 Topps Bobby Orr #35",
+             "card": "1966-67 Topps Bobby Orr #35", "from": 0, "to": 1}
+    report = stock_compare.plugin_write_report(
+        [one, other], {"updated": [{"id": 101,
+                                    "title": "1966-67 Topps Bobby Orr #35",
+                                    "inventory": 2}]})
+    check("an entry naming another card's title is still the id's card",
+          report["changed"] == [one] and report["unknown"] == [other],
+          str(report))
+    report = stock_compare.plugin_write_report(
+        [one], {"failed": [{"id": 101, "title": "Gretzky",
+                            "why": "two listings matched"}]})
+    check("an enriched failure is a failure with its reason",
+          report["changed"] == [] and
+          report["failed"][0]["why"] == "two listings matched", str(report))
+    report = stock_compare.plugin_write_report(
+        [one], {"updated": [{"id": 101, "title": "Gretzky", "inventory": 2}],
+                "failed": [{"id": 101, "title": "Gretzky", "why": "raced"}]})
+    check("a card in both arrays is still a failure",
+          report["changed"] == [] and report["failed"][0]["why"] == "raced",
+          str(report))
+
     report = stock_compare.plugin_write_report(
         [one], {"failed": [{"id": 101, "error": "no session"}]})
     check("a card in both lists is a failure, not a coin toss",
