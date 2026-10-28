@@ -59,7 +59,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.55"
+VERSION = "2.56"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1044,13 +1044,40 @@ mystery: gui-log.txt (this window's runs), sold-cards-report.csv
 image-sync reports from the staging/wiring runs."""
 
 
+def theme_background(widget):
+    """The window colour the current ttk theme paints, so nothing is white."""
+    try:
+        style = ttk.Style(widget)
+        for name in ("TFrame", "Frame", "TLabel"):
+            colour = style.lookup(name, "background")
+            if colour:
+                return colour
+    except Exception:
+        pass
+    for colour in (lambda: widget.winfo_toplevel().cget("background"),
+                   lambda: widget.cget("background")):
+        try:
+            found = colour()
+            if found and str(found).lower() not in ("white", "#ffffff"):
+                return found
+        except Exception:
+            continue
+    return "#f0f0f0"
+
+
 class ScrollFrame(ttk.Frame):
     """A vertically scrollable container: tall content scrolls, the console
     below never gets squeezed out of view."""
 
     def __init__(self, parent):
         super().__init__(parent)
-        self.canvas = tk.Canvas(self, highlightthickness=0)
+        #  A Tk canvas is white unless told otherwise, and this one fills the
+        #  whole page area - so every panel that was shorter than the window
+        #  left a white band under it, and the area looked empty rather than
+        #  like the end of the page. Matching the theme's own background makes
+        #  the page end where its content ends.
+        self.canvas = tk.Canvas(self, highlightthickness=0, bd=0,
+                                background=theme_background(self))
         vsb = ttk.Scrollbar(self, orient="vertical",
                             command=self.canvas.yview)
         self.inner = ttk.Frame(self.canvas, padding=(2, 2))
@@ -2163,30 +2190,35 @@ def panel_header(parent, app, pid, with_doc=True):
         #  Builders put their own explanations here (panel_note), so they end
         #  up below the work rather than between it and the title.
         notes = ttk.Frame(parent)
-        notes.pack(side="bottom", fill="x", pady=(6, 0))
-        held = ttk.Frame(top)         # the open help, under the title row
-        held.pack(fill="x", pady=(3, 2))
-        doc = ttk.Label(held, text=text, style="Dim.TLabel", wraplength=780,
+        notes.pack(side="bottom", fill="x", pady=(4, 0))
+        #  The help lives in its own frame under the title row, and closing it
+        #  takes the whole frame away. Hiding just the text used to leave the
+        #  frame behind holding the space the text had taken, so the panel
+        #  kept a gap where the words had been.
+        held = ttk.Frame(parent)
+        doc = ttk.Label(held, text=text, style="Dim.TLabel", wraplength=760,
                         justify="left")
+        doc.pack(fill="x")
         open_now = pid in getattr(app, "_docs_open", set())
 
         def toggle():
             showing = pid in getattr(app, "_docs_open", set())
             if showing:
                 app._docs_open = getattr(app, "_docs_open", set()) - {pid}
-                doc.pack_forget()
+                held.pack_forget()
                 help_button.configure(text="What this panel does")
             else:
                 app._docs_open = getattr(app, "_docs_open", set()) | {pid}
-                doc.pack(fill="x")
+                held.pack(fill="x", pady=(0, 3), after=top)
                 help_button.configure(text="Hide this help")
 
         help_button = ttk.Button(top, text="Hide this help" if open_now else
                                  "What this panel does", command=toggle)
         help_button.pack(side="right")
         if open_now:
-            doc.pack(fill="x")
+            held.pack(fill="x", pady=(0, 3), after=top)
         parent._notes_frame = notes
+        parent._help_frame = held
         app._doc_label = doc          # the text itself, for tests and reading
         app._doc_button = help_button
     return top

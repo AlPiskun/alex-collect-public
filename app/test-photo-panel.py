@@ -1022,8 +1022,9 @@ def test_actions_above_the_words():
               for w in notes.walk()), "")
     help_button = getattr(app, "_doc_button", None)
     doc = getattr(app, "_doc_label", None)
+    held = getattr(parent, "_help_frame", None)
     check("the panel's help is folded until it is asked for",
-          help_button is not None and doc is not None and not doc.packed,
+          help_button is not None and held is not None and not held.packed,
           str(help_button))
     check("the help still holds the real text, so nothing was lost",
           doc is not None and len(str(doc.cget("text"))) > 200,
@@ -1031,13 +1032,13 @@ def test_actions_above_the_words():
     if help_button is not None:
         help_button.invoke()
     check("one click opens it, and it opens underneath",
-          doc is not None and doc.packed and
+          held is not None and held.packed and
           help_button.cget("text") == "Hide this help",
           str(help_button and help_button.cget("text")))
     if help_button is not None:
         help_button.invoke()
-    check("and one click folds it again",
-          doc is not None and not doc.packed, str(doc and doc.packed))
+    check("and one click folds it away, with no gap left behind",
+          held is not None and not held.packed, str(held and held.packed))
     shutil.rmtree(folder, ignore_errors=True)
 
 
@@ -1194,7 +1195,8 @@ def test_every_panel_leads_with_the_work():
                       if isinstance(w, action_types)), None)
         if first is not None and id(first) in inside:
             wrong_place.append(pid)
-        if getattr(app, "_doc_label", None) is not None and app._doc_label.packed:
+        held = getattr(parent, "_help_frame", None)
+        if held is not None and held.packed:
             folded.append(pid)
     check("every panel keeps its work above its help area",
           not wrong_place, str(wrong_place))
@@ -1350,6 +1352,7 @@ def test_help_sits_beside_the_title():
     gui.build_newphotos(parent, app)
     button = getattr(app, "_doc_button", None)
     doc = getattr(app, "_doc_label", None)
+    held = getattr(parent, "_help_frame", None)
     check("the panel has a help button", button is not None, str(button))
     if button is not None:
         row = button.parent
@@ -1357,15 +1360,18 @@ def test_help_sits_beside_the_title():
                   if isinstance(w, gui.ttk.Label)]
         check("it shares the title's row",
               gui.TITLES["newphotos"] in titles, str(titles))
-        check("the help text opens from that row, right under it",
-              doc is not None and doc.parent.parent is row, str(doc))
-        check("and it starts folded", doc is not None and not doc.packed, "")
+        check("the help text sits in its own frame under that row",
+              held is not None and held.parent is parent and
+              doc is not None and doc.parent is held, "")
+        check("and it starts folded", held is not None and not held.packed, "")
         button.invoke()
         check("one click opens it under the title",
-              doc is not None and doc.packed and doc.parent.parent is row, "")
+              held is not None and held.packed, "")
         button.invoke()
-        check("one click folds it again", doc is not None and not doc.packed,
-              "")
+        check("one click takes the frame away, leaving nothing behind",
+              held is not None and not held.packed, "")
+        check("no stray text is left on screen either",
+              doc is None or held is None or not held.packed, "")
 
     #  Inside a section the frame carries the title, so the button sits at the
     #  top of the section instead of beside a label that is not there.
@@ -1378,6 +1384,57 @@ def test_help_sits_beside_the_title():
           len(section_buttons) == 1, str(len(section_buttons)))
     check("and it is the first thing in the section",
           section_buttons and section_buttons[0].parent.parent is section, "")
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_the_page_area_is_not_white():
+    print()
+    print("== 25. the page area is the window's colour, not a white band ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    app = FakeApp(folder)
+    holder = FakeWidget()
+    scroller = gui.ScrollFrame(holder)
+    colour = str(scroller.canvas._kw.get("background", "")).lower()
+    check("the scrolling page area carries a background of its own",
+          colour not in ("", "white", "#ffffff", "systemwindow"),
+          colour)
+    check("it is taken from the theme, not made up",
+          colour == str(gui.theme_background(scroller)).lower(), colour)
+
+    class Style:
+        def __init__(self, found):
+            self.found = found
+        def lookup(self, name, option):
+            return self.found
+
+    with patch.object(gui.ttk, "Style", lambda *a, **k: Style("#f0f0f0")):
+        check("a theme colour is used when the theme has one",
+              gui.theme_background(holder) == "#f0f0f0",
+              gui.theme_background(holder))
+    with patch.object(gui.ttk, "Style", lambda *a, **k: Style("")):
+        fallback = str(gui.theme_background(holder)).lower()
+        check("a theme that answers nothing still never gives white",
+              fallback not in ("", "white", "#ffffff"), fallback)
+
+    #  The gap the user reported: opening the help and closing it again used
+    #  to leave the frame that held the text behind, still taking its space.
+    parent = FakeWidget()
+    gui.build_newphotos(parent, app)
+    held = getattr(parent, "_help_frame", None)
+    button = getattr(app, "_doc_button", None)
+    pack_calls = []
+    real_pack = held.pack if held is not None else None
+    if held is not None:
+        held.pack = lambda *a, **k: (pack_calls.append(k), real_pack(*a, **k))[1]
+    button.invoke()
+    height_px = held.packed if held is not None else None
+    button.invoke()
+    check("closing the help takes its frame out of the layout",
+          held is not None and not held.packed, str(height_px))
+    check("and it is put back under the title when reopened",
+          pack_calls and all(k.get("after") is not None for k in pack_calls),
+          str(pack_calls))
     shutil.rmtree(folder, ignore_errors=True)
 
 
@@ -1425,6 +1482,7 @@ def main():
     test_tabs_are_sections()
     test_every_button_explains_itself()
     test_help_sits_beside_the_title()
+    test_the_page_area_is_not_white()
     test_grid_fits_a_small_screen()
     test_loading_is_visible()
     test_spent_sitting()
