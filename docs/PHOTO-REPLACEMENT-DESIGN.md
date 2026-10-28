@@ -1,6 +1,6 @@
 # Replacing card photos — proposed redesign
 
-Status: mostly built. 2.52 ships the assignment window: one row per card image, filled by an AI read of the sheet, by the cards in scan order, or one at a time - and applied in a batch. Still proposals: matching a batch to an order number, and the nine-at-a-time queue with the "still needs a photo" list.
+Status: mostly built. 2.52 ships the assignment window: one row per card image, filled by an AI read of the sheet, by the cards in scan order, or one at a time - and applied in a batch. 2.53 makes the pictures usable on a small screen: the picker's grid scrolls, a caption is the slot alone, the pictures are decoded after the window is up and kept for the sitting, and splitting a scan says so while it runs. Still proposals: matching a batch to an order number, and the nine-at-a-time queue with the "still needs a photo" list.
 
 ![The proposed window](mockups/photo-replace-flow.png)
 

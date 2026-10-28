@@ -59,7 +59,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.52"
+VERSION = "2.59"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1044,29 +1044,90 @@ mystery: gui-log.txt (this window's runs), sold-cards-report.csv
 image-sync reports from the staging/wiring runs."""
 
 
+def console_lines_for(screen_height):
+    """How many lines of output the window can spare.
+
+    The console is a fixed number of lines of text, so on a small screen it
+    used to take half the window and leave the page above it with almost
+    nothing. It keeps its size on a big screen and gives room back on a small
+    one - the console scrolls, the page needs the space.
+    """
+    return 8 if screen_height < 800 else (12 if screen_height < 1000 else 16)
+
+
+def theme_background(widget):
+    """The window colour the current ttk theme paints, so nothing is white."""
+    try:
+        style = ttk.Style(widget)
+        for name in ("TFrame", "Frame", "TLabel"):
+            colour = style.lookup(name, "background")
+            if colour:
+                return colour
+    except Exception:
+        pass
+    for colour in (lambda: widget.winfo_toplevel().cget("background"),
+                   lambda: widget.cget("background")):
+        try:
+            found = colour()
+            if found and str(found).lower() not in ("white", "#ffffff"):
+                return found
+        except Exception:
+            continue
+    return "#f0f0f0"
+
+
 class ScrollFrame(ttk.Frame):
     """A vertically scrollable container: tall content scrolls, the console
     below never gets squeezed out of view."""
 
     def __init__(self, parent):
         super().__init__(parent)
-        self.canvas = tk.Canvas(self, highlightthickness=0)
+        #  A Tk canvas is white unless told otherwise, and this one fills the
+        #  whole page area - so every panel that was shorter than the window
+        #  left a white band under it, and the area looked empty rather than
+        #  like the end of the page. Matching the theme's own background makes
+        #  the page end where its content ends.
+        self.canvas = tk.Canvas(self, highlightthickness=0, bd=0,
+                                background=theme_background(self))
         vsb = ttk.Scrollbar(self, orient="vertical",
                             command=self.canvas.yview)
         self.inner = ttk.Frame(self.canvas, padding=(2, 2))
-        self.inner.bind("<Configure>",
-                        lambda e: self.canvas.configure(
-                            scrollregion=self.canvas.bbox("all")))
+        self._last_size = (0, 0)
+        self.inner.bind("<Configure>", self._resize)
         self.canvas.create_window((0, 0), window=self.inner, anchor="nw",
                                   tags="inner")
         self.canvas.configure(yscrollcommand=vsb.set)
         self.canvas.pack(fill="both", expand=True, side="left")
         vsb.pack(fill="y", side="right")
-        self.canvas.bind("<Configure>",
-                         lambda e: self.canvas.itemconfigure("inner",
-                                                             width=e.width))
+        #  The page is stretched to at least the height of the window, not
+        #  only to its own content. Without that a page shorter than the
+        #  window left a dead band above the console, and a panel that itself
+        #  expands - the settings form did - only claimed the height its
+        #  widgets asked for, leaving most of the window unused.
+        self.canvas.bind("<Configure>", self._resize)
         self.bind("<Enter>", lambda e: self._wheel(True))
         self.bind("<Leave>", lambda e: self._wheel(False))
+
+    def _resize(self, _event=None):
+        """Stretch the page to fill the window, then say how tall it is."""
+        try:
+            width = self.canvas.winfo_width()
+            height = self.canvas.winfo_height()
+            natural = self.inner.winfo_reqheight()
+        except Exception:
+            return
+        wanted = (width, max(natural or 0, height or 0))
+        if wanted != self._last_size:
+            self._last_size = wanted
+            try:
+                self.canvas.itemconfigure("inner", width=wanted[0],
+                                          height=wanted[1])
+            except Exception:
+                pass
+        try:
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        except Exception:
+            pass
 
     def _wheel(self, on):
         def scroll(e):
@@ -1159,6 +1220,216 @@ def add_tooltip(widget, text):
     return widget
 
 
+#  What every button does, in one place. The task page has had hover notes
+#  since it was written; everywhere else the explanation lived only in the
+#  panel's help text, so a button had to be pressed to find out what it did.
+#  Keys are the button's text; a formatted one ("Put one back on sale...")
+#  matches on its prefix, so a variant does not need its own entry.
+TOOLTIPS = {
+    # -- moving around ----------------------------------------------------
+    "<- All tasks": "Go back to the list of task groups",
+    "<- Back": "Go back to the previous wizard step",
+    "Next step ->": "Save this step and continue the wizard",
+    "Skip the wizard (task menu)": "Close the wizard and go straight to the task menu",
+    "Finish": "Save the startup choice and open the task menu",
+    "What this panel does": "Show what this panel is for, without leaving it",
+    "Hide this help": "Fold the explanation away again",
+    # -- connecting and settings -----------------------------------------
+    "Test connection": "Check the saved store address and keys answer, without changing anything",
+    "Save cookie": "Save the pasted cookie so the CanadianShopper tools can sign in",
+    "Save user settings": "Save every field on this panel to gui-settings.json",
+    "Save & open AI page": "Save the AI address and open it in your browser",
+    "Open WooCommerce API keys": "Open woo-keys.txt so the store keys can be edited; the file persists across updates",
+    "Open WordPress media upload": "Open the WordPress media library to upload by hand",
+    "Pick a folder...": "Choose a folder and save it in the settings",
+    "Browse...": "Choose a file or folder and save its path",
+    "Use this browser": "Use the selected browser for every page Alex Collect opens",
+    # -- selling to a customer -------------------------------------------
+    "Build the order": "Match the pasted list to products and preview the order before writing it",
+    "Create the order": "Write the previewed order to the store as pending; nothing is charged",
+    "Open the order list": "Open the WooCommerce order screen to paste the list by hand",
+    "Search": "Search the store for the typed card and list the matches",
+    # -- a sale -----------------------------------------------------------
+    "A card sold": "Open the sold panel: type what sold and tick off the other marketplaces",
+    "Add to the checklist (and fix CS if ticked)": "Record the sale and add the other listings to the tick-off checklist",
+    "CanadianShopper only: preview the stock change": "Show what the CanadianShopper plugin would change, without writing anything",
+    "What is outstanding? (--status)": "List the cards still waiting to be ticked off",
+    "Open the checklist viewer (tick things off)": "Open the checklist window and tick off what has been done",
+    "Open the checklist (sold-cards-checklist.csv)": "Open the checklist file itself in your spreadsheet",
+    "Open the stock report (sold-cards-report.csv)": "Open the report of sales that were applied",
+    "Put one back on sale (--reactivate is in SoldCards.bat)": "Take a card off the checklist and put it back on sale",
+    # -- a new batch ------------------------------------------------------
+    "Run the card pipeline": "Open the pipeline dialog: choose the scans and run split then listing",
+    "Split the scans and build the CSV": "Split the scans and run the listing step with the AI answer on the clipboard",
+    "Split the scans only": "Split the scans into card images and stop, so the AI steps can be done on their own",
+    "Combine CSVs": "Join the marketplace CSVs into one import batch",
+    "Combine now": "Join the CSVs now, after the preview",
+    "Stage the photos": "Square, host and wire the batch photos through the plugin",
+    "Stage the photos (square + host + rewrite CSVs)": "Square the photos, host them and rewrite the CSVs with their URLs",
+    "Import / publish drafts": "Import the batch and preview or publish the vendor drafts",
+    "Preview drafts": "Show what would be published; nothing is changed",
+    "Publish ready drafts": "Publish the ready drafts after typing PUBLISH to confirm",
+    "Wire the photos": "Set the batch photos on their listings without rebuilding anything",
+    "Wire for real": "Apply the wiring instead of only reporting what it would do",
+    "Re-point photos": "Point the listings at photos that are already hosted, from the cache",
+    "Preview cached changes": "Show what the re-point would change, using cached URLs only",
+    "Preview (--dry-run)": "Report what the combine would write, without creating the CSV",
+    "Apply the previewed change": "Write exactly what the preview listed",
+    "Clear": "Empty this list; the files on disk are left alone",
+    "Type the cards...": "Open the editor for typing what sold, one card per line",
+    "Open plugins folder": "Open the folder plugins are installed into",
+    "Open the tools folder": "Open the folder holding this app's tools",
+    "Dry-run (writes nothing)": "Report what would happen without writing anything",
+    # -- after a sale / archives -----------------------------------------
+    "Preview: what sits at 0?": "List the CanadianShopper listings already at zero stock",
+    "Archive listings at 0": "Archive those listings, one at a time, without deleting them",
+    "Archive them": "Archive the listed zero-stock listings",
+    "Refresh list": "Read the file again and rebuild this list",
+    "Refresh": "Read the plugin list again",
+    # -- photos -----------------------------------------------------------
+    "Replace card photos": "Open the photo panel: find the card and replace its pictures",
+    "Find the card...": "Look the card up on the store and start the replacement",
+    "Add sheets...": "Load the scan sheets for this sitting; they stay loaded for the next card too",
+    "Assign photos to cards...": "Line a whole sheet up with cards and replace them in a batch",
+    "Read these": "Read the pasted titles or cards and fill one row per image",
+    "Choose a card for this row": "Search the store for the card this image belongs to",
+    "Apply the ready ones": "Replace the photos for every row that is unambiguously matched",
+    "Square up a photo": "Crop one photo to the card and save a square copy for manual upload",
+    "Pick photo(s)...": "Choose the photos this panel works on",
+    "Use this image": "Take the picture selected above as this card's image",
+    "Another scan...": "Load a different scan when the image is not on these sheets",
+    # -- dialogs ----------------------------------------------------------
+    "Cancel": "Close this window and change nothing",
+    "Close": "Close this window",
+    "Not now": "Skip this offer; nothing is changed",
+    "Use this card": "Take the selected card as the one being replaced",
+    "Use this product": "Take the selected product as the one whose photos change",
+    "Use selected listing": "Use the listing selected above",
+    "Replace the selected row": "Replace that gallery row with the new photo",
+    "Remove this photo from the product": "Take that row off the product; the image file stays in the media library",
+    "Keep every existing photo": "Add the new photo beside the old ones instead of replacing any",
+    "No old back - keep every row and add the new back": "Leave the gallery as it is and add the new back beside it",
+    "Leave this card unmatched": "Skip this card; nothing is written for it",
+    "Leave remaining unmatched": "Finish with the cards matched so far and skip the rest",
+    "Apply these changes": "Write the changes listed above",
+    "Skip this one": "Leave this card for later and move to the next",
+    "Cancel this card": "Stop this card; anything already written stays written",
+    "Cancel all": "Stop the whole run; anything already written stays written",
+    "Tick the selected ones": "Mark the selected checklist rows as done",
+    "Tick EVERYTHING": "Mark every outstanding row as done, after a confirmation",
+    "Open the selected row's link": "Open the marketplace page for the selected checklist row",
+    # -- re-runs ----------------------------------------------------------
+    "WooCommerce CSV": "Rebuild only the WooCommerce import CSV from the AI answer on disk",
+    "CanadianShopper CSV": "Rebuild only the CanadianShopper CSV and its staged photos",
+    "Facebook feed + xlsx": "Rebuild only the Facebook feed and the Marketplace delta workbook",
+    "eBay Quick List": "Rebuild only the eBay Quick List page",
+    "Choose a different AI text...": "Point this re-run at a different saved AI answer",
+    "Re-run a marketplace": "Open the panel that rebuilds one marketplace at a time",
+    # -- logs, reports and plugins ---------------------------------------
+    "Preview old pipeline files": "List the older output files and where they would be moved",
+    "Move old files into folders": "Move those files after a confirmation; nothing is deleted or overwritten",
+    "Open the GUI log (gui-log.txt)": "Open this app's own log",
+    "Open the pipeline output-file audit": "Open the list of every file the pipeline writes",
+    "Open the publish report": "Open the report from the last draft publish",
+    "Open the image-sync report": "Open the report from the last photo wiring",
+    "Open the stock report (sold-cards-report.csv)": "Open the report of applied sales",
+    "Open the CSV file": "Open this batch's CSV in your spreadsheet",
+    "Open the CSV": "Open that CSV in your spreadsheet",
+    "Open the batch folder": "Open the folder holding this batch's files",
+    "Open the cs-ready folder": "Open the folder of photos prepared for CanadianShopper",
+    "Open the Facebook feed folder (the delta xlsx lives here)": "Open the folder holding the Facebook feed and workbook",
+    "Open the plugins folder": "Open the folder plugins are installed into",
+    "Open the scanner folder": "Open the folder your scans are saved to",
+    "Open the report (cs-image-report.csv)": "Open the report from the last image sync",
+    "Open canadianshopper.ca": "Open the CanadianShopper site in your browser",
+    "Your eBay listings": "Open your active eBay listings",
+    "Your Facebook listings": "Open your Facebook Marketplace selling page",
+    "Install from ZIP...": "Install a plugin from a ZIP you trust; plugin code runs as you",
+    "Enable": "Turn this plugin back on",
+    "Disable": "Turn this plugin off without uninstalling it",
+    "Remove...": "Uninstall this plugin after a confirmation",
+    "Remove selected": "Remove the selected item from this list",
+    "New command": "Add a custom AI command button for the pipeline dialog",
+    "Add / update button": "Save this command as a new button, or update the selected one",
+    "Run the Facebook feed updater": "Run the Facebook feed companion on its own",
+    "Split the scans and build the CSV": "Split the scans and run the listing step",
+    # -- console ----------------------------------------------------------
+    "Send": "Send what you typed to the running tool",
+    "Enter": "Send a bare Enter to the running tool",
+    "Stop": "Stop the running tool; anything already written stays written",
+}
+
+
+def tip_for(text):
+    """The hover explanation for a button's text, or "" when there is none."""
+    text = str(text or "").strip()
+    if text in TOOLTIPS:
+        return TOOLTIPS[text]
+    best = ""
+    for key in TOOLTIPS:
+        if text.startswith(key) and len(key) > len(best):
+            best = key
+    return TOOLTIPS[best] if best else ""
+
+
+def _descendants(widget):
+    """Every widget under ``widget``, parents before children."""
+    try:
+        children = widget.winfo_children()
+    except Exception:
+        return
+    for child in children:
+        yield child
+        yield from _descendants(child)
+
+
+def tips_missing(root):
+    """Button texts under ``root`` that have no hover explanation."""
+    missing = []
+    for widget in _descendants(root):
+        text = button_text(widget)
+        if text is None:
+            continue
+        existing = getattr(widget, "_alex_tooltip", None)
+        if existing is not None and getattr(existing, "text", ""):
+            continue
+        if not tip_for(text):
+            missing.append(text)
+    return missing
+
+
+def button_text(widget):
+    """A button's caption, or None when the widget is not a button."""
+    try:
+        if not isinstance(widget, (ttk.Button, tk.Button)):
+            return None
+        return str(widget.cget("text") or "")
+    except Exception:
+        return None
+
+
+def attach_tooltips(root):
+    """Give every button under ``root`` a hover explanation it does not have.
+
+    Called once a window or panel is built. A button that already carries an
+    explanation (the task menu's own, or one written for a specific case) is
+    left alone, so nothing is explained twice.
+    """
+    added = 0
+    for widget in _descendants(root):
+        text = button_text(widget)
+        if text is None:
+            continue
+        existing = getattr(widget, "_alex_tooltip", None)
+        if existing is not None and getattr(existing, "text", ""):
+            continue
+        tip = tip_for(text)
+        if tip:
+            add_tooltip(widget, tip)
+            added += 1
+    return added
+
+
 # --------------------------------------------------------------------- app
 class App(tk.Tk):
     def __init__(self, settings=None, scans=None):
@@ -1177,10 +1448,13 @@ class App(tk.Tk):
             pass
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
-        width = min(1160, max(940, screen_width - 80))
-        height = min(920, max(660, screen_height - 80))
+        #  Small screens get a small window: the old minimums (940x660) were
+        #  larger than an 800x600 display, so the app opened bigger than the
+        #  screen and the bottom of every panel was off it.
+        width = min(1160, max(760, screen_width - 60))
+        height = min(920, max(540, screen_height - 70))
         self.geometry("%dx%d" % (width, height))
-        self.minsize(min(880, width), min(680, height))
+        self.minsize(min(720, width), min(500, height))
         self.runner = Runner(self)
         self._saw_dangling_prompt = False
         self._hinted = set()
@@ -1222,6 +1496,13 @@ class App(tk.Tk):
         st.configure("Task.TButton", padding=(7, 3))
         st.configure("TaskGroup.TLabelframe", padding=(10, 7),
                      borderwidth=2, relief="groove")
+        #  One bordered box per panel in the tabs view: a heavier border than
+        #  a group box, so the boundary between two panels is unmistakable.
+        st.configure("PanelSection.TLabelframe", padding=(8, 6),
+                     borderwidth=2, relief="groove")
+        st.configure("PanelSection.TLabelframe.Label",
+                     font=("TkDefaultFont", 10, "bold"),
+                     foreground="#24476b")
         st.configure("TaskGroup.TLabelframe.Label",
                      font=("TkDefaultFont", 10, "bold"),
                      foreground="#24476b")
@@ -1308,8 +1589,17 @@ class App(tk.Tk):
         box = ttk.LabelFrame(self, text="Output (scrollback)",
                              padding=(4, 2))
         box.pack(fill="x", side="bottom", padx=6, pady=(1, 2))
+        #  The console is a fixed number of lines, and on a small screen
+        #  twenty of them were half the window - the page above got what was
+        #  left. It keeps its share on a big screen and gives the page its
+        #  room back on a small one; it still scrolls to everything.
+        try:
+            screen = self.winfo_screenheight()
+        except Exception:
+            screen = 900
+        lines = console_lines_for(screen)
         self.console = tk.Text(
-            box, height=20, state="disabled", wrap="word", bg="#141414",
+            box, height=lines, state="disabled", wrap="word", bg="#141414",
             fg="#e8e8e8", insertbackground="#e8e8e8",
             font=("Consolas", 9) if sys.platform == "win32"
                  else "TkFixedFont")
@@ -1434,7 +1724,19 @@ class App(tk.Tk):
         self._input_enable(False)
 
     # ------------------------------------------------------------ modes
+    def clear_action_bar(self):
+        """Empty the pinned strip; a stale Save button is worse than none."""
+        bar = getattr(self, "_action_bar", None)
+        if bar is not None:
+            try:
+                if bar.winfo_exists():
+                    bar.destroy()
+            except Exception:
+                pass
+        self._action_bar = None
+
     def show_mode(self, mode):
+        self.clear_action_bar()
         if self._mode_frame is not None:
             self._mode_frame.destroy()
         wrap = ScrollFrame(self.body)
@@ -1665,6 +1967,7 @@ class App(tk.Tk):
         top.protocol("WM_DELETE_WINDOW", leave_rest)
         render()
         entry.focus_set()
+        attach_tooltips(top)
         self.wait_window(top)
         return chosen
 
@@ -1757,6 +2060,7 @@ class App(tk.Tk):
                    command=cancel).pack(side="right")
         listing.bind("<Double-Button-1>", take_row)
         top.protocol("WM_DELETE_WINDOW", cancel)
+        attach_tooltips(top)
         self.wait_window(top)
         if answer["choice"] == "row" and answer["row"] is not None:
             return {"row": answer["row"]}
@@ -1802,6 +2106,7 @@ class App(tk.Tk):
             side="right", padx=(0, 8))
         top.protocol("WM_DELETE_WINDOW", top.destroy)
         top.grab_set()
+        attach_tooltips(top)
         self.wait_window(top)
         return result["browser"]
 
@@ -1910,33 +2215,407 @@ BLURBS = {
 }
 
 
-def panel_header(parent, app, pid, with_doc=True):
-    """Title + doc text shared by every panel view (core-aware)."""
+def action_bar(app, parent=None):
+    """The strip above the page that does not scroll with it.
+
+    A panel that puts its title row in here keeps its buttons in view however
+    far down the page the reader is - the scrolling area is packed below this
+    strip, so the header cannot be scrolled away. It is created only when a
+    panel asks for it, so pages that do not pin anything keep every pixel.
+    """
+    bar = getattr(app, "_action_bar", None)
+    try:
+        if bar is not None and bar.winfo_exists():
+            return bar
+    except Exception:
+        pass
+    body = getattr(app, "body", None)
+    if body is None or parent is None:
+        return None
+    try:
+        bar = ttk.Frame(body)
+        where = {"fill": "x", "side": "top", "padx": 6, "pady": (2, 3)}
+        mode_frame = getattr(app, "_mode_frame", None)
+        if mode_frame is not None and mode_frame is not body:
+            where["before"] = mode_frame
+        bar.pack(**where)
+    except Exception:
+        return None
+    app._action_bar = bar
+    return bar
+
+
+def panel_header(parent, app, pid, with_doc=True, pin=False):
+    """Title and its help button on one row; the help opens right below it.
+
+    Two earlier arrangements were wrong for the same reason. The help used to
+    sit under the title as eight lines of always-on prose, which pushed the
+    buttons it explains off the bottom of the window; then it went to the
+    bottom edge with its button, which meant the button that opens it was
+    itself at the bottom of the panel, several screens below the title on a
+    long one.
+
+    Now the button sits beside the title, where a reader looks for "more about
+    this", and the text it opens appears directly beneath that row - so
+    clicking it always shows something at the point where the click happened.
+    It still starts folded: a panel is opened to do something with it.
+    """
     core = not getattr(app, "cs_addon", True)
     titles = TITLES
     docs = {**DOCS, **(DOCS_CORE if core else {})}
-    top = ttk.Frame(parent)
-    top.pack(fill="x", pady=(0, 3))
-    ttk.Label(top, text=titles[pid], style="H2.TLabel").pack(anchor="w")
+    #  Inside a section the frame itself carries the title, and printing it
+    #  again would give the panel two headings a few pixels apart.
+    sectioned = getattr(parent, "_section_titled", False)
+    #  A wizard page already has its own step heading, so pinning the panel's
+    #  title above it would stack two headings and put the button above the
+    #  step it belongs to.
+    pinned = (pin and not getattr(parent, "_wizard_page", False) and
+              action_bar(app, parent) is not None)
+    holder = action_bar(app, parent) if pinned else parent
+    top = ttk.Frame(holder)
+    top.pack(fill="x", pady=(0, 2))
+    parent._title_row = top
+    if not sectioned:
+        ttk.Label(top, text=titles[pid], style="H2.TLabel").pack(side="left")
     if with_doc:
         text = docs.get(pid, DOCS.get(pid, "")).strip()
-        doc = ttk.Label(top, text=text, style="Dim.TLabel", wraplength=780,
+        #  Builders put their own explanations here (panel_note), so they end
+        #  up below the work rather than between it and the title.
+        notes = ttk.Frame(parent)
+        notes.pack(side="bottom", fill="x", pady=(4, 0))
+        #  The help lives in its own frame under the title row, and closing it
+        #  takes the whole frame away. Hiding just the text used to leave the
+        #  frame behind holding the space the text had taken, so the panel
+        #  kept a gap where the words had been.
+        held = ttk.Frame(parent)
+        doc = ttk.Label(held, text=text, style="Dim.TLabel", wraplength=760,
                         justify="left")
-        doc.pack(fill="x", pady=(1, 4))
-        # The panel help is a Label, not a Text widget; keep a reference so
-        # tests (and anything else) can read what was actually rendered.
-        app._doc_label = doc
+        doc.pack(fill="x")
+        open_now = pid in getattr(app, "_docs_open", set())
+
+        def open_help():
+            """Put the help right under the title row.
+
+            The row is only a sibling of the help when the panel is not
+            pinned. A pinned row lives in the strip above the page, and
+            asking Tk to pack after a widget in another container raises -
+            which is how the button on User Settings came to do nothing at
+            all. There the help goes to the top of the page instead, which is
+            still directly under the strip and so still under the title.
+            """
+            if held.master is top.master:
+                held.pack(fill="x", pady=(0, 3), after=top)
+                return
+            siblings = [w for w in parent.winfo_children() if w is not held]
+            if siblings:
+                held.pack(fill="x", pady=(0, 3), before=siblings[0])
+            else:
+                held.pack(fill="x", pady=(0, 3))
+
+        def toggle():
+            showing = pid in getattr(app, "_docs_open", set())
+            if showing:
+                app._docs_open = getattr(app, "_docs_open", set()) - {pid}
+                held.pack_forget()
+                help_button.configure(text="What this panel does")
+                return
+            app._docs_open = getattr(app, "_docs_open", set()) | {pid}
+            #  A Tk error here would leave the button doing nothing, which is
+            #  exactly the failure this is fixing - so it is never silent.
+            try:
+                open_help()
+                help_button.configure(text="Hide this help")
+            except Exception as exc:
+                app._docs_open = getattr(app, "_docs_open", set()) - {pid}
+                messagebox.showwarning(
+                    "Could not show the help",
+                    "The explanation could not be shown in this window:\n%s"
+                    % exc, parent=app)
+
+        help_button = ttk.Button(top, text="Hide this help" if open_now else
+                                 "What this panel does", command=toggle)
+        help_button.pack(side="right")
+        if open_now:
+            try:
+                open_help()
+            except Exception:
+                pass
+        parent._notes_frame = notes
+        parent._help_frame = held
+        app._doc_label = doc          # the text itself, for tests and reading
+        app._doc_button = help_button
     return top
+
+
+def panel_section(parent, app, pid, expand=True):
+    """Build one panel inside its own bordered, titled section.
+
+    The tabs view used to stack a group's panels one after another with
+    nothing between them but a heading, so five panels read as one long page
+    and it was hard to tell where one job ended and the next began. Each panel
+    now lives in its own groove-bordered box, the panel's own title on the
+    border, a gap between boxes - so scrolling the group still shows several
+    panels, but every one of them is visibly its own thing.
+    """
+    section = ttk.LabelFrame(parent, text=TITLES[pid],
+                             style="PanelSection.TLabelframe",
+                             padding=(8, 4, 8, 6))
+    section.pack(fill="both" if expand else "x", expand=expand,
+                 padx=2, pady=(0, 10))
+    section._section_titled = True      # panel_header keeps its heading off
+    PANEL_BUILDERS[pid](section, app)
+    attach_tooltips(section)
+    return section
+
+
+SETTINGS_DOCS = {
+    "startup": (
+        "Which view opens when Alex Collect starts. The task menu is the "
+        "shortest way to a job; the tabs view shows a whole group of panels at "
+        "once; the wizard is for a first run. It can be changed at any time "
+        "from the View menu."),
+    "store": (
+        "The store itself and the AI chat page. Store name, currency prefix, "
+        "currency name, description word count and tag count are substituted "
+        "into the AI prompts as {{STORE_NAME}}, {{CURRENCY_PREFIX}} and so on, "
+        "so changing them changes what the AI is asked for. The browser choice "
+        "is used for every page Alex Collect opens; \"Ask me the first "
+        "time\" means it asks once and remembers. Nothing here is uploaded or "
+        "written to the shop."),
+    "store_pages": (
+        "Three shortcuts that save this form first, then open a page: the "
+        "WordPress media uploader, your AI chat, and woo-keys.txt itself. They "
+        "only open a page - no listing, photo or product is changed."),
+    "custom_ai": (
+        "Extra copy-to-clipboard buttons for the pipeline dialog. Each one "
+        "needs a name, a hover note and the command text, and they accept the "
+        "same {{STORE_NAME}}, {{CURRENCY_PREFIX}}, {{CURRENCY_NAME}}, "
+        "{{DESCRIPTION_MIN_WORDS}}, {{TAG_COUNT}} and {{LISTING_CONTEXT}} "
+        "placeholders as the built-in prompts. A custom button copies its "
+        "command - it never sends anything to the AI by itself."),
+    "markets": (
+        "The pages opened after a sale and by the photo panels: your eBay "
+        "active listings, the Facebook selling page, and the CanadianShopper "
+        "vendor page. They are only opened in the browser."),
+    "ebay": (
+        "Defaults for the generated eBay Quick List page. The template URLs "
+        "point at the HTML you already use; the defaults fill in the fields an "
+        "AI answer does not name. Nothing is submitted to eBay from this app - "
+        "the page is a copy-and-drag helper."),
+    "facebook": (
+        "The columns of the Facebook workbook. The templates accept "
+        "{placeholders} filled in per card from the live feed; the description "
+        "is the long text, and its {product_url} is filled with each card's "
+        "own address. Leave the price template as {price} to use the feed's "
+        "price."),
+    "cs_csv": (
+        "Defaults for the CanadianShopper import CSV that the pipeline writes: "
+        "category, where it ships from, and the shipping defaults. They are "
+        "written into the CSV as column values, so the import needs no editing "
+        "afterwards."),
+    "folders": (
+        "Where the tools write and where the scans are read from. The batch "
+        "folder holds card_pipeline.py and its outputs; the scanner folder is "
+        "where the scan dialog opens. Both are used by the GUI and by the "
+        "command-line tools."),
+    "cs_login": (
+        "The CanadianShopper session cookie from a signed-in browser. It is a "
+        "live login: it is stored locally in this folder, it can change stock "
+        "on that site, and it should not be shared. Refresh it when the plugin "
+        "reports that authentication has expired. Without the plugin none of "
+        "these controls appear and CanadianShopper stays a manual import."),
+}
+
+
+def settings_section(app, parent, key, title, doc=""):
+    """One titled group of settings, with its own explanation button.
+
+    The settings page is ten unrelated jobs in one form - the store address,
+    the AI page, the Facebook templates, the eBay defaults, the folders - and
+    one explanation for the whole page described none of them well. Each group
+    now has its own heading, its own rule underneath it, and its own "What
+    this panel does" button for the part it actually covers.
+    """
+    section = ttk.Frame(parent)
+    section.pack(fill="x", pady=(0, 2))
+    header = ttk.Frame(section)
+    header.pack(fill="x", pady=(8, 3))
+    ttk.Label(header, text=title, style="H2.TLabel").pack(side="left")
+    body = ttk.Frame(section)
+    body.pack(fill="x")
+    if doc:
+        held = ttk.Frame(section)
+        label = ttk.Label(held, text=doc, style="Dim.TLabel", wraplength=740,
+                          justify="left")
+        label.pack(fill="x")
+        open_now = key in getattr(app, "_docs_open", set())
+        #  The command is bound through a lambda because toggle() is defined
+        #  below it - and a button whose command is set afterwards is exactly
+        #  the bug this page already had once.
+        button = ttk.Button(header, text="Hide this help" if open_now else
+                            "What this panel does",
+                            command=lambda: toggle())
+
+        def toggle():
+            showing = key in getattr(app, "_docs_open", set())
+            if showing:
+                app._docs_open = (getattr(app, "_docs_open", set()) -
+                                  {key})
+                held.pack_forget()
+                button.configure(text="What this panel does")
+            else:
+                app._docs_open = getattr(app, "_docs_open", set()) | {key}
+                held.pack(fill="x", pady=(0, 3), before=body)
+                button.configure(text="Hide this help")
+
+        button.pack(side="right")
+        if open_now:
+            held.pack(fill="x", pady=(0, 3), before=body)
+        app._doc_labels = list(getattr(app, "_doc_labels", [])) + [label]
+        app._doc_buttons = list(getattr(app, "_doc_buttons", [])) + [button]
+        section._help_frame = held
+        section._doc_button = button
+    ttk.Separator(section).pack(fill="x", pady=(7, 0))
+    return body
+
+
+def panel_note(parent, text, wraplength=780):
+    """An explanation, in the panel's help area below the actions.
+
+    Anything the panel needs to *say* goes here rather than above the buttons:
+    reading is what you do after the job, not before it.
+    """
+    holder = getattr(parent, "_notes_frame", parent)
+    label = ttk.Label(holder, text=text, style="Dim.TLabel",
+                      wraplength=wraplength, justify="left")
+    label.pack(anchor="w", pady=(1, 0))
+    return label
+
+
+class ProgressWindow:
+    """A small "working..." window for a step that takes seconds.
+
+    Splitting a high-resolution scan is slow, and the app used to do it with
+    nothing on screen at all: no dialog, no bar, no change - which is exactly
+    what a hung program looks like. This puts the step on screen and moves a
+    bar as it goes, pumping the event loop so Windows keeps painting the
+    window instead of greying it out as "Not Responding".
+
+    It never blocks and it never fails the job: anything it cannot draw (a
+    headless test run, a window that will not open) is dropped on the floor,
+    because a progress display must not be able to stop the work.
+    """
+
+    def __init__(self, parent, title="Working...", text="", total=None):
+        self.window = None
+        self.bar = None
+        self.label = None
+        try:
+            self.window = tk.Toplevel(parent)
+            self.window.title(title)
+            self.window.transient(parent)
+            self.window.resizable(False, False)
+            try:
+                self.window.grab_set()
+            except Exception:
+                pass
+            frame = ttk.Frame(self.window, padding=14)
+            frame.pack(fill="both", expand=True)
+            self.label = ttk.Label(frame, text=text or title, wraplength=420,
+                                   justify="left")
+            self.label.pack(anchor="w", pady=(0, 8))
+            mode = "determinate" if total else "indeterminate"
+            self.bar = ttk.Progressbar(frame, length=380, mode=mode,
+                                       maximum=100)
+            self.bar.pack(fill="x")
+            self.window.geometry("+%d+%d" % self._corner(parent))
+            if total:
+                self.bar.configure(value=0)
+            else:
+                try:
+                    self.bar.start(12)
+                except Exception:
+                    pass
+            self.pump()
+        except Exception:
+            self.window = None
+
+    @staticmethod
+    def _corner(parent):
+        """Near the middle, so it is noticed without covering the window."""
+        try:
+            x = parent.winfo_rootx() + max(0, (parent.winfo_width() - 440) // 2)
+            y = parent.winfo_rooty() + max(0, (parent.winfo_height() - 120) // 2)
+            return int(x), int(y)
+        except Exception:
+            return 200, 200
+
+    def pump(self):
+        """Let Tk draw and answer the OS, without entering its main loop."""
+        try:
+            self.window.update_idletasks()
+            self.window.update()
+        except Exception:
+            pass
+
+    def step(self, text=None, done=None, total=None):
+        """Say what is happening now, and how far along it is."""
+        if self.window is None:
+            return
+        try:
+            if text:
+                self.label.configure(text=text)
+            if done is not None and total:
+                self.bar.configure(mode="determinate", maximum=total,
+                                   value=done)
+        except Exception:
+            pass
+        self.pump()
+
+    def close(self):
+        try:
+            if self.bar is not None:
+                self.bar.stop()
+        except Exception:
+            pass
+        try:
+            if self.window is not None:
+                self.window.destroy()
+        except Exception:
+            pass
+        self.window = None
 
 
 # ---- individual panel builders (parent = container frame) ----------------
 
 def build_cookie(parent, app):
-    panel_header(parent, app, "cookie")
-    scroller = ScrollFrame(parent)
-    scroller.pack(fill="both", expand=True)
-    box = ttk.Frame(scroller.inner)
-    box.pack(fill="x", expand=True)
+    #  Pinned: the settings page is the longest form in the app, and its Save
+    #  button used to be at the very bottom of it - so saving meant scrolling
+    #  past every field first. The title row goes in the strip above the page
+    #  and the Save button sits on that row, so both stay put as the fields
+    #  scroll underneath.
+    #  No panel-wide explanation: each group below has its own, next to the
+    #  fields it describes. One button for ten unrelated jobs explained none
+    #  of them.
+    panel_header(parent, app, "cookie", pin=True, with_doc=False)
+    #  This page owns its help per section, so it starts the list afresh
+    #  rather than adding to whatever the last panel left behind.
+    app._doc_buttons = []
+    app._doc_labels = []
+    #  The sections go straight into the page. This used to add a second
+    #  scroll area inside the page's own, and a nested canvas only claims the
+    #  height its own widgets ask for - so the settings stopped a third of the
+    #  way down the window and the rest of it sat empty above the console.
+    page = ttk.Frame(parent)
+    page.pack(fill="both", expand=True)
+    box = page
+
+    def group(key, title):
+        """Start a section; everything packed into ``box`` after this goes in it."""
+        nonlocal box
+        box = settings_section(app, page, key, title,
+                               SETTINGS_DOCS.get(key, ""))
+        return box
 
     fields = {}
     app._user_setting_vars = fields
@@ -1953,6 +2632,7 @@ def build_cookie(parent, app):
                 row=row + 1, column=1, sticky="w", padx=2, pady=(0, 2))
         return var
 
+    group("startup", "When Alex Collect opens")
     startup_var = tk.StringVar(
         master=box, value=app.settings.get("startup_mode", "menu"))
     startup_row = ttk.Frame(box)
@@ -1962,7 +2642,7 @@ def build_cookie(parent, app):
                  values=("menu", "tabs", "wizard"), width=14).pack(
                      side="left", padx=6)
 
-    ttk.Label(box, text="Store and AI", style="H2.TLabel").pack(anchor="w")
+    group("store", "Store and AI")
     general = ttk.Frame(box)
     general.pack(fill="x", pady=(1, 4))
     general.columnconfigure(1, weight=1)
@@ -2002,6 +2682,7 @@ def build_cookie(parent, app):
     refresh_var = field_row(general, 12, "Feed refresh URL (optional override):",
                             "woo_feed_refresh_url")
 
+    group("store_pages", "Open the store pages")
     row = ttk.Frame(box)
     row.pack(fill="x", pady=(0, 4))
     def open_media_page():
@@ -2036,15 +2717,7 @@ def build_cookie(parent, app):
                command=lambda: open_woo_keys_file(app, fields["woo_site_url"].get())
                ).pack(side="left", padx=(6, 0))
 
-    ttk.Label(box, text="Custom AI commands", style="H2.TLabel").pack(
-        anchor="w", pady=(4, 0))
-    ttk.Label(box, text=(
-        "Create extra copy-to-clipboard buttons for the pipeline dialog. "
-        "Commands can use the same {{STORE_NAME}}, {{CURRENCY_PREFIX}}, "
-        "{{CURRENCY_NAME}}, {{DESCRIPTION_MIN_WORDS}}, {{TAG_COUNT}}, and "
-        "{{LISTING_CONTEXT}} placeholders. Save User Settings after editing."),
-        style="Dim.TLabel", wraplength=760, justify="left").pack(
-            anchor="w", pady=(0, 3))
+    group("custom_ai", "Custom AI commands")
     custom_frame = ttk.Frame(box)
     custom_frame.pack(fill="x", pady=(0, 6))
     custom_frame.columnconfigure(1, weight=1)
@@ -2153,8 +2826,7 @@ def build_cookie(parent, app):
         "remove": remove_custom_item,
     }
 
-    ttk.Label(box, text="Marketplace pages", style="H2.TLabel").pack(
-        anchor="w", pady=(2, 0))
+    group("markets", "Marketplace pages")
     market = ttk.Frame(box)
     market.pack(fill="x", pady=(1, 4))
     market.columnconfigure(1, weight=1)
@@ -2164,8 +2836,7 @@ def build_cookie(parent, app):
     field_row(market, 2, "CanadianShopper vendor page URL:",
               "canadianshopper_store_url")
 
-    ttk.Label(box, text="eBay Quick List handoff", style="H2.TLabel").pack(
-        anchor="w", pady=(2, 0))
+    group("ebay", "eBay Quick List handoff")
     ebay_box = ttk.Frame(box)
     ebay_box.pack(fill="x", pady=(1, 4))
     ebay_box.columnconfigure(1, weight=1)
@@ -2200,8 +2871,7 @@ def build_cookie(parent, app):
         style="Dim.TLabel", wraplength=720, justify="left").grid(
             row=16, column=1, sticky="w", padx=3, pady=(0, 3))
 
-    ttk.Label(box, text="Facebook Marketplace export fields",
-              style="H2.TLabel").pack(anchor="w", pady=(2, 0))
+    group("facebook", "Facebook Marketplace export fields")
     facebook_box = ttk.Frame(box)
     facebook_box.pack(fill="x", pady=(1, 4))
     facebook_box.columnconfigure(1, weight=1)
@@ -2230,8 +2900,7 @@ def build_cookie(parent, app):
         wraplength=720, justify="left").grid(
             row=7, column=1, sticky="w", padx=3, pady=(0, 3))
 
-    ttk.Label(box, text="CanadianShopper CSV defaults", style="H2.TLabel").pack(
-        anchor="w", pady=(2, 0))
+    group("cs_csv", "CanadianShopper CSV defaults")
     cs_config = ttk.Frame(box)
     cs_config.pack(fill="x", pady=(1, 4))
     cs_config.columnconfigure(1, weight=1)
@@ -2251,8 +2920,7 @@ def build_cookie(parent, app):
     field_row(cs_config, 5, "Transit days:",
               "canadianshopper_transit_days", width=16)
 
-    ttk.Label(box, text="Working folders", style="H2.TLabel").pack(
-        anchor="w", pady=(2, 0))
+    group("folders", "Working folders")
     grid = ttk.Frame(box)
     grid.pack(fill="x", pady=(1, 4))
     grid.columnconfigure(1, weight=1)
@@ -2397,13 +3065,23 @@ def build_cookie(parent, app):
         return True
 
     app._save_user_settings_callback = save_user_settings
-    ttk.Button(box, text="Save user settings", command=save_user_settings).pack(
-        anchor="w", pady=(1, 4))
+    #  Beside the title, not at the end of the form: everything above this
+    #  line is the page the button applies to. In the wizard, where the title
+    #  row is not pinned, it stays the plain button under the fields.
+    title_row = getattr(parent, "_title_row", None)
+    save_button = ttk.Button(title_row if title_row is not None else box,
+                             text="Save user settings",
+                             command=save_user_settings,
+                             style="Task.TButton")
+    if title_row is not None:
+        save_button.pack(side="right", padx=(0, 6))
+    else:
+        save_button.pack(anchor="w", pady=(1, 4))
+    add_tooltip(save_button, tip_for("Save user settings"))
+    app._save_button = save_button
 
     if app.cs_addon:
-        ttk.Separator(box).pack(fill="x", pady=(1, 4))
-        ttk.Label(box, text="CanadianShopper connection",
-                  style="H2.TLabel").pack(anchor="w")
+        group("cs_login", "CanadianShopper connection")
         ttk.Label(box, text="Session cookie (private login; stored locally):"
                   ).pack(anchor="w", pady=(2, 0))
         txt = tk.Text(box, height=3, wrap="char", font=("Consolas", 9))
@@ -3135,12 +3813,11 @@ def build_plugins(parent, app):
     panel_header(parent, app, "plugins")
     box = ttk.Frame(parent)
     box.pack(fill="both", expand=True)
-    ttk.Label(box, text=(
+    panel_note(parent, (
         "Plugins are optional code packages. Install only ZIPs from a "
         "source you trust; a plugin can access files and accounts available "
         "to this Windows user. The app checks metadata but does not sandbox "
-        "plugin code."), style="Dim.TLabel", wraplength=780,
-        justify="left").pack(anchor="w", pady=(0, 8))
+        "plugin code."))
 
     listing = ttk.Frame(box)
     listing.pack(fill="both", expand=True, pady=(2, 8))
@@ -3372,15 +4049,15 @@ def build_ordertext(parent, app):
     box = ttk.Frame(parent)
     box.pack(fill="both", expand=True)
 
-    ttk.Label(box, text="Paste the list - one card per line. Numbering, "
-                        "bullets and a trailing price are ignored.",
-              style="Dim.TLabel").pack(anchor="w")
     text = tk.Text(box, height=11, wrap="word", font=("Consolas", 9))
     text.pack(fill="both", expand=True, pady=(2, 4))
 
     row = ttk.Frame(box)
     row.pack(fill="x")
-    status = ttk.Label(box, text="", style="Dim.TLabel", wraplength=760,
+    notes = getattr(parent, "_notes_frame", None) or box
+    panel_note(parent, "Paste the list - one card per line. Numbering, "
+               "bullets and a trailing price are ignored.")
+    status = ttk.Label(notes, text="", style="Dim.TLabel", wraplength=760,
                        justify="left")
     status.pack(anchor="w", pady=(3, 0))
 
@@ -3447,6 +4124,7 @@ def build_ordertext(parent, app):
         ttk.Button(buttons, text="Cancel", command=top.destroy).pack(
             side="right", padx=8)
         top.protocol("WM_DELETE_WINDOW", top.destroy)
+        attach_tooltips(top)
         app.wait_window(top)
         return result["ok"]
 
@@ -3565,6 +4243,7 @@ def build_ordertext(parent, app):
         listing.bind("<Double-Button-1>", use)
         entry.bind("<Return>", lambda *_: do_search())
         show(candidates)
+        attach_tooltips(top)
         app.wait_window(top)
         return chosen["product"]
 
@@ -3765,11 +4444,14 @@ def build_newphotos(parent, app):
     panel_header(parent, app, "newphotos")
     box = ttk.Frame(parent)
     box.pack(fill="x")
+    #  What the panel *says* lives underneath the work: the sheets summary and
+    #  the running status are read after the card is found, not before.
+    notes = getattr(parent, "_notes_frame", None) or box
 
     keys_file = BASE / "woo-keys.txt"
     term = tk.StringVar(master=box)
     sheets_text = {"label": None}     # set once the strip is built below
-    hint = ttk.Label(box, text="", style="Dim.TLabel", wraplength=760,
+    hint = ttk.Label(notes, text="", style="Dim.TLabel", wraplength=760,
                      justify="left")
 
     def status(text):
@@ -3825,6 +4507,7 @@ def build_newphotos(parent, app):
         ttk.Button(buttons, text="Cancel",
                    command=top.destroy).pack(side="right", padx=8)
         listing.bind("<Double-Button-1>", accept)
+        attach_tooltips(top)
         app.wait_window(top)
         return chosen["row"]
 
@@ -3911,13 +4594,36 @@ def build_newphotos(parent, app):
         chosen = list(chosen) if not isinstance(chosen, str) else [chosen]
         pool.tiles_dir = replace_dir()
         failed, added = [], 0
-        for path in chosen:
-            try:
-                pool.add_sheet(path, index=len(pool.sheets))
-            except photo_pool.PhotoPoolError as exc:
-                failed.append("%s: %s" % (Path(path).name, exc))
-                continue
-            added += 1
+        #  Splitting a high-resolution scan takes seconds, and this used to run
+        #  with nothing on screen at all - no dialog, no bar, no change - which
+        #  is indistinguishable from a hung program. The window names the sheet
+        #  being worked on and the bar moves once per sheet.
+        total = len(chosen)
+        status("Reading %d scan%s - a big one takes a few seconds..." % (
+            total, "" if total == 1 else "s"))
+        try:
+            app.update_idletasks()
+        except Exception:
+            pass
+        progress = ProgressWindow(
+            app, "Reading your scans",
+            "Splitting %s into card images. A high-resolution scan takes a "
+            "few seconds; nothing is saved until it is done."
+            % Path(chosen[0]).name, total=total)
+        try:
+            for index, path in enumerate(chosen, start=1):
+                progress.step("Splitting %s (%d of %d)..." %
+                              (Path(path).name, index, total),
+                              done=index - 1, total=total)
+                try:
+                    pool.add_sheet(path, index=len(pool.sheets))
+                except photo_pool.PhotoPoolError as exc:
+                    failed.append("%s: %s" % (Path(path).name, exc))
+                    continue
+                added += 1
+                progress.step(done=index, total=total)
+        finally:
+            progress.close()
         refresh_sheets()
         if failed:
             messagebox.showwarning(
@@ -3943,6 +4649,10 @@ def build_newphotos(parent, app):
 
     def clear_sheets():
         pool.clear()
+        #  The pictures belong to the sheets that just went away, so they go
+        #  too rather than being kept for names that will never come back.
+        if getattr(app, "_tile_thumbs", None) is not None:
+            app._tile_thumbs.clear()
         refresh_sheets()
         status("Sheets cleared.")
 
@@ -4116,14 +4826,41 @@ def build_newphotos(parent, app):
             return candidates[0]
 
         tiles_by_path = {str(t.get("path")): t for t in candidates}
-        thumbs = photo_thumbs.Thumbnails()
+        #  Decoding nine tiles is quick, but it used to happen before the
+        #  window existed - so a slow first decode showed nothing at all and
+        #  the program looked hung. One cache per sitting also means the
+        #  second card reuses these pictures instead of reading them again.
+        thumbs = getattr(app, "_tile_thumbs", None)
+        if thumbs is None:
+            thumbs = photo_thumbs.Thumbnails()
+            app._tile_thumbs = thumbs
         keep = {}                     # PhotoImage objects Tk must not free
         pictures = {}
-        for key in tiles_by_path:
-            photo = photo_thumbs.as_photo(thumbs.get(key))
-            if photo is not None:
-                keep[key] = photo
-                pictures[key] = photo
+        sheet_order = list(dict.fromkeys(str(t.get("sheet_path") or
+                                             t.get("sheet") or "")
+                                         for t in candidates))
+        mixed_sheets = len([x for x in sheet_order if x]) > 1
+        mixed_sides = len({t.get("side") or "" for t in candidates}) > 1
+
+        def short_caption(tile):
+            """Slot and side, and the sheet only when the grid mixes them."""
+            sheet = ""
+            if mixed_sheets:
+                key = str(tile.get("sheet_path") or tile.get("sheet") or "")
+                if key in sheet_order:
+                    sheet = "S%d" % (sheet_order.index(key) + 1)
+            return photo_thumbs.caption(tile, sheet=sheet, side=mixed_sides)
+
+        #  One picture, made before the window exists, decides whether this
+        #  run can show pictures at all: Tk without image support falls back
+        #  to the same choices as a plain list. It is also the slowest single
+        #  decode, and it is cached, so the grid does not repeat it.
+        if candidates:
+            first_key = str(candidates[0].get("path"))
+            first = photo_thumbs.as_photo(thumbs.get(first_key))
+            if first is not None:
+                keep[first_key] = first
+                pictures[first_key] = first
 
         top = tk.Toplevel(app)
         top.title("Which image?")
@@ -4133,18 +4870,39 @@ def build_newphotos(parent, app):
         shown = {"tiles": list(candidates)}
 
         def by_picture():
-            """The grid of pictures: click one, then Use this image."""
-            top.geometry("840x580")
-            ttk.Label(top, text=question, wraplength=800,
-                      justify="left").pack(anchor="w", padx=10, pady=(10, 2))
-            ttk.Label(top, text="These are the card images on your sheets - "
-                      "pick the one that belongs to this card.",
-                      style="Dim.TLabel").pack(anchor="w", padx=10,
-                                               pady=(0, 6))
-            holder = ttk.Frame(top)
+            """Actions on top, the grid in the middle, the words underneath.
+
+            The buttons used to sit below a grid that could be taller than the
+            window, so at 800x600 they were simply off-screen; the grid now
+            scrolls instead, and every button is reachable without scrolling.
+            """
+            width = min(900, max(560, app.winfo_screenwidth() - 60))
+            height = min(640, max(430, app.winfo_screenheight() - 90))
+            top.geometry("%dx%d" % (width, height))
+            bar = ttk.Frame(top)
+            bar.pack(fill="x", padx=10, pady=(10, 4))
+            accept_button = ttk.Button(bar, text="Use this image",
+                                       command=lambda: accept())
+            accept_button.pack(side="right")
+            ttk.Button(bar, text="Cancel", command=top.destroy).pack(
+                side="right", padx=8)
+            if more_scan is not None:
+                ttk.Button(bar, text="Another scan...",
+                           command=lambda: another()).pack(side="right",
+                                                          padx=8)
+            chosen_line = ttk.Label(bar, text="", style="Dim.TLabel")
+            chosen_line.pack(side="left")
+
+            holder = ScrollFrame(top)
             holder.pack(fill="both", expand=True, padx=10, pady=(0, 4))
             cells = {}
             state = {"key": None}
+
+            def accept(*_event):
+                tile = tiles_by_path.get(state["key"] or "")
+                if tile is not None:
+                    chosen["tile"] = tile
+                top.destroy()
 
             def choose(key):
                 state["key"] = key
@@ -4153,20 +4911,16 @@ def build_newphotos(parent, app):
                     cell.configure(
                         highlightbackground="#2f6fd0" if picked else "#d8dce2",
                         highlightthickness=3 if picked else 1)
-
-            def accept(*_event):
-                tile = tiles_by_path.get(state["key"] or "")
-                if tile is not None:
-                    chosen["tile"] = tile
-                top.destroy()
+                tile = tiles_by_path.get(key or "")
+                chosen_line.configure(text=short_caption(tile) if tile else "")
 
             def draw(tiles):
-                for child in holder.winfo_children():
+                for child in holder.inner.winfo_children():
                     child.destroy()
                 cells.clear()
                 shown["tiles"] = list(tiles)
                 for row in photo_thumbs.rows(tiles):
-                    line = ttk.Frame(holder)
+                    line = ttk.Frame(holder.inner)
                     line.pack(anchor="w", pady=4)
                     for tile in row:
                         key = str(tile.get("path"))
@@ -4177,7 +4931,7 @@ def build_newphotos(parent, app):
                         if key in pictures:
                             label.configure(image=pictures[key])
                         label.pack(padx=2, pady=(2, 0))
-                        caption = photo_thumbs.caption(tile)
+                        caption = short_caption(tile)
                         if preselect is not None and \
                                 str(preselect.get("path")) == key:
                             caption += "  \u00b7 proposed"
@@ -4197,30 +4951,55 @@ def build_newphotos(parent, app):
                         wanted = str(preselect.get("path"))
                     choose(wanted or str(shown["tiles"][0].get("path")))
 
-            draw(candidates)
-            buttons = ttk.Frame(top)
-            buttons.pack(fill="x", padx=10, pady=8)
-            ttk.Button(buttons, text="Use this image",
-                       command=accept).pack(side="right")
-            ttk.Button(buttons, text="Cancel",
-                       command=top.destroy).pack(side="right", padx=8)
-            if more_scan is not None:
-                def another():
-                    tiles = more_scan()
-                    if not tiles:
-                        return
-                    for tile in tiles:
-                        key = str(tile.get("path"))
-                        tiles_by_path[key] = tile
-                        photo = photo_thumbs.as_photo(thumbs.get(key))
-                        if photo is not None:
-                            keep[key] = photo
-                            pictures[key] = photo
-                    draw(tiles)
+            def load_pictures(tiles):
+                """Fill in the pictures after the window is on screen."""
+                for index, tile in enumerate(tiles, start=1):
+                    key = str(tile.get("path"))
+                    if key in pictures:
+                        continue
+                    photo = photo_thumbs.as_photo(thumbs.get(key))
+                    if photo is not None:
+                        keep[key] = photo
+                        pictures[key] = photo
+                        if index % 3 == 0:
+                            #  Paint the ones already done rather than
+                            #  showing an empty grid until the last tile.
+                            try:
+                                top.update_idletasks()
+                            except Exception:
+                                pass
 
-                ttk.Button(buttons, text="Another scan...",
-                           command=another).pack(side="left")
+            draw(candidates)
+            #  The window is up and answering before the first picture is
+            #  decoded, so even a slow scan shows "opening" instead of nothing.
+            try:
+                top.update_idletasks()
+            except Exception:
+                pass
+            load_pictures(shown["tiles"])
+            draw(shown["tiles"])
+
+            def another():
+                tiles = more_scan()
+                if not tiles:
+                    return
+                for tile in tiles:
+                    tiles_by_path[str(tile.get("path"))] = tile
+                draw(tiles)
+                load_pictures(tiles)
+                draw(tiles)
+
+            ttk.Label(top, text=question, wraplength=max(500, width - 40),
+                      justify="left").pack(anchor="w", padx=10)
+            ttk.Label(top, text="These are the card images on your sheets - "
+                      "pick the one that belongs to this card. The grid "
+                      "scrolls; double-click a picture to use it straight "
+                      "away.", style="Dim.TLabel",
+                      wraplength=max(500, width - 40),
+                      justify="left").pack(anchor="w", padx=10, pady=(0, 8))
+            accept_button.configure(command=accept)
             top.bind("<Return>", accept)
+            attach_tooltips(top)
             app.wait_window(top)
             return chosen["tile"]
 
@@ -4276,6 +5055,7 @@ def build_newphotos(parent, app):
                 ttk.Button(row, text="Another scan...",
                            command=another).pack(side="left")
             listing.bind("<Double-Button-1>", accept)
+            attach_tooltips(top)
             app.wait_window(top)
             return chosen["tile"]
 
@@ -4344,6 +5124,7 @@ def build_newphotos(parent, app):
             side="right")
         listing.bind("<Double-Button-1>", take_row)
         top.protocol("WM_DELETE_WINDOW", cancel)
+        attach_tooltips(top)
         app.wait_window(top)
         return answer
 
@@ -4587,7 +5368,11 @@ def build_newphotos(parent, app):
         app.photo_assign_window = top      # kept so a test can drive it
         top.title("Assign the images to cards")
         top.transient(app)
-        top.geometry("860x560")
+        #  Never bigger than the screen it opens on: this window used to be
+        #  860 wide, which does not fit an 800x600 display at all.
+        width = min(880, max(560, app.winfo_screenwidth() - 60))
+        height = min(600, max(420, app.winfo_screenheight() - 90))
+        top.geometry("%dx%d" % (width, height))
         method = tk.StringVar(master=top, value="titles")
         text = tk.Text(top, height=7, wrap="word")
         listing = tk.Listbox(top, height=10, exportselection=False)
@@ -4696,10 +5481,9 @@ def build_newphotos(parent, app):
                                                                 padx=12)
         ttk.Radiobutton(choices, text="One at a time (the card search below)",
                         variable=method, value="one").pack(side="left")
-        ttk.Label(top, text="Paste here - an AI answer read off the sheet, or "
-                  "your cards in the order they were scanned:",
-                  style="Dim.TLabel", wraplength=820).pack(anchor="w", padx=10,
-                                                           pady=(8, 2))
+        ttk.Label(top, text="The AI's answer, or your cards in the order they "
+                  "were scanned:", style="Dim.TLabel",
+                  wraplength=width - 40).pack(anchor="w", padx=10, pady=(6, 2))
         text.pack(fill="x", padx=10)
         buttons = ttk.Frame(top)
         buttons.pack(fill="x", padx=10, pady=6)
@@ -4713,6 +5497,7 @@ def build_newphotos(parent, app):
             side="right", padx=8)
         listing.pack(fill="both", expand=True, padx=10, pady=(0, 4))
         said.pack(anchor="w", padx=10, pady=(0, 8))
+        attach_tooltips(top)
         render()
 
     def start():
@@ -4743,9 +5528,6 @@ def build_newphotos(parent, app):
                command=clear_sheets).pack(side="left", padx=6)
     ttk.Button(sheets_row, text="Assign photos to cards...",
                command=open_assign_window).pack(side="left", padx=(10, 0))
-    sheets_text["label"] = ttk.Label(box, text="", style="Dim.TLabel",
-                                     wraplength=780, justify="left")
-    sheets_text["label"].pack(anchor="w", pady=(2, 0))
 
     row = ttk.Frame(box)
     row.pack(anchor="w", pady=4)
@@ -4763,6 +5545,9 @@ def build_newphotos(parent, app):
                        "Connection panel." %
                        app.settings.get("scan_dir", DEFAULT_SCAN_DIR)))
                ).pack(side="left", padx=8)
+    sheets_text["label"] = ttk.Label(notes, text="", style="Dim.TLabel",
+                                     wraplength=780, justify="left")
+    sheets_text["label"].pack(anchor="w", pady=(2, 0))
     hint.pack(anchor="w", pady=(2, 0))
     refresh_sheets()
 
@@ -4772,11 +5557,9 @@ def build_logs(parent, app):
     box = ttk.Frame(parent)
     box.pack(fill="x")
 
-    ttk.Label(box, text=(
+    panel_note(parent, (
         "Move older root-level marketplace outputs into their folders. "
-        "Preview first; this organizer never deletes or overwrites files."),
-        style="Dim.TLabel", wraplength=780, justify="left").pack(
-            anchor="w", pady=(0, 3))
+        "Preview first; this organizer never deletes or overwrites files."))
     organizer = BASE / "pipeline" / "organize_pipeline_outputs.py"
 
     def run_organizer(apply=False):
@@ -4991,6 +5774,7 @@ class PipelineDialog(tk.Toplevel):
         self.status = ttk.Label(box, text="", foreground="#1b5e20",
                                 wraplength=740, justify="left")
         self.status.pack(fill="x")
+        attach_tooltips(self)
 
         ttk.Separator(box).pack(fill="x", pady=5)
         ttk.Label(box, text="3) The AI's answer", style="H2.TLabel").pack(
@@ -5560,8 +6344,10 @@ class TasksFrame(ttk.Frame):
                 button.grid(row=row, column=column, sticky="w",
                             padx=(0, 8 if column == 0 else 0), pady=3)
                 add_tooltip(button, BLURBS[pid])
+        attach_tooltips(self.menu)
 
     def show_panel(self, pid):
+        self.app.clear_action_bar()
         self.menu.destroy()
         wrap = ttk.Frame(self)
         wrap.pack(fill="both", expand=True)
@@ -5569,6 +6355,7 @@ class TasksFrame(ttk.Frame):
                    command=lambda: self.app.show_mode("menu")).pack(
                        anchor="w", pady=(2, 6))
         PANEL_BUILDERS[pid](wrap, self.app)
+        attach_tooltips(wrap)
 
 
 # --------------------------------------------------------------- tabs
@@ -5579,12 +6366,10 @@ class TabsFrame(ttk.Frame):
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True)
         for group, ids in groups_for(app.cs_addon):
-            tab = ttk.Frame(nb, padding=(5, 3))
+            tab = ttk.Frame(nb, padding=(6, 5))
             nb.add(tab, text=group)
             for pid in ids:
-                box = ttk.Frame(tab, padding=(2, 1))
-                box.pack(fill="x", pady=(0, 4))
-                PANEL_BUILDERS[pid](box, app)
+                panel_section(tab, app, pid, expand=False)
 
 
 # --------------------------------------------------------------- wizard
@@ -5611,6 +6396,8 @@ class WizardFrame(ttk.Frame):
         self.render()
 
     def render(self):
+        self.app.clear_action_bar()
+        self.content._wizard_page = True
         for w in self.content.winfo_children():
             w.destroy()
         pid = WIZARD_PAGES[self.page]
@@ -5650,6 +6437,7 @@ class WizardFrame(ttk.Frame):
                 self.app.show_mode("menu")
             ttk.Button(self.content, text="Finish", style="Task.TButton",
                        command=finish).pack(anchor="w")
+            attach_tooltips(self.content)
             return
         if pid == "welcome":
             ttk.Label(self.content, text="Welcome", style="H1.TLabel").pack(

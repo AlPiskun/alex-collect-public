@@ -42,6 +42,7 @@ def check(name, cond, extra=""):
 class FakeWidget:
     def __init__(self, *args, **kwargs):
         self._kw = dict(kwargs)
+        self.packed = False
         self.children = []
         self.command = kwargs.get("command")
         self.value = kwargs.get("text", "")
@@ -51,7 +52,14 @@ class FakeWidget:
         if self.parent is not None and hasattr(self.parent, "children"):
             self.parent.children.append(self)
 
-    def pack(self, *a, **k): return self
+    def pack(self, *a, **k):
+        self.packed = True
+        self._kw_pack = dict(k)
+        return self
+
+    def pack_forget(self, *a, **k):
+        self.packed = False
+
     def grid(self, *a, **k): return self
     def place(self, *a, **k): return self
     def bind(self, *a, **k): return self
@@ -61,7 +69,22 @@ class FakeWidget:
         return self._kw.get("text", self.value) if key == "text" \
             else self._kw.get(key, "")
     def winfo_children(self): return list(self.children)
-    def destroy(self): pass
+
+    @property
+    def master(self):
+        """Tk's name for the parent widget; panels ask which one holds it."""
+        return self.parent
+    def destroy(self):
+        #  A destroyed widget leaves its parent: the panel rebuilds its grid
+        #  after the pictures are decoded, and the old cells must be gone.
+        self.packed = False
+        parent = getattr(self, "parent", None)
+        if parent is not None and hasattr(parent, "children"):
+            try:
+                parent.children.remove(self)
+            except ValueError:
+                pass
+
     def focus_set(self): pass
     def yview(self, *a, **k): return (0.0, 1.0)
     def xview(self, *a, **k): return (0.0, 1.0)
@@ -82,6 +105,32 @@ class FakeWidget:
     def invoke(self):
         if self.command:
             self.command()
+    # -- the handful of calls a scrollable canvas makes ---------------------
+    def create_window(self, *a, **k): return 1
+    def itemconfigure(self, *a, **k): return None
+    def bbox(self, *a, **k): return (0, 0, 200, 200)
+    def yview_scroll(self, *a, **k): return None
+    def bind_all(self, *a, **k): return None
+    def unbind_all(self, *a, **k): return None
+    def winfo_containing(self, *a, **k): return None
+    def winfo_toplevel(self): return self
+    def add(self, child, **kwargs):
+        """ttk.Notebook.add: remember the tab and its label."""
+        self.tabs = getattr(self, "tabs", [])
+        self.tabs.append((child, kwargs.get("text", "")))
+        return child
+
+    def select(self, *a, **k): return None
+
+    def columnconfigure(self, *a, **k): return None
+    def rowconfigure(self, *a, **k): return None
+    def grid_columnconfigure(self, *a, **k): return None
+    def update(self): return None
+    def update_idletasks(self): return None
+    def winfo_rootx(self): return 0
+    def winfo_rooty(self): return 0
+    def winfo_width(self): return 800
+    def winfo_height(self): return 600
     def walk(self):
         yield self
         for child in self.children:
@@ -100,11 +149,16 @@ class FakeToplevel(FakeWidget):
     def __init__(self, *a, **k):
         super().__init__(*a, **k)
         self._title = k.get("title", "")
+        self._geometry = ""
+        self.resizable = lambda *a, **k: self
     def title(self, value=None):
         if value is not None: self._title = value
         return self._title
     def transient(self, *a, **k): return self
-    def geometry(self, *a, **k): return self
+    def geometry(self, value=None):
+        if value is not None:
+            self._geometry = value
+        return self._geometry
     def grab_set(self, *a, **k): return self
     def wait_window(self, *a, **k):
         PICKER["press"](self)
@@ -113,20 +167,31 @@ class FakeToplevel(FakeWidget):
 PICKER = {"press": lambda window: None}
 
 
+def widget_class(name, base=FakeWidget):
+    """A fake that stands in for one Tk class, so isinstance() still works.
+
+    Everything used to be the same FakeWidget, which made "is this a Button
+    or a LabelFrame?" unanswerable - and the tabs view is laid out entirely in
+    LabelFrame sections, so the difference is exactly what a test needs.
+    """
+    return type("Fake" + name, (base,), {})
+
+
 def install_tk():
     tk = types.ModuleType("tkinter")
-    for name, obj in dict(Frame=FakeWidget, Label=FakeWidget, Button=FakeWidget,
-                          Entry=FakeWidget, Text=FakeWidget, Listbox=FakeWidget,
-                          Toplevel=FakeToplevel, Canvas=FakeWidget,
-                          StringVar=FakeVar, BooleanVar=FakeVar,
-                          IntVar=FakeVar, Tk=FakeWidget).items():
-        setattr(tk, name, obj)
+    for name, base in dict(Frame=FakeWidget, Label=FakeWidget,
+                           Button=FakeWidget, Entry=FakeWidget,
+                           Text=FakeWidget, Listbox=FakeWidget,
+                           Toplevel=FakeToplevel, Canvas=FakeWidget,
+                           StringVar=FakeVar, BooleanVar=FakeVar,
+                           IntVar=FakeVar, Tk=FakeWidget).items():
+        setattr(tk, name, widget_class(name, base))
     tk.font = types.SimpleNamespace(nametofont=lambda *a, **k: FakeWidget())
     ttk = types.ModuleType("tkinter.ttk")
     for name in ("Frame", "Label", "Button", "Entry", "LabelFrame", "Notebook",
                  "Scrollbar", "Checkbutton", "Radiobutton", "Combobox",
                  "Treeview", "Separator", "Progressbar"):
-        setattr(ttk, name, FakeWidget)
+        setattr(ttk, name, widget_class(name))
     ttk.Style = lambda *a, **k: types.SimpleNamespace(
         configure=lambda *a, **k: None, lookup=lambda *a, **k: "22",
         theme_use=lambda *a, **k: None, map=lambda *a, **k: None)
@@ -158,12 +223,15 @@ _TK, _TTK, _DIALOG, _BOX = install_tk()
 import gui                                     # noqa: E402
 import photo_pool                              # noqa: E402
 import photo_replace                           # noqa: E402
+import photo_thumbs as panel_thumbs            # noqa: E402
 from PIL import Image                          # noqa: E402
 
 
 # --------------------------------------------------------------- app stand-in
 class FakeApp:
     def __init__(self, folder):
+        self.body = FakeWidget()          # the page area a panel pins into
+        self._mode_frame = None
         self.settings = {"browser_name": "system", "scan_dir": str(folder),
                          "pipeline_dir": str(folder),
                          "woo_site_url": "https://shop.example",
@@ -186,6 +254,24 @@ class FakeApp:
 
     def wait_window(self, window):
         window.wait_window()
+
+    def clear_action_bar(self):
+        """The real app destroys the pinned strip when the page changes."""
+        bar = getattr(self, "_action_bar", None)
+        if bar is not None:
+            bar.destroy()
+        self._action_bar = None
+
+    def winfo_screenwidth(self):
+        return 800          # the small screen the picker has to fit on
+
+    def winfo_screenheight(self):
+        return 600
+
+    def winfo_rootx(self): return 0
+    def winfo_rooty(self): return 0
+    def winfo_width(self): return 800
+    def winfo_height(self): return 600
 
 
 PRODUCT = {"id": 42,
@@ -931,6 +1017,715 @@ def test_website_first():
           UPLOADS[0]["keep_ids"] == [9], str(UPLOADS))
 
 
+def test_actions_above_the_words():
+    print()
+    print("== 20. the work sits on top; the words sit underneath ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    app = FakeApp(folder)
+    parent = FakeWidget()
+    gui.build_newphotos(parent, app)
+    widgets = list(parent.walk())
+    notes = getattr(parent, "_notes_frame", None)
+    find = next(w for w in widgets if w.cget("text") == "Find the card...")
+    add = next(w for w in widgets if w.cget("text") == "Add sheets...")
+    check("the buttons are not in the notes area",
+          notes is not None and find not in list(notes.walk()) and
+          add not in list(notes.walk()), str(notes))
+    check("the sheet summary and the status line are",
+          notes is not None and
+          any("No replacement sheets loaded" in w.cget("text")
+              for w in notes.walk()), "")
+    help_button = getattr(app, "_doc_button", None)
+    doc = getattr(app, "_doc_label", None)
+    held = getattr(parent, "_help_frame", None)
+    #  build_newphotos is not pinned, so its title row is still in the panel.
+    check("the panel's help is folded until it is asked for",
+          help_button is not None and held is not None and not held.packed,
+          str(help_button))
+    check("the help still holds the real text, so nothing was lost",
+          doc is not None and len(str(doc.cget("text"))) > 200,
+          str(doc and len(str(doc.cget("text")))))
+    check("the help frame starts out of the layout",
+          held is not None and not held.packed, "")
+    help_button.invoke()
+    check("one click opens it, and it opens underneath",
+          held is not None and held.packed and
+          help_button.cget("text") == "Hide this help",
+          str(help_button and help_button.cget("text")))
+    if help_button is not None:
+        help_button.invoke()
+    check("and one click folds it away, with no gap left behind",
+          held is not None and not held.packed, str(held and held.packed))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_grid_fits_a_small_screen():
+    print()
+    print("== 18. nine cards on an 800x600 screen: scroll, and say so ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    #  A full sheet: nine cards, no blanks - the case that overflowed.
+    sheet = make_sheet(folder / "Scan-full.jpg", blanks=())
+    app = FakeApp(folder)
+    seen = []
+
+    def press(window):
+        """Look at the grid as the user would, then take the first picture."""
+        seen.append(window)
+        for widget in window.walk():
+            if widget.cget("text") == "Use this image":
+                widget.invoke()
+                return
+        window.destroy()
+
+    #  A build that can draw pictures: without this the picker correctly
+    #  falls back to the plain list, which is not what is under test.
+    dummy = object()
+    with patch.object(panel_thumbs, "as_photo", lambda image: dummy):
+        drive(app, sheet, press=press, nocancel=False, cards=1)
+
+    check("the picker was drawn as a grid, not a list", bool(seen), str(seen))
+    grid = seen[0].walk() if seen else ()
+    widgets = list(grid)
+    check("the grid scrolls instead of running off the window",
+          any(isinstance(w, gui.ScrollFrame) for w in widgets), "")
+    scroller = next((w for w in widgets if isinstance(w, gui.ScrollFrame)),
+                    None)
+    captions = [w.cget("text") for w in (scroller.inner.walk() if scroller
+                                         else [])
+                if w.cget("text")]
+    slots = [c for c in captions if c.startswith("Slot ")]
+    check("every card on the sheet is offered, all nine",
+          len(slots) == 9, str(slots))
+    check("a caption is the slot, not a file name",
+          slots and all(".jpg" not in c and ".webp" not in c for c in slots),
+          str(slots))
+    check("the buttons sit above the grid, so they never scroll away",
+          _first_action_row(seen[0]) is not None, "")
+    check("the window fits the small screen",
+          _fits(seen[0]._geometry, 800, 600), seen[0]._geometry)
+    check("the pictures are kept for the next card",
+          getattr(app, "_tile_thumbs", None) is not None and
+          len(app._tile_thumbs._cache) >= 1,
+          str(getattr(app, "_tile_thumbs", None)))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def _fits(geometry, width, height):
+    """Whether a Tk geometry string (WxH+X+Y) fits inside a screen."""
+    try:
+        size = str(geometry).split("+")[0]
+        w, h = [int(x) for x in size.split("x")]
+    except Exception:
+        return False
+    return w <= width and h <= height
+
+
+def _first_action_row(window):
+    """The first Button in the window's walk order, if any."""
+    for widget in window.walk():
+        if isinstance(widget, gui.ttk.Button):
+            return widget
+    return None
+
+
+class ProgressRecorder:
+    """Stands in for ProgressWindow and remembers what it was asked to say."""
+
+    calls = []
+
+    def __init__(self, parent, title="", text="", total=None):
+        self.title, self.text, self.total = title, text, total
+        self.steps, self.closed = [], False
+        ProgressRecorder.calls.append(self)
+
+    def step(self, text=None, done=None, total=None):
+        self.steps.append((text, done, total))
+
+    def close(self):
+        self.closed = True
+
+    def pump(self):
+        pass
+
+
+def test_loading_is_visible():
+    print()
+    print("== 19. reading a big scan says so instead of looking hung ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    first = make_sheet(folder / "Scan-a.jpg", blanks=(2, 4, 9))
+    second = make_sheet(folder / "Scan-b.jpg", blanks=(2, 4, 9))
+    app = FakeApp(folder)
+    parent = FakeWidget()
+    gui.build_newphotos(parent, app)
+    widgets = list(parent.walk())
+    add = next(w for w in widgets if w.cget("text") == "Add sheets...")
+    _DIALOG.askopenfilenames = lambda **k: (str(first), str(second))
+    ProgressRecorder.calls.clear()
+    with patch.object(gui, "ProgressWindow", ProgressRecorder):
+        add.invoke()
+    made = ProgressRecorder.calls
+    check("a working window is shown while the scans are split",
+          len(made) == 1, str(made))
+    check("it says how many scans are being read",
+          made and made[0].total == 2, str(made and made[0].total))
+    check("it names the sheet being split",
+          made and any(step[0] and "Scan-a.jpg" in step[0]
+                       for step in made[0].steps),
+          str(made[0].steps if made else ""))
+    check("the bar moves once per sheet",
+          made and [s[1] for s in made[0].steps if s[1] is not None] ==
+          [0, 1, 1, 2], str(made[0].steps if made else ""))
+    check("the window is taken down again",
+          made and made[0].closed, str(made and made[0].closed))
+    check("both sheets were loaded", len(app.photo_pool.sheets) == 2,
+          str(len(app.photo_pool.sheets)))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_every_panel_leads_with_the_work():
+    print()
+    print("== 21. every panel: the work first, the words underneath ==")
+    folder = Path(tempfile.mkdtemp())
+    app = FakeApp(folder)
+    action_types = (gui.ttk.Button, gui.ttk.Entry, gui.ttk.Combobox,
+                    gui.ttk.Checkbutton, gui.ttk.Radiobutton, gui.tk.Text,
+                    gui.tk.Listbox)
+    wrong_place, folded, no_help = [], [], []
+    for pid in gui.PANEL_ORDER:
+        builder = gui.PANEL_BUILDERS.get(pid)
+        if builder is None or pid == "welcome":
+            continue
+        app._doc_buttons = []          # settings registers one per section
+        parent = FakeWidget()
+        try:
+            builder(parent, app)
+        except Exception as exc:
+            wrong_place.append("%s: %s" % (pid, exc))
+            continue
+        notes = getattr(parent, "_notes_frame", None)
+        buttons = getattr(app, "_doc_buttons", [])
+        if notes is None and not buttons:
+            no_help.append(pid)
+            continue
+        inside = set(id(w) for w in notes.walk()) if notes is not None \
+            else set()
+        first = next((w for w in parent.walk()
+                      if isinstance(w, action_types)), None)
+        if notes is not None and first is not None and id(first) in inside:
+            wrong_place.append(pid)
+        held = getattr(parent, "_help_frame", None)
+        if held is not None and held.packed:
+            folded.append(pid)
+    check("every panel keeps its work above its help area",
+          not wrong_place, str(wrong_place))
+    check("every panel's help starts folded",
+          not folded, str(folded))
+    check("every panel has a help area", not no_help, str(no_help))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def _labels_below(widget):
+    """Every Label under a widget, not counting the widget itself."""
+    found = []
+    for child in widget.walk():
+        if child is widget:
+            continue
+        if isinstance(child, gui.ttk.Label) and child.cget("text"):
+            found.append(child.cget("text"))
+    return found
+
+
+def test_tabs_are_sections():
+    print()
+    print("== 22. the tabs view: one bordered section per panel ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    app = FakeApp(folder)
+    parent = FakeWidget()
+    gui.TabsFrame(parent, app)
+    notebook = next((w for w in parent.walk()
+                     if isinstance(w, gui.ttk.Notebook)), None)
+    check("the tabs view builds a notebook of the groups",
+          notebook is not None and
+          [name for _tab, name in getattr(notebook, "tabs", [])] ==
+          [group for group, _ids in gui.groups_for(app.cs_addon)],
+          str([name for _tab, name in getattr(notebook, "tabs", [])]))
+    sections, problems, repeated = [], [], []
+    for tab, group in getattr(notebook, "tabs", []):
+        ids = dict(gui.groups_for(app.cs_addon))[group]
+        frames = [w for w in tab.walk() if isinstance(w, gui.ttk.LabelFrame)]
+        sections.extend(frames)
+        if [f.cget("text") for f in frames] != [gui.TITLES[pid] for pid in ids]:
+            problems.append((group, [f.cget("text") for f in frames]))
+        for pid, frame in zip(ids, frames):
+            if frame.cget("style") != "PanelSection.TLabelframe":
+                problems.append((pid, frame.cget("style")))
+            if gui.TITLES[pid] in _labels_below(frame):
+                repeated.append(pid)
+    check("every panel in a group has its own section, in order",
+          not problems, str(problems))
+    check("a section carries the panel's title on its border",
+          len(sections) == sum(len(ids) for _g, ids in
+                               gui.groups_for(app.cs_addon)) and
+          all(s.cget("text") for s in sections),
+          str([s.cget("text") for s in sections]))
+    check("the title is not printed twice inside the section",
+          not repeated, str(repeated))
+    photos = next((s for s in sections
+                   if s.cget("text") == gui.TITLES["newphotos"]), None)
+    check("the panel's buttons are inside its section",
+          photos is not None and
+          any(w.cget("text") == "Find the card..." for w in photos.walk()), "")
+    check("so is its folded help",
+          photos is not None and
+          any(w.cget("text") == "What this panel does"
+              for w in photos.walk()), "")
+
+    #  The task menu shows one panel with no section around it, so there the
+    #  title still has to be drawn by the panel itself.
+    bare = FakeWidget()
+    gui.PANEL_BUILDERS["newphotos"](bare, app)
+    check("a panel outside a section still prints its own title",
+          gui.TITLES["newphotos"] in _labels_below(bare), "")
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_every_button_explains_itself():
+    print()
+    print("== 23. every button has a hover explanation ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    app = FakeApp(folder)
+    missing = {}
+    for pid in gui.PANEL_ORDER:
+        if pid == "welcome":
+            continue
+        parent = FakeWidget()
+        gui.PANEL_BUILDERS[pid](parent, app)
+        for text in gui.tips_missing(parent):
+            missing.setdefault(text, set()).add(pid)
+    for view, cls in (("menu", gui.TasksFrame), ("tabs", gui.TabsFrame)):
+        parent = FakeWidget()
+        cls(parent, app)
+        for text in gui.tips_missing(parent):
+            missing.setdefault(text, set()).add(view)
+    check("every button in every panel and view has one",
+          not missing,
+          str({k: sorted(v) for k, v in missing.items()}))
+
+    sheet = make_sheet(folder / "Scan-1.jpg")
+    parent = FakeWidget()
+    gui.build_newphotos(parent, app)
+    widgets = list(parent.walk())
+    assign = next(w for w in widgets
+                  if w.cget("text") == "Assign photos to cards...")
+    _DIALOG.askopenfilenames = lambda **k: (str(sheet),)
+    with patch.object(gui, "has_woo_credentials", lambda path=None: False):
+        assign.invoke()
+    window = getattr(app, "photo_assign_window", None)
+    check("the assignment window's buttons are explained too",
+          window is not None and not gui.tips_missing(window),
+          str(window and gui.tips_missing(window)))
+
+    #  A dialog is not built here: every literal button caption in the source
+    #  is checked against the table instead, so a new dialog button cannot
+    #  ship without its sentence.
+    import re
+    source = (APP / "gui.py").read_text(encoding="utf-8")
+    literals = set()
+    for block in re.findall(r"ttk\.Button\(([\s\S]{0,240}?)\)", source):
+        for literal in re.findall(r'text="((?:[^"\\]|\\.)*)"', block):
+            literals.add(literal)
+    def explanation(literal):
+        """The tip for a literal, allowing for a line split mid-caption.
+
+        Three captions are written across two lines of source, so the regex
+        sees only the first half; a table key that starts with it is the
+        explanation for the whole.
+        """
+        found = gui.tip_for(literal)
+        if found:
+            return found
+        for key in gui.TOOLTIPS:
+            if key.startswith(literal.strip()) and literal.strip():
+                return gui.TOOLTIPS[key]
+        return ""
+
+    unexplained = sorted(t for t in literals if not explanation(t))
+    check("every button caption written in the source is explained",
+          not unexplained, str(unexplained))
+    check("the explanations say something, not just the caption",
+          all(len(explanation(t)) > 12 for t in literals),
+          str([t for t in literals if len(explanation(t)) <= 12]))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_help_sits_beside_the_title():
+    print()
+    print("== 24. the help button is beside the title, not at the bottom ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    app = FakeApp(folder)
+    parent = FakeWidget()
+    gui.build_newphotos(parent, app)
+    button = getattr(app, "_doc_button", None)
+    doc = getattr(app, "_doc_label", None)
+    held = getattr(parent, "_help_frame", None)
+    check("the panel has a help button", button is not None, str(button))
+    if button is not None:
+        row = button.parent
+        titles = [w.cget("text") for w in row.walk()
+                  if isinstance(w, gui.ttk.Label)]
+        check("it shares the title's row",
+              gui.TITLES["newphotos"] in titles, str(titles))
+        check("the help text sits in its own frame under that row",
+              held is not None and held.parent is parent and
+              doc is not None and doc.parent is held, "")
+        check("and it starts folded", held is not None and not held.packed, "")
+        button.invoke()
+        check("one click opens it under the title",
+              held is not None and held.packed, "")
+        button.invoke()
+        check("one click takes the frame away, leaving nothing behind",
+              held is not None and not held.packed, "")
+        check("no stray text is left on screen either",
+              doc is None or held is None or not held.packed, "")
+
+    #  Inside a section the frame carries the title, so the button sits at the
+    #  top of the section instead of beside a label that is not there.
+    outer = FakeWidget()
+    section = gui.panel_section(outer, app, "newphotos")
+    section_buttons = [w for w in section.walk()
+                       if isinstance(w, gui.ttk.Button) and
+                       w.cget("text") == "What this panel does"]
+    check("a sectioned panel still gets its help button",
+          len(section_buttons) == 1, str(len(section_buttons)))
+    check("and it is the first thing in the section",
+          section_buttons and section_buttons[0].parent.parent is section, "")
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_the_page_area_is_not_white():
+    print()
+    print("== 25. the page area is the window's colour, not a white band ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    app = FakeApp(folder)
+    holder = FakeWidget()
+    scroller = gui.ScrollFrame(holder)
+    colour = str(scroller.canvas._kw.get("background", "")).lower()
+    check("the scrolling page area carries a background of its own",
+          colour not in ("", "white", "#ffffff", "systemwindow"),
+          colour)
+    check("it is taken from the theme, not made up",
+          colour == str(gui.theme_background(scroller)).lower(), colour)
+
+    class Style:
+        def __init__(self, found):
+            self.found = found
+        def lookup(self, name, option):
+            return self.found
+
+    with patch.object(gui.ttk, "Style", lambda *a, **k: Style("#f0f0f0")):
+        check("a theme colour is used when the theme has one",
+              gui.theme_background(holder) == "#f0f0f0",
+              gui.theme_background(holder))
+    with patch.object(gui.ttk, "Style", lambda *a, **k: Style("")):
+        fallback = str(gui.theme_background(holder)).lower()
+        check("a theme that answers nothing still never gives white",
+              fallback not in ("", "white", "#ffffff"), fallback)
+
+    #  The gap the user reported: opening the help and closing it again used
+    #  to leave the frame that held the text behind, still taking its space.
+    parent = FakeWidget()
+    gui.build_newphotos(parent, app)
+    held = getattr(parent, "_help_frame", None)
+    button = getattr(app, "_doc_button", None)
+    pack_calls = []
+    real_pack = held.pack if held is not None else None
+    if held is not None:
+        held.pack = lambda *a, **k: (pack_calls.append(k), real_pack(*a, **k))[1]
+    button.invoke()
+    height_px = held.packed if held is not None else None
+    button.invoke()
+    check("closing the help takes its frame out of the layout",
+          held is not None and not held.packed, str(height_px))
+    check("and it is put back under the title when reopened",
+          pack_calls and all(k.get("after") is not None for k in pack_calls),
+          str(pack_calls))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_settings_save_is_pinned():
+    print()
+    print("== 26. Save user settings lives beside the title, above the scroll ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    app = FakeApp(folder)
+    parent = FakeWidget()
+    gui.build_cookie(parent, app)
+
+    bar = getattr(app, "_action_bar", None)
+    save = getattr(app, "_save_button", None)
+    check("the settings page pins a strip above the page", bar is not None, "")
+    check("the title row moved into it",
+          bar is not None and getattr(parent, "_title_row", None) is not None and
+          parent._title_row.parent is bar, "")
+    check("the strip is packed above the scrolling page",
+          bar is not None and bar._kw_pack.get("side") == "top",
+          str(bar and bar._kw_pack))
+    check("Save user settings is on that row",
+          save is not None and save.parent is parent._title_row, "")
+    check("the title is on the same row",
+          bar is not None and gui.TITLES["cookie"] in
+          [w.cget("text") for w in parent._title_row.walk()], "")
+
+    #  The strip is outside the page, so the button cannot scroll away; the
+    #  form is the page, so it scrolls under the strip.
+    #  The strip holds the title row and its button - not the form. Save is
+    #  meant to be in the strip; the sections are meant not to be.
+    in_bar = [w.cget("text") for w in (bar.walk() if bar is not None else [])
+              if isinstance(w, gui.ttk.Label) and w.cget("text")]
+    check("the strip holds the title and the button, not the form",
+          "Store and AI" not in in_bar and "Working folders" not in in_bar,
+          str(in_bar))
+    check("the page has no second scroll area of its own",
+          not any(isinstance(w, gui.ScrollFrame) for w in parent.walk()), "")
+    sections = [w for w in parent.walk() if isinstance(w, gui.ttk.Label) and
+                w.cget("style") == "H2.TLabel"]
+    check("the sections are in the page, so they scroll under the strip",
+          sections and not any(w in list(bar.walk()) for w in sections),
+          str(len(sections)))
+    check("nothing in the form saves it from a distance",
+          not any(w.cget("text") == "Save user settings"
+                  for w in parent.walk() if w is not save), "")
+
+    fields = getattr(app, "_user_setting_vars", {})
+    check("the saved-panel fields still all exist", len(fields) > 8,
+          str(len(fields)))
+    #  The form refuses to save when the prompt numbers are unusable, so the
+    #  fixture states them the way a real settings file would.
+    fields["description_min_words"].set("30")
+    fields["tag_count"].set("5")
+    for key, value in (("canadianshopper_shipping_flat", "9.95"),
+                       ("canadianshopper_handling_days", "1"),
+                       ("canadianshopper_transit_days", "3")):
+        if key in fields:
+            fields[key].set(value)
+    if hasattr(app, "_pipeline_var"):
+        app._pipeline_var.set(str(app.settings.get("pipeline_dir", folder)))
+    if hasattr(app, "_scan_var"):
+        app._scan_var.set(str(folder))
+    saved, refused = [], []
+    with patch.object(gui, "save_settings", lambda *a, **k: saved.append(1)), \
+            patch.object(gui, "sync_site_url_to_woo_keys", lambda *a, **k: None), \
+            patch.object(gui.messagebox, "showwarning",
+                         lambda *a, **k: refused.append(a)):
+        save.invoke()
+    check("an unusable form is still refused, not saved", not refused or saved,
+          str(refused))
+    check("pressing it still saves the settings", bool(saved), str(saved))
+    check("it has its hover explanation too",
+          gui.tip_for("Save user settings") in
+          str(getattr(save, "_alex_tooltip", None) and
+              save._alex_tooltip.text), "")
+
+    #  The wizard has its own step heading, so there the button stays put in
+    #  the form instead of jumping above the step it belongs to.
+    wizard_app = FakeApp(folder)
+    page = FakeWidget()
+    page._wizard_page = True
+    gui.build_cookie(page, wizard_app)
+    check("a wizard page is not given a pinned strip",
+          getattr(wizard_app, "_action_bar", None) is None, "")
+    check("there the button sits beside the title inside the page",
+          getattr(wizard_app, "_save_button", None) is not None and
+          wizard_app._save_button.parent is getattr(page, "_title_row", None),
+          "")
+
+    #  Changing page must take the strip with it.
+    app.clear_action_bar()
+    check("changing page clears the strip",
+          getattr(app, "_action_bar", None) is None and not bar.packed, "")
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_settings_have_their_own_sections():
+    print()
+    print("== 27. the settings page: a section and a help button per job ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    app = FakeApp(folder)
+    parent = FakeWidget()
+    gui.build_cookie(parent, app)
+
+    titles = [w.cget("text") for w in parent.walk()
+              if isinstance(w, gui.ttk.Label) and
+              w.cget("style") == "H2.TLabel"]
+    expected = ["When Alex Collect opens", "Store and AI", "Open the store pages",
+                "Custom AI commands", "Marketplace pages",
+                "eBay Quick List handoff",
+                "Facebook Marketplace export fields",
+                "CanadianShopper CSV defaults", "Working folders",
+                "CanadianShopper connection"]
+    check("every group of settings has its own heading",
+          titles == expected, str(titles))
+    buttons = getattr(app, "_doc_buttons", [])
+    check("every heading has its own help button", len(buttons) == len(expected),
+          str(len(buttons)))
+    labels = getattr(app, "_doc_labels", [])
+    check("each button has its own explanation, not the panel's",
+          len(labels) == len(expected) and
+          len(set(str(l.cget("text")) for l in labels)) == len(expected),
+          str(len(set(str(l.cget("text")) for l in labels))))
+    check("the old page-wide explanation and its button are gone",
+          getattr(app, "_doc_button", None) is None and
+          getattr(app, "_help_frame", None) is None, "")
+    check("no section repeats the old one-size blurb",
+          all(str(l.cget("text")) != gui.DOCS["cookie"] for l in labels), "")
+    check("each explanation covers its own subject",
+          any("prompt" in str(l.cget("text")).lower() for l in labels) and
+          any("cookie" in str(l.cget("text")).lower() for l in labels) and
+          any("eBay" in str(l.cget("text")) for l in labels) and
+          any("scanner folder" in str(l.cget("text")) for l in labels), "")
+    check("each explanation says something substantial",
+          all(len(str(l.cget("text"))) > 80 for l in labels),
+          str([len(str(l.cget("text"))) for l in labels]))
+
+    #  Every button opens its own help, and only its own.
+    for index, button in enumerate(buttons):
+        button.invoke()
+        opened = [i for i, other in enumerate(buttons)
+                  if other.cget("text") == "Hide this help"]
+        check("section %d opens its own help and no other" % (index + 1),
+              opened == [index], str(opened))
+        button.invoke()
+    check("and every one of them closes again",
+          all(b.cget("text") == "What this panel does" for b in buttons), "")
+
+    #  The fields are still all there, in their sections.
+    fields = getattr(app, "_user_setting_vars", {})
+    check("no field was lost in the split", len(fields) >= 40, str(len(fields)))
+    for key in ("store_name", "woo_site_url", "ai_agent_url",
+                "ebay_template_hockey_url", "facebook_feed_condition",
+                "canadianshopper_category", "pipeline_dir", "scan_dir"):
+        check("the %s field is still a field on the page" % key, key in fields,
+              str(sorted(fields)[:6]))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_pinned_help_still_opens():
+    print()
+    print("== 28. a pinned title row's help button works ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    app = FakeApp(folder)
+    parent = FakeWidget()
+    #  A pinned page with a panel-wide explanation: the shape that broke. The
+    #  title row lives in the strip, the help frame in the page, so packing
+    #  "after the title row" raises - and the button did nothing at all.
+    gui.panel_header(parent, app, "newphotos", pin=True)
+    bar = getattr(app, "_action_bar", None)
+    held = getattr(parent, "_help_frame", None)
+    button = getattr(app, "_doc_button", None)
+    check("the panel is pinned into the strip", bar is not None and
+          parent._title_row.parent is bar, "")
+    check("its help frame belongs to the page, not the strip",
+          held is not None and held.parent is parent, "")
+    shown_before = len(_BOX.shown)
+    button.invoke()
+    check("one click still opens the help",
+          held is not None and held.packed and
+          button.cget("text") == "Hide this help", str(button.cget("text")))
+    check("no error dialog was needed to get there",
+          len(_BOX.shown) == shown_before, str(_BOX.shown[shown_before:]))
+    check("the help goes at the top of the page, under the strip",
+          held is not None and held.packed, "")
+    button.invoke()
+    check("and it closes again", held is not None and not held.packed, "")
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def test_the_page_fills_the_window():
+    print()
+    print("== 29. a short page fills the window instead of leaving a band ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    app = FakeApp(folder)
+
+    #  A canvas that reports a window-sized viewport and a page that asks for
+    #  a third of it - the settings page used to stop exactly here.
+    class Canvas(FakeWidget):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.items = {"inner": {"width": 0, "height": 0}}
+            self.region = None
+        def winfo_width(self): return 900
+        def winfo_height(self): return 620
+        def itemconfigure(self, tag, **k):
+            if tag == "inner":
+                self.items["inner"].update(k)
+        def bbox(self, tag):
+            size = self.items["inner"]
+            return (0, 0, size["width"], size["height"])
+        def configure(self, **k):
+            if "scrollregion" in k:
+                self.region = k["scrollregion"]
+            return self
+
+    holder = FakeWidget()
+    scroller = gui.ScrollFrame(holder)
+    scroller.canvas = Canvas()
+    scroller.inner.winfo_reqheight = lambda: 200
+    scroller._last_size = (0, 0)
+    scroller._resize()
+    size = scroller.canvas.items["inner"]
+    check("the page is stretched to the window, not to its own content",
+          (size["width"], size["height"]) == (900, 620), str(size))
+    check("so there is nothing to scroll when it all fits",
+          scroller.canvas.region == (0, 0, 900, 620), str(scroller.canvas.region))
+
+    #  Once the content is taller than the window the page keeps its real
+    #  height, and the scrollbar has somewhere to go.
+    scroller.inner.winfo_reqheight = lambda: 1500
+    scroller._resize()
+    size = scroller.canvas.items["inner"]
+    check("a long page is left at its own height",
+          (size["width"], size["height"]) == (900, 1500), str(size))
+    check("and the scroll region covers all of it",
+          scroller.canvas.region == (0, 0, 900, 1500), str(scroller.canvas.region))
+    scroller._resize()
+    check("re-measuring the same page changes nothing",
+          scroller.canvas.items["inner"]["height"] == 1500, "")
+
+    #  The settings form itself: one page, no second scroll area, sections
+    #  stacked so there is more to scroll through than before.
+    app2 = FakeApp(folder)
+    parent = FakeWidget()
+    gui.build_cookie(parent, app2)
+    check("the settings form is one continuous page",
+          not any(isinstance(w, gui.ScrollFrame) for w in parent.walk()), "")
+    headings = [w.cget("text") for w in parent.walk()
+                if isinstance(w, gui.ttk.Label) and
+                w.cget("style") == "H2.TLabel"]
+    check("a screen too small for twenty console lines gets fewer",
+          gui.console_lines_for(700) == 8 and
+          gui.console_lines_for(900) == 12 and
+          gui.console_lines_for(1440) == 16,
+          str([gui.console_lines_for(h) for h in (700, 900, 1440)]))
+    check("all ten sections are on it, in order",
+          headings == ["When Alex Collect opens", "Store and AI",
+                       "Open the store pages", "Custom AI commands",
+                       "Marketplace pages", "eBay Quick List handoff",
+                       "Facebook Marketplace export fields",
+                       "CanadianShopper CSV defaults", "Working folders",
+                       "CanadianShopper connection"], str(headings))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
 def test_spent_sitting():
     print()
     print("== 17. a sitting with every image used says so ==")
@@ -970,6 +1765,18 @@ def main():
     test_old_back_cancelled()
     test_replacements_folder_opens()
     test_assign_window()
+    test_actions_above_the_words()
+    test_every_panel_leads_with_the_work()
+    test_tabs_are_sections()
+    test_every_button_explains_itself()
+    test_help_sits_beside_the_title()
+    test_the_page_area_is_not_white()
+    test_settings_save_is_pinned()
+    test_settings_have_their_own_sections()
+    test_pinned_help_still_opens()
+    test_the_page_fills_the_window()
+    test_grid_fits_a_small_screen()
+    test_loading_is_visible()
     test_spent_sitting()
     test_empty_sheet()
     test_website_first()
