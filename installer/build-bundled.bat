@@ -23,7 +23,7 @@ if errorlevel 1 goto badhash
 
 echo.
 echo READY. Open alexcollect-bundled.iss in Inno Setup Compiler and press Compile.
-echo Output: Output\AlexCollect-Setup-bundled-2.80.exe
+echo Output: Output\AlexCollect-Setup-bundled-2.81.exe
 echo The final installer needs internet on the target PC to fetch pip packages.
 echo.
 pause

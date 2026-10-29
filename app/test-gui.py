@@ -1781,6 +1781,21 @@ def main():
           "drafts" in (gui._prompt_hint_for(
               "Create these 9 product(s) on https://shop.example now? [y/N] ")
               or ""))
+    #  Both prompts start with "Create these": a needle that only matches one
+    #  of them is the difference between help and misinformation.
+    cs_import = gui._prompt_hint_for("Create these listings as drafts now? "
+                                     "[y/N] ")
+    check("hint: the CanadianShopper draft import", "UNPUBLISHED DRAFTS" in
+          (cs_import or ""), str(cs_import))
+    check("the two 'Create these' questions never share a hint", cs_import !=
+          gui._prompt_hint_for("\nCreate these 9 product(s) on "
+                               "https://shop.example now? [y/N] "),
+          str(cs_import))
+    check("the publisher's hidden question gets a note of its own",
+          gui.publisher_wait_note("Publishing ready CanadianShopper drafts...\n")
+          == gui.PUBLISHER_WAIT_NOTE and
+          gui.publisher_wait_note("some other output") == "",
+          str(gui.publisher_wait_note("other")))
     check("hint: putting them on sale after the photos",
           "draft" in (gui._prompt_hint_for(
               "  Put the ones whose photos upload on sale when they are "

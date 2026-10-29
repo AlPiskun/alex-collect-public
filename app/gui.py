@@ -64,7 +64,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.80"
+VERSION = "2.81"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -542,7 +542,7 @@ PIPELINE_PROMPT_HINTS = [
      "CanadianShopper CSVs are already written, nothing is lost. "
      "If the cards are still drafts: publish them on the website, then use "
      "the Facebook feed updater button afterwards."),
-    ("Create these",
+    ("product(s) on",
      "The products are about to be created on your website with the saved "
      "WooCommerce keys. 'y' + Send creates them as drafts (photos uploaded "
      "first, every product read back); 'n' or an empty Send leaves the "
@@ -553,6 +553,14 @@ PIPELINE_PROMPT_HINTS = [
      "site; a product whose photos did not upload stays a draft and the "
      "report says why. 'n' or an empty Send leaves them all as drafts, "
      "which you can publish any time from the website."),
+    ("Create these listings as drafts",
+     "The CanadianShopper plugin has staged the CSVs with the square front + "
+     "back photos and is offering to send them to CanadianShopper's import "
+     "service. 'y' + Send creates the listings as UNPUBLISHED DRAFTS - it "
+     "never publishes anything and never changes an existing listing, and a "
+     "title already on your vendor account is skipped. 'n' or an empty Send "
+     "leaves the CSVs in cs-ready to import by hand. This is a different "
+     "question from the one about creating products on your own website."),
     ("pick a category",
      "The pipeline detected categories - type the number(s) it shows and "
      "press Send."),
@@ -600,6 +608,26 @@ def _prompt_hint_for(text):
         if needle in text:
             return hint
     return None
+
+
+#  The CanadianShopper plugin runs its publisher as its own process, so the
+#  publisher's "type PUBLISH" question can be swallowed and the run simply
+#  stops moving. Nobody can answer a question they cannot see, so the app
+#  says what to type after this long with no output at all.
+PUBLISHER_WAIT_SECONDS = 20
+PUBLISHER_WAIT_MARKER = "Publishing ready CanadianShopper drafts"
+PUBLISHER_WAIT_NOTE = (
+    "The plugin's publisher is running and has printed nothing since. It "
+    "waits for the word PUBLISH without showing its own prompt: type "
+    "PUBLISH in the answer box below and press Send. If nothing happens "
+    "after that, press Stop and use the card-pipeline panel's \"Publish "
+    "ready drafts\" button - it is the same publisher, run so its prompt "
+    "is visible.")
+
+
+def publisher_wait_note(text):
+    """The note to show when a run has gone quiet at the publisher, or ""."""
+    return PUBLISHER_WAIT_NOTE if PUBLISHER_WAIT_MARKER in (text or "") else ""
 
 
 MARKET_RERUNS = {
@@ -695,6 +723,10 @@ class Runner:
         #  tool's own words ("Drafts found: 0") can read them instead of
         #  guessing from a file whose format the core does not own.
         self.output = ""
+        #  Watched so a run that stops at the plugin's hidden PUBLISH question
+        #  is explained instead of looking hung.
+        self._publish_watch = None
+        self._publish_note_shown = False
 
     def busy(self):
         return self.proc is not None and self.proc.poll() is None
@@ -718,6 +750,8 @@ class Runner:
         self.on_done = on_done
         self._dialog_buffer = ""
         self.output = ""
+        self._publish_watch = None
+        self._publish_note_shown = False
         try:
             self.proc = subprocess.Popen(
                 cmd, cwd=str(cwd), stdin=subprocess.PIPE,
@@ -804,6 +838,37 @@ class Runner:
             text = text[end_pos + len(end):]
         return "".join(shown)
 
+    def _watch_publisher(self):
+        """Notice a run that stops at the plugin's invisible PUBLISH prompt.
+
+        The marker is the plugin's own line, printed just before it starts the
+        publisher; if nothing at all follows it, the answer box is the only
+        thing standing between the person and a window that looks frozen.
+        """
+        if self._publish_note_shown or not publisher_wait_note(self.output):
+            return
+        length = len(self.output)
+        if self._publish_watch and self._publish_watch[0] == length:
+            return
+        self._publish_watch = (length, self.app.after(
+            PUBLISHER_WAIT_SECONDS * 1000, self._publish_still_waiting))
+
+    def _publish_still_waiting(self):
+        """After the wait: say what to type, if the run really went quiet."""
+        if self._publish_note_shown or not self.busy():
+            return
+        if not self._publish_watch \
+                or len(self.output) != self._publish_watch[0]:
+            return
+        self._publish_note_shown = True
+        try:
+            self.app.console_line("NOTE: " + PUBLISHER_WAIT_NOTE, "dim")
+            self.app.status.config(
+                text="Waiting for the word PUBLISH - type it below and press "
+                     "Send (or Stop the run).")
+        except Exception:
+            pass          # the window went away while the timer was waiting
+
     def drain(self):
         """Called from the Tk loop; moves queued output into the console."""
         got = False
@@ -819,6 +884,7 @@ class Runner:
                 shown = self._consume_dialog_protocol(payload)
                 if shown:
                     self.app.console_write(shown)
+                    self._watch_publisher()
                     hint = _prompt_hint_for(shown)
                     if hint and hint not in self.app._hinted:
                         self.app._hinted.add(hint)

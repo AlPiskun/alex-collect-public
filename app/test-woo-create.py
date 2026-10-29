@@ -92,7 +92,7 @@ class FakeSite:
     """A site that answers the calls woo_create makes, and remembers them."""
 
     def __init__(self, exist=(), categories=None, refuse=None,
-                 publish_status="publish"):
+                 publish_status="publish", existing=None):
         self.calls = []
         self.products = {}
         self.by_sku = {sku: pid for sku, pid in exist}
@@ -100,6 +100,12 @@ class FakeSite:
         for sku, pid in self.by_sku.items():
             self.products[pid] = {"id": pid, "sku": sku, "name": sku,
                                   "status": "publish"}
+        #  ``existing`` describes a product the site already had: its status
+        #  and whether it carries photos. A batch that stopped half way leaves
+        #  exactly this behind.
+        for sku, detail in (existing or {}).items():
+            pid = self.by_sku[sku]
+            self.products[pid].update(detail)
         self.categories = dict(categories or {})     # name -> id
         self.next_category = 40
         self.refuse = dict(refuse or {})             # (method, keyword) -> code
@@ -462,6 +468,70 @@ def test_categories_and_help():
           lines[0], str(lines))
 
 
+def test_existing_products():
+    """What a second run finds: live products, and the drafts it left behind."""
+    print()
+    print("== 3b. a product already there is reported by its state ==")
+    rows = [row(1), row(2)]
+    exist = [("OPC1971-001-PR-2", 701), ("OPC1971-002-PR-2", 702)]
+
+    with tempfile.TemporaryDirectory() as td:
+        site = FakeSite(exist=exist, existing={
+            "OPC1971-001-PR-2": {"status": "publish",
+                                 "images": [{"id": 1}, {"id": 2}]},
+            "OPC1971-002-PR-2": {"status": "draft",
+                                 "images": [{"id": 3}, {"id": 4}]}})
+        read, planned = build(Path(td), rows)
+        report = woo_create.run(planned, "https://shop.example", "ck_a",
+                                "cs_b", publish=False, opener=site)
+    puts = [c for c in site.calls if c["method"] == "PUT"]
+    text = "\n".join(woo_create.report_text(report, "https://shop.example"))
+    check("a live product is left completely alone", puts == [], str(puts))
+    check("the report says it is live",
+          "Already there: 1971-72 O-Pee-Chee Test Card #001 (PR) "
+          "(product 701) - live, so nothing was changed." in text, text)
+    check("and a draft is named as a draft",
+          "a draft, and publishing this batch was not asked for" in text, text)
+    check("nothing is called created when nothing was", "created on" not in
+          text, text)
+
+    with tempfile.TemporaryDirectory() as td:
+        site = FakeSite(exist=exist, existing={
+            "OPC1971-001-PR-2": {"status": "publish",
+                                 "images": [{"id": 1}, {"id": 2}]},
+            "OPC1971-002-PR-2": {"status": "draft",
+                                 "images": [{"id": 3}, {"id": 4}]}})
+        read, planned = build(Path(td), rows)
+        report = woo_create.run(planned, "https://shop.example", "ck_a",
+                                "cs_b", publish=True, opener=site)
+    puts = [c for c in site.calls if c["method"] == "PUT"]
+    text = "\n".join(woo_create.report_text(report, "https://shop.example"))
+    check("a batch asked to publish finishes the draft it left behind",
+          len(puts) == 1 and "/products/702" in puts[0]["url"], str(puts))
+    check("and says so, apart from the new products",
+          "1 already on the website as a draft was put on sale too." in text,
+          text)
+    check("the live one is still not touched", all("701" not in c["url"]
+                                                   for c in puts), str(puts))
+    check("it is not counted as a product created",
+          "created on" not in text, text)
+
+    with tempfile.TemporaryDirectory() as td:
+        #  A draft with no photos is a product nobody finished: publishing it
+        #  would put a card on sale with an empty gallery.
+        site = FakeSite(exist=[("OPC1971-001-PR-2", 701)], existing={
+            "OPC1971-001-PR-2": {"status": "draft", "images": []}})
+        read, planned = build(Path(td), [row(1)])
+        report = woo_create.run(planned, "https://shop.example", "ck_a",
+                                "cs_b", publish=True, opener=site)
+    puts = [c for c in site.calls if c["method"] == "PUT"]
+    text = "\n".join(woo_create.report_text(report, "https://shop.example"))
+    check("a draft with no photos is never published", puts == [], str(puts))
+    check("and the report says what to do about it",
+          "a draft with no photos - new photos are added on the website, "
+          "then publish it" in text, text)
+
+
 def test_pipeline_glue(tmp):
     """The pipeline offers this instead of quietly writing a CSV.
 
@@ -603,6 +673,7 @@ def main():
     test_payload()
     test_creation()
     test_publishing()
+    test_existing_products()
     test_refusals()
     test_categories_and_help()
     with tempfile.TemporaryDirectory() as td:

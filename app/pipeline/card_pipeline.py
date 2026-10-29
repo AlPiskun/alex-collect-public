@@ -2010,6 +2010,17 @@ def maybe_run_canadianshopper(args, cards_parsed):
     print("  2. If the CanadianShopper plugin is installed, it stages the photos")
     print("     and offers to import the CSVs as unpublished drafts.")
     print("  3. Without the plugin, import the CSVs manually and review each draft.")
+    #  The plugin's publisher runs as its own process and can wait for the word
+    #  PUBLISH without printing a prompt the console can show. Said here, before
+    #  the plugin takes over, because by then this line is the last thing on
+    #  screen - and a run that has gone quiet with nothing to type is a run the
+    #  person thinks has hung.
+    print("\n  If the plugin offers to publish the new drafts, its publisher waits"
+          " for the word PUBLISH.")
+    print("  Type PUBLISH in the answer box and press Send. If nothing moves, "
+          "stop the run and use the")
+    print("  card-pipeline panel's \"Publish ready drafts\" button - it is the "
+          "same publisher, with a prompt you can see.")
     # ---- Optional CanadianShopper photo stage: square front + back gallery
     _cs_hook = _find_cs_stage_hook()
     if _cs_hook is not None:

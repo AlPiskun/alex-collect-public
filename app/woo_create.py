@@ -551,8 +551,28 @@ def run(plan_result, site, key, secret, username="", app_password="",
             if existing is not None:
                 entry.update({"id": existing.get("id"),
                               "why": "already on the website",
-                              "status": existing.get("status") or ""})
+                              "status": existing.get("status") or "",
+                              "images": len(existing.get("images") or []),
+                              "link": existing.get("permalink") or ""})
                 skipped.append(entry)
+                #  A batch that stopped half way leaves products behind as
+                #  drafts. Skipping them is right - they are not created
+                #  twice - but a batch asked to publish must not leave half
+                #  of its cards unpublished and call itself finished, so an
+                #  existing draft that already has photos is finished here.
+                if publish and entry["status"] == "draft" and entry["images"]:
+                    try:
+                        publish_product(site, key, secret, entry["id"],
+                                        timeout=timeout, opener=opener)
+                        entry["status"] = "publish"
+                        entry["why"] = "already on the website as a draft"
+                        published.append(entry)
+                    except ProductError as exc:
+                        entry["why"] = ("already on the website as a draft, "
+                                        "but publishing it failed: %s"
+                                        % exc.message)
+                        entry["hint"] = exc.hint
+                        failed.append(entry)
                 continue
             image_ids = []
             if item["images"] and username and app_password:
@@ -628,8 +648,14 @@ def report_text(report, site=""):
         lines.append("%d product%s created on %s." %
                      (len(created), "" if len(created) == 1 else "s",
                       site or "your website"))
-    if published:
-        lines.append("%d of them put on sale." % len(published))
+    fresh = [entry for entry in published if entry in created]
+    older = [entry for entry in published if entry not in created]
+    if fresh:
+        lines.append("%d of them put on sale." % len(fresh))
+    if older:
+        lines.append("%d already on the website as a draft %s put on sale "
+                     "too." % (len(older), "was" if len(older) == 1 else
+                               "were"))
     waiting = [entry for entry in created
                if str(entry.get("status") or "") != "publish"]
     if waiting:
@@ -638,9 +664,31 @@ def report_text(report, site=""):
         lines.append("%d left as a draft - publish them when they are ready."
                      % len(waiting))
     for entry in skipped:
-        lines.append("Already there: %s (product %s) - not created again."
-                     % (entry.get("name"), entry.get("id")))
+        #  The state is the point: an existing product that is still a draft
+        #  is a card nobody can buy, and it must never be listed as though it
+        #  were live.
+        status = str(entry.get("status") or "")
+        if entry.get("why") != "already on the website":
+            detail = entry.get("why") or status or "state unknown"
+        elif status == "publish":
+            detail = "live, so nothing was changed"
+        elif status == "draft":
+            if not entry.get("images"):
+                detail = ("a draft with no photos - new photos are added "
+                          "on the website, then publish it")
+            else:
+                detail = ("a draft, and publishing this batch was not asked "
+                          "for")
+        else:
+            detail = "state %r, left alone" % (status or "unknown")
+        lines.append("Already there: %s (product %s) - %s."
+                     % (entry.get("name"), entry.get("id"), detail))
     for entry in failed:
+        if entry.get("why", "").startswith("already on the website"):
+            lines.append("Not published: %s (product %s) - %s %s"
+                         % (entry.get("name"), entry.get("id"),
+                            entry.get("why") or "", entry.get("hint") or ""))
+            continue
         lines.append("Not created: %s - %s %s" %
                      (entry.get("name"), entry.get("why") or "",
                       entry.get("hint") or ""))
