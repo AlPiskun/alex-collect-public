@@ -1796,6 +1796,24 @@ def main():
           == gui.PUBLISHER_WAIT_NOTE and
           gui.publisher_wait_note("some other output") == "",
           str(gui.publisher_wait_note("other")))
+    #  What the note may claim depends on the plugin: 1.0.27 keeps the
+    #  publisher's question on screen, so silence there is work, not a hidden
+    #  prompt - and telling someone to type PUBLISH blind would be a lie.
+    quiet = "Publishing ready CanadianShopper drafts...\n"
+    old_note = gui.publisher_wait_note(quiet, "1.0.26")
+    new_note = gui.publisher_wait_note(quiet, "1.0.27")
+    check("an older plugin is told the question is invisible, and to update",
+          "older than 1.0.27" in old_note and "update the plugin" in
+          old_note, old_note)
+    check("1.0.27 is told the wait is work, not a hidden question",
+          new_note == gui.PUBLISHER_WAIT_NOTE_STREAMED and
+          "hidden" not in new_note and "not a question nobody can see" in
+          new_note, new_note)
+    check("an unreadable version gets the safe sentence",
+          gui.publisher_wait_note(quiet, "") == gui.PUBLISHER_WAIT_NOTE)
+    check("every tool is told a console is reading its output",
+          gui.tool_env().get("ALEX_COLLECT_NESTED") == "1",
+          str(gui.tool_env().get("ALEX_COLLECT_NESTED")))
     check("hint: putting them on sale after the photos",
           "draft" in (gui._prompt_hint_for(
               "  Put the ones whose photos upload on sale when they are "
@@ -2006,11 +2024,13 @@ def main():
         "    print('STAGE-RAN tools=%s' % tools_dir)\n"
         "    print('STAGE-COOKIE=%s' % cookie_file)\n"
         "    print('STAGE-BROWSER=%s' % browser_name)\n"
-        "    print('STAGE-N=%d' % len(list(output_paths)))\n")
+        "    print('STAGE-N=%d' % len(list(output_paths)))\n"
+        "    import os\n"
+        "    print('STAGE-NESTED=%s' % os.environ.get('ALEX_COLLECT_NESTED'))\n")
     inp_txt = "SEO Image titles:\n" + "x" * 220
 
     def sandbox(name, install_root=None, legacy=False, plugin=False,
-                plugin_enabled=True):
+                plugin_enabled=True, plugin_version="1.0.0"):
         d = TMP / name
         shutil.rmtree(d, ignore_errors=True)
         (d / "pipeline" / "canadianshopper" / "tools").mkdir(parents=True)
@@ -2045,7 +2065,7 @@ def main():
             (plugin_dir / "tools" / "cs_stage_hook.py").write_text(stub_hook)
             (plugin_dir / "plugin.json").write_text(json.dumps({
                 "id": "test-stage-plugin", "name": "Test stage plugin",
-                "version": "1.0.0", "host_api": 1,
+                "version": plugin_version, "host_api": 1,
                 "capabilities": ["batch.pipeline_stage"],
                 "actions": {"batch.pipeline_stage": "pipeline_stage"},
                 "tools": {"pipeline_stage": "tools/cs_stage_hook.py"}}))
@@ -2106,6 +2126,19 @@ def main():
           r.stdout[-260:])
     check("the configured browser is passed to the plugin hook",
           "STAGE-BROWSER=test-browser" in r.stdout, r.stdout[-260:])
+    check("a plugin hook is told it runs inside a console that reads its output",
+          "STAGE-NESTED=1" in r.stdout, r.stdout[-300:])
+    check("a 1.0.0 plugin gets the hidden-question warning, not a claim",
+          "stays hidden in that version" in r.stdout and
+          "1.0.27" in r.stdout, r.stdout[-400:])
+    r = sandbox("gui-v227-plugin", plugin=True, plugin_version="1.0.27")
+    check("a 1.0.27 plugin is told its publisher's question stays visible",
+          r.returncode == 0 and
+          "keeps the publisher's PUBLISH question on screen" in r.stdout and
+          "stays hidden in that version" not in r.stdout,
+          r.stdout[-420:] + r.stderr[-200:])
+    check("and it still receives the nested-console flag",
+          "STAGE-NESTED=1" in r.stdout, r.stdout[-300:])
     r = sandbox("gui-v221-plugin-disabled", install_root=True,
                 plugin=True, plugin_enabled=False)
     check("disabled managed plugin does not fall through to stale legacy tools",
@@ -2113,7 +2146,8 @@ def main():
           "photo stage not installed" in r.stdout,
           r.stdout[-260:] + r.stderr[-200:])
     for junk in ("gui-v211-installed", "gui-v211-legacy", "gui-v211-none",
-                 "gui-v221-plugin", "gui-v221-plugin-disabled"): 
+                 "gui-v221-plugin", "gui-v221-plugin-disabled",
+                 "gui-v227-plugin"):
         shutil.rmtree(TMP / junk, ignore_errors=True)
 
     # The Plugins panel manages optional plugin packages from local ZIPs.

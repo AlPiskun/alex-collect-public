@@ -64,7 +64,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.81"
+VERSION = "2.82"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -104,6 +104,11 @@ CS_STOCK_STATUS_VERSION = "1.0.25"
 #  state, which reads as the app being stale when it is only repeating what it
 #  was given - so the version decides what the panel is allowed to claim.
 CS_STOCK_CACHE_VERSION = "1.0.26"
+#  1.0.27 streams the publisher instead of capturing it, so the "type PUBLISH"
+#  question reaches the console. Before it the question was invisible and a
+#  run could sit there looking frozen - which is what the panel says, and why
+#  the version decides which sentence a silent run gets.
+CS_NESTED_STREAM_VERSION = "1.0.27"
 #  Creating listings is the plugin's own importer: the core writes the CSV it
 #  has always written, and this action takes that file and makes the drafts.
 CS_IMPORT_ACTION = "marketplace.import_csv"
@@ -617,17 +622,33 @@ def _prompt_hint_for(text):
 PUBLISHER_WAIT_SECONDS = 20
 PUBLISHER_WAIT_MARKER = "Publishing ready CanadianShopper drafts"
 PUBLISHER_WAIT_NOTE = (
-    "The plugin's publisher is running and has printed nothing since. It "
-    "waits for the word PUBLISH without showing its own prompt: type "
-    "PUBLISH in the answer box below and press Send. If nothing happens "
-    "after that, press Stop and use the card-pipeline panel's \"Publish "
-    "ready drafts\" button - it is the same publisher, run so its prompt "
-    "is visible.")
+    "The plugin's publisher is running and has printed nothing since. This "
+    "plugin is older than 1.0.27, which is the version that keeps the "
+    "publisher's question visible: in this one it waits for the word PUBLISH "
+    "without showing its prompt. Type PUBLISH in the answer box below and "
+    "press Send, then update the plugin. If nothing happens after that, "
+    "press Stop and use the card-pipeline panel's \"Publish ready drafts\" "
+    "button - it is the same publisher, run so its prompt is always visible.")
+PUBLISHER_WAIT_NOTE_STREAMED = (
+    "The plugin's publisher has printed nothing for a while. Plugin 1.0.27 "
+    "and later keep its question on screen, so this is the wait itself - "
+    "reading your draft listings and checking each one - not a question "
+    "nobody can see. Give it a little longer; if it never moves, press Stop "
+    "and use the card-pipeline panel's \"Publish ready drafts\" button, "
+    "which runs the same publisher on its own.")
 
 
-def publisher_wait_note(text):
-    """The note to show when a run has gone quiet at the publisher, or ""."""
-    return PUBLISHER_WAIT_NOTE if PUBLISHER_WAIT_MARKER in (text or "") else ""
+def publisher_wait_note(text, version=""):
+    """The note to show when a run has gone quiet at the publisher, or "".
+
+    What the sentence may claim depends on the plugin: 1.0.27 streams the
+    publisher, so silence there means work rather than a hidden question.
+    """
+    if PUBLISHER_WAIT_MARKER not in (text or ""):
+        return ""
+    if version and version_at_least(version, CS_NESTED_STREAM_VERSION):
+        return PUBLISHER_WAIT_NOTE_STREAMED
+    return PUBLISHER_WAIT_NOTE
 
 
 MARKET_RERUNS = {
@@ -706,6 +727,22 @@ def find_pipeline_script(settings):
     return None
 
 
+def tool_env():
+    """The environment every tool this app starts is given.
+
+    A plugin tool that runs its own children must stream them rather than
+    capture their output: this console is where the person reads the question
+    they are expected to answer. Plugin 1.0.27 and later read
+    ``ALEX_COLLECT_NESTED`` and add progress around each child; older ones
+    ignore it, so it is safe to set for every tool.
+    """
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    env["ALEX_COLLECT_NESTED"] = "1"
+    return env
+
+
 # ------------------------------------------------------------------ runner
 class Runner:
     """Runs ONE tool at a time, streams its output into the console,
@@ -742,9 +779,7 @@ class Runner:
             log("user declined: %s" % title)
             return False
         cmd = [sys.executable, "-u", str(script)] + [str(a) for a in args]
-        env = dict(os.environ)
-        env["PYTHONIOENCODING"] = "utf-8"
-        env["PYTHONUTF8"] = "1"
+        env = tool_env()
         self.cmd = " ".join(cmd)
         self.title = title
         self.on_done = on_done
@@ -862,7 +897,9 @@ class Runner:
             return
         self._publish_note_shown = True
         try:
-            self.app.console_line("NOTE: " + PUBLISHER_WAIT_NOTE, "dim")
+            self.app.console_line(
+                "NOTE: " + publisher_wait_note(self.output, plugin_version()),
+                "dim")
             self.app.status.config(
                 text="Waiting for the word PUBLISH - type it below and press "
                      "Send (or Stop the run).")

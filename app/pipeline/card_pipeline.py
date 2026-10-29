@@ -37,6 +37,7 @@ Category / sub-category:
 import argparse
 import csv
 import html
+import json
 import math
 import os
 import re
@@ -1950,6 +1951,44 @@ def _find_cs_stage_hook():
     return next((candidate for candidate in legacy if candidate.is_file()), None)
 
 
+#  1.0.27 streams the publisher instead of capturing it, so its "type PUBLISH"
+#  question is visible in the console the person is actually reading.
+CS_STREAM_VERSION = "1.0.27"
+
+
+def _version_tuple(text):
+    parts = []
+    for piece in str(text or "").strip().split("."):
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        if digits == "":
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def _cs_version_at_least(version, wanted):
+    """Whether ``version`` is known and at least ``wanted``."""
+    got, need = _version_tuple(version), _version_tuple(wanted)
+    return bool(got) and got >= need
+
+
+def _cs_hook_version(hook):
+    """The plugin's declared version from the ``plugin.json`` above its tools.
+
+    A hook copied beside the app (the pre-plugin layout) has no manifest, so
+    its version is unknown - and an unknown version is never treated as a new
+    one, because the sentence printed for an old plugin is the safe one.
+    """
+    if not hook:
+        return ""
+    manifest = Path(hook).parent.parent / "plugin.json"
+    try:
+        return str(json.loads(manifest.read_text(encoding="utf-8"))
+                   .get("version") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
 def canadianshopper_import_folder(output_paths, stage_hook=None):
     """Find the folder containing the final CS import CSVs."""
     if not stage_hook:
@@ -2010,20 +2049,33 @@ def maybe_run_canadianshopper(args, cards_parsed):
     print("  2. If the CanadianShopper plugin is installed, it stages the photos")
     print("     and offers to import the CSVs as unpublished drafts.")
     print("  3. Without the plugin, import the CSVs manually and review each draft.")
-    #  The plugin's publisher runs as its own process and can wait for the word
-    #  PUBLISH without printing a prompt the console can show. Said here, before
-    #  the plugin takes over, because by then this line is the last thing on
-    #  screen - and a run that has gone quiet with nothing to type is a run the
-    #  person thinks has hung.
-    print("\n  If the plugin offers to publish the new drafts, its publisher waits"
-          " for the word PUBLISH.")
-    print("  Type PUBLISH in the answer box and press Send. If nothing moves, "
-          "stop the run and use the")
-    print("  card-pipeline panel's \"Publish ready drafts\" button - it is the "
-          "same publisher, with a prompt you can see.")
     # ---- Optional CanadianShopper photo stage: square front + back gallery
     _cs_hook = _find_cs_stage_hook()
+    _cs_version = _cs_hook_version(_cs_hook)
+    if _cs_hook is not None and _cs_version_at_least(_cs_version,
+                                                     CS_STREAM_VERSION):
+        print("\n  Plugin %s keeps the publisher's PUBLISH question on screen, "
+              "so it can be answered." % _cs_version)
+    elif _cs_hook is not None:
+        #  Before 1.0.27 the plugin captured its publisher's output, so the
+        #  publisher's "type PUBLISH" question never reached this console and
+        #  the run simply stopped moving. Said here, before the plugin takes
+        #  over, because afterwards this line is the last thing on screen.
+        print("\n  The installed plugin is %s, and the publisher's question "
+              "stays hidden in that version."
+              % (_cs_version or "older than 1.0.27 (no version to read)"))
+        print("  If it offers to publish the new drafts, type PUBLISH in the "
+              "answer box and press Send.")
+        print("  Update the plugin to 1.0.27 or later, which keeps the question "
+              "visible; until then, if nothing moves,")
+        print("  stop the run and use the card-pipeline panel's \"Publish ready "
+              "drafts\" button.")
     if _cs_hook is not None:
+        #  A plugin 1.0.27+ reads this and adds progress around each child; it
+        #  also tells any tool it runs that this console is where its output
+        #  has to go. Set here as well as in the app, because a batch folder
+        #  can be run from a terminal with no app above it.
+        os.environ["ALEX_COLLECT_NESTED"] = "1"
         import importlib.util as _ilu
         import inspect as _inspect
         _spec = _ilu.spec_from_file_location("cs_stage_hook", str(_cs_hook))

@@ -112,7 +112,7 @@ Notes:
 | `test-facebook-feed.py` | pandas, openpyxl | |
 | `test-user-settings.py`, `test-ebay-quicklist.py` | Pillow | Prints `Pillow is required` and stops if missing. |
 | `test-linux-packaging.py` | Tk, Xvfb | Linux only; skips itself on Windows. |
-| `test-market-rerun.py`, `test-pipeline-listing.py` | Pillow | Pipeline regression suite; no GUI. |
+| `test-market-rerun.py`, `test-pipeline-listing.py` | Pillow | Pipeline regression suite; no GUI. `test-pipeline-listing.py` also reads the plugin version rules: 1.0.27 is the streaming version, an unreadable or missing manifest is never treated as new. |
 | `test-ai-prompts.py` | nothing | The shipped AI prompt files, read without Tk. |
 | `test-process-utils.py` | nothing | No stray console windows; checks flags only. |
 | `test-photo-replace.py` | Pillow | Sheet split, empty-slot detection, replacement naming. |
