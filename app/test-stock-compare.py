@@ -91,10 +91,18 @@ def test_plugin_items():
         {"title": "", "inventory": 4},
         {"title": "Old key name", "quantity": 1}]}
     items = stock_compare.plugin_items(payload)
-    check("a title, a SKU and an inventory make a row", len(items) == 2,
+    check("a title, a SKU and an inventory make a row", len(items) == 3,
           str(items))
-    check("a listing with no inventory is dropped, not assumed",
-          all(item["name"] != "No number given" for item in items), "")
+    check("a listing with no inventory is kept, with no number to compare",
+          next((item for item in items
+                if item["name"] == "No number given"), {}).get("qty") is None,
+          str(items))
+    check("and not one number is invented for it",
+          not any(item["name"] == "No number given" and item["qty"] == 0
+                  for item in items), str(items))
+    check("a row with no title is still dropped - nothing can be matched to "
+          "it",
+          not any(item["name"] == "" for item in items), str(items))
     check("'quantity' is accepted as the older name",
           any(item["name"] == "Old key name" for item in items), str(items))
     check("'listings' is accepted as the older envelope",
@@ -2046,8 +2054,9 @@ def test_listing_without_a_count():
     check("and its count stays unknown rather than becoming zero",
           next(item for item in items if item["name"].startswith("1965"))["qty"]
           is None, str(items))
-    check("a live listing with no count is still left out, as before",
-          "A live listing with no count" not in names, str(names))
+    check("a live listing with no count is kept too, and says so by having "
+          "no count",
+          "A live listing with no count" in names, str(names))
     check("a live listing with a count is untouched",
           "A live listing with a count" in names, str(names))
 
@@ -2070,6 +2079,134 @@ def test_listing_without_a_count():
           stock_compare.label_action(draft_row))
     check("and no write plan can name it",
           stock_compare.plan_set(rows) == [], str(stock_compare.plan_set(rows)))
+
+
+def test_a_listing_that_counts_nothing():
+    print()
+    print("== 23. a card that exists but counts nothing is not a missing card ==")
+    raw = {"items": [
+        #  The listing is on the other site, paired by title - it simply
+        #  carries no inventory value, which a stock comparison cannot use.
+        {"id": 301, "title": "1965 Topps Sandy Koufax #300", "sku": "KO-300",
+         "inventory": None, "status": "Active"},
+    ]}
+    items = stock_compare.plugin_items(raw)
+    woo = [{"name": "1965 Topps Sandy Koufax #300", "sku": "KO-300", "qty": 2,
+            "id": 1}]
+    pairs, only_woo, only_other = stock_compare.pair(woo, items)
+    check("the card still pairs, so it is not called missing",
+          len(pairs) == 1 and not only_woo and not only_other,
+          str((pairs, only_woo, only_other)))
+    check("and it is not a disagreement either - there is no number to "
+          "disagree with",
+          stock_compare.differences(pairs) == [],
+          str(stock_compare.differences(pairs)))
+    rows = stock_compare.action_list(pairs, only_woo, only_other)
+    check("it gets its own row, named for what it is",
+          len(rows) == 1 and rows[0]["kind"] == stock_compare.NO_COUNT,
+          str(rows))
+    check("the label says the site counts no stock, not a made-up zero",
+          "no stock count there" in stock_compare.label_action(rows[0])
+          and "CanadianShopper 0" not in stock_compare.label_action(rows[0]),
+          stock_compare.label_action(rows[0]))
+    check("no write plan can name it", stock_compare.plan_set(rows) == [],
+          str(stock_compare.plan_set(rows)))
+    check("and the reverse plan cannot either",
+          __import__("stock_write").plan_from_rows(rows) == [], "")
+    check("publishing is not offered for it - it is not a draft",
+          stock_compare.draft_rows(rows) == [] and
+          stock_compare.off_sale_rows(rows) == [], str(rows))
+    check("its kind is counted on its own",
+          len(stock_compare.no_count_rows(rows)) == 1, str(rows))
+
+    #  ...and the panel says so out loud.
+    folder, app, parent = build_panel()
+    products = PRODUCTS + [
+        {"id": 9, "name": "1965 Topps Sandy Koufax #300", "sku": "KO-300",
+         "manage_stock": True, "stock_quantity": 2, "type": "simple"}]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_all), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+        (folder / "cs-stock.json").write_text(json.dumps(raw),
+                                             encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+    listed = next((w for w in parent.walk()
+                   if isinstance(w, gui.tk.Listbox)), None)
+    check("the panel lists the card instead of hiding it",
+          listed is not None and any("no stock count there" in item
+                                    for item in listed.items),
+          str(listed and listed.items))
+    check("the console explains there is no number to compare or write",
+          any("counts no stock" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and the summary counts it separately from the one-sided cards",
+          any("counting no stock" in text and "only on one side" in text
+              for _tag, text in app.lines), str(app.lines[-2:]))
+
+
+def test_nearest_title_diagnosis():
+    print()
+    print("== 24. a one-sided card is diagnosed, not just reported ==")
+    other = stock_compare.plugin_items({"items": [
+        {"id": 401, "title": "#237a Phil Esposito 1970-71 O-Pee-Chee",
+         "inventory": 3, "status": "Active"},
+        {"id": 402, "title": "#236 Bobby Orr 1970-71 O-Pee-Chee",
+         "inventory": 1, "status": "Active"},
+    ]})
+    item, score = stock_compare.closest(
+        other, "#237a Phil Esposito (VG) 1970-71 O-Pee-Chee")
+    check("the nearest title is found for a card worded differently",
+          item is not None and item["name"].startswith("#237a"), str(item))
+    check("and its score is high enough to mean something", score >= 0.9,
+          str(score))
+    item, score = stock_compare.closest(other, "1985 Topps Mark McGwire #401")
+    check("a card with a different number matches nothing at all",
+          item is None, str(item))
+    item, score = stock_compare.closest(
+        other, "1970-71 O-Pee-Chee Bobby Orr #236 First Team All-Star")
+    check("word order and a longer title do not hide the right listing",
+          item is not None and item["name"].startswith("#236"), str(item))
+
+    folder, app, parent = build_panel()
+    products = PRODUCTS + [
+        {"id": 9, "name": "#237a Phil Esposito (VG) 1970-71 O-Pee-Chee",
+         "sku": "", "manage_stock": True, "stock_quantity": 2,
+         "type": "simple"}]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_all), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+        #  The listing that should have paired is unreachable to the pairing:
+        #  a different card number in the same set.
+        (folder / "cs-stock.json").write_text(json.dumps({"items": [
+            {"id": 401, "title": "1970-71 O-Pee-Chee Phil Esposito #238",
+             "inventory": 3, "status": "Active"}]}), encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+    check("a one-sided card is reported as one-sided first",
+          any("only on one side" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and the console says nothing similar exists, rather than guessing",
+          any("nothing similar" in text for _tag, text in app.lines),
+          str(app.lines[-4:]))
 
 
 def main():
@@ -2100,6 +2237,8 @@ def main():
     test_old_reader_is_named()
     test_publisher_tally()
     test_listing_without_a_count()
+    test_a_listing_that_counts_nothing()
+    test_nearest_title_diagnosis()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))

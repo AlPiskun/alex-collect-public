@@ -64,7 +64,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.75"
+VERSION = "2.76"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -4342,7 +4342,7 @@ def build_stock(parent, app):
     app._stock_filter = ""
     state = {"card": focus, "rows": [], "pairs": [], "only_woo": [],
              "only_other": [], "label": "CanadianShopper", "mode": "count",
-             "skipped": 0, "catalog": {}}
+             "skipped": 0, "catalog": {}, "items": []}
     statuses = {}
 
     def credentials():
@@ -4450,8 +4450,24 @@ def build_stock(parent, app):
                                      state["pairs"], state["only_woo"],
                                      state["only_other"], state["label"])
         if rows and not fixable:
-            text = "No counts disagree; %d card%s only on one side." % (
-                len(rows), "" if len(rows) == 1 else "s")
+            no_count = len(stock_compare.no_count_rows(rows))
+            one_sided = len(rows) - no_count
+            if no_count and one_sided:
+                text = ("No counts disagree; %d card%s only on one side, %d "
+                        "with no count on %s." %
+                        (one_sided, "" if one_sided == 1 else "s", no_count,
+                         state["label"]))
+            elif no_count:
+                text = ("No counts disagree; %d card%s on %s count nothing." %
+                        (no_count, "" if no_count == 1 else "s",
+                         state["label"]))
+            else:
+                text = "No counts disagree; %d card%s only on one side." % (
+                    len(rows), "" if len(rows) == 1 else "s")
+        no_count = len(stock_compare.no_count_rows(rows))
+        if fixable and no_count:
+            text += ("  %d more card%s on %s counting no stock." %
+                     (no_count, "" if no_count == 1 else "s", state["label"]))
         if hidden:
             text += "  %d ignored." % hidden
         if state["card"]:
@@ -5253,13 +5269,54 @@ def build_stock(parent, app):
                 "%s is on %s but not on sale (%s) - a count cannot fix that." %
                 (row["card"], state["label"], row.get("state") or "not on sale"),
                 "warn")
-        one_sided = len(rows) - len(fixable) - len(off_sale)
-        app.console_line(
-            "Compared %d matched cards against %s; %d disagree, %d not on sale "
-            "there, %d only on one side. Nothing was changed on either site "
-            "yet." %
-            (len(state["pairs"]), state["label"], len(fixable), len(off_sale),
-             one_sided), "ok")
+        no_count = stock_compare.no_count_rows(rows)
+        for row in no_count:
+            app.console_line(
+                "%s is on %s but that listing counts no stock - there is no "
+                "number to compare or to write. Turn stock tracking on for "
+                "that listing (or ignore the card)." %
+                (row["card"], state["label"]), "warn")
+        one_sided = len(rows) - len(fixable) - len(off_sale) - len(no_count)
+        #  A card that is one-sided is either not listed there at all or
+        #  listed under wording the pairing would not accept. Only the titles
+        #  can say which, so the nearest one is shown - with the card-number
+        #  rule the pairing uses, so "nothing close" means something.
+        missing = [row for row in rows
+                   if row["kind"] == stock_compare.ONLY_WOO]
+        if missing and state.get("items"):
+            near, nothing = [], []
+            for row in missing:
+                item, score = stock_compare.closest(state["items"], row["card"])
+                if item is not None and score >= 0.45:
+                    near.append((row["card"], item.get("name") or "", score))
+                else:
+                    nothing.append(row["card"])
+            if near:
+                app.console_line(
+                    "%d of those %d have a similar title on %s - check these "
+                    "by hand before listing them again:" %
+                    (len(near), len(missing), state["label"]), "warn")
+                for card, other_name, score in near[:8]:
+                    app.console_line(
+                        "  %s\n      closest: %s (%d%%)" %
+                        (card, other_name, round(score * 100)), "dim")
+                if len(near) > 8:
+                    app.console_line("  ... and %d more" % (len(near) - 8),
+                                     "dim")
+            if nothing:
+                app.console_line(
+                    "%d of those %d have nothing similar on %s: those cards "
+                    "are not listed there, so the import is what creates "
+                    "them." % (len(nothing), len(missing), state["label"]),
+                    "dim")
+        summary_line = (
+            "Compared %d matched cards against %s; %d disagree, %d not on "
+            "sale there" % (len(state["pairs"]), state["label"], len(fixable),
+                            len(off_sale)))
+        if no_count:
+            summary_line += ", %d counting no stock" % len(no_count)
+        app.console_line(summary_line + ", %d only on one side. Nothing was "
+                         "changed on either site yet." % one_sided, "ok")
         if one_sided and state["label"] == "CanadianShopper":
             #  A reader that only reports the listings that are on sale makes
             #  a draft or a hidden listing look missing entirely, which reads
@@ -5317,6 +5374,9 @@ def build_stock(parent, app):
             woo, skipped = stock_compare.woo_items(products)
             woo, items_here = narrow(woo, items)
             pairs, only_woo, only_other = stock_compare.pair(woo, items_here)
+            #  Kept for one diagnostic only: naming the nearest title on the
+            #  other site when a card comes back one-sided.
+            state["items"] = items_here
             show((pairs, only_woo, only_other), skipped)
 
         in_background(
