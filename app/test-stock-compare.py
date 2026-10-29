@@ -1319,8 +1319,9 @@ def test_one_click_import():
           str(publish_run and publish_run["args"]))
     check("the publish dialog says it scans every draft, not just the new one",
           any("every draft on CanadianShopper" in message and
-              "not only this one" in message for title, message in asked
-              if title.startswith("Publish")), str(asked[-1:]))
+              "drafts from earlier runs" in message
+              for title, message in asked if title.startswith("Publish")),
+          str(asked[-1:]))
     check("and that a typed PUBLISH still stands between it and going live",
           any("type PUBLISH" in message for title, message in asked
               if title.startswith("Publish")), str(asked[-1:]))
@@ -1496,10 +1497,21 @@ def test_one_click_import_refusals():
     check("and nothing on the page says \"0 drafts\"",
           not any("0 draft" in str(w.cget("text")) for w in parent.walk()
                   if isinstance(w, gui.ttk.Label)), "")
-    check("it still offers the read-only report, because the listing may "
-          "already be an unpublished draft",
-          any(title == "Preview the drafts already there?" for title, _m in asked),
+    check("and it offers to publish, because the matched listings may still "
+          "be drafts",
+          any(title == "Publish any ready drafts now?" for title, _m in asked),
           str([title for title, _m in asked]))
+    check("the console explains why nothing was created",
+          any("already have a listing on CanadianShopper" in text
+              for _tag, text in lines), str(lines[-4:]))
+    check("and says which states the stock reader cannot see",
+          any("a draft, hidden, archived, or off sale" in text
+              for _tag, text in lines), str(lines[-4:]))
+    declined_publish = [title for title, _m in asked
+                        if title.startswith("Publish")]
+    check("a file with nothing new never claims a draft was created",
+          not any("draft created" in text for _tag, text in lines),
+          str(lines[-4:]))
 
     # ---- a genuine per-file refusal keeps its red reason
     _run, lines = listing_run(

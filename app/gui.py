@@ -64,7 +64,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.71"
+VERSION = "2.72"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -4851,6 +4851,14 @@ def build_stock(parent, app):
                     "this import." %
                     (len(report["failed"]),
                      "" if len(report["failed"]) == 1 else "s"), "warn")
+                app.console_line(
+                    "That means these cards already have a listing on "
+                    "CanadianShopper - and the stock comparison could not see "
+                    "it. A listing the stock reader does not return is usually "
+                    "one that is not active: a draft, hidden, archived, or off "
+                    "sale. Publishing (offered next) puts any ready draft back "
+                    "on sale; anything else has to be found in the vendor "
+                    "dashboard.", "dim")
             elif not report["imported"] and not report["unknown"]:
                 app.console_line(
                     "Nothing was imported: the plugin reported no file as "
@@ -4873,7 +4881,7 @@ def build_stock(parent, app):
             #  fallback - both when they decline and when nothing new was
             #  created, because the listing may already be an unpublished
             #  draft from an earlier run.
-            if made and publish_drafts(made):
+            if (made or report["failed"]) and publish_drafts(made):
                 return
             if report["imported"]:
                 preview_drafts()
@@ -4902,20 +4910,31 @@ def build_stock(parent, app):
         """
         if not TOOL_ACTION("marketplace.publish_drafts"):
             return False
+        if count:
+            title = ("Publish the %d new draft%s now?" %
+                     (count, "" if count == 1 else "s"))
+            detail = ("%d listing%s %s created as unpublished drafts. Take "
+                      "%s live now?" %
+                      (count, "" if count == 1 else "s",
+                       "was" if count == 1 else "were",
+                       "it" if count == 1 else "them"))
+        else:
+            #  Nothing new was needed because the cards are already there. The
+            #  listings the import matched may still be unpublished, and
+            #  publishing is what makes them live - which is the whole point.
+            title = "Publish any ready drafts now?"
+            detail = ("Nothing new had to be created: these cards already "
+                      "have a listing on CanadianShopper. If any of those "
+                      "listings are still drafts, publishing is what puts "
+                      "them on sale.")
         if not messagebox.askyesno(
-                "Publish the %d new draft%s now?" %
-                (count, "" if count == 1 else "s"),
-                "%d listing%s %s created as unpublished drafts. Take %s live "
-                "now?\n\nPublishing scans every draft on CanadianShopper and "
+                title,
+                "%s\n\nPublishing scans every draft on CanadianShopper and "
                 "activates each one that passes all the readiness checks - "
-                "drafts from earlier runs too, not only %s. A draft that is "
-                "not ready is left alone.\n\nYou will also be asked to type "
-                "PUBLISH in the console, so nothing can go live on one "
-                "click." %
-                (count, "" if count == 1 else "s",
-                 "was" if count == 1 else "were",
-                 "it" if count == 1 else "them",
-                 "the %d here" % count if count != 1 else "this one"),
+                "drafts from earlier runs too%s. A draft that is not ready is "
+                "left alone.\n\nYou will also be asked to type PUBLISH in the "
+                "console, so nothing can go live on one click." %
+                (detail, "" if count else ", and the listings matched here"),
                 parent=box.winfo_toplevel()):
             return False
         report = canadianshopper_results_dir(app) / "cs-publish-report.csv"
