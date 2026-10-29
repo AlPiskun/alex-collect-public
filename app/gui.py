@@ -64,7 +64,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.68"
+VERSION = "2.69"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1689,6 +1689,10 @@ class App(tk.Tk):
         self.console.tag_configure("cmd", foreground="#9fd0ff")
         self.console.tag_configure("err", foreground="#ff9d9d")
         self.console.tag_configure("ok", foreground="#9de0a8")
+        #  Not every outcome is a failure or a success: "the file was read and
+        #  there was nothing new in it" is neither, and painting it red sends
+        #  the person looking for a fault that is not there.
+        self.console.tag_configure("warn", foreground="#ffd08a")
         self.console.tag_configure("dim", foreground="#8a8a8a")
 
         row = ttk.Frame(box)
@@ -4798,8 +4802,12 @@ def build_stock(parent, app):
                     answer = {}
             report = cs_listing.import_report(written, answer)
             for entry in report["failed"]:
-                app.console_line("Not imported: %s - %s" %
-                                 (entry["file"], entry["why"]), "err")
+                #  The plugin's own sentence, unedited - "every listing in
+                #  this file already exists" is a good outcome and must not
+                #  be dressed up as one of the bad ones, and a real refusal
+                #  must not be softened.
+                app.console_line("No new listing from %s: %s" %
+                                 (entry["file"], entry["why"]), "warn")
             if rc != 0:
                 app.console_line(
                     "The import did not finish (exit %s). The file is still "
@@ -4831,33 +4839,60 @@ def build_stock(parent, app):
                     "-> Products before importing it again." %
                     (len(report["unknown"]),
                      "" if len(report["unknown"]) == 1 else "s"), "err")
-            if not report["imported"] and not report["unknown"]:
+            if report["failed"] and not report["imported"]:
+                #  A file the plugin read and refused, or read and found
+                #  nothing to do: the file stays where it is and nothing on
+                #  CanadianShopper moved because of this run.
+                app.console_line(
+                    "Nothing new was created: the plugin read %d file%s and "
+                    "added nothing. Nothing on CanadianShopper was changed by "
+                    "this import." %
+                    (len(report["failed"]),
+                     "" if len(report["failed"]) == 1 else "s"), "warn")
+            elif not report["imported"] and not report["unknown"]:
                 app.console_line(
                     "Nothing was imported: the plugin reported no file as "
                     "imported. The file is in %s." % folder, "err")
-            summary.configure(
-                text=("%d draft%s created on CanadianShopper. Compare again "
-                      "after you publish them." %
-                      (made, "" if made == 1 else "s")) if made else
-                "The import reported no drafts; check CanadianShopper -> "
-                "Products.")
+            if made:
+                summary.configure(
+                    text="%d draft%s created on CanadianShopper. Compare "
+                         "again after you publish them." %
+                         (made, "" if made == 1 else "s"))
+            elif report["failed"] and not report["unknown"]:
+                summary.configure(
+                    text="No new listings were created; the plugin's reasons "
+                         "are in the console above.")
+            else:
+                summary.configure(
+                    text="The import reported no drafts; check CanadianShopper "
+                         "-> Products.")
+            #  The drafts the file did not create may already be sitting on
+            #  CanadianShopper, unpublished - which is exactly what the
+            #  read-only report answers.
             if report["imported"]:
                 preview_drafts()
+            elif report["failed"] and not report["unknown"]:
+                preview_drafts(
+                    "Preview the drafts already there?",
+                    "Nothing new was created. Any listing this card already "
+                    "has on CanadianShopper is still there, and may still be a "
+                    "draft.\n\nRead the drafts back and write a readiness "
+                    "report - which can be published and which need work? "
+                    "Nothing is published by this step.")
 
         app.run_tool(action, args, "Import CanadianShopper listings",
                      cwd=app.settings.get("pipeline_dir", str(WORK)),
                      on_done=arrived)
 
-    def preview_drafts():
+    def preview_drafts(title="Preview the new drafts?",
+                       message="Read the drafts back and write a readiness "
+                               "report - which can be published and which need "
+                               "work?\n\nNothing is published by this step."):
         """Offer the read-only draft report that follows an import."""
         if not TOOL_ACTION("marketplace.publish_drafts"):
             return
-        if not messagebox.askyesno(
-                "Preview the new drafts?",
-                "Read the drafts back and write a readiness report - which "
-                "can be published and which need work?\n\nNothing is "
-                "published by this step.",
-                parent=box.winfo_toplevel()):
+        if not messagebox.askyesno(title, message,
+                                   parent=box.winfo_toplevel()):
             return
         report = canadianshopper_results_dir(app) / "cs-publish-report.csv"
         args = ["--cookie-file", str(CS_COOKIE_FILE), "--report", str(report)]

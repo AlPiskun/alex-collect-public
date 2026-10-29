@@ -287,6 +287,19 @@ def test_import_report():
             {"imported": [{"file": label, "drafts": 2}]})
         check("a path written as %r still finds its file" % label,
               report["imported"] and not report["unknown"], str(report))
+    #  1.0.24 puts a file with nothing new to create in "failed" with a why;
+    #  the reader must carry that sentence through untouched.
+    report = cs_listing.import_report(
+        [(Path("a.csv"), 2)],
+        {"imported": [],
+         "failed": [{"file": "a.csv",
+                     "why": "every listing in this file already exists on "
+                            "CanadianShopper; existing listings were left "
+                            "unchanged"}]})
+    check("a nothing-new file arrives as a reason, not as a draft count",
+          not report["imported"] and not report["unknown"] and
+          report["failed"][0]["why"].startswith("every listing"),
+          str(report))
     check("a file the plugin lists under a different name stays unknown",
           cs_listing.import_report(
               [(Path("a.csv"), 1)],

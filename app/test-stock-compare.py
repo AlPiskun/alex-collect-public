@@ -1330,7 +1330,9 @@ def test_one_click_import_refusals():
     def fetch_all(base, path, params, key, secret):
         return (200, products) if params["page"] == 1 else (200, [])
 
-    import_actions = {"marketplace.import_csv": "/plugins/cs/cs-import.py"}
+    import_actions = {"marketplace.import_csv": "/plugins/cs/cs-import.py",
+                      "marketplace.publish_drafts":
+                      "/plugins/cs/cs-publish-drafts.py"}
 
     def listing_run(action_map, make_answer):
         """Write a listing file, run the import, and hand back what happened.
@@ -1410,6 +1412,50 @@ def test_one_click_import_refusals():
                       "failed": []})
     check("an import that made no drafts is not called a success",
           any("reported no drafts" in text for _tag, text in lines) and
+          not any("draft created" in text for _tag, text in lines),
+          str(lines[-3:]))
+
+    # ---- 1.0.24: a file with nothing new to create is in "failed", with why
+    _run, lines = listing_run(
+        import_actions,
+        lambda name: {"imported": [],
+                      "failed": [{"file": name,
+                                  "why": "every listing in this file already "
+                                         "exists on CanadianShopper; existing "
+                                         "listings were left unchanged"}]})
+    check("a file with nothing new is not painted as a failure",
+          any(tag == "warn" and "No new listing from" in text
+              for tag, text in lines), str(lines[-3:]))
+    check("the plugin's own sentence is printed unedited",
+          any("existing listings were left unchanged" in text
+              for _tag, text in lines), str(lines[-3:]))
+    check("and the panel says nothing on the shop moved",
+          any("Nothing on CanadianShopper was changed by this import" in text
+              for _tag, text in lines), str(lines[-3:]))
+    check("no draft count is claimed for it",
+          not any("draft created" in text for _tag, text in lines),
+          str(lines[-3:]))
+    #  The summary may have moved on to the readiness report by now, so the
+    #  thing worth proving is that no panel text ever says "0 drafts".
+    check("and nothing on the page says \"0 drafts\"",
+          not any("0 draft" in str(w.cget("text")) for w in parent.walk()
+                  if isinstance(w, gui.ttk.Label)), "")
+    check("it still offers the read-only report, because the listing may "
+          "already be an unpublished draft",
+          any(title == "Preview the drafts already there?" for title, _m in asked),
+          str([title for title, _m in asked]))
+
+    # ---- a genuine per-file refusal keeps its red reason
+    _run, lines = listing_run(
+        import_actions,
+        lambda name: {"imported": [],
+                      "failed": [{"file": name,
+                                  "why": "the session expired before the "
+                                         "import"}]})
+    check("a real refusal keeps its reason verbatim",
+          any("the session expired before the import" in text
+              for _tag, text in lines), str(lines[-3:]))
+    check("a real refusal is still not called success",
           not any("draft created" in text for _tag, text in lines),
           str(lines[-3:]))
 
