@@ -579,6 +579,33 @@ def test_the_cookies_canadian_shopper_is_told_about():
           any("cookie.txt" in text and "bytes" in text and "saved" in text
               for _tag, text in app.lines), str(app.lines[-3:]))
 
+    # ---- a failed read must never fall back to a list from an earlier run,
+    #      which is the shape a cached answer takes once it is on disk.
+    #      (1.0.26 refuses to write a partial list; this proves the app does
+    #      not compare one either.)
+    app.runs.clear()
+    app.lines[:] = []
+    out = folder / "cs-stock.json"
+    out.write_text(json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "BASE", folder):
+        compare.invoke()
+        check("the old stock list is thrown away before the read, so a failed "
+              "read cannot compare it",
+              not out.exists(), str(out))
+        app.runs[0]["on_done"](1)
+    check("a failed read says nothing was compared",
+          any("nothing was compared" in text for _tag, text in app.lines),
+          str(app.lines[-2:]))
+    check("and it does not claim a comparison happened",
+          not any("Compared" in text for _tag, text in app.lines),
+          str(app.lines[-2:]))
+
 
 def test_one_card():
     print()
@@ -2413,6 +2440,73 @@ def test_held_under_another_product():
           str(app.lines[:4]))
 
 
+def test_a_reader_that_cannot_ask_for_a_fresh_page():
+    print()
+    print("== 28. a cached page is the reader's limit, not the app's reading ==")
+    folder, app, parent = build_panel()
+    products = PRODUCTS + [
+        {"id": 9, "name": "#319 Val Fonteyne 1972-73 O-Pee-Chee", "sku": "",
+         "manage_stock": True, "stock_quantity": 1, "type": "simple"}]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    stock = {"items": [
+        {"id": 401, "title": "#319 Val Fonteyne 1972-73 O-Pee-Chee",
+         "inventory": 1, "status": "Archived"},
+        {"id": 402, "title": "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6",
+         "inventory": 0, "status": "Active"},
+    ]}
+
+    def compare(version):
+        app.lines.clear()
+        with patch.object(gui, "TOOL_ACTION",
+                          lambda action: "/plugins/cs/stock.py"), \
+                patch.object(gui, "read_woo_credentials",
+                             lambda path=None: ("https://shop.example", "ck_a",
+                                                "cs_b")), \
+                patch.object(gui, "woo_get", fetch_all), \
+                patch.object(gui, "in_background", sync_background), \
+                patch.object(gui, "plugin_version",
+                             lambda *a, **k: version), \
+                patch.object(gui, "BASE", folder):
+            find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+            (folder / "cs-stock.json").write_text(json.dumps(stock),
+                                                 encoding="utf-8")
+            app.runs[-1]["on_done"](0)
+        return list(app.lines)
+
+    lines = compare("1.0.26")
+    check("a reader that can ask for a fresh page says so on the tally line",
+          any("plugin 1.0.26, cache-checked" in text for _tag, text in lines),
+          str(lines[:3]))
+    check("and no warning is raised about a cached page",
+          not any("serve from its cache" in text for _tag, text in lines),
+          str(lines[-3:]))
+    check("the archived listing is still reported as archived",
+          any("not on sale (Archived)" in text for _tag, text in lines),
+          str(lines[-4:]))
+
+    lines = compare("1.0.25")
+    check("an older reader is named on the tally line, without the claim",
+          any("plugin 1.0.25" in text and "cache-checked" not in text
+              for _tag, text in lines), str(lines[:3]))
+    check("and a moved listing is allowed to be a stale read",
+          any("serve from its cache" in text and "1.0.26" in text
+              for _tag, text in lines), str(lines[-4:]))
+    check("and it says so before the states are acted on",
+          any("before acting on the states above" in text
+              for _tag, text in lines), str(lines[-4:]))
+
+    lines = compare("")
+    check("an unreadable plugin version is not guessed at",
+          any(text.startswith("What the reader returned - ")
+              for _tag, text in lines), str(lines[:3]))
+    check("and no cache warning is invented for it",
+          not any("serve from its cache" in text for _tag, text in lines),
+          str(lines[-3:]))
+
+
 def main():
     test_woo_items()
     test_plugin_items()
@@ -2446,6 +2540,7 @@ def main():
     test_a_duplicate_on_the_website()
     test_what_the_reader_claimed()
     test_held_under_another_product()
+    test_a_reader_that_cannot_ask_for_a_fresh_page()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))

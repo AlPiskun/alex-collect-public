@@ -64,7 +64,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.78"
+VERSION = "2.79"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -98,6 +98,12 @@ CS_STOCK_SET_ACTION = "stock.set"
 #  and comes back as "only on your website" - which is why the version is
 #  checked before the panel explains one of those cards away.
 CS_STOCK_STATUS_VERSION = "1.0.25"
+#  1.0.26 asks the site for a page it cannot serve from its cache, and re-reads
+#  once when a page comes back byte-identical to the last run. Before it, a
+#  listing moved in the vendor dashboard could keep coming back in its old
+#  state, which reads as the app being stale when it is only repeating what it
+#  was given - so the version decides what the panel is allowed to claim.
+CS_STOCK_CACHE_VERSION = "1.0.26"
 #  Creating listings is the plugin's own importer: the core writes the CSV it
 #  has always written, and this action takes that file and makes the drafts.
 CS_IMPORT_ACTION = "marketplace.import_csv"
@@ -5384,6 +5390,19 @@ def build_stock(parent, app):
                     "its own state. Update the plugin, then compare again." %
                     (version, CS_STOCK_STATUS_VERSION), "dim")
         if off_sale:
+            #  Before 1.0.26 the reader could be handed a cached page, so a
+            #  listing moved in the dashboard kept coming back in its old
+            #  state. Say that here rather than let the person chase a change
+            #  the app never saw.
+            reader = plugin_version()
+            if reader and not version_at_least(reader, CS_STOCK_CACHE_VERSION):
+                app.console_line(
+                    "The reader is plugin %s. It does not ask for a page the "
+                    "site cannot serve from its cache, so a listing you moved "
+                    "may still be reported in its old state. %s and later "
+                    "re-read a repeated page once; update the plugin and "
+                    "compare again before acting on the states above." %
+                    (reader, CS_STOCK_CACHE_VERSION), "warn")
             publish_ready.pack(anchor="w", pady=(3, 0))
         else:
             publish_ready.pack_forget()
@@ -5487,8 +5506,16 @@ def build_stock(parent, app):
         #  The states the reader claims, in its own words: if a listing was
         #  moved in the dashboard and this still shows the old state, the
         #  reading is stale - and that is worth knowing before acting on it.
-        app.console_line("What the reader returned - %s."
-                         % stock_compare.tally_line(items), "dim")
+        #  The version goes in the same line because which reader produced it
+        #  decides whether a repeated page was even looked for.
+        version = plugin_version()
+        who = ""
+        if version:
+            who = " (plugin %s%s)" % (
+                version, ", cache-checked" if version_at_least(
+                    version, CS_STOCK_CACHE_VERSION) else "")
+        app.console_line("What the reader returned%s - %s."
+                         % (who, stock_compare.tally_line(items)), "dim")
         compare_items(items, "CanadianShopper", "count", creds)
         return True
 
