@@ -217,12 +217,17 @@ def set_counts(site, key, secret, items, opener=None, on_item=None):
 
 
 def describe(items, other_label="CanadianShopper"):
-    """The confirmation's lines: the card, the website's count and the new one."""
+    """The confirmation's lines: the card, the website's count and the new one.
+
+    Each line says where the new number comes from: this is the write in the
+    direction that is *not* the default, and the source has to be unmistakable
+    at the moment a shop's counts are about to change.
+    """
     lines = []
     for item in items or []:
-        lines.append("  %s\n      website %s -> %s" % (
+        lines.append("  %s\n      website %s -> %s   (from %s)" % (
             item.get("title") or item.get("card") or "",
-            item.get("from"), item.get("to")))
+            item.get("from"), item.get("to"), other_label))
     return lines
 
 

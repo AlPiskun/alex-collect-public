@@ -4,7 +4,7 @@
 ; alexcollect-bundled.iss instead.
 
 #define MyAppName "Alex Collect Control Panel"
-#define MyAppVersion "2.73"
+#define MyAppVersion "2.74"
 #define MyAppPublisher "Alex Collect"
 #define MyAppExe "START Alex Collect.bat"
 

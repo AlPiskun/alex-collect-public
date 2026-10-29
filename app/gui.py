@@ -64,7 +64,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.73"
+VERSION = "2.74"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -92,6 +92,12 @@ CS_STOCK_ACTION = "stock.list"
 #  The write half. It is asked for exactly as the plugin names it, so an
 #  older plugin that cannot set stock is detected rather than assumed.
 CS_STOCK_SET_ACTION = "stock.set"
+#  1.0.25 stopped filtering stock.list down to the listings that are on sale:
+#  every listing comes back with its own state. Without that, a card whose
+#  listing is a draft, hidden or archived simply vanishes from the comparison
+#  and comes back as "only on your website" - which is why the version is
+#  checked before the panel explains one of those cards away.
+CS_STOCK_STATUS_VERSION = "1.0.25"
 #  Creating listings is the plugin's own importer: the core writes the CSV it
 #  has always written, and this action takes that file and makes the drafts.
 CS_IMPORT_ACTION = "marketplace.import_csv"
@@ -4471,7 +4477,10 @@ def build_stock(parent, app):
                 (len(unknown), "" if len(unknown) == 1 else "s",
                  "it is" if len(unknown) == 1 else "they are"), "err")
         if changed:
-            text = ("%d CanadianShopper count%s set to the website's count" %
+            #  The direction is spelled out in the success line too: this is
+            #  the write that must never be mistaken for the opposite one.
+            text = ("%d CanadianShopper count%s set to the website's count "
+                    "(the website was not changed)" %
                     (len(changed), "" if len(changed) == 1 else "s"))
             if report["failed"]:
                 text += "; %d could not be changed" % len(report["failed"])
@@ -4509,9 +4518,11 @@ def build_stock(parent, app):
         body = "\n".join(lines[:12])
         if len(lines) > 12:
             body += "\n  ... and %d more" % (len(lines) - 12)
-        question = ("%s\n\n%s\n\nOnly those counts change: nothing is "
-                    "added, removed or repriced. Write them now?" %
-                    (stock_compare.plan_summary(plan, state["label"]), body))
+        question = ("Direction: your website's count  ->  %s. Your website is "
+                    "not changed.\n\n%s\n\n%s\n\nOnly those counts change: "
+                    "nothing is added, removed or repriced. Write them now?" %
+                    (state["label"],
+                     stock_compare.plan_summary(plan, state["label"]), body))
         if not messagebox.askyesno("Set CanadianShopper to these counts?",
                                    question, parent=box.winfo_toplevel()):
             app.console_line("The stock change was not confirmed; nothing was "
@@ -4545,10 +4556,13 @@ def build_stock(parent, app):
         args = ["--set-file", str(plan_path), "--set-out", str(out)]
         if CS_COOKIE_FILE.is_file():
             args += ["--cookie-file", str(CS_COOKIE_FILE)]
-        summary.configure(text="Setting %d count%s on CanadianShopper..." %
-                               (len(plan), "" if len(plan) == 1 else "s"))
-        app.console_line("Setting %d count%s on CanadianShopper..." %
-                         (len(plan), "" if len(plan) == 1 else "s"), "cmd")
+        summary.configure(text="Setting %d %s count%s..." %
+                               (len(plan), state["label"],
+                                "" if len(plan) == 1 else "s"))
+        app.console_line(
+            "Setting %d %s count%s from your website (your website is not "
+            "changed)..." % (len(plan), state["label"],
+                             "" if len(plan) == 1 else "s"), "cmd")
         app.run_tool(action, args, "Set CanadianShopper stock",
                      cwd=app.settings.get("pipeline_dir", str(WORK)),
                      on_done=lambda rc: set_arrived(rc, plan, out, action))
@@ -4587,19 +4601,24 @@ def build_stock(parent, app):
         body = "\n".join(lines[:12])
         if len(lines) > 12:
             body += "\n  ... and %d more" % (len(lines) - 12)
-        question = ("%s\n\n%s\n\nOnly those stock counts change: nothing is "
-                    "added, removed or repriced. Write them to the website "
-                    "now?" % (stock_write.summary(plan, state["label"]), body))
-        if not messagebox.askyesno("Set the website to these counts?",
-                                   question, parent=box.winfo_toplevel()):
+        question = ("Direction: %s's count  ->  your website. %s is not "
+                    "changed.\n\n%s\n\n%s\n\nOnly those stock counts change: "
+                    "nothing is added, removed or repriced. Write them to "
+                    "the website now?" %
+                    (state["label"], state["label"],
+                     stock_write.summary(plan, state["label"]), body))
+        if not messagebox.askyesno(
+                "Write %s's counts onto your website?" % state["label"],
+                question, parent=box.winfo_toplevel()):
             app.console_line("The website was not changed: the write was not "
                              "confirmed.", "dim")
             return
-        summary.configure(text="Setting %d count%s on the website..." %
+        summary.configure(text="Setting %d website count%s..." %
                                (len(plan), "" if len(plan) == 1 else "s"))
-        app.console_line("Setting %d count%s on the website from %s..." %
-                         (len(plan), "" if len(plan) == 1 else "s",
-                          state["label"]), "cmd")
+        app.console_line(
+            "Setting %d website count%s from %s's counts (%s is not "
+            "changed)..." % (len(plan), "" if len(plan) == 1 else "s",
+                             state["label"], state["label"]), "cmd")
         site, key, secret = creds
 
         def arrived(result, error):
@@ -4640,6 +4659,7 @@ def build_stock(parent, app):
                 len(updated), "" if len(updated) == 1 else "s")
             if failed:
                 text += "; %d could not be changed" % len(failed)
+            text += " (%s was not changed)" % state["label"]
             summary.configure(text=text + ". Compare again to confirm.")
             app.console_line(text + ". Compare again to confirm.", "ok")
 
@@ -4862,9 +4882,9 @@ def build_stock(parent, app):
                     "CanadianShopper - and the stock comparison could not see "
                     "it. A listing the stock reader does not return is usually "
                     "one that is not active: a draft, hidden, archived, or off "
-                    "sale. Publishing (offered next) puts any ready draft back "
-                    "on sale; anything else has to be found in the vendor "
-                    "dashboard.", "dim")
+                    "sale. Publishing (offered next) looks for drafts first "
+                    "and puts any ready one back on sale; anything else has "
+                    "to be found in the vendor dashboard.", "dim")
             elif not report["imported"] and not report["unknown"]:
                 app.console_line(
                     "Nothing was imported: the plugin reported no file as "
@@ -4913,9 +4933,19 @@ def build_stock(parent, app):
         go live and the same typed PUBLISH confirms it: nothing here weakens
         that gate, it only stops the person having to find the button in
         another panel.
+
+        ``count`` is what the import says it created, and ``reason`` is what a
+        comparison already found. When neither is known - the import created
+        nothing, because every card already had a listing - nobody knows
+        whether there is a draft at all, so the publisher is asked to *look*
+        first and the typed PUBLISH is only asked for once there is something
+        to publish. That is what stops a run ending in an empty report that
+        answers nothing.
         """
         if not TOOL_ACTION("marketplace.publish_drafts"):
             return False
+        if not count and not reason:
+            return look_for_drafts()
         if count:
             title = ("Publish the %d new draft%s now?" %
                      (count, "" if count == 1 else "s"))
@@ -4924,26 +4954,16 @@ def build_stock(parent, app):
                       (count, "" if count == 1 else "s",
                        "was" if count == 1 else "were",
                        "it" if count == 1 else "them"))
-        elif reason:
+        else:
             title = "Publish the ready drafts now?"
             detail = reason
-        else:
-            #  Nothing new was needed because the cards are already there. The
-            #  listings the import matched may still be unpublished, and
-            #  publishing is what makes them live - which is the whole point.
-            title = "Publish any ready drafts now?"
-            detail = ("Nothing new had to be created: these cards already "
-                      "have a listing on CanadianShopper. If any of those "
-                      "listings are still drafts, publishing is what puts "
-                      "them on sale.")
         if not messagebox.askyesno(
                 title,
                 "%s\n\nPublishing scans every draft on CanadianShopper and "
                 "activates each one that passes all the readiness checks - "
-                "drafts from earlier runs too%s. A draft that is not ready is "
-                "left alone.\n\nYou will also be asked to type PUBLISH in the "
-                "console, so nothing can go live on one click." %
-                (detail, "" if count else ", and the listings matched here"),
+                "drafts from earlier runs too. A draft that is not ready is "
+                "left alone.\n\nYou will also be asked to type PUBLISH in "
+                "the console, so nothing can go live on one click." % detail,
                 parent=box.winfo_toplevel()):
             return False
         report = canadianshopper_results_dir(app) / "cs-publish-report.csv"
@@ -4962,16 +4982,105 @@ def build_stock(parent, app):
             on_done=lambda rc: published(rc, count, report))
         return True
 
+    def look_for_drafts():
+        """Ask the publisher whether there is a draft at all, before asking
+        anyone to type PUBLISH.
+
+        An import that created nothing leaves cards whose listings exist
+        somewhere the stock reader cannot see. Publishing is the only thing
+        the app can do about a draft, so it is worth one read-only look - and
+        when that look finds nothing, "there is no draft" is the answer. What
+        it must never do is ask for a typed PUBLISH and then hand back a
+        report with no rows in it, which answers nothing.
+        """
+        report = canadianshopper_results_dir(app) / "cs-publish-report.csv"
+        try:
+            report.unlink()
+        except FileNotFoundError:
+            pass
+        app.console_line(
+            "Looking for drafts on CanadianShopper before asking to publish "
+            "anything...", "cmd")
+        summary.configure(text="Looking for drafts to publish...")
+        app.run_tool(
+            "cs-publish-drafts.py",
+            ["--cookie-file", str(CS_COOKIE_FILE), "--report", str(report)],
+            "Look for CanadianShopper drafts",
+            cwd=app.settings.get("pipeline_dir", str(WORK)),
+            on_done=lambda rc: found(rc, report))
+        return True
+
+    def found(rc, report):
+        """What the read-only look found: publish only if there is something."""
+        rows = stock_compare.report_rows(report)
+        if rc != 0:
+            app.console_line(
+                "The look for drafts did not finish (exit %s), so nothing "
+                "was published and nothing was changed." % rc, "err")
+            summary.configure(text="Could not look for drafts (exit %s)." % rc)
+            return
+        if rows is None:
+            #  A report nobody can read is not the same as "there is no draft",
+            #  and saying so would be a guess dressed as an answer.
+            app.console_line(
+                "The publisher finished but left no report to read, so it is "
+                "not known whether there is a draft. Nothing was published.",
+                "err")
+            summary.configure(text="No draft report was written.")
+            return
+        if not rows:
+            app.console_line(
+                "No drafts on CanadianShopper: there is nothing to publish, "
+                "and nothing was changed.", "warn")
+            app.console_line(
+                "A listing that exists but is not a draft is hidden, "
+                "archived, private or off sale - or a variation of a "
+                "variable product, which the stock reader does not return. "
+                "Those are put back on sale in the vendor dashboard, not "
+                "from here.", "dim")
+            version = plugin_version()
+            if version and not version_at_least(version,
+                                                CS_STOCK_STATUS_VERSION):
+                app.console_line(
+                    "The installed CanadianShopper plugin is %s: its stock "
+                    "list reports only the listings that are on sale, which "
+                    "is why those cards came back one-sided. %s and later "
+                    "report every listing with its own state, so the "
+                    "comparison can name each one and offer publishing only "
+                    "for the drafts. Update the plugin, then compare again."
+                    % (version, CS_STOCK_STATUS_VERSION), "dim")
+            summary.configure(text="No drafts to publish: the one-sided cards "
+                                   "are not drafts.")
+            return
+        publish_drafts(
+            0, "The publisher found %d draft%s on CanadianShopper to look "
+               "at." % (rows, "" if rows == 1 else "s"))
+
     def published(rc, count, report):
         """Say what happened, without claiming more than the publisher did."""
         if rc != 0:
+            if count:
+                app.console_line(
+                    "The publish step did not finish (exit %s). The %d "
+                    "draft%s from this listing %s still there, unpublished." %
+                    (rc, count, "" if count == 1 else "s",
+                     "is" if count == 1 else "are"), "err")
+                summary.configure(text="The drafts were created but not "
+                                       "published (exit %s)." % rc)
+            else:
+                app.console_line(
+                    "The publish step did not finish (exit %s). Nothing was "
+                    "published and nothing was changed." % rc, "err")
+                summary.configure(text="Nothing was published (exit %s)." % rc)
+            return
+        if stock_compare.report_rows(report) == 0:
+            #  The look said there was a draft and the publisher then found
+            #  none: a race, not a failure. Say the plain thing rather than
+            #  offering an empty report as if it were the answer.
             app.console_line(
-                "The publish step did not finish (exit %s). The %d draft%s "
-                "from this listing %s still there, unpublished." %
-                (rc, count, "" if count == 1 else "s",
-                 "is" if count == 1 else "are"), "err")
-            summary.configure(text="The drafts were created but not published "
-                                   "(exit %s)." % rc)
+                "The publisher scanned and found no drafts to look at, so "
+                "nothing was published and nothing was changed.", "warn")
+            summary.configure(text="No drafts to publish.")
             return
         app.console_line(
             "Publish finished. The report lists every draft it looked at and "
@@ -5091,12 +5200,28 @@ def build_stock(parent, app):
                 "%s is on %s but not on sale (%s) - a count cannot fix that." %
                 (row["card"], state["label"], row.get("state") or "not on sale"),
                 "warn")
+        one_sided = len(rows) - len(fixable) - len(off_sale)
         app.console_line(
             "Compared %d matched cards against %s; %d disagree, %d not on sale "
             "there, %d only on one side. Nothing was changed on either site "
             "yet." %
             (len(state["pairs"]), state["label"], len(fixable), len(off_sale),
-             len(rows) - len(fixable) - len(off_sale)), "ok")
+             one_sided), "ok")
+        if one_sided and state["label"] == "CanadianShopper":
+            #  A reader that only reports the listings that are on sale makes
+            #  a draft or a hidden listing look missing entirely, which reads
+            #  as "this card is not on CanadianShopper" - the opposite of what
+            #  is true. Name the version that can tell the difference.
+            version = plugin_version()
+            if version and not version_at_least(version,
+                                                CS_STOCK_STATUS_VERSION):
+                app.console_line(
+                    "The CanadianShopper reader in your plugin is %s: it "
+                    "reports only the listings that are on sale, so a card "
+                    "whose listing is a draft, hidden or archived looks "
+                    "missing here. %s and later report every listing with "
+                    "its own state. Update the plugin, then compare again." %
+                    (version, CS_STOCK_STATUS_VERSION), "dim")
         if off_sale:
             publish_ready.pack(anchor="w", pady=(3, 0))
         else:

@@ -494,6 +494,33 @@ def hidden_count(pairs, only_woo, only_other, ignored):
             len(action_list(pairs, only_woo, only_other, ignored)))
 
 
+def report_rows(path):
+    """How many rows of detail a CSV report holds, the header excluded.
+
+    ``None`` means the file could not be read, which is not the same as an
+    empty report: a report nobody can read must not be described as "no
+    drafts". A file that holds only a header - or nothing at all, which is what
+    a publisher that found no drafts leaves behind - is a real, countable
+    zero.
+    """
+    try:
+        text = Path(str(path)).read_text(encoding="utf-8-sig",
+                                         errors="replace")
+    except (OSError, TypeError, ValueError):
+        return None
+    rows = 0
+    seen_header = False
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        if not seen_header:
+            #  The first non-blank line is the header a report always writes.
+            seen_header = True
+            continue
+        rows += 1
+    return rows
+
+
 def plan_set(rows):
     """What to write so the other site matches the website, card by card.
 
@@ -588,10 +615,15 @@ def plugin_write_report(plan, answer):
 
 
 def describe_plan(plan, other_label="CanadianShopper"):
-    """The confirmation: exactly what would be written, one line per card."""
+    """The confirmation: exactly what would be written, one line per card.
+
+    Every line names the side the number comes from, because the same dialog
+    exists for the other direction and the direction is the one thing that
+    must never be guessed at.
+    """
     lines = []
     for item in plan or []:
-        lines.append("  %s\n      %s %d -> %d" % (
+        lines.append("  %s\n      %s %d -> %d   (from your website)" % (
             item["card"][:90], other_label, item["from"], item["to"]))
     return lines
 

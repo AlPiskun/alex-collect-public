@@ -863,6 +863,10 @@ def test_the_fix_flow():
     check("the whole list asks before writing anything",
           asked and "Set CanadianShopper to these counts?" == asked[0][0],
           str(asked))
+    check("and the question names the direction, so the website is never "
+          "mistaken for the side that changes",
+          asked and "your website's count  ->  CanadianShopper" in asked[0][1]
+          and "Your website is not changed" in asked[0][1], str(asked[:1]))
     check("and the question lists the exact card and both counts",
           asked and "Gretzky" in asked[0][1] and "0 -> 2" in asked[0][1],
           str(asked))
@@ -973,9 +977,16 @@ def test_the_fix_flow():
             patch.object(gui, "BASE", folder):
         set_site.invoke()
     check("the reverse fix asks before writing to the website",
-          asked and asked[0][0] == "Set the website to these counts?", str(asked))
-    check("and shows the website's count against the new one",
-          asked and "website 2 -> 0" in asked[0][1], str(asked))
+          asked and asked[0][0] ==
+          "Write CanadianShopper's counts onto your website?", str(asked))
+    check("and the question states the direction, so the two writes cannot "
+          "be taken for each other",
+          asked and "CanadianShopper's count  ->  your website" in asked[0][1]
+          and "CanadianShopper is not changed" in asked[0][1], str(asked[:1]))
+    check("and shows the website's count against the new one, and where the "
+          "new one came from",
+          asked and "website 2 -> 0" in asked[0][1]
+          and "(from CanadianShopper)" in asked[0][1], str(asked))
     check("declining sends nothing to the website", not writes, str(writes))
 
     wrote = {"updated": [{"id": 1, "inventory": 0, "title": "Gretzky"}],
@@ -1329,6 +1340,8 @@ def test_one_click_import():
           publish_run is not None and publish_run.get("confirm") not in
           (None, ""), str(publish_run))
 
+    report_csv = (folder / "canadianshopper_products" / "cs-publish-report.csv")
+    report_csv.write_text("card,state\nGretzky,published\n", encoding="utf-8")
     app.lines.clear()
     publish_run["on_done"](0)
     check("a finished publish says the report has the detail",
@@ -1337,6 +1350,21 @@ def test_one_click_import():
     check("and tells the person to compare again",
           any("Compare again" in text for _tag, text in app.lines),
           str(app.lines[-3:]))
+
+    # ---- a publisher that wrote no rows is never handed over as a report
+    asked.clear()
+    app.lines.clear()
+    report_csv.write_text("", encoding="utf-8")
+    publish_run["on_done"](0)
+    check("a publish that found no drafts says so plainly",
+          any("found no drafts" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and never claims the report has the detail",
+          not any("Publish finished" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and does not offer an empty report to open",
+          not any(title == "Open the publish report?"
+                  for title, _m in asked), str(asked))
 
     publish_run["on_done"](2)
     check("a publish that failed says the drafts are still unpublished",
@@ -1497,21 +1525,71 @@ def test_one_click_import_refusals():
     check("and nothing on the page says \"0 drafts\"",
           not any("0 draft" in str(w.cget("text")) for w in parent.walk()
                   if isinstance(w, gui.ttk.Label)), "")
-    check("and it offers to publish, because the matched listings may still "
-          "be drafts",
-          any(title == "Publish any ready drafts now?" for title, _m in asked),
-          str([title for title, _m in asked]))
     check("the console explains why nothing was created",
           any("already have a listing on CanadianShopper" in text
               for _tag, text in lines), str(lines[-4:]))
     check("and says which states the stock reader cannot see",
           any("a draft, hidden, archived, or off sale" in text
               for _tag, text in lines), str(lines[-4:]))
-    declined_publish = [title for title, _m in asked
-                        if title.startswith("Publish")]
     check("a file with nothing new never claims a draft was created",
           not any("draft created" in text for _tag, text in lines),
           str(lines[-4:]))
+    #  Nothing was created, so nobody knows whether there is a draft. The
+    #  publisher is asked to look first - never to apply blind.
+    look = next((r for r in app.runs
+                 if r["tool"].endswith("cs-publish-drafts.py")), None)
+    check("a publish is looked for before anyone is asked to type PUBLISH",
+          look is not None and "--apply" not in look["args"],
+          str(look and look["args"]))
+    check("and no PUBLISH question is asked until the look finds one",
+          not any(title.startswith("Publish") for title, _m in asked),
+          str([title for title, _m in asked]))
+
+    #  A look that finds nothing is an answer: no PUBLISH, no empty report.
+    report_csv = (folder / "canadianshopper_products" / "cs-publish-report.csv")
+    report_csv.write_text("card,state\n", encoding="utf-8")
+    asked.clear()
+    app.lines.clear()
+    look["on_done"](0)
+    check("a look that finds no drafts says there is nothing to publish",
+          any("No drafts on CanadianShopper" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and names the states a count cannot fix, pointing at the dashboard",
+          any("vendor dashboard" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and never asks for a typed PUBLISH for nothing",
+          not any(title.startswith("Publish") for title, _m in asked),
+          str([title for title, _m in asked]))
+    check("and never offers the empty report to open",
+          not any(title == "Open the publish report?" for title, _m in asked),
+          str([title for title, _m in asked]))
+
+    #  A plugin that cannot see listings that are not on sale is named, so the
+    #  one-sided cards are not left as a mystery.
+    check("an older reader is named when one is installed",
+          not any("plugin is" in text and "1.0.25" in text
+                  for _tag, text in app.lines)
+          or gui.plugin_version() != "", str(app.lines[-2:]))
+
+    #  A look that does find a draft asks the same question as before, and
+    #  only then is the publisher asked to apply.
+    report_csv.write_text("card,state\nGretzky,draft\n", encoding="utf-8")
+    asked.clear()
+    app.runs.clear()
+    #  Inside the patch: the publisher is resolved by action name when the
+    #  question is asked, so the stub has to still be in place.
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: import_actions.get(action, "")), \
+            patch.object(gui, "BASE", folder):
+        look["on_done"](0)
+    check("a look that finds a draft asks before publishing it",
+          any(title.startswith("Publish") for title, _m in asked),
+          str([title for title, _m in asked]))
+    applied = next((r for r in app.runs
+                    if r["tool"].endswith("cs-publish-drafts.py")
+                    and "--apply" in r["args"]), None)
+    check("and only then is the publisher asked to apply",
+          applied is not None, str(app.runs))
 
     # ---- a genuine per-file refusal keeps its red reason
     _run, lines = listing_run(
@@ -1727,6 +1805,87 @@ def test_panel_explains_off_sale():
           not app.runs, str(app.runs))
 
 
+def test_report_rows():
+    print()
+    print("== 19. a report is only worth opening when it has something in it ==")
+    folder = Path(tempfile.mkdtemp(prefix="cs-report-"))
+    path = folder / "cs-publish-report.csv"
+    check("a report that is not there is unknown, not empty",
+          stock_compare.report_rows(path) is None, "")
+    path.write_text("", encoding="utf-8")
+    check("a file with nothing in it holds no rows",
+          stock_compare.report_rows(path) == 0, "")
+    path.write_text("card,state\n", encoding="utf-8")
+    check("a header on its own is still no rows - what a publisher with no "
+          "drafts leaves behind",
+          stock_compare.report_rows(path) == 0, "")
+    path.write_text("card,state\nGretzky,published\nOrr,blocked\n",
+                    encoding="utf-8")
+    check("every draft line counts", stock_compare.report_rows(path) == 2, "")
+    path.write_text("\n\ncard,state\nGretzky,published\n", encoding="utf-8")
+    check("blank lines are not drafts", stock_compare.report_rows(path) == 1, "")
+
+
+def test_old_reader_is_named():
+    print()
+    print("== 20. a reader that cannot see a hidden listing says so ==")
+    folder, app, parent = build_panel()
+    products = PRODUCTS + [
+        {"id": 9, "name": "Only on the website card", "sku": "",
+         "manage_stock": True, "stock_quantity": 1, "type": "simple"}]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    def compare(version=None):
+        app.lines.clear()
+        with patch.object(gui, "TOOL_ACTION",
+                          lambda action: "/plugins/cs/stock.py"), \
+                patch.object(gui, "read_woo_credentials",
+                             lambda path=None: ("https://shop.example", "ck_a",
+                                                "cs_b")), \
+                patch.object(gui, "woo_get", fetch_all), \
+                patch.object(gui, "in_background", sync_background), \
+                patch.object(gui, "plugin_version",
+                             lambda *a, **k: version or ""), \
+                patch.object(gui, "BASE", folder):
+            find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+            (folder / "cs-stock.json").write_text(
+                json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+            app.runs[-1]["on_done"](0)
+        return list(app.lines)
+
+    lines = compare()
+    listed = next((w for w in parent.walk()
+                   if isinstance(w, gui.tk.Listbox)), None)
+    check("the card only on the website is listed as such",
+          listed is not None and any("not on CanadianShopper" in item
+                                    for item in listed.items),
+          str(listed and listed.items))
+    check("and the summary separates it from the count disagreement",
+          any("1 disagree" in text and "1 only on one side" in text
+              for _tag, text in lines), str(lines[-3:]))
+    check("and no version is claimed when the plugin cannot be read",
+          not any("reader in your plugin is" in text for _tag, text in lines),
+          str(lines[-3:]))
+
+    lines = compare("1.0.24")
+    check("an old reader is named, with the version that fixes it",
+          any("1.0.24" in text and "1.0.25" in text for _tag, text in lines),
+          str(lines[-3:]))
+    check("and it says what such a reader cannot see",
+          any("draft, hidden or archived looks missing" in text
+              for _tag, text in lines), str(lines[-3:]))
+    check("and it does not claim the card is absent from the shop",
+          any("Update the plugin, then compare again" in text
+              for _tag, text in lines), str(lines[-3:]))
+
+    lines = compare("1.0.25")
+    check("a reader that reports every listing is not nagged about",
+          not any("reader in your plugin is" in text for _tag, text in lines),
+          str(lines[-3:]))
+
+
 def main():
     test_woo_items()
     test_plugin_items()
@@ -1751,6 +1910,8 @@ def main():
     test_one_click_import_refusals()
     test_listings_that_are_not_on_sale()
     test_panel_explains_off_sale()
+    test_report_rows()
+    test_old_reader_is_named()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))
