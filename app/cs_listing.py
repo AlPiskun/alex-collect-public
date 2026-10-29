@@ -163,6 +163,32 @@ def build_rows(products, values=None):
     return rows, notes
 
 
+def basename(label):
+    """A file's own name, from a bare name or a path of either flavour.
+
+    The plugin may report ``file``, ``csv`` or ``path``, and a path on Windows
+    uses backslashes. Comparing whole paths would make the same batch look
+    like two different files, and the panel would then call a file imported
+    here and unknown there.
+    """
+    return str(label or "").replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+
+
+def _count(entry, key):
+    """A number the plugin reported, or None when it said nothing usable.
+
+    Zero is a real answer - an import that created no drafts - and must not be
+    confused with a missing field, which is a different story.
+    """
+    value = (entry or {}).get(key)
+    if value is None or value == "":
+        return None
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def import_report(written, answer):
     """What the plugin's own import result says about each file written.
 
@@ -186,12 +212,12 @@ def import_report(written, answer):
 
     imported, failed, unknown = [], [], []
     for path, count in written:
-        name = Path(str(path)).name
+        name = basename(path)
         hit_fail = None
         for entry in entries("failed"):
             label = str(entry.get("file") or entry.get("csv") or
                         entry.get("path") or "")
-            if label and Path(label).name == name:
+            if label and basename(label) == name:
                 hit_fail = entry
                 break
         if hit_fail is not None:
@@ -205,16 +231,16 @@ def import_report(written, answer):
         for entry in entries("imported"):
             label = str(entry.get("file") or entry.get("csv") or
                         entry.get("path") or "")
-            if label and Path(label).name == name:
+            if label and basename(label) == name:
                 hit = entry
                 break
         if hit is None:
             unknown.append({"file": name, "rows": count})
             continue
-        try:
-            made = int(hit.get("drafts") if hit.get("drafts") is not None
-                       else hit.get("rows") or count)
-        except (TypeError, ValueError):
+        made = _count(hit, "drafts")
+        if made is None:
+            made = _count(hit, "rows")
+        if made is None:
             made = count
         imported.append({"file": name, "rows": count, "drafts": made})
     return {"imported": imported, "failed": failed, "unknown": unknown}

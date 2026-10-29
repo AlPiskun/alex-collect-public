@@ -277,6 +277,31 @@ def test_import_report():
               [(Path("C:/deep/folder/a.csv"), 1)],
               {"imported": [{"file": "a.csv", "drafts": 1}]})["imported"],
           "")
+    #  Plugin 1.0.23 reports the basename, but a path in either flavour must
+    #  still land on the same file - otherwise one batch reads as imported
+    #  here and unknown there.
+    for label in ("C:\\Users\\Owner\\cs\\a.csv", "/home/o/cs/a.csv",
+                  "a.csv", "./a.csv"):
+        report = cs_listing.import_report(
+            [(Path("C:/deep/folder/a.csv"), 2)],
+            {"imported": [{"file": label, "drafts": 2}]})
+        check("a path written as %r still finds its file" % label,
+              report["imported"] and not report["unknown"], str(report))
+    check("a file the plugin lists under a different name stays unknown",
+          cs_listing.import_report(
+              [(Path("a.csv"), 1)],
+              {"imported": [{"file": "b.csv", "drafts": 1}]})["unknown"] ==
+          [{"file": "a.csv", "rows": 1}], "")
+    report = cs_listing.import_report(
+        [(Path("a.csv"), 3)],
+        {"imported": [{"file": "a.csv", "rows": 3, "drafts": 0}]})
+    check("an import that made no drafts is reported as zero, not as three",
+          report["imported"][0]["drafts"] == 0, str(report))
+    report = cs_listing.import_report(
+        [(Path("a.csv"), 3)],
+        {"imported": [{"file": "a.csv", "rows": 0, "drafts": 0}]})
+    check("a reported zero is not replaced by the rows that were written",
+          report["imported"][0]["drafts"] == 0, str(report))
 
 
 def test_listing_products():

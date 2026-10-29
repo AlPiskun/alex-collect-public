@@ -1403,6 +1403,27 @@ def test_one_click_import_refusals():
           not any("draft created" in text for _tag, text in lines),
           str(lines[-3:]))
 
+    # ---- a plugin that takes the file but creates nothing is not a success
+    _run, lines = listing_run(
+        import_actions,
+        lambda name: {"imported": [{"file": name, "rows": 1, "drafts": 0}],
+                      "failed": []})
+    check("an import that made no drafts is not called a success",
+          any("reported no drafts" in text for _tag, text in lines) and
+          not any("draft created" in text for _tag, text in lines),
+          str(lines[-3:]))
+
+    # ---- a Windows-shaped path in the result still finds the file
+    _run, lines = listing_run(
+        import_actions,
+        lambda name: {"imported": [{"file": "C:\\Users\\Owner\\cs\\" + name,
+                                    "rows": 1, "drafts": 1}],
+                      "failed": []})
+    check("a result that names the file by a full Windows path is understood",
+          any("1 draft created" in text for _tag, text in lines) and
+          not any("not reported on" in text for _tag, text in lines),
+          str(lines[-3:]))
+
     # ---- declining the import leaves the file, and nothing runs
     asked[:] = []
     app.runs.clear()

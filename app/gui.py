@@ -64,7 +64,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.67"
+VERSION = "2.68"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -4809,12 +4809,21 @@ def build_stock(parent, app):
                                        "the file is still there." % rc)
                 return
             made = sum(entry["drafts"] for entry in report["imported"])
-            if report["imported"]:
+            if made:
                 app.console_line(
                     "%d draft%s created on CanadianShopper. They are not "
                     "live: Preview drafts lists which are ready and which "
                     "need work." %
                     (made, "" if made == 1 else "s"), "ok")
+            if report["imported"] and not made:
+                #  The plugin took the file but says it created nothing. That
+                #  is not a success to report as one: either the importer
+                #  made drafts it did not count, or it silently refused every
+                #  row, and only the dashboard can say which.
+                app.console_line(
+                    "The plugin took the file but reported no drafts. Check "
+                    "CanadianShopper -> Products before importing it again.",
+                    "err")
             if report["unknown"]:
                 app.console_line(
                     "%d file%s was not reported on by the plugin, so it is not "
@@ -4827,9 +4836,11 @@ def build_stock(parent, app):
                     "Nothing was imported: the plugin reported no file as "
                     "imported. The file is in %s." % folder, "err")
             summary.configure(
-                text="%d draft%s created on CanadianShopper. Compare again "
-                     "after you publish them." %
-                     (made, "" if made == 1 else "s"))
+                text=("%d draft%s created on CanadianShopper. Compare again "
+                      "after you publish them." %
+                      (made, "" if made == 1 else "s")) if made else
+                "The import reported no drafts; check CanadianShopper -> "
+                "Products.")
             if report["imported"]:
                 preview_drafts()
 
