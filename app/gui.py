@@ -47,7 +47,12 @@ from process_utils import no_window_kwargs
 import photo_assign
 import photo_pool
 import photo_replace
+import market_stock
 import photo_thumbs
+import sale_preview
+import cs_listing
+import stock_compare
+import stock_write
 import woo_media
 import woo_orders
 from sale_inputs import woo_get
@@ -59,7 +64,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.59"
+VERSION = "2.73"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -77,6 +82,19 @@ CS_PLUGIN_ID = "canadianshopper"
 CS_PHOTO_STAGE = "batch.photo_stage"
 CS_PHOTO_WIRE = "batch.photo_wire"
 CS_PHOTO_REPLACE = "batch.photo_replace"
+#  Reading CanadianShopper's own order list, so a sale there can be
+#  previewed before it is written. Optional: a plugin without it
+#  still sells cards, the panel just says what is missing.
+CS_ORDERS_ACTION = "after_sale.orders"
+#  Listing CanadianShopper's whole catalogue with its inventory, so the
+#  two sites can be compared without opening either dashboard.
+CS_STOCK_ACTION = "stock.list"
+#  The write half. It is asked for exactly as the plugin names it, so an
+#  older plugin that cannot set stock is detected rather than assumed.
+CS_STOCK_SET_ACTION = "stock.set"
+#  Creating listings is the plugin's own importer: the core writes the CSV it
+#  has always written, and this action takes that file and makes the drafts.
+CS_IMPORT_ACTION = "marketplace.import_csv"
 #  batch.photo_replace existed in 1.0.14 but only matched a staged CSV
 #  row. The CSV-free --mode replace arrived in 1.0.15, so the action ID
 #  alone cannot tell the two apart - the version has to be checked.
@@ -176,6 +194,10 @@ SETTINGS_FILE = BASE / "gui-settings.json"
 LOG_FILE = BASE / "gui-log.txt"
 CHECKLIST = BASE / "sold-cards-checklist.csv"
 CS_COOKIE_FILE = BASE / "cookie.txt"
+#  Which orders have already been turned into checklist rows. It is a
+#  cache, not a record: the checklist and the ledger stay the truth,
+#  and losing this file only means a preview shows older orders again.
+SOLD_ORDERS_SEEN = BASE / sale_preview.SEEN_FILE
 CS_HOME = "https://canadianshopper.ca"
 _TOOL_DIALOG_START = "\x1eALEX_COLLECT_DIALOG:"
 _TOOL_DIALOG_END = "\x1f"
@@ -868,6 +890,8 @@ inside Alex Collect - no bookmarklet is required for publishing:
 
   1. Open CanadianShopper (button below) and log in.
   2. Vendor dashboard -> Products -> upload / import the CSV.
+     (A listing made from the stock panel writes the same file and can
+     import it as drafts itself, when the plugin supports it.)
   3. Use the newest file from the cs-ready folder - the name starts
      with canadianshopper_import_ and ends _01_of_NN.csv.
   4. Choose Preview drafts. It lists ready and blocked drafts and writes
@@ -924,6 +948,42 @@ Sweep on the CanadianShopper side: every listing already sitting at
 quantity 0 gets archived (reversible - it can be reactivated later).
 Useful after you sold the last copies in person. Preview shows the
 list first; nothing is archived without the second click."""
+
+DOCS["stock"] = """\
+Where the numbers disagree, and where they get put right. One card can sit on
+four sites; when one of them sells it, the others keep offering it until
+somebody changes them. This panel reads a catalogue - your website through its
+REST API keys, and CanadianShopper, eBay or Facebook through a signed-in
+session - matches the cards, and lists ONLY the ones that need something done:
+a count that differs, or a card that exists on one side only.
+
+The list is the work, not a report. The website is right far more often than
+not, so the first button sets every differing CanadianShopper count to the
+website's count - and it always shows the exact changes and asks before writing
+anything. Select rows to fix or ignore just those, and when the website is the
+wrong side, select the card and open its product page: the app's keys can only
+read, so the website is changed on the website's own screen. A card that is no
+longer sold on the other site is ignored, which stops it being compared again
+until it is restored.
+
+A listing that exists but is not on sale - a draft, hidden, archived or out of
+stock - gets its own row, because a stock count cannot fix it and stock.set
+only touches listings that are on sale. When one of them is a draft, publishing
+is offered; anything else is a vendor-dashboard job.
+
+A card that exists on the website and no longer on CanadianShopper is the one
+that can be put back rather than corrected: the listing buttons write the
+CanadianShopper import file from the website product itself - its title, price,
+photo URL and stock count - in the same fourteen columns and with the same
+filename as a batch from the pipeline. Nothing appears on CanadianShopper until
+that file is imported, which the panel offers to do itself when the plugin can.
+It arrives as an unpublished draft, and the same run then offers to publish it:
+the publisher scans every draft, activates only the ones that pass all the
+readiness checks, and still asks for PUBLISH to be typed.
+
+A pair is only made when a shared SKU or the title identifies the same card - a
+wrong pair would accuse a card that is fine - and an unpaired card is never
+called wrong, only "on one side"."""
 
 DOCS["square"] = """\
 Square up a photo (or a whole folder) by padding it onto a white
@@ -1022,6 +1082,8 @@ runs behind your login in the browser (with or without the add-on):
 
   1. Open CanadianShopper (button below) and log in.
   2. Vendor dashboard -> Products -> upload / import the CSV.
+     (A listing made from the stock panel writes the same file and can
+     import it as drafts itself, when the plugin supports it.)
   3. Use the newest file from the cs-ready folder or your batch folder.
   4. Keep each file under 500 rows (that is what Combine ensures).
   5. When the import shows the products, publish them.
@@ -1277,6 +1339,26 @@ TOOLTIPS = {
     "Apply the previewed change": "Write exactly what the preview listed",
     "Clear": "Empty this list; the files on disk are left alone",
     "Type the cards...": "Open the editor for typing what sold, one card per line",
+    "Add these": "Add only the orders shown above to the checklist - the rest of the website is left alone",
+    "Compare stock": "Read both catalogues and list only the cards whose counts disagree; nothing is changed",
+    "Compare this card": "Open the stock panel pointed at the one card this sale is about",
+    "Compare the whole catalogue instead": "Drop the one-card filter and compare everything",
+    "Compare stock with eBay": "Read your eBay active listings with your session cookie and list only the cards whose numbers disagree",
+    "Compare stock with Facebook": "Read your Facebook selling page with your session cookie and list only the cards whose numbers disagree",
+    "Set CanadianShopper to the website's counts...": "The usual fix: for every card whose two counts differ, set CanadianShopper's count to the website's count - always shown and confirmed first, write permission only",
+    "Fix the selected cards...": "Set CanadianShopper to the website's count for just the rows selected in the list, after a confirmation listing them",
+    "Set the website to the selected cards' counts...": "The reverse fix: set the website's stock count to the count the other site reports, for the selected cards - always shown and confirmed first; needs WooCommerce keys with Read/Write access",
+    "Open the selected cards on the website": "Open the website's own product edit page for the selected cards - for a count a plugin owns, a variable product, or anything the stock panel should not touch",
+    "List the selected cards on CanadianShopper...": "Write the CanadianShopper import file for the selected website-only cards from the website product - title, price, its own photo and stock count - then offer to import it as drafts and to publish them",
+    "List every website-only card...": "The same file for every card that is on the website and not on CanadianShopper, then the same offer to import and publish the drafts",
+    "Ignore the selected cards": "Stop comparing the selected cards: a card that is no longer sold on one site disappears from the list until it is restored; nothing on either site changes",
+    "Publish the ready drafts...": "Scan CanadianShopper's drafts and activate only the ones that pass every readiness check - for cards whose listing exists but was never published; PUBLISH still has to be typed",
+    "Restore ignored cards...": "Put every ignored card back into comparisons, after showing which ones they are",
+    "Read a saved eBay page...": "Read an eBay page you saved from your own signed-in browser (Ctrl+S, HTML only) - the way round eBay's \"Pardon our interruption\" check, using the same reader",
+    "Read a saved Facebook page...": "Read a Facebook selling page you saved from your own signed-in browser (Ctrl+S, HTML only) - the way round Facebook's HTTP 400, using the same reader",
+    "Open the eBay cookie file": "Open ebay-cookie.txt so the eBay session cookie can be pasted; the file stays on this computer",
+    "Open the Facebook cookie file": "Open fb-cookie.txt so the Facebook session cookie can be pasted; the file stays on this computer",
+    "Preview new orders": "Read the orders that came in since you last looked, and write nothing",
     "Open plugins folder": "Open the folder plugins are installed into",
     "Open the tools folder": "Open the folder holding this app's tools",
     "Dry-run (writes nothing)": "Report what would happen without writing anything",
@@ -1614,6 +1696,10 @@ class App(tk.Tk):
         self.console.tag_configure("cmd", foreground="#9fd0ff")
         self.console.tag_configure("err", foreground="#ff9d9d")
         self.console.tag_configure("ok", foreground="#9de0a8")
+        #  Not every outcome is a failure or a success: "the file was read and
+        #  there was nothing new in it" is neither, and painting it red sends
+        #  the person looking for a fault that is not there.
+        self.console.tag_configure("warn", foreground="#ffd08a")
         self.console.tag_configure("dim", foreground="#8a8a8a")
 
         row = ttk.Frame(box)
@@ -2136,12 +2222,13 @@ class App(tk.Tk):
 #  A panel = title + doc + controls. The same builder is used by the task
 #  menu, the tabs view and the wizard pages.
 PANEL_ORDER = ["cookie", "pipeline", "combine", "stage", "importpanel",
-               "wire", "rerun", "sold", "checklist", "zerostock", "square",
+               "wire", "rerun", "sold", "checklist", "stock", "zerostock",
+               "square",
                "newphotos", "ordertext", "markets", "logs", "plugins"]
 GROUPS_FULL = [("Sell to a customer", ["ordertext"]),
                ("Sell a new batch", ["pipeline", "combine", "stage",
                                      "importpanel", "wire"]),
-               ("After a sale", ["sold", "checklist", "zerostock"]),
+               ("After a sale", ["sold", "checklist", "stock", "zerostock"]),
                ("Photos", ["square", "rerun", "newphotos"]),
                ("Re-run a marketplace", ["markets"])]
 
@@ -2169,6 +2256,7 @@ TITLES = {
     "rerun": "Re-point photos",
     "sold": "A card sold - mark it everywhere",
     "checklist": "The tick-off checklist",
+    "stock": "Stock on every site",
     "zerostock": "Archive CanadianShopper listings already at 0",
     "square": "Square up a photo (manual upload)",
     "plugins": "Plugins",
@@ -2187,6 +2275,7 @@ MENU_LABELS = {
     "rerun": "Re-point photos",
     "sold": "A card sold",
     "checklist": "The checklist",
+    "stock": "Compare stock",
     "zerostock": "Archive listings at 0",
     "square": "Square up a photo",
     "newphotos": "Replace card photos",
@@ -2205,6 +2294,8 @@ BLURBS = {
     "rerun": "CanadianShopper plugin: restore cached front/back photos after an import. No Woo export or image uploads needed; preview before applying.",
     "sold": "Record where the sale happened and follow up on the other listings.",
     "checklist": "See what is still outstanding and tick it off.",
+    "stock": "Find the cards whose counts disagree between your website "
+             "and CanadianShopper.",
     "zerostock": "Sweep: archive everything sitting at quantity 0.",
     "square": "Pad a photo onto a white square for a manual dashboard upload.",
     "plugins": "Install and manage optional plugins.",
@@ -2831,7 +2922,10 @@ def build_cookie(parent, app):
     market.pack(fill="x", pady=(1, 4))
     market.columnconfigure(1, weight=1)
     field_row(market, 0, "eBay active listings URL:", "ebay_selling_url")
-    field_row(market, 1, "Facebook listing/review page URL:",
+    #  Stock comparison reads these pages. The label says which one, because
+    #  the create-a-listing page is the one a person lands on first and it has
+    #  no stock on it at all.
+    field_row(market, 1, "Facebook selling page URL:",
               "facebook_selling_url")
     field_row(market, 2, "CanadianShopper vendor page URL:",
               "canadianshopper_store_url")
@@ -3128,6 +3222,63 @@ def build_cookie(parent, app):
         ttk.Label(box, text="CanadianShopper cookie controls appear when the "
                   "optional plugin is installed.", style="Dim.TLabel").pack(
                       anchor="w", pady=(4, 8))
+
+
+def in_background(app, work, done):
+    """Run a slow call off the window thread, then draw with its answer.
+
+    A website read can take a few seconds, and doing it inline froze the whole
+    window - which on Windows is painted as "Not Responding" and reads as a
+    hung program. The work runs on a daemon thread and its result (or its
+    error) comes back through ``app.after``, so every Tk call still happens on
+    the thread that owns the widgets.
+    """
+    def runner():
+        try:
+            result, error = work(), None
+        except Exception as exc:      # the caller draws the message
+            result, error = None, exc
+        try:
+            app.after(0, lambda: done(result, error))
+        except Exception:
+            #  The window was closed while the call was out; there is nobody
+            #  left to draw for, and a progress display must never be able to
+            #  turn a finished read into a traceback in the log.
+            pass
+
+    threading.Thread(target=runner, daemon=True).start()
+
+
+def open_market_cookie(app, site_id):
+    """Create/open the private cookie file for eBay or Facebook.
+
+    The file is a paste target, not a form: the shipped lines explain what to
+    copy, and every line starting with '#' is ignored when it is read, so the
+    explanation cannot end up inside the cookie.
+    """
+    info = market_stock.SITES[site_id]
+    path = BASE / info["cookie"]
+    if not path.exists():
+        path.write_text(
+            "# Paste your %s session cookie below, then save this file.\n"
+            "#\n"
+            "# A signed-in site sends MANY cookies, not one - paste all of them.\n"
+            "# In the browser: sign in, press F12, open the Network tab, reload\n"
+            "# the page, click the page request itself, and copy the whole value\n"
+            "# of the 'Cookie' request header. It is one long line of\n"
+            "# name=value pairs separated by semicolons; paste it as it is.\n"
+            "#\n"
+            "# Several lines work too: each is joined into the same header, and a\n"
+            "# line may start with 'Cookie:' - that part is removed for you.\n"
+            "#\n"
+            "# Lines starting with # are ignored, so this explanation is safe to\n"
+            "# leave in place. The file stays on this computer and is never\n"
+            "# included in the app or in a report.\n" % info["label"],
+            encoding="utf-8")
+    restrict_file_permissions(path)
+    open_path(path)
+    app.console_line("Opened the private %s cookie file; keep it out of public "
+                     "repos and messages." % info["label"], "dim")
 
 
 def open_woo_keys_file(app, current_site_url=""):
@@ -3599,26 +3750,319 @@ def build_rerun(parent, app):
 
 
 def build_sold(parent, app):
+    #  The panel used to lead with two rows of radios and end with the buttons,
+    #  so the first thing a person saw was configuration and the thing they
+    #  actually came to do was below the fold - "I can't see how to run this".
+    #  It now opens with the action: read what sold, look at it, then add it.
     panel_header(parent, app, "sold")
     box = ttk.Frame(parent)
     box.pack(fill="x")
     src = tk.StringVar(master=parent, value="typed")
     onch = tk.StringVar(master=parent, value="website")
     do_cs = tk.BooleanVar(master=parent, value=False)
+    state = {"path": None, "preview": []}
 
+    channel_names = {"website": "your website",
+                     "canadianshopper": "CanadianShopper",
+                     "facebook": "Facebook", "ebay": "eBay",
+                     "inperson": "an in-person sale",
+                     "other": "another place"}
+
+    # ---------------------------------------------------------- credentials
+    def keys_path():
+        return BASE / "woo-keys.txt"
+
+    def creds_or_offer():
+        """(site, key, secret) or None, offering the one-time file when absent.
+
+        The key file is the difference between a sale being one click and it
+        being retyped by hand, so it is offered once, with that reason
+        attached - and only when it is actually missing.
+        """
+        site, key, secret = read_woo_credentials()
+        site = site or app.settings.get("woo_site_url", "")
+        if site and key and secret:
+            return site, key, secret
+        if messagebox.askyesno(
+                "One-time setup: your website's API keys",
+                "I can read new orders straight from your website, so a sale "
+                "is one click instead of retyping its title.\n\n"
+                "That needs two lines in a private file beside the app:\n"
+                "  woo-keys.txt\n"
+                "  1. your website's address\n"
+                "  2. a READ-ONLY WooCommerce key (Settings > Advanced > "
+                "REST API > Add key)\n\n"
+                "It is a one-time step, and it makes every later check one "
+                "click. Fill it in now?"):
+            open_woo_keys_file(app, app.settings.get("woo_site_url", ""))
+            app.console_line("Fill in woo-keys.txt, save it, then press "
+                             "Preview new orders again.", "dim")
+        else:
+            app.console_line("No website keys, so nothing can be read yet: "
+                             "type the cards instead, or use the orders CSV.",
+                             "dim")
+        return None
+
+    # ------------------------------------------------------------- preview
+    def seen_numbers():
+        return sale_preview.load_seen(SOLD_ORDERS_SEEN)
+
+    def show_preview(rows, source_name, source="website"):
+        """Put the previewed cards on screen. Writes nothing anywhere."""
+        state["preview"] = rows
+        state["preview_source"] = source
+        listing.delete(0, "end")
+        for row in rows:
+            listing.insert("end", sale_preview.label(row))
+        if rows:
+            summary.configure(text=sale_preview.headline(rows))
+            list_frame.pack(anchor="w", fill="x", pady=(3, 4))
+            add_preview_btn.configure(
+                text="Add these %d card%s to the checklist%s" % (
+                    len(rows), "" if len(rows) == 1 else "s",
+                    " and fix CanadianShopper" if do_cs.get() else ""))
+            add_preview_btn.pack(anchor="w", pady=(0, 4))
+            for line in sale_preview.describe(rows):
+                app.console_line(line, "dim")
+            app.console_line(
+                "%s  (read from %s - nothing has been written yet)" %
+                (sale_preview.headline(rows), source_name), "ok")
+        else:
+            list_frame.pack_forget()
+            add_preview_btn.pack_forget()
+            summary.configure(text="No new orders: everything %s has is "
+                                   "already on the checklist." % source_name)
+            app.console_line("No new orders on %s." % source_name, "ok")
+
+    def preview_arrived(orders, error, source_name, source="website",
+                        statuses=sale_preview.DEFAULT_STATUSES):
+        """Draw what a read turned up - the only place a preview is decided."""
+        if error is not None:
+            message = getattr(error, "message", str(error))
+            hint = getattr(error, "hint", "")
+            messagebox.showerror("Could not read your orders",
+                                 message +
+                                 ("\n\n" + hint if hint else ""),
+                                 parent=box.winfo_toplevel())
+            app.console_line("Preview failed: %s %s" % (message, hint), "err")
+            #  A failed read empties the list: an old preview must never stay
+            #  on screen looking like today's answer, ready to be added.
+            state["preview"] = []
+            state["preview_source"] = ""
+            listing.delete(0, "end")
+            list_frame.pack_forget()
+            add_preview_btn.pack_forget()
+            summary.configure(text="Could not read your orders: " + message)
+            return
+        rows = sale_preview.unseen(
+            sale_preview.order_rows(orders, statuses=statuses, source=source),
+            seen_numbers())
+        show_preview(rows, source_name, source)
+
+    def read_website(creds):
+        site, key, secret = creds
+        summary.configure(text="Reading orders from %s..." % site)
+        app.console_line("Reading orders from %s..." % site, "cmd")
+        in_background(
+            app,
+            lambda: sale_preview.read_orders(woo_get, site, key, secret),
+            lambda orders, error: preview_arrived(orders, error, "your website"))
+
+    def read_canadianshopper():
+        action = TOOL_ACTION(CS_ORDERS_ACTION)
+        if not action:
+            messagebox.showinfo(
+                "CanadianShopper order list",
+                "Reading CanadianShopper's own orders needs the plugin's order "
+                "reader, and the installed plugin does not have it yet.\n\n"
+                "Until it does, either choose \"my website\" if the sale went "
+                "through the website, type the card with \"Type the cards...\", "
+                "or search the store yourself - that is the secondary route "
+                "and it needs no plugin at all.")
+            app.console_line(
+                "This CanadianShopper plugin has no order reader yet (%s). "
+                "Website orders can still be previewed." % CS_ORDERS_ACTION,
+                "dim")
+            return
+        out = BASE / "cs-orders.json"
+        try:
+            out.unlink()      # so an old answer can never be mistaken for this one
+        except FileNotFoundError:
+            pass
+        args = ["--orders-out", str(out),
+                "--days", str(sale_preview.DEFAULT_DAYS)]
+        if CS_COOKIE_FILE.is_file():
+            args += ["--cookie-file", str(CS_COOKIE_FILE)]
+        summary.configure(text="Asking CanadianShopper for its orders...")
+
+        def done(rc):
+            if rc != 0:
+                app.console_line("The CanadianShopper order read failed "
+                                 "(exit %s); nothing was previewed." % rc, "err")
+                summary.configure(text="CanadianShopper could not be read.")
+                return False
+            #  No status filter: WooCommerce's statuses are not
+            #  CanadianShopper's, and the plugin already returns the orders it
+            #  considers sold. Filtering here would silently drop every one.
+            orders = sale_preview.read_orders_file(out)
+            if orders is None:
+                #  Exit 0 with no readable file is a failure, not an empty
+                #  day: the plugin promised an answer and did not give one.
+                preview_arrived(None, sale_preview.PreviewError(
+                    "The CanadianShopper plugin finished but left no order "
+                    "list to read.",
+                    "Nothing was changed. The console above shows what the "
+                    "plugin said."),
+                    "CanadianShopper", source="canadianshopper",
+                    statuses=())
+                return False
+            preview_arrived(orders, None, "CanadianShopper",
+                            source="canadianshopper", statuses=())
+            return True
+
+        app.run_tool(action, args, "CanadianShopper orders",
+                     cwd=app.settings.get("pipeline_dir", str(WORK)),
+                     on_done=done)
+
+    def preview_new():
+        kind = sale_preview.channel_kind(onch.get())
+        if kind == "plugin":
+            read_canadianshopper()
+            return
+        if kind == "manual":
+            messagebox.showinfo(
+                "No order list to read",
+                "%s keeps no order list this app can read, so there is nothing "
+                "to preview.\n\nType the card with \"Type the cards...\", or "
+                "search the title in the seller pages the checklist links to."
+                % channel_names.get(onch.get(), "That channel").capitalize())
+            return
+        creds = creds_or_offer()
+        if creds:
+            read_website(creds)
+
+    def add_previewed():
+        """The previewed orders only - not everything the website has."""
+        rows = state["preview"]
+        if not rows:
+            return
+        if state.get("preview_source") == "canadianshopper":
+            #  CanadianShopper's order numbers mean nothing to WooCommerce, so
+            #  the cards go in by title - the same list the typed route uses,
+            #  written from the preview instead of retyped by hand.
+            card_list = BASE / "cs-sold-preview.txt"
+            card_list.write_text("\n".join(
+                row["card"] if int(row.get("qty") or 1) == 1
+                else "%s, %d" % (row["card"], row["qty"])
+                for row in rows) + "\n", encoding="utf-8")
+            args = ["--list", str(card_list), "--sold-on", "canadianshopper",
+                    "--checklist", str(CHECKLIST)]
+        else:
+            #  Only the website route needs the keys; a CanadianShopper sale
+            #  is added by title and must not be blocked by a missing file.
+            if not keys_path().is_file() and creds_or_offer() is None:
+                return
+            wanted = sorted({row["id"] or row["order"] for row in rows
+                             if row["id"] or row["order"]})
+            args = ["--woo-keys", str(keys_path()),
+                    "--orders", ",".join(wanted),
+                    "--checklist", str(CHECKLIST)]
+        if do_cs.get():
+            args.extend(["--cs", "--gui-dialogs", "--cs-tool",
+                         TOOL("sold-cards.py"), "--cookie-file",
+                         str(CS_COOKIE_FILE)])
+        added = list(rows)
+
+        def done(rc):
+            #  Remembered only once the checklist tool says it succeeded: a
+            #  preview whose sale was never written must come back next time.
+            if rc != 0:
+                app.console_line("The checklist tool did not finish (exit %s); "
+                                 "these orders will still be previewed next "
+                                 "time." % rc, "err")
+                return False
+            sale_preview.save_seen(SOLD_ORDERS_SEEN,
+                                   sale_preview.remember(seen_numbers(), added))
+            app.console_line("Added %s to the checklist." %
+                             sale_preview.headline(added).rstrip("."), "ok")
+            state["preview"] = []
+            listing.delete(0, "end")
+            list_frame.pack_forget()
+            add_preview_btn.pack_forget()
+            summary.configure(text="Added those cards. Press Preview new orders "
+                                   "again for anything newer.")
+            return True
+
+        app.run_tool("sold-everywhere.py", args,
+                     "Mark the sale(s) everywhere",
+                     cwd=app.settings.get("pipeline_dir", str(WORK)),
+                     on_done=done)
+
+    def source_hint():
+        """One line saying what Preview will read, for the chosen source."""
+        kind = sale_preview.channel_kind(onch.get())
+        if kind == "api":
+            return ("Preview reads your website's orders since the last time "
+                    "you added them. It uses the WooCommerce keys in "
+                    "woo-keys.txt - reading needs no special permission - and "
+                    "it is offered only when the keys are missing.")
+        if kind == "plugin":
+            if TOOL_ACTION(CS_ORDERS_ACTION):
+                return ("Preview asks the CanadianShopper plugin for its own "
+                        "orders, through the session cookie it already uses.")
+            return ("The installed CanadianShopper plugin has no order reader "
+                    "yet, so this source cannot be previewed - use your website "
+                    "or type the card.")
+        return ("%s has no order list this app can read: type the card, or "
+                "search the title in that site." %
+                channel_names.get(onch.get(), "That channel").capitalize())
+
+    ttk.Label(box, text="New orders", style="H2.TLabel").pack(anchor="w")
+    row_top = ttk.Frame(box)
+    row_top.pack(anchor="w", pady=(2, 0))
+    ttk.Button(row_top, text="Preview new orders", style="Task.TButton",
+               command=preview_new).pack(side="left")
+
+    summary = ttk.Label(box, text="Nothing previewed yet.", style="Dim.TLabel",
+                        wraplength=680, justify="left")
+    summary.pack(anchor="w", pady=(2, 0))
+
+    list_frame = ttk.Frame(box)
+    listing = tk.Listbox(list_frame, height=6, exportselection=False)
+    scroll = ttk.Scrollbar(list_frame, orient="vertical",
+                           command=listing.yview)
+    listing.configure(yscrollcommand=scroll.set)
+    listing.pack(side="left", fill="both", expand=True)
+    scroll.pack(side="right", fill="y")
+
+    add_preview_btn = ttk.Button(box, text="Add these to the checklist",
+                                 command=add_previewed)
+    add_preview_btn.pack_forget()
+
+    hint = ttk.Label(box, text=source_hint(), style="Dim.TLabel",
+                     wraplength=680, justify="left")
+    hint.pack(anchor="w", pady=(4, 0))
+
+    def chosen_changed():
+        hint.configure(text=source_hint())
+
+    # --------------------------------------------------- where did it sell?
+    ttk.Label(box, text="Where did it sell?", style="H2.TLabel").pack(
+        anchor="w", pady=(10, 0))
     row = ttk.Frame(box)
-    row.pack(anchor="w", pady=(0, 4))
-    ttk.Label(row, text="Where did it sell?").pack(side="left")
-    for txt, val in (("my website", "website"), ("CanadianShopper", "canadianshopper"),
+    row.pack(anchor="w", pady=(2, 0))
+    for txt, val in (("my website", "website"),
+                     ("CanadianShopper", "canadianshopper"),
                      ("Facebook", "facebook"), ("eBay", "ebay"),
                      ("in person", "inperson"), ("somewhere else", "other")):
-        ttk.Radiobutton(row, text=txt, value=val, variable=onch).pack(
-            side="left", padx=(8, 0))
+        ttk.Radiobutton(row, text=txt, value=val, variable=onch,
+                        command=chosen_changed).pack(side="left", padx=(8, 0))
 
+    # ------------------------------------------------------ how they are named
+    ttk.Label(box, text="Name the cards", style="H2.TLabel").pack(
+        anchor="w", pady=(10, 0))
     row2 = ttk.Frame(box)
-    row2.pack(anchor="w")
-    ttk.Label(row2, text="How do you want to name the cards?").pack(
-        side="left")
+    row2.pack(anchor="w", pady=(2, 0))
     for txt, val in (("type them", "typed"),
                      ("my website's orders CSV", "orders"),
                      ("website API key (woo-keys.txt)", "keys")):
@@ -3626,29 +4070,38 @@ def build_sold(parent, app):
             side="left", padx=(8, 0))
     ttk.Label(
         box,
-        text="These choices provide card names for the core follow-up checklist "
-             "too; they are not CanadianShopper-plugin-only.",
-        style="Dim.TLabel", wraplength=640, justify="left").pack(
+        text="These choices name the cards for the checklist below too; they "
+             "are not plugin-only. Preview is the shortcut when the sale came "
+             "from a site: it already knows the titles.",
+        style="Dim.TLabel", wraplength=680, justify="left").pack(
             anchor="w", pady=(3, 0))
 
+    # -------------------------------------------------- CanadianShopper stock
     if app.cs_addon:
+        ttk.Label(box, text="CanadianShopper stock", style="H2.TLabel").pack(
+            anchor="w", pady=(10, 0))
         ttk.Checkbutton(
             box, variable=do_cs,
             text="Also fix CanadianShopper now (separate from the sale source; "
-                 "preview and approve before writing)").pack(anchor="w", pady=(6, 2))
+                 "preview and approve before writing)",
+            command=lambda: add_preview_btn.configure(
+                text="Add these %d card%s to the checklist%s" % (
+                    len(state["preview"]),
+                    "" if len(state["preview"]) == 1 else "s",
+                    " and fix CanadianShopper" if do_cs.get() else ""))
+        ).pack(anchor="w", pady=(2, 2))
         ttk.Label(
             box,
-            text="The match picker appears only after a valid session is loaded "
-                 "and a title is unmatched or ambiguous. Check the console for "
-                 "cookie/session errors or the preview details.",
-            style="Dim.TLabel", wraplength=640, justify="left").pack(
+            text="A stock comparison is a separate job: nothing here counts "
+                 "your stock on other sites during a sale. The match picker "
+                 "appears only after a valid session is loaded and a title is "
+                 "unmatched or ambiguous.",
+            style="Dim.TLabel", wraplength=680, justify="left").pack(
                 anchor="w", pady=(0, 2))
     else:
         ttk.Label(box, text="Without the plugin, CanadianShopper stock changes "
                   "remain manual checklist tasks.", style="Dim.TLabel",
-                  wraplength=640, justify="left").pack(anchor="w", pady=(6, 2))
-
-    state = {"path": None}
+                  wraplength=680, justify="left").pack(anchor="w", pady=(10, 2))
 
     def source_args():
         """(args-for-sold-everywhere, args-for-sold-cards) or None."""
@@ -3674,7 +4127,7 @@ def build_sold(parent, app):
                 return None
             a = ["--woo-orders-csv", f]
             return a, a
-        kf = BASE / "woo-keys.txt"
+        kf = keys_path()
         if not kf.exists():
             ex = BASE / "woo-keys.txt.example"
             if ex.exists() and messagebox.askyesno(
@@ -3763,20 +4216,32 @@ def build_sold(parent, app):
                                                    "preview"),
                      cwd=app.settings.get("pipeline_dir", str(WORK)))
 
-    ttk.Label(box,
-              text="Typed-sale flow: enter the cards, save the list, then add it to "
-                   "the checklist. Choose the sale source above; the checklist "
-                   "covers the other channels. One typed card opens the remaining "
-                   "seller pages in Edge, including the CanadianShopper store. "
-                   "Paste the copied title into CanadianShopper, eBay and "
-                   "Facebook searches manually; WooCommerce opens the orders list. "
-                   "The plugin-only CanadianShopper stock checkbox is independent; "
-                   "no listing is changed automatically.",
-              style="Dim.TLabel", wraplength=680, justify="left").pack(
-                  anchor="w", pady=(4, 0))
-
-    row3 = ttk.Frame(box)
-    row3.pack(anchor="w", pady=(4, 0))
+    def compare_this_card():
+        """Hand one card to the stock panel, which does the comparing."""
+        card = ""
+        if len(state["preview"]) == 1:
+            card = state["preview"][0]["card"]
+        elif state["path"]:
+            try:
+                lines = [line.strip() for line in Path(state["path"]).read_text(
+                    encoding="utf-8", errors="replace").splitlines()]
+            except Exception as exc:
+                log("could not read typed sale list: %s" % exc)
+                lines = []
+            lines = [line for line in lines
+                     if line and not line.startswith("##")]
+            if len(lines) == 1:
+                card = lines[0].split(",")[0].strip()
+        if not card:
+            messagebox.showinfo(
+                "Which card?",
+                "This opens the stock panel for ONE card. Either preview the "
+                "sale first (so the card is known), or type the card on its "
+                "own with \"Type the cards...\".\n\nFor the whole catalogue "
+                "at once, use the Stock panel from the After a sale menu.")
+            return
+        app._stock_filter = card
+        app.show_panel("stock")
 
     def type_cards():
         Editor(self_toplevel=box, title="Cards that sold",
@@ -3796,10 +4261,17 @@ def build_sold(parent, app):
                          "title and returns; then click Add to the checklist.",
                on_saved=lambda p: state.update(path=str(p)))
 
+    # --------------------------------------------------------- manual route
+    ttk.Label(box, text="Type it instead", style="H2.TLabel").pack(
+        anchor="w", pady=(10, 0))
+    row3 = ttk.Frame(box)
+    row3.pack(anchor="w", pady=(2, 0))
     ttk.Button(row3, text="Type the cards...", command=type_cards).pack(
         side="left")
     ttk.Button(row3, text="Add to the checklist (and fix CS if ticked)",
                style="Task.TButton", command=add_rows).pack(side="left", padx=8)
+    ttk.Button(row3, text="Compare this card's stock...",
+               command=compare_this_card).pack(side="left")
     if app.cs_addon:
         row4 = ttk.Frame(box)
         row4.pack(anchor="w", pady=(4, 0))
@@ -3807,6 +4279,1281 @@ def build_sold(parent, app):
                    "change", command=lambda: fix_cs(False)).pack(side="left")
         ttk.Button(row4, text="Apply the previewed change",
                    command=lambda: fix_cs(True)).pack(side="left", padx=8)
+
+    ttk.Label(box,
+              text="This route is for a sale the app cannot read: enter the "
+                   "cards, save the list, then add it to the checklist. One "
+                   "typed card opens the remaining seller pages in the "
+                   "browser, with the title copied for pasting. The "
+                   "plugin-only CanadianShopper stock checkbox is independent; "
+                   "no listing is changed automatically.",
+              style="Dim.TLabel", wraplength=680, justify="left").pack(
+                  anchor="w", pady=(6, 0))
+
+
+def build_stock(parent, app):
+    #  One job, on demand: which cards have a different number on two sites,
+    #  and then the correction. Nothing here runs during a sale - the sale
+    #  panel says plainly that comparing is a separate job.
+    #
+    #  The list is the place the work happens, not a report: the usual answer
+    #  is "the website is right", so setting the other site to the website's
+    #  count is one confirmed click for the whole list, a selection for the
+    #  exceptions, and a card that only exists on one side can be dismissed so
+    #  it stops coming back.
+    panel_header(parent, app, "stock")
+    box = ttk.Frame(parent)
+    box.pack(fill="x")
+
+    #  A one-shot hand-off from the sale panel: "this card, please". It is
+    #  consumed here so reopening the panel from the menu compares everything.
+    focus = str(getattr(app, "_stock_filter", "") or "").strip()
+    app._stock_filter = ""
+    state = {"card": focus, "rows": [], "pairs": [], "only_woo": [],
+             "only_other": [], "label": "CanadianShopper", "mode": "count",
+             "skipped": 0, "catalog": {}}
+    statuses = {}
+
+    def credentials():
+        site, key, secret = read_woo_credentials()
+        site = site or app.settings.get("woo_site_url", "")
+        if site and key and secret:
+            return site, key, secret
+        messagebox.showinfo(
+            "One-time setup: your website's API keys",
+            "Comparing stock reads your website's catalogue with the same "
+            "WooCommerce keys as everything else. Changing a count on the "
+            "website needs a key pair with Read/Write access; a read-only "
+            "pair can still compare and can still fix CanadianShopper.\n\n"
+            "woo-keys.txt is about to open. Fill it in, save it, then press "
+            "Compare again.")
+        open_woo_keys_file(app, app.settings.get("woo_site_url", ""))
+        return None
+
+    # --------------------------------------------------------- the ignore list
+    def ignored_path():
+        return BASE / stock_compare.IGNORED_FILE
+
+    def ignored_entries():
+        return stock_compare.load_ignored(ignored_path())
+
+    def hide(rows):
+        """Dismiss these cards so they are not compared again."""
+        if not rows:
+            messagebox.showinfo("Nothing selected",
+                                "Select one or more rows in the list first.")
+            return
+        entries = stock_compare.remember_ignored(ignored_entries(), rows)
+        if not stock_compare.save_ignored(ignored_path(), entries):
+            messagebox.showerror(
+                "Could not save the list",
+                "The list of cards to stop asking about could not be written "
+                "to %s." % ignored_path(), parent=box.winfo_toplevel())
+            return
+        for row in rows:
+            app.console_line("Ignoring %s - it will not be compared again."
+                             % row["card"], "dim")
+        app.console_line("%d card%s now ignored. Restore them with \"Restore "
+                         "ignored cards...\"." %
+                         (len(rows), "" if len(rows) == 1 else "s"), "ok")
+        redraw()
+
+    def restore_ignored():
+        entries = ignored_entries()
+        if not entries:
+            messagebox.showinfo("Nothing is ignored",
+                                "No card has been dismissed, so there is "
+                                "nothing to restore.")
+            return
+        names = [entry.get("title") or entry.get("key") for entry in entries]
+        shown = "\n".join("  " + name[:80] for name in names[:12])
+        if len(names) > 12:
+            shown += "\n  ... and %d more" % (len(names) - 12)
+        if not messagebox.askyesno(
+                "Restore %d ignored card%s?" % (len(names),
+                                                "" if len(names) == 1 else "s"),
+                "These cards are being left out of comparisons:\n\n%s\n\n"
+                "Restore all of them, so they are compared again?" % shown,
+                parent=box.winfo_toplevel()):
+            return
+        stock_compare.save_ignored(ignored_path(), [])
+        app.console_line("%d ignored card%s restored; press Compare again to "
+                         "see them." % (len(names),
+                                        "" if len(names) == 1 else "s"), "ok")
+        summary.configure(text="Ignored cards restored. Press Compare again.")
+
+    # ------------------------------------------------------------- the list
+    def selected_rows():
+        try:
+            indexes = list(listing.curselection())
+        except Exception:
+            indexes = []
+        rows = state["rows"]
+        return [rows[i] for i in indexes if 0 <= i < len(rows)]
+
+    def redraw():
+        rows = stock_compare.action_list(state["pairs"], state["only_woo"],
+                                         state["only_other"],
+                                         stock_compare.ignored_keys(
+                                             ignored_entries()),
+                                         state["label"])
+        state["rows"] = rows
+        listing.delete(0, "end")
+        for row in rows:
+            listing.insert("end", stock_compare.label_action(
+                row, state["label"], state["mode"]))
+        if rows:
+            list_frame.pack(anchor="w", fill="x", pady=(3, 4))
+            action_row.pack(anchor="w", pady=(0, 4))
+        else:
+            list_frame.pack_forget()
+            action_row.pack_forget()
+        hidden = stock_compare.hidden_count(state["pairs"], state["only_woo"],
+                                            state["only_other"],
+                                            stock_compare.ignored_keys(
+                                                ignored_entries()))
+        fixable = len([row for row in rows
+                       if row["kind"] == stock_compare.FIX])
+        text = stock_compare.summary([row for row in rows
+                                      if row["kind"] == stock_compare.FIX],
+                                     state["pairs"], state["only_woo"],
+                                     state["only_other"], state["label"])
+        if rows and not fixable:
+            text = "No counts disagree; %d card%s only on one side." % (
+                len(rows), "" if len(rows) == 1 else "s")
+        if hidden:
+            text += "  %d ignored." % hidden
+        if state["card"]:
+            text = "%s  (only this card)" % text.rstrip(".")
+        summary.configure(text=text)
+        return rows
+
+    # ------------------------------------------------------- writing a change
+    def copy_plan(plan):
+        lines = ["%s -> %s %d" % (item["card"], state["label"], item["to"])
+                 for item in plan]
+        try:
+            app.clipboard_clear()
+            app.clipboard_append("\n".join(lines))
+            app.update_idletasks()
+            return True
+        except Exception as exc:
+            log("could not copy the stock plan: %s" % exc)
+            return False
+
+    def set_arrived(rc, plan, out, action):
+        answer = {}
+        if out.is_file():
+            try:
+                answer = json.loads(out.read_text(encoding="utf-8"))
+            except Exception:
+                answer = {}
+        report = stock_compare.plugin_write_report(plan, answer)
+        for entry in report["failed"]:
+            app.console_line("Not changed: %s - %s" %
+                             (entry["card"] or "a card", entry["why"]), "err")
+        if rc != 0:
+            #  The plugin's contract is "attempt nothing" on a non-zero exit, so
+            #  the list is left exactly as it was.
+            app.console_line("The stock change did not finish (exit %s). "
+                             "Nothing was changed." % rc, "err")
+            summary.configure(text="The stock change did not finish (exit %s)."
+                                   % rc)
+            return False
+        changed = report["changed"]
+        unknown = report["unknown"]
+        if unknown:
+            #  A card the plugin did not report on is not called fixed: it
+            #  stays on the list and the console says why it is there.
+            app.console_line(
+                "%d card%s was not reported on by the plugin, so %s left on "
+                "the list: compare again to see where it stands." %
+                (len(unknown), "" if len(unknown) == 1 else "s",
+                 "it is" if len(unknown) == 1 else "they are"), "err")
+        if changed:
+            text = ("%d CanadianShopper count%s set to the website's count" %
+                    (len(changed), "" if len(changed) == 1 else "s"))
+            if report["failed"]:
+                text += "; %d could not be changed" % len(report["failed"])
+            app.console_line(text + ". Press Compare again to confirm.", "ok")
+            summary.configure(text=text + ". Compare again to confirm.")
+        elif not unknown:
+            app.console_line(
+                "The plugin finished but reported no card as written, so the "
+                "list is unchanged.", "err")
+            summary.configure(text="The plugin reported no card as written.")
+        #  Only the rows the plugin said it wrote leave the list, and only if
+        #  the card really is no longer one this panel has anything to do about.
+        done = {stock_compare.card_key(row["card"]) for row in changed}
+        state["rows"] = [row for row in state["rows"]
+                         if stock_compare.card_key(row["card"]) not in done]
+        listing.delete(0, "end")
+        for row in state["rows"]:
+            listing.insert("end", stock_compare.label_action(
+                row, state["label"], state["mode"]))
+        if not state["rows"]:
+            list_frame.pack_forget()
+            action_row.pack_forget()
+        return bool(changed)
+
+    def run_set(rows):
+        plan = stock_compare.plan_set(rows)
+        if not plan:
+            messagebox.showinfo(
+                "Nothing to set",
+                "Only a card that is on both sites can have its count set. "
+                "Select one of the rows where the two numbers differ, or use "
+                "\"Set CanadianShopper to the website's counts...\".")
+            return
+        lines = stock_compare.describe_plan(plan, state["label"])
+        body = "\n".join(lines[:12])
+        if len(lines) > 12:
+            body += "\n  ... and %d more" % (len(lines) - 12)
+        question = ("%s\n\n%s\n\nOnly those counts change: nothing is "
+                    "added, removed or repriced. Write them now?" %
+                    (stock_compare.plan_summary(plan, state["label"]), body))
+        if not messagebox.askyesno("Set CanadianShopper to these counts?",
+                                   question, parent=box.winfo_toplevel()):
+            app.console_line("The stock change was not confirmed; nothing was "
+                             "written.", "dim")
+            return
+        action = TOOL_ACTION(CS_STOCK_SET_ACTION)
+        if not action:
+            copied = copy_plan(plan)
+            messagebox.showinfo(
+                "This plugin cannot set stock yet",
+                "The installed CanadianShopper plugin can list its stock but "
+                "not write it, so nothing was changed.\n\nThe exact changes "
+                "are in the console%s. Update the plugin to 1.0.21 or newer "
+                "and this button will set them for you."
+                % (" and on your clipboard" if copied else ""))
+            for line in lines:
+                app.console_line(line, "dim")
+            app.console_line(
+                "stock.set is not declared by the installed plugin (%s)." %
+                CS_STOCK_SET_ACTION, "dim")
+            return
+        plan_path = BASE / "cs-stock-set.json"
+        out = BASE / "cs-stock-set-result.json"
+        try:
+            out.unlink()
+        except FileNotFoundError:
+            pass
+        plan_path.write_text(
+            json.dumps({"items": plan}, indent=1, ensure_ascii=False),
+            encoding="utf-8")
+        args = ["--set-file", str(plan_path), "--set-out", str(out)]
+        if CS_COOKIE_FILE.is_file():
+            args += ["--cookie-file", str(CS_COOKIE_FILE)]
+        summary.configure(text="Setting %d count%s on CanadianShopper..." %
+                               (len(plan), "" if len(plan) == 1 else "s"))
+        app.console_line("Setting %d count%s on CanadianShopper..." %
+                         (len(plan), "" if len(plan) == 1 else "s"), "cmd")
+        app.run_tool(action, args, "Set CanadianShopper stock",
+                     cwd=app.settings.get("pipeline_dir", str(WORK)),
+                     on_done=lambda rc: set_arrived(rc, plan, out, action))
+
+    def set_all():
+        run_set([row for row in state["rows"]
+                 if row["kind"] == stock_compare.FIX])
+
+    def set_selected():
+        run_set(selected_rows())
+
+    def ignore_selected():
+        hide(selected_rows())
+
+    def set_website(rows):
+        """The other direction: the website's count is the one that is wrong.
+
+        The keys are the shop's own Read/Write pair - the same ones the photo
+        wiring uses - so this writes the count the other site reports. It is
+        never the default, because the website is right more often than not,
+        and it is always named card by card before anything is sent.
+        """
+        plan = stock_write.plan_from_rows(rows, state["label"])
+        if not plan:
+            messagebox.showinfo(
+                "Nothing to set",
+                "Select a row where the two counts differ and the card exists "
+                "on the website. A card that is only on the other site has "
+                "nothing on the website to change.")
+            return
+        creds = site_creds.get("last") or credentials()
+        if not creds:
+            return
+        site_creds["last"] = creds
+        lines = stock_write.describe(plan, state["label"])
+        body = "\n".join(lines[:12])
+        if len(lines) > 12:
+            body += "\n  ... and %d more" % (len(lines) - 12)
+        question = ("%s\n\n%s\n\nOnly those stock counts change: nothing is "
+                    "added, removed or repriced. Write them to the website "
+                    "now?" % (stock_write.summary(plan, state["label"]), body))
+        if not messagebox.askyesno("Set the website to these counts?",
+                                   question, parent=box.winfo_toplevel()):
+            app.console_line("The website was not changed: the write was not "
+                             "confirmed.", "dim")
+            return
+        summary.configure(text="Setting %d count%s on the website..." %
+                               (len(plan), "" if len(plan) == 1 else "s"))
+        app.console_line("Setting %d count%s on the website from %s..." %
+                         (len(plan), "" if len(plan) == 1 else "s",
+                          state["label"]), "cmd")
+        site, key, secret = creds
+
+        def arrived(result, error):
+            if error is not None:
+                message = getattr(error, "message", str(error))
+                hint = getattr(error, "hint", "")
+                messagebox.showerror(
+                    "The website could not be changed",
+                    message + ("\n\n" + hint if hint else "") +
+                    "\n\nNo count was changed by this attempt.",
+                    parent=box.winfo_toplevel())
+                app.console_line("Website write stopped: %s %s" %
+                                 (message, hint), "err")
+                summary.configure(text="The website could not be changed.")
+                return
+            updated = result.get("updated") or []
+            failed = result.get("failed") or []
+            for entry in failed:
+                app.console_line(
+                    "Not changed: %s - %s %s" %
+                    (entry.get("title") or entry.get("id"), entry.get("why"),
+                     entry.get("hint") or ""), "err")
+            for entry in updated:
+                app.console_line("Website now shows %s: %s" %
+                                 (entry.get("inventory"),
+                                  entry.get("title") or entry.get("id")), "ok")
+            done = {str(entry.get("id")) for entry in updated}
+            state["rows"] = [row for row in state["rows"]
+                             if str(row.get("woo_id")) not in done]
+            listing.delete(0, "end")
+            for row in state["rows"]:
+                listing.insert("end", stock_compare.label_action(
+                    row, state["label"], state["mode"]))
+            if not state["rows"]:
+                list_frame.pack_forget()
+                action_row.pack_forget()
+            text = "%d website count%s changed" % (
+                len(updated), "" if len(updated) == 1 else "s")
+            if failed:
+                text += "; %d could not be changed" % len(failed)
+            summary.configure(text=text + ". Compare again to confirm.")
+            app.console_line(text + ". Compare again to confirm.", "ok")
+
+        in_background(
+            app,
+            lambda: stock_write.set_counts(
+                site, key, secret,
+                [{"id": row["id"], "quantity": row["to"],
+                  "title": row["title"]} for row in plan]),
+            arrived)
+
+    def set_website_selected():
+        set_website(selected_rows())
+
+    def list_rows(rows):
+        """Offer to list these cards on CanadianShopper, from the website.
+
+        A card that sold out here but is still stocked on the website is the
+        one case where the panel can put it *back* rather than change a
+        number. CanadianShopper has no API this app may write listings
+        through, so this writes the import CSV the pipeline already writes -
+        same fourteen columns, same filename, same folder - from the website
+        product itself: its title, its price, its own photo URL and its stock
+        count. Nothing on either site changes until that file is imported.
+        """
+        rows = [row for row in rows or []
+                if row.get("kind") == stock_compare.ONLY_WOO]
+        if not rows:
+            messagebox.showinfo(
+                "Nothing to list",
+                "Select one or more rows that are on the website only. A card "
+                "on both sites has nothing to list, and a card that is only on "
+                "the other site cannot be listed on the website from here.")
+            return
+        wanted, missing = cs_listing.listing_products(rows, state["catalog"])
+        if missing:
+            app.console_line(
+                "%d selected card%s not in the comparison's catalogue; compare "
+                "again to list %s." %
+                (len(missing), "" if len(missing) == 1 else "s",
+                 "it" if len(missing) == 1 else "them"), "err")
+        if not wanted:
+            messagebox.showinfo(
+                "Nothing to list",
+                "The products behind those rows are no longer loaded. Press "
+                "Compare again, then select the cards.")
+            return
+        values = cs_listing.defaults(app.settings)
+        built, notes = cs_listing.build_rows(wanted, values)
+        if not built:
+            messagebox.showinfo(
+                "Nothing to list",
+                "Those products have no name, so there is nothing to list.")
+            return
+        lines = cs_listing.describe(built)
+        if len(built) > 12:
+            lines.append("  ... and %d more" % (len(built) - 12))
+        body = "\n".join(lines)
+        if notes:
+            body += "\n\nWorth knowing:\n" + "\n".join(
+                "  %s - %s" % note for note in notes[:6])
+            if len(notes) > 6:
+                body += "\n  ... and %d more" % (len(notes) - 6)
+        question = ("%s\n\n%s\n\nAlex Collect writes the CanadianShopper "
+                    "import file first - the same file a batch produces - then "
+                    "offers to import it as drafts and to publish them, with "
+                    "the publisher's own confirmations. Write the file "
+                    "now?" %
+                    (cs_listing.summary(built, values), body))
+        if not messagebox.askyesno("List these cards on CanadianShopper?",
+                                   question, parent=box.winfo_toplevel()):
+            app.console_line("Nothing was written: the listing was not "
+                             "confirmed.", "dim")
+            return
+        folder = canadianshopper_results_dir(app)
+        try:
+            written = cs_listing.write_rows(built, folder)
+        except OSError as exc:
+            messagebox.showerror(
+                "Could not write the import file",
+                "The CanadianShopper import file could not be written to "
+                "%s:\n\n%s\n\nNothing on either site was changed."
+                % (folder, exc), parent=box.winfo_toplevel())
+            app.console_line("Could not write the CanadianShopper import "
+                             "file: %s" % exc, "err")
+            return
+        total = sum(count for _path, count in written)
+        for path, count in written:
+            app.console_line("Wrote %s (%d listing%s)." %
+                             (path, count, "" if count == 1 else "s"), "ok")
+        for note in notes:
+            app.console_line("Note: %s - %s" % note, "dim")
+        summary.configure(
+            text="%d listing%s written to %s." %
+                 (total, "" if total == 1 else "s", written[0][0].name))
+        import_written(written, total)
+
+    def import_written(written, total):
+        """Finish the job: hand the file to the plugin's own importer.
+
+        The file is written either way - it is the same CSV a batch produces -
+        so an older plugin still finishes the job by hand. What this adds is
+        the click: the drafts appear without opening the folder, and nothing is
+        published, because an import only ever creates drafts.
+        """
+        folder = written[0][0].parent
+        names = "\n".join("  %s (%d row%s)" %
+                          (path.name, count, "" if count == 1 else "s")
+                          for path, count in written)
+        action = TOOL_ACTION(CS_IMPORT_ACTION)
+        if not action:
+            messagebox.showinfo(
+                "The file is ready to import",
+                "%d listing%s written:\n\n%s\n\nThis plugin cannot import "
+                "a CSV itself yet, so the file has to go in by hand: "
+                "CanadianShopper -> vendor dashboard -> Products -> Import "
+                "from CSV.\n\nWhen the plugin declares \"%s\", this button "
+                "will do that step too." %
+                (total, "" if total == 1 else "s", names, CS_IMPORT_ACTION),
+                parent=box.winfo_toplevel())
+            if messagebox.askyesno(
+                    "Import file written",
+                    "Open the folder so %s can be imported on CanadianShopper?"
+                    % ("it" if len(written) == 1 else "they"),
+                    parent=box.winfo_toplevel()):
+                open_path(folder)
+            return
+        if not messagebox.askyesno(
+                "Import %d listing%s on CanadianShopper now?" %
+                (total, "" if total == 1 else "s"),
+                "%s\n\nImported listings arrive as unpublished drafts: "
+                "nothing is published and nothing goes live. They can be "
+                "previewed and published from Import / publish drafts when "
+                "you are ready." % names,
+                parent=box.winfo_toplevel()):
+            app.console_line(
+                "The file was written but not imported; it is in %s." % folder,
+                "dim")
+            if messagebox.askyesno(
+                    "Import file written",
+                    "Open the folder so %s can be imported by hand?" %
+                    ("it" if len(written) == 1 else "they"),
+                    parent=box.winfo_toplevel()):
+                open_path(folder)
+            return
+        result = folder / "cs-import-result.json"
+        try:
+            result.unlink()
+        except FileNotFoundError:
+            pass
+        args = []
+        for path, _count in written:
+            args += ["--csv", str(path)]
+        if CS_COOKIE_FILE.is_file():
+            args += ["--cookie-file", str(CS_COOKIE_FILE)]
+        args += ["--result", str(result)]
+        summary.configure(text="Importing %d listing%s on CanadianShopper..." %
+                               (total, "" if total == 1 else "s"))
+        app.console_line("Importing %d listing%s on CanadianShopper..." %
+                         (total, "" if total == 1 else "s"), "cmd")
+
+        def arrived(rc):
+            answer = {}
+            if result.is_file():
+                try:
+                    answer = json.loads(result.read_text(encoding="utf-8"))
+                except Exception:
+                    answer = {}
+            report = cs_listing.import_report(written, answer)
+            for entry in report["failed"]:
+                #  The plugin's own sentence, unedited - "every listing in
+                #  this file already exists" is a good outcome and must not
+                #  be dressed up as one of the bad ones, and a real refusal
+                #  must not be softened.
+                app.console_line("No new listing from %s: %s" %
+                                 (entry["file"], entry["why"]), "warn")
+            if rc != 0:
+                app.console_line(
+                    "The import did not finish (exit %s). The file is still "
+                    "in %s, so it can be imported by hand." % (rc, folder),
+                    "err")
+                summary.configure(text="The import did not finish (exit %s); "
+                                       "the file is still there." % rc)
+                return
+            made = sum(entry["drafts"] for entry in report["imported"])
+            if made:
+                app.console_line(
+                    "%d draft%s created on CanadianShopper. They are not "
+                    "live: Preview drafts lists which are ready and which "
+                    "need work." %
+                    (made, "" if made == 1 else "s"), "ok")
+            if report["imported"] and not made:
+                #  The plugin took the file but says it created nothing. That
+                #  is not a success to report as one: either the importer
+                #  made drafts it did not count, or it silently refused every
+                #  row, and only the dashboard can say which.
+                app.console_line(
+                    "The plugin took the file but reported no drafts. Check "
+                    "CanadianShopper -> Products before importing it again.",
+                    "err")
+            if report["unknown"]:
+                app.console_line(
+                    "%d file%s was not reported on by the plugin, so it is not "
+                    "known whether those drafts exist: check CanadianShopper "
+                    "-> Products before importing it again." %
+                    (len(report["unknown"]),
+                     "" if len(report["unknown"]) == 1 else "s"), "err")
+            if report["failed"] and not report["imported"]:
+                #  A file the plugin read and refused, or read and found
+                #  nothing to do: the file stays where it is and nothing on
+                #  CanadianShopper moved because of this run.
+                app.console_line(
+                    "Nothing new was created: the plugin read %d file%s and "
+                    "added nothing. Nothing on CanadianShopper was changed by "
+                    "this import." %
+                    (len(report["failed"]),
+                     "" if len(report["failed"]) == 1 else "s"), "warn")
+                app.console_line(
+                    "That means these cards already have a listing on "
+                    "CanadianShopper - and the stock comparison could not see "
+                    "it. A listing the stock reader does not return is usually "
+                    "one that is not active: a draft, hidden, archived, or off "
+                    "sale. Publishing (offered next) puts any ready draft back "
+                    "on sale; anything else has to be found in the vendor "
+                    "dashboard.", "dim")
+            elif not report["imported"] and not report["unknown"]:
+                app.console_line(
+                    "Nothing was imported: the plugin reported no file as "
+                    "imported. The file is in %s." % folder, "err")
+            if made:
+                summary.configure(
+                    text="%d draft%s created on CanadianShopper. Compare "
+                         "again after you publish them." %
+                         (made, "" if made == 1 else "s"))
+            elif report["failed"] and not report["unknown"]:
+                summary.configure(
+                    text="No new listings were created; the plugin's reasons "
+                         "are in the console above.")
+            else:
+                summary.configure(
+                    text="The import reported no drafts; check CanadianShopper "
+                         "-> Products.")
+            #  The job the person actually wants is the card on sale again,
+            #  so the publish offer comes first. The read-only report is the
+            #  fallback - both when they decline and when nothing new was
+            #  created, because the listing may already be an unpublished
+            #  draft from an earlier run.
+            if (made or report["failed"]) and publish_drafts(made):
+                return
+            if report["imported"]:
+                preview_drafts()
+            elif report["failed"] and not report["unknown"]:
+                preview_drafts(
+                    "Preview the drafts already there?",
+                    "Nothing new was created. Any listing this card already "
+                    "has on CanadianShopper is still there, and may still be a "
+                    "draft.\n\nRead the drafts back and write a readiness "
+                    "report - which can be published and which need work? "
+                    "Nothing is published by this step.")
+
+        app.run_tool(action, args, "Import CanadianShopper listings",
+                     cwd=app.settings.get("pipeline_dir", str(WORK)),
+                     on_done=arrived)
+
+    def publish_drafts(count, reason=""):
+        """Take the drafts live, through the publisher the app already has.
+
+        The listing step left unpublished drafts; this is the rest of the job
+        the person actually wants - the card on sale again. It is the existing
+        publisher with --apply, so the same readiness checks decide what may
+        go live and the same typed PUBLISH confirms it: nothing here weakens
+        that gate, it only stops the person having to find the button in
+        another panel.
+        """
+        if not TOOL_ACTION("marketplace.publish_drafts"):
+            return False
+        if count:
+            title = ("Publish the %d new draft%s now?" %
+                     (count, "" if count == 1 else "s"))
+            detail = ("%d listing%s %s created as unpublished drafts. Take "
+                      "%s live now?" %
+                      (count, "" if count == 1 else "s",
+                       "was" if count == 1 else "were",
+                       "it" if count == 1 else "them"))
+        elif reason:
+            title = "Publish the ready drafts now?"
+            detail = reason
+        else:
+            #  Nothing new was needed because the cards are already there. The
+            #  listings the import matched may still be unpublished, and
+            #  publishing is what makes them live - which is the whole point.
+            title = "Publish any ready drafts now?"
+            detail = ("Nothing new had to be created: these cards already "
+                      "have a listing on CanadianShopper. If any of those "
+                      "listings are still drafts, publishing is what puts "
+                      "them on sale.")
+        if not messagebox.askyesno(
+                title,
+                "%s\n\nPublishing scans every draft on CanadianShopper and "
+                "activates each one that passes all the readiness checks - "
+                "drafts from earlier runs too%s. A draft that is not ready is "
+                "left alone.\n\nYou will also be asked to type PUBLISH in the "
+                "console, so nothing can go live on one click." %
+                (detail, "" if count else ", and the listings matched here"),
+                parent=box.winfo_toplevel()):
+            return False
+        report = canadianshopper_results_dir(app) / "cs-publish-report.csv"
+        args = ["--cookie-file", str(CS_COOKIE_FILE), "--report", str(report),
+                "--apply"]
+        app.console_line("Publishing the ready drafts...", "cmd")
+        summary.configure(text="Publishing the ready drafts...")
+        app.run_tool(
+            "cs-publish-drafts.py", args,
+            "Publish ready CanadianShopper drafts",
+            cwd=app.settings.get("pipeline_dir", str(WORK)),
+            confirm=("Scan your CanadianShopper drafts and activate only the "
+                     "ones that pass all readiness checks?\n\nNothing is "
+                     "activated unless you also type PUBLISH in the output "
+                     "console."),
+            on_done=lambda rc: published(rc, count, report))
+        return True
+
+    def published(rc, count, report):
+        """Say what happened, without claiming more than the publisher did."""
+        if rc != 0:
+            app.console_line(
+                "The publish step did not finish (exit %s). The %d draft%s "
+                "from this listing %s still there, unpublished." %
+                (rc, count, "" if count == 1 else "s",
+                 "is" if count == 1 else "are"), "err")
+            summary.configure(text="The drafts were created but not published "
+                                   "(exit %s)." % rc)
+            return
+        app.console_line(
+            "Publish finished. The report lists every draft it looked at and "
+            "what it did: %s" % report, "ok")
+        for hint in ("A draft the report leaves as a draft did not pass a "
+                     "readiness check; its edit link is in the report.",
+                     "Compare again: the cards that are now live on "
+                     "CanadianShopper leave this list."):
+            app.console_line(hint, "dim")
+        summary.configure(text="Publishing finished. Compare again to confirm "
+                               "the cards are on CanadianShopper.")
+        if report.is_file() and messagebox.askyesno(
+                "Open the publish report?",
+                "The report lists every draft the publisher looked at and what "
+                "it did with it.\n\n  %s\n\nOpen it?" % report,
+                parent=box.winfo_toplevel()):
+            open_path(report)
+
+    def preview_drafts(title="Preview the new drafts?",
+                       message="Read the drafts back and write a readiness "
+                               "report - which can be published and which need "
+                               "work?\n\nNothing is published by this step."):
+        """Offer the read-only draft report that follows an import."""
+        if not TOOL_ACTION("marketplace.publish_drafts"):
+            return
+        if not messagebox.askyesno(title, message,
+                                   parent=box.winfo_toplevel()):
+            return
+        report = canadianshopper_results_dir(app) / "cs-publish-report.csv"
+        args = ["--cookie-file", str(CS_COOKIE_FILE), "--report", str(report)]
+        app.console_line("Reading the drafts back for a readiness report...",
+                         "cmd")
+        summary.configure(text="Reading the drafts back...")
+        app.run_tool("cs-publish-drafts.py", args,
+                     "Preview CanadianShopper drafts",
+                     cwd=app.settings.get("pipeline_dir", str(WORK)))
+
+    def list_selected():
+        list_rows(selected_rows())
+
+    def list_every_website_only_card():
+        list_rows(state["rows"])
+
+    def open_on_website():
+        """Look at the product itself rather than changing its count.
+
+        The reverse write is the button beside this one; this one is for the
+        times a number is not the whole story - a variable product, a count a
+        plugin owns, a price to fix while you are there. Nothing is written
+        here, and the list is left alone: compare again afterwards.
+        """
+        rows = [row for row in selected_rows() if row.get("woo_id")]
+        if not rows:
+            messagebox.showinfo(
+                "Nothing to open",
+                "Select a row that exists on the website first. A card that is "
+                "only on CanadianShopper or eBay has no website product to "
+                "open, and one that is only on the website has nothing to set "
+                "on the other side.")
+            return
+        urls = []
+        for row in rows[:8]:
+            url = product_edit_url(row["woo_id"], app.settings)
+            if url:
+                urls.append(url)
+        if not urls:
+            messagebox.showinfo(
+                "No website address saved",
+                "Set the store's address in User Settings first.")
+            return
+        app.open_webpages(urls)
+        app.console_line(
+            "Opening %d website product page%s. Change the count there, then "
+            "compare again - nothing was changed by this app." %
+            (len(urls), "" if len(urls) == 1 else "s"), "ok")
+        if len(rows) > len(urls):
+            app.console_line(
+                "%d more selected card%s not opened: change those in the "
+                "product list." % (len(rows) - len(urls),
+                                   "" if len(rows) - len(urls) == 1 else "s"),
+                "dim")
+
+    # ---------------------------------------------------------- read results
+    def clear_list():
+        listing.delete(0, "end")
+        list_frame.pack_forget()
+        action_row.pack_forget()
+
+    def failed(what, message, hint):
+        messagebox.showerror("Could not compare with %s" % what,
+                             message + ("\n\n" + hint if hint else ""),
+                             parent=box.winfo_toplevel())
+        app.console_line("Stock comparison stopped: %s %s" % (message, hint),
+                         "err")
+        summary.configure(text="Could not read %s: %s" % (what, message))
+        clear_list()
+
+    def show(rows_source, skipped):
+        """Draw one comparison: ``rows_source`` is (pairs, only_woo, only_other)."""
+        state["pairs"], state["only_woo"], state["only_other"] = rows_source
+        state["skipped"] = skipped
+        if skipped:
+            app.console_line(
+                "%d products were not compared: no stock count "
+                "(unmanaged or variable)." % skipped, "dim")
+        rows = redraw()
+        fixable = [row for row in rows if row["kind"] == stock_compare.FIX]
+        for row in fixable:
+            app.console_line(stock_compare.describe(
+                [{"card": row["card"], "woo": row["woo"], "other": row["other"],
+                  "gap": row["gap"]}], other_label=state["label"],
+                mode=state["mode"])[0], "dim")
+        off_sale = stock_compare.off_sale_rows(rows)
+        drafts = stock_compare.draft_rows(rows)
+        for row in off_sale:
+            app.console_line(
+                "%s is on %s but not on sale (%s) - a count cannot fix that." %
+                (row["card"], state["label"], row.get("state") or "not on sale"),
+                "warn")
+        app.console_line(
+            "Compared %d matched cards against %s; %d disagree, %d not on sale "
+            "there, %d only on one side. Nothing was changed on either site "
+            "yet." %
+            (len(state["pairs"]), state["label"], len(fixable), len(off_sale),
+             len(rows) - len(fixable) - len(off_sale)), "ok")
+        if off_sale:
+            publish_ready.pack(anchor="w", pady=(3, 0))
+        else:
+            publish_ready.pack_forget()
+        if drafts:
+            app.console_line(
+                "%d of those is a draft: %s can activate it once it passes the "
+                "readiness checks." %
+                (len(drafts), "Publishing" if len(drafts) > 1 else "publishing"),
+                "dim")
+
+    def narrow(woo, items):
+        """Keep only the one card this panel was opened for, if any."""
+        wanted = state["card"]
+        if not wanted:
+            return woo, items
+        keep = lambda rows: [item for item in rows
+                             if woo_orders.score(wanted, item["name"]) >= 0.5]
+        return keep(woo), keep(items)
+
+    def compare_items(items, label, mode, creds):
+        """Compare a list read from somewhere against the website."""
+        site, key, secret = creds
+        summary.configure(text="%s: %d listings. Reading your website..." %
+                               (label, len(items)))
+        app.console_line("%s: %d listings. Reading your website's catalogue..."
+                         % (label, len(items)), "cmd")
+
+        def arrived(products, error):
+            if error is not None:
+                failed("your website", getattr(error, "message", str(error)),
+                       getattr(error, "hint", ""))
+                return
+            #  The whole product records, not just their counts: listing a
+            #  card on the other site needs its price, its description and the
+            #  photo URL the shop already serves.
+            state["catalog"] = {str(product.get("id")): product
+                                for product in products or []
+                                if isinstance(product, dict)}
+            woo, skipped = stock_compare.woo_items(products)
+            woo, items_here = narrow(woo, items)
+            pairs, only_woo, only_other = stock_compare.pair(woo, items_here)
+            show((pairs, only_woo, only_other), skipped)
+
+        in_background(
+            app,
+            lambda: stock_compare.read_woo_stock(woo_get, site, key, secret),
+            arrived)
+
+    # ------------------------------------------------------- CanadianShopper
+    def plugin_arrived(rc, out, creds, sent_cookie=False):
+        if rc == 2 and sent_cookie:
+            #  Exit 2 from a Python tool is a usage error: this plugin's reader
+            #  predates --cookie-file. Ask again without it rather than telling
+            #  the person to do something about a flag.
+            app.console_line(
+                "This plugin's stock reader does not take --cookie-file; "
+                "asking it again without one.", "dim")
+            app.run_tool(TOOL_ACTION(CS_STOCK_ACTION),
+                         ["--stock-out", str(out)], "CanadianShopper stock",
+                         cwd=app.settings.get("pipeline_dir", str(WORK)),
+                         on_done=lambda code: plugin_arrived(code, out, creds,
+                                                             False))
+            return False
+        if rc != 0:
+            app.console_line("The CanadianShopper stock read failed (exit %s); "
+                             "nothing was compared." % rc, "err")
+            if CS_COOKIE_FILE.is_file():
+                #  Say exactly what was sent, so a cookie problem is not a
+                #  guessing game: the file, its age, and its size.
+                try:
+                    stamp = datetime.fromtimestamp(
+                        CS_COOKIE_FILE.stat().st_mtime).strftime(
+                            "%Y-%m-%d %H:%M")
+                    size = CS_COOKIE_FILE.stat().st_size
+                except OSError:
+                    stamp, size = "?", 0
+                app.console_line(
+                    "The cookie sent was %s (%d bytes, saved %s). If that is "
+                    "the one you just refreshed, the plugin is not reading it; "
+                    "if it is old, paste a fresh one in User Settings."
+                    % (CS_COOKIE_FILE.name, size, stamp), "dim")
+            summary.configure(text="CanadianShopper could not be read.")
+            clear_list()
+            return False
+        items = stock_compare.read_stock_file(out)
+        if items is None:
+            messagebox.showerror(
+                "Could not read CanadianShopper's stock",
+                "The plugin finished but left no stock list to read.\n\n"
+                "Nothing was compared and nothing was changed.",
+                parent=box.winfo_toplevel())
+            app.console_line("No CanadianShopper stock list was written, so "
+                             "nothing was compared.", "err")
+            summary.configure(text="CanadianShopper wrote no stock list.")
+            clear_list()
+            return False
+        state["label"], state["mode"] = "CanadianShopper", "count"
+        compare_items(items, "CanadianShopper", "count", creds)
+        return True
+
+    def compare_cs():
+        action = TOOL_ACTION(CS_STOCK_ACTION)
+        if not action:
+            messagebox.showinfo(
+                "CanadianShopper stock list",
+                "Comparing against CanadianShopper needs the plugin's stock "
+                "reader, and the installed plugin does not have it yet.\n\n"
+                "Nothing is wrong with the rest of the app: the plugin updates "
+                "stock on a sale, it just cannot list the whole catalogue for "
+                "comparison yet.")
+            app.console_line(
+                "This CanadianShopper plugin cannot list its stock yet (%s)."
+                % CS_STOCK_ACTION, "dim")
+            return
+        creds = credentials()
+        if not creds:
+            return
+        out = BASE / "cs-stock.json"
+        try:
+            out.unlink()
+        except FileNotFoundError:
+            pass
+        cookie = CS_COOKIE_FILE if CS_COOKIE_FILE.is_file() else None
+        args = ["--stock-out", str(out)]
+        if cookie is not None:
+            #  The same cookie the sale tools already use. Without this the
+            #  reader falls back to whatever session the plugin itself last
+            #  saw - which is why refreshing the app's cookie changed nothing.
+            args += ["--cookie-file", str(cookie)]
+        summary.configure(text="Reading CanadianShopper's stock...")
+        app.console_line("Reading CanadianShopper's stock...", "cmd")
+        if cookie is None:
+            app.console_line(
+                "No %s yet: paste a CanadianShopper cookie in User Settings "
+                "first." % CS_COOKIE_FILE.name, "dim")
+        app.run_tool(action, args, "CanadianShopper stock",
+                     cwd=app.settings.get("pipeline_dir", str(WORK)),
+                     on_done=lambda rc: plugin_arrived(rc, out, creds,
+                                                       cookie is not None))
+
+    # ------------------------------------------------------- eBay / Facebook
+    #  Neither site offers a list this app can ask for, so the page the seller
+    #  is already signed in to is read instead. Both sites check whether the
+    #  request comes from a browser, and both can refuse it - so a saved page
+    #  is a first-class route here, not a last resort.
+    def market_read(site_id, info, url, cookie):
+        if site_id == "ebay":
+            items, pages, text = market_stock.read_ebay(
+                market_stock.fetch, url, cookie)
+            return {"items": items, "pages": pages, "text": text}
+        status, text = market_stock.fetch(url, cookie)
+        if status != 200 or market_stock.looks_like_login(text) or \
+                market_stock.looks_like_blocked(text):
+            raise market_stock.describe_refusal(
+                info["label"], status, text, BASE / info["cookie"])
+        return {"items": market_stock.parse_listings(site_id, text), "pages": 1,
+                "text": text}
+
+    def market_done(site_id, info, result, error, creds):
+        if error is not None:
+            message = getattr(error, "message", str(error))
+            hint = getattr(error, "hint", "")
+            kind = getattr(error, "kind", "")
+            statuses[site_id].configure(
+                text={"session": "not signed in", "blocked": "blocked"
+                      }.get(kind, "could not be read"))
+            if kind in ("session", "blocked"):
+                messagebox.showwarning(
+                    "%s could not be read" % info["label"],
+                    message + ("\n\n" + hint if hint else "") +
+                    "\n\nNothing was read and nothing was changed.",
+                    parent=box.winfo_toplevel())
+                app.console_line("%s: %s %s" % (info["label"], message, hint),
+                                 "err")
+                summary.configure(text="%s could not be read. %s" %
+                                       (info["label"],
+                                        "Save the page from your browser and "
+                                        "press \"Read a saved %s page\"."
+                                        % info["label"]
+                                        if kind == "blocked" else
+                                        "It is not signed in."))
+                clear_list()
+                return
+            failed(info["label"], message, hint)
+            return
+        page = market_stock.save_page(BASE / info["page"], result["text"])
+        items = result["items"]
+        if not items:
+            #  A page with no listing in it that this reader can recognise: the
+            #  page's wording changed, and the saved copy is how that gets
+            #  fixed. Saying "nothing is listed" would be a lie.
+            statuses[site_id].configure(text="page not understood")
+            messagebox.showwarning(
+                "Nothing on the %s page could be read" % info["label"],
+                "The page came back as %s, but no listing on it could be read."
+                "\n\nNothing was compared and nothing was changed. The copy "
+                "saved beside the app is what the reader is repaired against:"
+                "\n\n  %s" % (market_stock.describe(result["text"], 200), page),
+                parent=box.winfo_toplevel())
+            app.console_line(
+                "%s: the page loaded but no listing could be read; a copy is "
+                "at %s" % (info["label"], page), "err")
+            clear_list()
+            summary.configure(text="%s's page could not be understood." %
+                                   info["label"])
+            return
+        statuses[site_id].configure(text="%d listings" % len(items))
+        state["label"] = info["label"]
+        state["mode"] = "listed" if site_id == "facebook" else "count"
+        app.console_line(
+            "%s: %d listings read from %s (page copy at %s)." %
+            (info["label"], len(items), market_stock.describe(result["text"]),
+             page), "cmd")
+        compare_items(items, info["label"], state["mode"], creds)
+        if site_id == "facebook":
+            app.console_line(
+                "Facebook has no quantity: an Active listing counts as 1 and a "
+                "Sold one as 0, so a card listed once never matches a website "
+                "stock of 2 on the number alone.", "dim")
+
+    site_creds = {}
+
+    def compare_market(site_id):
+        info = market_stock.SITES[site_id]
+        url = str(app.settings.get("%s_selling_url" % site_id, "") or "").strip()
+        cookie_path = BASE / info["cookie"]
+        try:
+            cookie, dropped = market_stock.read_cookie_report(cookie_path)
+        except Exception:
+            cookie, dropped = "", []
+        if cookie and dropped:
+            #  A tick or a curly quote pasted in with the cookie cannot go in a
+            #  request; dropping it usually still works, so it is said rather
+            #  than refused - and said here, before the site claims the session
+            #  is bad.
+            app.console_line(
+                "%s: removed %s from the saved cookie - no header can carry "
+                "them. If the site then says you are signed out, copy the "
+                "Cookie header again." %
+                (info["label"], ", ".join(repr(ch) for ch in dropped)), "dim")
+        if not cookie:
+            messagebox.showinfo(
+                "%s needs your session cookie" % info["label"],
+                "%s publishes no list this app can ask for, so it reads the "
+                "page you are already signed in to - and that needs your "
+                "session cookie, pasted once into:\n\n  %s\n\n"
+                "That file is about to open. Paste the whole Cookie header "
+                "(all of its cookies are fine, on one line or several), save "
+                "it, then press this button again."
+                % (info["label"], cookie_path))
+            open_market_cookie(app, site_id)
+            return
+        if not url:
+            messagebox.showinfo(
+                "No address saved for %s" % info["label"],
+                "Set the %s page address in User Settings first." % info["label"])
+            return
+        creds = credentials()
+        if not creds:
+            return
+        site_creds[site_id] = creds
+        statuses[site_id].configure(text="reading...")
+        summary.configure(text="Reading %s ..." % info["label"])
+        app.console_line("Reading %s ..." % url, "cmd")
+        in_background(
+            app,
+            lambda: market_read(site_id, info, url, cookie),
+            lambda result, error: market_done(site_id, info, result, error,
+                                              creds))
+
+    def read_saved_page(site_id):
+        """Read a page the person saved from their own signed-in browser.
+
+        This is how eBay and Facebook are read when the site refuses the app's
+        request: the browser has the page, Ctrl+S keeps it, and the parser
+        here is the same one that reads a fetched page.
+        """
+        info = market_stock.SITES[site_id]
+        path = filedialog.askopenfilename(
+            title="Choose the %s page you saved from your browser" %
+                  info["label"],
+            initialdir=str(BASE),
+            filetypes=[("Saved page", "*.html *.htm"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            messagebox.showerror("Could not open that file", str(exc),
+                                 parent=box.winfo_toplevel())
+            return
+        items = market_stock.parse_listings(site_id, text)
+        if not items:
+            messagebox.showwarning(
+                "No listing could be read from that page",
+                "%s looks like %s, but no listing in it could be read.\n\n"
+                "Make sure it is the signed-in %s page itself, not the sign-in "
+                "page or a listing form." %
+                (Path(path).name, market_stock.describe(text),
+                 info["label"]), parent=box.winfo_toplevel())
+            app.console_line("%s: %s has no listing this reader recognises."
+                             % (info["label"], Path(path).name), "err")
+            return
+        creds = credentials()
+        if not creds:
+            return
+        statuses[site_id].configure(text="%d listings" % len(items))
+        state["label"] = info["label"]
+        state["mode"] = "listed" if site_id == "facebook" else "count"
+        app.console_line("%s: %d listings read from the saved page %s." %
+                         (info["label"], len(items), Path(path).name), "cmd")
+        compare_items(items, info["label"], state["mode"], creds)
+
+    # --------------------------------------------------------------- layout
+    ttk.Label(box, text="Compare with your website", style="H2.TLabel").pack(
+        anchor="w")
+    row = ttk.Frame(box)
+    row.pack(anchor="w", pady=(2, 0))
+    ttk.Button(row, text="Compare stock (WooCommerce and CanadianShopper)",
+               style="Task.TButton", command=compare_cs).pack(side="left")
+    ttk.Button(row, text="Compare stock with eBay",
+               command=lambda: compare_market("ebay")).pack(side="left", padx=8)
+    ttk.Button(row, text="Compare stock with Facebook",
+               command=lambda: compare_market("facebook")).pack(side="left")
+
+    row_saved = ttk.Frame(box)
+    row_saved.pack(anchor="w", pady=(2, 0))
+    ttk.Button(row_saved, text="Read a saved eBay page...",
+               command=lambda: read_saved_page("ebay")).pack(side="left")
+    ttk.Button(row_saved, text="Read a saved Facebook page...",
+               command=lambda: read_saved_page("facebook")).pack(
+                   side="left", padx=8)
+
+    if focus:
+        focus_label = ttk.Label(box, text="Only this card: " + focus,
+                                style="H2.TLabel", wraplength=680,
+                                justify="left")
+        focus_label.pack(anchor="w", pady=(4, 0))
+
+        def compare_everything():
+            state["card"] = ""
+            focus_label.pack_forget()
+            clear_btn.pack_forget()
+            app.console_line("Comparing the whole catalogue now.", "dim")
+
+        clear_btn = ttk.Button(box, text="Compare the whole catalogue instead",
+                               command=compare_everything)
+        clear_btn.pack(anchor="w", pady=(2, 0))
+
+    summary = ttk.Label(box, text="Nothing compared yet.", style="Dim.TLabel",
+                        wraplength=680, justify="left")
+    summary.pack(anchor="w", pady=(2, 0))
+
+    list_frame = ttk.Frame(box)
+    listing = tk.Listbox(list_frame, height=9, exportselection=False,
+                         selectmode="extended")
+    scroll = ttk.Scrollbar(list_frame, orient="vertical",
+                           command=listing.yview)
+    listing.configure(yscrollcommand=scroll.set)
+    listing.pack(side="left", fill="both", expand=True)
+    scroll.pack(side="right", fill="y")
+
+    #  The actions belong to the list and sit right under it, so "fix this" is
+    #  never a scroll away from what it fixes.
+    action_row = ttk.Frame(box)
+    first = ttk.Frame(action_row)
+    first.pack(anchor="w")
+    ttk.Button(first, text="Set CanadianShopper to the website's counts...",
+               style="Task.TButton", command=set_all).pack(side="left")
+    ttk.Button(first, text="Fix the selected cards...",
+               command=set_selected).pack(side="left", padx=6)
+    second = ttk.Frame(action_row)
+    second.pack(anchor="w", pady=(3, 0))
+    ttk.Button(second, text="Set the website to the selected cards' counts...",
+               command=set_website_selected).pack(side="left")
+    ttk.Button(second, text="Open the selected cards on the website",
+               command=open_on_website).pack(side="left", padx=6)
+    third = ttk.Frame(action_row)
+    third.pack(anchor="w", pady=(3, 0))
+    ttk.Button(third, text="List the selected cards on CanadianShopper...",
+               style="Task.TButton", command=list_selected).pack(side="left")
+    ttk.Button(third, text="List every website-only card...",
+               command=list_every_website_only_card).pack(side="left", padx=6)
+    fourth = ttk.Frame(action_row)
+    fourth.pack(anchor="w", pady=(3, 0))
+    ttk.Button(fourth, text="Ignore the selected cards",
+               command=ignore_selected).pack(side="left")
+    ttk.Button(fourth, text="Restore ignored cards...",
+               command=restore_ignored).pack(side="left", padx=6)
+    action_row.pack_forget()
+
+    #  Shown only when a comparison finds listings that exist but are not on
+    #  sale: a count cannot activate those, publishing can.
+    publish_ready = ttk.Button(
+        box, text="Publish the ready drafts...",
+        command=lambda: publish_drafts(
+            0, "Some of these cards have a draft listing on CanadianShopper. "
+               "Publishing activates the drafts that pass every readiness "
+               "check; a draft that is not ready is left alone."))
+    publish_ready.pack_forget()
+
+    ttk.Label(box,
+              text="The list is what needs attention: a card whose two counts "
+                   "differ, a card whose listing on the other site is not on "
+                   "sale, or a card that exists on one side only. The "
+                   "website is usually the right one, so the first button sets "
+                   "every differing count to the website's - after showing "
+                   "exactly what would change and asking. Select rows to fix "
+                   "or ignore just those; ignoring a card that is not on the "
+                   "other site stops it being compared again, and nothing on "
+                   "either site is changed by comparing or by ignoring. When "
+                   "the website is the one that is wrong, select the card and "
+                   "set the website to the other side's count - the same "
+                   "confirmation applies, and Read/Write keys are needed - or "
+                   "open its product page and change it there. A card that is "
+                   "on the website and no longer on CanadianShopper can be put "
+                   "back: the listing buttons write the same import file the "
+                   "batch pipeline writes, from the website product itself, "
+                   "then offer to import it and publish the drafts - all with "
+                   "the publisher's own confirmations, including the typed "
+                   "PUBLISH.",
+              style="Dim.TLabel", wraplength=680, justify="left").pack(
+                  anchor="w", pady=(6, 0))
+
+    # ---------------------------------------------------------- sessions
+    ttk.Label(box, text="Your eBay and Facebook sessions", style="H2.TLabel"
+              ).pack(anchor="w", pady=(12, 0))
+    for site_id, caption in (("ebay", "Open the eBay cookie file"),
+                             ("facebook", "Open the Facebook cookie file")):
+        info = market_stock.SITES[site_id]
+        line = ttk.Frame(box)
+        line.pack(anchor="w", pady=(2, 0))
+        ttk.Button(line, text=caption,
+                   command=lambda s=site_id: open_market_cookie(app, s)
+                   ).pack(side="left")
+        label = ttk.Label(line, text="no session saved" if not (
+            BASE / info["cookie"]).is_file() else "session saved",
+            style="Dim.TLabel")
+        label.pack(side="left", padx=(6, 0))
+        statuses[site_id] = label
+
+    ttk.Label(box,
+              text="Both sites need a signed-in session, and both check "
+                   "whether a request comes from a browser - eBay answers "
+                   "with a \"Pardon our interruption\" page and Facebook with "
+                   "HTTP 400. When that happens the app says so and changes "
+                   "nothing: save the page from your browser with Ctrl+S "
+                   "(HTML only) and use the \"Read a saved page\" button, which "
+                   "uses the same reader. The cookie goes in ebay-cookie.txt "
+                   "or fb-cookie.txt; the whole Cookie header can be pasted at "
+                   "once, on one line or several. A copy of every page read is "
+                   "kept beside the app (ebay-active.html, fb-selling.html) "
+                   "and is never sent anywhere.",
+              style="Dim.TLabel", wraplength=680, justify="left").pack(
+                  anchor="w", pady=(6, 0))
+
 
 
 def build_plugins(parent, app):
@@ -4464,8 +6211,9 @@ def build_newphotos(parent, app):
             "Save your website API keys?",
             "Alex Collect can look the card up on your website and open its "
             "product edit page directly.\n\n"
-            "That needs a read-only WooCommerce key pair in woo-keys.txt. It "
-            "is a one-time setup, and every later photo replacement becomes "
+            "That uses the WooCommerce keys in woo-keys.txt - the same pair "
+            "the rest of the app uses, read-only being enough for the lookup. "
+            "It is a one-time setup, and every later photo replacement becomes "
             "one click instead of a search.\n\n"
             "Enter the keys now?", parent=app)
         if not enter:
@@ -5637,6 +7385,7 @@ PANEL_BUILDERS = {
     "rerun": build_rerun,
     "sold": build_sold,
     "checklist": build_checklist,
+    "stock": build_stock,
     "zerostock": build_zerostock,
     "square": build_square,
     "newphotos": build_newphotos,
