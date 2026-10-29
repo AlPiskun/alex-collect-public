@@ -159,7 +159,8 @@ def test_shipped_script_runs_end_to_end(root):
     (d / "pipeline").mkdir(parents=True)
     for name in ("card_pipeline.py", "output_history.py"):
         shutil.copyfile(PIPELINE / name, d / "pipeline" / name)
-    for name in ("browser_utils.py", "user_settings.py", "plugin_manager.py"):
+    for name in ("browser_utils.py", "user_settings.py", "plugin_manager.py",
+                 "cs_listing.py"):
         shutil.copyfile(APP / name, d / name)
     (d / "gui-settings.json").write_text(
         json.dumps({"browser_name": "system"}), encoding="utf-8")

@@ -71,6 +71,7 @@ from output_history import (consolidate_csv_history,
                             consolidate_ebay_history, write_ebay_sidecar)
 from user_settings import (load_user_settings, save_user_settings,
                            site_admin_url, site_url, feed_urls)
+import cs_listing
 
 USER_SETTINGS = load_user_settings(APP_DIR / "gui-settings.json")
 OUTPUT_DIR = SCRIPT_DIR / "output"
@@ -1552,27 +1553,19 @@ def maybe_run_facebook(args):
 # =====================================================================
 #  CANADIANSHOPPER UPLOAD
 # =====================================================================
-CANADIANSHOPPER_FIELDNAMES = [
-    "title", "price_cad", "category", "description", "image_url",
-    "inventory", "is_made_to_order", "ship_from_province",
-    "shipping_flat_cad", "free_shipping", "handling_days", "transit_days",
-    "sizes", "colors",
-]
+#  The import template and its defaults live in cs_listing, because the stock
+#  panel writes the same file for cards that are only on the website. One
+#  definition, so a batch and a listing cannot disagree about a column.
+from cs_listing import (CANADIANSHOPPER_BATCH_SIZE, CANADIANSHOPPER_FIELDNAMES,
+                        defaults as _cs_defaults)
 
-CANADIANSHOPPER_CATEGORY = str(USER_SETTINGS.get(
-    "canadianshopper_category", "Antiques & Collectibles"))
-CANADIANSHOPPER_PROVINCE = str(USER_SETTINGS.get(
-    "canadianshopper_ship_from_province", "ON"))
-CANADIANSHOPPER_FLAT_SHIPPING = str(USER_SETTINGS.get(
-    "canadianshopper_shipping_flat", "4.00"))
-CANADIANSHOPPER_FREE_SHIPPING = (
-    "true" if USER_SETTINGS.get("canadianshopper_free_shipping", False)
-    else "false")
-CANADIANSHOPPER_HANDLING_DAYS = str(USER_SETTINGS.get(
-    "canadianshopper_handling_days", 2))
-CANADIANSHOPPER_TRANSIT_DAYS = str(USER_SETTINGS.get(
-    "canadianshopper_transit_days", 5))
-CANADIANSHOPPER_BATCH_SIZE = 500
+_CS_DEFAULTS = _cs_defaults(USER_SETTINGS)
+CANADIANSHOPPER_CATEGORY = _CS_DEFAULTS["category"]
+CANADIANSHOPPER_PROVINCE = _CS_DEFAULTS["ship_from_province"]
+CANADIANSHOPPER_FLAT_SHIPPING = _CS_DEFAULTS["shipping_flat_cad"]
+CANADIANSHOPPER_FREE_SHIPPING = _CS_DEFAULTS["free_shipping"]
+CANADIANSHOPPER_HANDLING_DAYS = _CS_DEFAULTS["handling_days"]
+CANADIANSHOPPER_TRANSIT_DAYS = _CS_DEFAULTS["transit_days"]
 
 
 def default_canadianshopper_image_base_url():
@@ -1672,27 +1665,8 @@ def write_canadianshopper_csvs(rows):
     if not rows:
         return []
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    batch_count = math.ceil(len(rows) / CANADIANSHOPPER_BATCH_SIZE)
-    output_paths = []
-    CANADIANSHOPPER_DIR.mkdir(parents=True, exist_ok=True)
-
-    for batch_index in range(batch_count):
-        start = batch_index * CANADIANSHOPPER_BATCH_SIZE
-        batch = rows[start:start + CANADIANSHOPPER_BATCH_SIZE]
-        out_path = CANADIANSHOPPER_DIR / (
-            f"canadianshopper_import_{timestamp}_"
-            f"{batch_index + 1:02d}_of_{batch_count:02d}.csv"
-        )
-        with open(out_path, "w", newline="", encoding="utf-8-sig") as f:
-            writer = csv.DictWriter(
-                f,
-                fieldnames=CANADIANSHOPPER_FIELDNAMES,
-                lineterminator="\n",
-            )
-            writer.writeheader()
-            writer.writerows(batch)
-        output_paths.append(out_path)
+    written = cs_listing.write_rows(rows, CANADIANSHOPPER_DIR)
+    output_paths = [path for path, _count in written]
 
     _roll_csv_history(
         CANADIANSHOPPER_DIR, "canadianshopper_import_*.csv",

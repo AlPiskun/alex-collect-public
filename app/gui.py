@@ -50,6 +50,7 @@ import photo_replace
 import market_stock
 import photo_thumbs
 import sale_preview
+import cs_listing
 import stock_compare
 import stock_write
 import woo_media
@@ -63,7 +64,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.65"
+VERSION = "2.66"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -960,6 +961,13 @@ read, so the website is changed on the website's own screen. A card that is no
 longer sold on the other site is ignored, which stops it being compared again
 until it is restored.
 
+A card that exists on the website and no longer on CanadianShopper is the one
+that can be put back rather than corrected: the listing buttons write the
+CanadianShopper import file from the website product itself - its title, price,
+photo URL and stock count - in the same fourteen columns and with the same
+filename as a batch from the pipeline. Nothing appears on CanadianShopper until
+that file is imported, and it arrives as an unpublished draft.
+
 A pair is only made when a shared SKU or the title identifies the same card - a
 wrong pair would accuse a card that is fine - and an unpaired card is never
 called wrong, only "on one side"."""
@@ -1326,6 +1334,8 @@ TOOLTIPS = {
     "Fix the selected cards...": "Set CanadianShopper to the website's count for just the rows selected in the list, after a confirmation listing them",
     "Set the website to the selected cards' counts...": "The reverse fix: set the website's stock count to the count the other site reports, for the selected cards - always shown and confirmed first; needs WooCommerce keys with Read/Write access",
     "Open the selected cards on the website": "Open the website's own product edit page for the selected cards - for a count a plugin owns, a variable product, or anything the stock panel should not touch",
+    "List the selected cards on CanadianShopper...": "Write the CanadianShopper import file for the selected website-only cards, built from the website product - title, price, its own photo and stock count; nothing appears on either site until you import it",
+    "List every website-only card...": "The same import file, for every card that is on the website and not on CanadianShopper",
     "Ignore the selected cards": "Stop comparing the selected cards: a card that is no longer sold on one site disappears from the list until it is restored; nothing on either site changes",
     "Restore ignored cards...": "Put every ignored card back into comparisons, after showing which ones they are",
     "Read a saved eBay page...": "Read an eBay page you saved from your own signed-in browser (Ctrl+S, HTML only) - the way round eBay's \"Pardon our interruption\" check, using the same reader",
@@ -4281,7 +4291,7 @@ def build_stock(parent, app):
     app._stock_filter = ""
     state = {"card": focus, "rows": [], "pairs": [], "only_woo": [],
              "only_other": [], "label": "CanadianShopper", "mode": "count",
-             "skipped": 0}
+             "skipped": 0, "catalog": {}}
     statuses = {}
 
     def credentials():
@@ -4624,6 +4634,106 @@ def build_stock(parent, app):
     def set_website_selected():
         set_website(selected_rows())
 
+    def list_rows(rows):
+        """Offer to list these cards on CanadianShopper, from the website.
+
+        A card that sold out here but is still stocked on the website is the
+        one case where the panel can put it *back* rather than change a
+        number. CanadianShopper has no API this app may write listings
+        through, so this writes the import CSV the pipeline already writes -
+        same fourteen columns, same filename, same folder - from the website
+        product itself: its title, its price, its own photo URL and its stock
+        count. Nothing on either site changes until that file is imported.
+        """
+        rows = [row for row in rows or []
+                if row.get("kind") == stock_compare.ONLY_WOO]
+        if not rows:
+            messagebox.showinfo(
+                "Nothing to list",
+                "Select one or more rows that are on the website only. A card "
+                "on both sites has nothing to list, and a card that is only on "
+                "the other site cannot be listed on the website from here.")
+            return
+        wanted, missing = cs_listing.listing_products(rows, state["catalog"])
+        if missing:
+            app.console_line(
+                "%d selected card%s not in the comparison's catalogue; compare "
+                "again to list %s." %
+                (len(missing), "" if len(missing) == 1 else "s",
+                 "it" if len(missing) == 1 else "them"), "err")
+        if not wanted:
+            messagebox.showinfo(
+                "Nothing to list",
+                "The products behind those rows are no longer loaded. Press "
+                "Compare again, then select the cards.")
+            return
+        values = cs_listing.defaults(app.settings)
+        built, notes = cs_listing.build_rows(wanted, values)
+        if not built:
+            messagebox.showinfo(
+                "Nothing to list",
+                "Those products have no name, so there is nothing to list.")
+            return
+        lines = cs_listing.describe(built)
+        if len(built) > 12:
+            lines.append("  ... and %d more" % (len(built) - 12))
+        body = "\n".join(lines)
+        if notes:
+            body += "\n\nWorth knowing:\n" + "\n".join(
+                "  %s - %s" % note for note in notes[:6])
+            if len(notes) > 6:
+                body += "\n  ... and %d more" % (len(notes) - 6)
+        question = ("%s\n\n%s\n\nAlex Collect writes the CanadianShopper "
+                    "import file and nothing else: no listing appears until "
+                    "you import it, and it arrives as an unpublished draft. "
+                    "Write the file now?" %
+                    (cs_listing.summary(built, values), body))
+        if not messagebox.askyesno("List these cards on CanadianShopper?",
+                                   question, parent=box.winfo_toplevel()):
+            app.console_line("Nothing was written: the listing was not "
+                             "confirmed.", "dim")
+            return
+        folder = canadianshopper_results_dir(app)
+        try:
+            written = cs_listing.write_rows(built, folder)
+        except OSError as exc:
+            messagebox.showerror(
+                "Could not write the import file",
+                "The CanadianShopper import file could not be written to "
+                "%s:\n\n%s\n\nNothing on either site was changed."
+                % (folder, exc), parent=box.winfo_toplevel())
+            app.console_line("Could not write the CanadianShopper import "
+                             "file: %s" % exc, "err")
+            return
+        total = sum(count for _path, count in written)
+        for path, count in written:
+            app.console_line("Wrote %s (%d listing%s)." %
+                             (path, count, "" if count == 1 else "s"), "ok")
+        app.console_line(
+            "Import %d row%s on CanadianShopper, then use Import / publish "
+            "drafts to review them before they go live. Compare again "
+            "afterwards and they leave this list." %
+            (total, "" if total == 1 else "s"), "ok")
+        summary.configure(
+            text="%d listing%s written to %s. Import it on CanadianShopper; "
+                 "the drafts are reviewed in Import / publish drafts." %
+                 (total, "" if total == 1 else "s", written[0][0].name))
+        for note in notes:
+            app.console_line("Note: %s - %s" % note, "dim")
+        if messagebox.askyesno(
+                "Import file written",
+                "%d listing%s written:\n\n  %s\n\nOpen the folder so it can "
+                "be imported on CanadianShopper?" %
+                (total, "" if total == 1 else "s", written[0][0]),
+                parent=box.winfo_toplevel()):
+            open_path(folder)
+
+    def list_selected():
+        list_rows(selected_rows())
+
+    def list_every_website_only_card():
+        list_rows(state["rows"])
+
     def open_on_website():
         """Look at the product itself rather than changing its count.
 
@@ -4721,6 +4831,12 @@ def build_stock(parent, app):
                 failed("your website", getattr(error, "message", str(error)),
                        getattr(error, "hint", ""))
                 return
+            #  The whole product records, not just their counts: listing a
+            #  card on the other site needs its price, its description and the
+            #  photo URL the shop already serves.
+            state["catalog"] = {str(product.get("id")): product
+                                for product in products or []
+                                if isinstance(product, dict)}
             woo, skipped = stock_compare.woo_items(products)
             woo, items_here = narrow(woo, items)
             pairs, only_woo, only_other = stock_compare.pair(woo, items_here)
@@ -5062,9 +5178,15 @@ def build_stock(parent, app):
                command=open_on_website).pack(side="left", padx=6)
     third = ttk.Frame(action_row)
     third.pack(anchor="w", pady=(3, 0))
-    ttk.Button(third, text="Ignore the selected cards",
+    ttk.Button(third, text="List the selected cards on CanadianShopper...",
+               style="Task.TButton", command=list_selected).pack(side="left")
+    ttk.Button(third, text="List every website-only card...",
+               command=list_every_website_only_card).pack(side="left", padx=6)
+    fourth = ttk.Frame(action_row)
+    fourth.pack(anchor="w", pady=(3, 0))
+    ttk.Button(fourth, text="Ignore the selected cards",
                command=ignore_selected).pack(side="left")
-    ttk.Button(third, text="Restore ignored cards...",
+    ttk.Button(fourth, text="Restore ignored cards...",
                command=restore_ignored).pack(side="left", padx=6)
     action_row.pack_forget()
 
@@ -5080,7 +5202,11 @@ def build_stock(parent, app):
                    "the website is the one that is wrong, select the card and "
                    "set the website to the other side's count - the same "
                    "confirmation applies, and Read/Write keys are needed - or "
-                   "open its product page and change it there.",
+                   "open its product page and change it there. A card that is "
+                   "on the website and no longer on CanadianShopper can be put "
+                   "back: the listing buttons write the same import file the "
+                   "batch pipeline writes, from the website product itself, "
+                   "for you to import and review as a draft.",
               style="Dim.TLabel", wraplength=680, justify="left").pack(
                   anchor="w", pady=(6, 0))
 

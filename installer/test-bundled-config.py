@@ -12,7 +12,7 @@ LAUNCHER = (HERE.parent / "app" / "Alex Collect.bat").read_text(
 CORE = (HERE.parent / "app" / "gui.py").read_text(encoding="utf-8")
 PYTHON_SETUP = (HERE / "alexcollect.iss").read_text(encoding="utf-8")
 
-APP_VERSION = "2.65"
+APP_VERSION = "2.66"
 VERSION = "3.13.16"
 INSTALLER = "python-3.13.16-amd64.exe"
 SHA256 = "fb4f9f5d438b2396da0086dc70b935c530cb578e37adc6d354f7ad2037fee83b"

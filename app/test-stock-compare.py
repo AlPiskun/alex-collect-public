@@ -642,7 +642,10 @@ def test_actions():
     print("== 10. the list is the work: fix rows, one-sided rows, dismissals ==")
     woo, _ = stock_compare.woo_items(PRODUCTS)
     extra_woo = {"id": 9, "name": "1972-73 O-Pee-Chee Guy Lafleur #79",
-                 "sku": "LA-79", "qty": 3}
+                 "sku": "LA-79", "qty": 3,
+                 "images": [{"src": "https://shop.example/lafleur-front.webp"}],
+                 "price": "9.00",
+                 "short_description": "<p>Sharp corner copy.</p>"}
     extra_other = {"id": 77, "name": "1972-73 O-Pee-Chee Ken Dryden #10",
                    "sku": "", "qty": 1}
     pairs, only_woo, only_other = stock_compare.pair(woo, OTHER)
@@ -1090,6 +1093,136 @@ def test_ignoring():
           json.loads(path.read_text(encoding="utf-8"))["cards"] == [], "")
 
 
+
+def test_listing_the_leftovers():
+    print()
+    print("== 13. a card the website has and CanadianShopper does not ==")
+    folder, app, parent = build_panel()
+    #  Two products that are only on the website: one complete, one with no
+    #  photo - the confirmation has to be able to say so.
+    products = PRODUCTS + [
+        {"id": 9, "name": "1972-73 O-Pee-Chee Guy Lafleur #79", "sku": "LA-79",
+         "manage_stock": True, "stock_quantity": 3, "type": "simple",
+         "price": "9.00", "short_description": "<p>Sharp corner copy.</p>",
+         "images": [{"src": "https://shop.example/lafleur-front.webp"}]},
+        {"id": 10, "name": "1972-73 O-Pee-Chee Ken Dryden #10", "sku": "",
+         "manage_stock": True, "stock_quantity": 1, "type": "simple"},
+    ]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    button = find(parent, gui.ttk.Button, "Compare stock", exact=False)
+    out = folder / "cs-stock.json"
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_all), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        button.invoke()
+        out.write_text(json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+    listing = next((w for w in parent.walk()
+                    if isinstance(w, gui.tk.Listbox)), None)
+    website_only = [index for index, text in enumerate(listing.items or [])
+                    if "not on CanadianShopper" in text]
+    check("the cards that are only on the website are on the list",
+          len(website_only) == 2, str(listing.items))
+    list_btn = find(parent, gui.ttk.Button,
+                    "List the selected cards on CanadianShopper...")
+    check("and they can be listed from here",
+          list_btn is not None and
+          find(parent, gui.ttk.Button, "List every website-only card...")
+          is not None, "")
+
+    # ---- declining writes nothing, and says so
+    asked = []
+    harness._BOX.askyesno = lambda title, message, **k: (
+        asked.append((title, message)) or False)
+    with patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button,
+             "List every website-only card...").invoke()
+    check("listing asks first",
+          asked and asked[0][0] == "List these cards on CanadianShopper?",
+          str(asked[:1]))
+    check("the question says what the listings will look like",
+          asked and "2 listings would be created as unpublished drafts"
+          in asked[0][1], str(asked[:1]))
+    check("with the title, the price and the stock count of each",
+          asked and "Guy Lafleur" in asked[0][1] and "9.00" in asked[0][1] and
+          "3 in stock" in asked[0][1], str(asked[0][1][:400]))
+    check("and it names what is missing before the person imports",
+          asked and "no photo on the website" in asked[0][1],
+          str(asked[0][1][-300:]))
+    product_folder = folder / "canadianshopper_products"
+    check("declining writes no file at all",
+          not (product_folder.is_dir() and
+               any(product_folder.glob("*.csv"))), str(product_folder))
+    check("and says so rather than failing silently",
+          any("not confirmed" in text for _tag, text in app.lines),
+          str(app.lines[-2:]))
+
+    # ---- confirming writes the file the importer already knows
+    asked[:] = []
+    opened = []
+    harness._BOX.askyesno = lambda title, message, **k: (
+        asked.append((title, message)) or True)
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "open_path", lambda path: opened.append(path)):
+        find(parent, gui.ttk.Button,
+             "List every website-only card...").invoke()
+    import_csv = list(product_folder.glob("canadianshopper_import_*.csv"))
+    check("confirming writes one import file",
+          len(import_csv) == 1, str(import_csv))
+    check("named the way every other batch is named",
+          bool(import_csv) and
+          import_csv[0].name.endswith("_01_of_01.csv") and
+          import_csv[0].name.startswith("canadianshopper_import_"),
+          str([p.name for p in import_csv]))
+    body = import_csv[0].read_text(encoding="utf-8-sig") if import_csv else ""
+    check("with the pipeline's fourteen columns",
+          body.splitlines() and body.splitlines()[0].split(",") ==
+          gui.cs_listing.CANADIANSHOPPER_FIELDNAMES, body.splitlines()[:1])
+    check("and one row per card that is only on the website",
+          len(body.splitlines()) == 3, str(body.splitlines()[1:]))
+    check("the row carries the website's photo, price and count",
+          "lafleur-front.webp" in body and "9.00" in body and
+          "Sharp corner copy." in body, str(body.splitlines()[1:2]))
+    check("the console says what to do with it",
+          any("Import 2 rows on CanadianShopper" in text
+              for _tag, text in app.lines), str(app.lines[-3:]))
+    check("the folder is offered rather than assumed",
+          opened and str(product_folder) == str(opened[-1]), str(opened))
+    check("and the cards stay on the list until CanadianShopper has them",
+          any("not on CanadianShopper" in text for text in listing.items or []),
+          str(listing.items))
+    check("nothing was sent to either shop by listing",
+          not any("set-file" in " ".join(run["args"]) for run in app.runs),
+          str([run["args"] for run in app.runs])[:160])
+
+
+def test_listing_skips_what_is_not_a_listing_job():
+    print()
+    print("== 14. listing is only offered for what is really missing ==")
+    folder, app, parent = build_panel()
+    listing, out = run_comparison(folder, app, parent)
+    listing.selection = (0,)          # the one row is a disagreement, not a gap
+    infos = []
+    harness._BOX.showinfo = lambda *a, **k: infos.append(a)
+    with patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button,
+             "List the selected cards on CanadianShopper...").invoke()
+    check("a card on both sites is not offered as a new listing",
+          infos and "Nothing to list" in str(infos[0]), str(infos))
+    check("and the reason says which row it wants",
+          infos and "website only" in str(infos[0]), str(infos))
+    check("no file is written for a refused listing",
+          not list(folder.glob("canadianshopper_products/*.csv")), "")
+
+
 def main():
     test_woo_items()
     test_plugin_items()
@@ -1108,6 +1241,8 @@ def main():
     test_actions()
     test_the_fix_flow()
     test_ignoring()
+    test_listing_the_leftovers()
+    test_listing_skips_what_is_not_a_listing_job()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))
