@@ -2209,6 +2209,78 @@ def test_nearest_title_diagnosis():
           str(app.lines[-4:]))
 
 
+def test_a_duplicate_on_the_website():
+    print()
+    print("== 25. two website products, one listing: the duplicate is named ==")
+    title = "#25 Pete Stemkowski (EX) 1970-71 O-Pee-Chee"
+    woo = [{"name": title, "sku": "", "qty": 0, "id": 11},
+           {"name": title, "sku": "", "qty": 2, "id": 12}]
+    cs = stock_compare.plugin_items({"items": [
+        {"id": 501, "title": title, "inventory": 0, "status": "Active"}]})
+    pairs, only_woo, only_other = stock_compare.pair(woo, cs)
+    check("the listing goes to the product that can sell, not the sold-out "
+          "duplicate",
+          len(pairs) == 1 and pairs[0]["woo"]["id"] == 12, str(pairs))
+    check("and the duplicate is the one left over",
+          [item["id"] for item in only_woo] == [11],
+          str([item["id"] for item in only_woo]))
+    item, score = stock_compare.closest(cs, only_woo[0]["name"])
+    check("its nearest title is the very listing the other one holds",
+          item is not None and score == 1.0, str((item, score)))
+    owner = stock_compare.owner_of(pairs, item)
+    check("and the owner of that listing can be named",
+          owner is not None and owner["id"] == 12, str(owner))
+    check("the two titles are recognised as the same card's words",
+          stock_compare.same_words(only_woo[0]["name"], owner["name"]), "")
+    check("a different card is not called the same words",
+          not stock_compare.same_words(title,
+                                       "#26 Pete Stemkowski 1970-71 O-Pee-Chee"),
+          "")
+    check("an unpaired listing has no owner",
+          stock_compare.owner_of(pairs, cs[0]) is not None and
+          stock_compare.owner_of([], cs[0]) is None, "")
+
+    # ---- and the panel says exactly that, in words that name the duplicate
+    folder, app, parent = build_panel()
+    products = PRODUCTS + [
+        {"id": 11, "name": title, "sku": "", "manage_stock": True,
+         "stock_quantity": 0, "type": "simple"},
+        {"id": 12, "name": title, "sku": "", "manage_stock": True,
+         "stock_quantity": 2, "type": "simple"}]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    app.lines.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_all), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+        (folder / "cs-stock.json").write_text(
+            json.dumps({"items": [{"id": 501, "title": title,
+                                   "inventory": 0, "status": "Active"}]}),
+            encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+    check("the panel names the listing that is already held",
+          any("already belongs to" in text for _tag, text in app.lines),
+          str(app.lines[-6:]))
+    check("and says the listing exists while the duplicate does not",
+          any("the listing exists" in text and "duplicate on your website"
+              in text for _tag, text in app.lines), str(app.lines[-5:]))
+    check("and warns that listing it again would make a second one",
+          any("Listing it again would make a second one" in text
+              for _tag, text in app.lines), str(app.lines[-5:]))
+    check("and the duplicate is not counted among the cards that are really "
+          "missing",
+          any("nothing similar" in text and "2 of those 3" in text
+              for _tag, text in app.lines), str(len(app.lines)))
+
+
 def main():
     test_woo_items()
     test_plugin_items()
@@ -2239,6 +2311,7 @@ def main():
     test_listing_without_a_count()
     test_a_listing_that_counts_nothing()
     test_nearest_title_diagnosis()
+    test_a_duplicate_on_the_website()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))

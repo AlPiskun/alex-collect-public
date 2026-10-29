@@ -369,7 +369,12 @@ def pair(woo, other, minimum=DEFAULT_MIN_SCORE):
                 continue
             scored.append((value, numbers_ok, item, index,
                            "number" if shared_number else "title"))
-    scored.sort(key=lambda row: (-row[0], not row[1]))
+    #  When two website products score identically - which is what a
+    #  duplicate does - the one that can actually sell is the one that should
+    #  hold the listing. Otherwise a sold-out copy quietly owns the only
+    #  listing and the live product beside it is reported as missing.
+    scored.sort(key=lambda row: (-row[0], not row[1],
+                                 -int((row[2].get("qty") or 0) > 0)))
 
     used_woo = set()
     for value, _numbers_ok, item, index, how in scored:
@@ -546,6 +551,21 @@ def closest(items, name):
         if value > best_score:
             best, best_score = item, value
     return best, round(best_score, 3)
+
+
+def owner_of(pairs, item):
+    """The website product a listing is already compared with, or ``None``."""
+    if item is None:
+        return None
+    for row in pairs or []:
+        if row.get("other") is item:
+            return row.get("woo")
+    return None
+
+
+def same_words(a, b):
+    """Whether two titles are the same card's words, in any order and case."""
+    return bool(str(a or "").strip()) and card_key(a) == card_key(b)
 
 
 def no_count(items):

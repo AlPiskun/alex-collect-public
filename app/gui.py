@@ -64,7 +64,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.76"
+VERSION = "2.77"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -5284,25 +5284,52 @@ def build_stock(parent, app):
         missing = [row for row in rows
                    if row["kind"] == stock_compare.ONLY_WOO]
         if missing and state.get("items"):
-            near, nothing = [], []
+            near, nothing, twins = [], [], []
             for row in missing:
                 item, score = stock_compare.closest(state["items"], row["card"])
-                if item is not None and score >= 0.45:
-                    near.append((row["card"], item.get("name") or "", score))
-                else:
+                if item is None or score < 0.45:
                     nothing.append(row["card"])
+                    continue
+                owner = stock_compare.owner_of(state["pairs"], item)
+                same = (owner is not None and
+                        stock_compare.same_words(
+                            row["card"], owner.get("name") or ""))
+                near.append((row["card"], item.get("name") or "", score,
+                             owner, same))
+                if same:
+                    twins.append((row["card"], owner))
             if near:
                 app.console_line(
                     "%d of those %d have a similar title on %s - check these "
                     "by hand before listing them again:" %
                     (len(near), len(missing), state["label"]), "warn")
-                for card, other_name, score in near[:8]:
-                    app.console_line(
-                        "  %s\n      closest: %s (%d%%)" %
-                        (card, other_name, round(score * 100)), "dim")
+                for card, other_name, score, owner, same in near[:8]:
+                    line = "  %s\n      closest: %s (%d%%)" % (
+                        card, other_name, round(score * 100))
+                    if same:
+                        line += ("  - that listing already belongs to %s, "
+                                 "which has the same title" %
+                                 (owner.get("name") or "another website "
+                                                       "product"))
+                    elif owner is not None:
+                        line += ("  - already compared with %s" %
+                                 (owner.get("name") or "another website "
+                                                       "product"))
+                    app.console_line(line, "dim")
                 if len(near) > 8:
                     app.console_line("  ... and %d more" % (len(near) - 8),
                                      "dim")
+            if twins:
+                #  The one fact that settles it: a listing cannot be shared,
+                #  so two website products with one title means the card is
+                #  listed once and duplicated on the website - not missing.
+                app.console_line(
+                    "%d of those have the same title as a website product "
+                    "that already holds the listing: the listing exists, and "
+                    "the duplicate on your website does not. Listing it again "
+                    "would make a second one there - merge or delete the "
+                    "duplicate on the website, or ignore the card here." %
+                    len(twins), "warn")
             if nothing:
                 app.console_line(
                     "%d of those %d have nothing similar on %s: those cards "
@@ -5310,9 +5337,10 @@ def build_stock(parent, app):
                     "them." % (len(nothing), len(missing), state["label"]),
                     "dim")
         summary_line = (
-            "Compared %d matched cards against %s; %d disagree, %d not on "
-            "sale there" % (len(state["pairs"]), state["label"], len(fixable),
-                            len(off_sale)))
+            "Compared %d matched card%s against %s; %d disagree, %d not on "
+            "sale there" % (len(state["pairs"]),
+                            "" if len(state["pairs"]) == 1 else "s",
+                            state["label"], len(fixable), len(off_sale)))
         if no_count:
             summary_line += ", %d counting no stock" % len(no_count)
         app.console_line(summary_line + ", %d only on one side. Nothing was "
