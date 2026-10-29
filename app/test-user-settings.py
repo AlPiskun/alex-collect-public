@@ -89,7 +89,7 @@ def main():
     assert events[0] == (
         "open", "https://shop.example/wp-admin/media-new.php", "chrome")
     assert events[1][0] == "prompt"
-    assert "created/published the products" in events[1][1]
+    assert "created and published on the website" in events[1][1]
     assert folder_events == [pipeline.OUTPUT_DIR]
     launched = []
     with patch.object(browser_utils, "browser_executable",

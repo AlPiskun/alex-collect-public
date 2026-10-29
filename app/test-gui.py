@@ -2226,8 +2226,19 @@ def main():
     app.clipboard_clear()
     app.clipboard_append(long_answer)
     app.update()
-    big.invoke()
-    app.update()
+    #  The products question is a real modal window: it is answered for the
+    #  test, and checked on its own in section 20b below.
+    asked_products = []
+    real_ask_products = gui.ask_create_products
+    gui.ask_create_products = lambda a=None, cards=None: (
+        asked_products.append(1) or "none")
+    try:
+        big.invoke()
+        app.update()
+    finally:
+        gui.ask_create_products = real_ask_products
+    check("the products question is asked before the batch starts",
+          len(asked_products) == 1, str(asked_products))
     check("a failed start keeps the dialog open (no silent close)",
           bool(dlg.winfo_exists()))
     app.runner.start = cap2
@@ -2239,6 +2250,61 @@ def main():
           dlg2.front_var.get() == str(dfront) and
           dlg2.back_var.get() == str(dback))
     dlg2.destroy()
+    # ------------------------------------------------------------------
+    # 20b. what happens to the products when the batch runs
+    # ------------------------------------------------------------------
+    print("== 20b. the products question before a batch ==")
+    real_keys = gui.read_woo_credentials
+    real_ask = gui.messagebox.askyesno
+    real_info = gui.messagebox.showinfo
+    real_open_keys = gui.open_woo_keys_file
+    opened = []
+    notes = []
+    try:
+        gui.read_woo_credentials = lambda *a, **k: ("", "", "")
+        gui.open_woo_keys_file = lambda app_, site="": opened.append(site)
+        gui.messagebox.showinfo = lambda *a, **k: notes.append(a[0])
+        gui.messagebox.askyesno = lambda *a, **k: False
+        check("no keys and no keys wanted = the CSV only, asked first",
+              gui.ask_create_products(app) == "none", "")
+
+        gui.messagebox.askyesno = lambda *a, **k: True
+        check("saying yes opens woo-keys.txt", gui.ask_create_products(app)
+              == "none" and opened, str(opened))
+        check("and says what was still missing", len(notes) >= 1, str(notes))
+
+        gui.read_woo_credentials = lambda *a, **k: (
+            "https://shop.example", "ck_a", "cs_b")
+        dialog = gui.CreateProductsDialog(app, "https://shop.example", True)
+        app.update()
+        check("with the keys saved the question offers three answers",
+              dialog.choice.get() == "draft", dialog.choice.get())
+        dialog.choice.set("publish")
+        find_button(dialog, "Continue").invoke()
+        app.update()
+        check("choosing publish is what the dialog answers",
+              dialog.answer == "publish", str(dialog.answer))
+        check("the window closes after the answer", not dialog.winfo_exists())
+
+        dialog2 = gui.CreateProductsDialog(app, "https://shop.example", True)
+        app.update()
+        dialog2.destroy()
+        app.update()
+        check("closing the window answers nothing, so the batch is cancelled",
+              dialog2.answer is None, str(dialog2.answer))
+
+        dialog3 = gui.CreateProductsDialog(app, "", False)
+        app.update()
+        check("without keys the safe answer is the CSV only",
+              dialog3.choice.get() == "none", dialog3.choice.get())
+        dialog3.destroy()
+        app.update()
+    finally:
+        gui.read_woo_credentials = real_keys
+        gui.messagebox.askyesno = real_ask
+        gui.messagebox.showinfo = real_info
+        gui.open_woo_keys_file = real_open_keys
+
     # ------------------------------------------------------------------
     # 21. order from a pasted card list (no network: no keys saved here)
     # ------------------------------------------------------------------
