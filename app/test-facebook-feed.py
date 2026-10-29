@@ -5,9 +5,12 @@ Run from app/: python test-facebook-feed.py
 Uses a fake requests module and a tiny synthetic Google product feed; no
 network requests or seller credentials are involved.
 """
+import ast
 import csv
 import json
 import os
+from contextlib import redirect_stdout
+from io import StringIO
 import shutil
 import subprocess
 import sys
@@ -183,7 +186,34 @@ def test_ambiguous_or_missing_batch_fails_closed(root):
           not (feed_dir / "facebook_history.xlsx").exists())
 
 
-def test_nested_gui_python_uses_console_interpreter(root):
+class FakePipe(list):
+    """Lines the pipeline can read, and close, like a real pipe."""
+
+    def close(self):
+        pass
+
+
+class FakeChild:
+    """A stand-in for subprocess.Popen that answers like a helper would."""
+
+    def __init__(self, lines=(), code=0, record=None):
+        self.stdout = FakePipe(lines)
+        self.returncode = code
+        self.record = record if record is not None else {}
+
+    def wait(self):
+        return self.returncode
+
+
+def test_nested_gui_python_uses_console_interpreter(root, monkeypatch):
+    """Nested helpers run through the console interpreter, and are heard.
+
+    The feed helper used to be launched with inherited handles, which on the
+    user's machine produced "exited with code 3221225786" and not one line of
+    explanation. Now it is started with pipes this file owns, so whatever it
+    says reaches the console - and the interpreter choice is still the console
+    python.exe beside pythonw.exe.
+    """
     bindir = root / "python-bin"
     bindir.mkdir(parents=True, exist_ok=True)
     pythonw = bindir / "pythonw.exe"
@@ -191,28 +221,180 @@ def test_nested_gui_python_uses_console_interpreter(root):
     pythonw.write_bytes(b"")
     python.write_bytes(b"")
 
-    calls = {}
+    attempts = []
     original_executable = sys.executable
-    original_run = pipeline.subprocess.run
+    original_launcher = pipeline.stream_child
+    original_popen = pipeline.subprocess.Popen
 
-    class Result:
-        returncode = 0
-
-    def fake_run(command, **kwargs):
-        calls["command"] = command
-        return Result()
+    def fake_stream(command, cwd):
+        attempts.append({"command": command, "cwd": cwd})
+        return 0, "--- Feed fetch diagnostics ---\nHTTP status : 200\n"
 
     try:
         sys.executable = str(pythonw)
-        pipeline.subprocess.run = fake_run
+        pipeline.stream_child = fake_stream
         ok = pipeline.run_facebook_feed_script()
     finally:
-        pipeline.subprocess.run = original_run
+        pipeline.stream_child = original_launcher
         sys.executable = original_executable
 
     check("nested feed launcher uses sibling python.exe",
-          ok and calls.get("command", [None])[0] == str(python),
-          repr(calls))
+          ok and attempts and attempts[0]["command"][0] == str(python),
+          repr(attempts))
+    check("and runs the helper unbuffered, so nothing is lost",
+          attempts and "-u" in attempts[0]["command"], repr(attempts))
+    check("and runs it from the helper's own folder",
+          attempts and attempts[0]["cwd"] ==
+          pipeline.SCRIPT_DIR / "facebook_merchant_products", repr(attempts))
+    check("a clean helper is not run twice", len(attempts) == 1, repr(attempts))
+
+    #  A helper that says something and fails: keep its words, do not retry.
+    attempts = []
+    try:
+        sys.executable = str(pythonw)
+        pipeline.stream_child = lambda command, cwd: (
+            attempts.append(command) or (1, "Traceback: ImportError: pandas\n"))
+        ok = pipeline.run_facebook_feed_script()
+    finally:
+        pipeline.stream_child = original_launcher
+        sys.executable = original_executable
+    check("a helper that explains itself is not run a second time",
+          not ok and len(attempts) == 1, repr(attempts))
+
+    #  A helper that says nothing at all: that is a launcher problem, so the
+    #  app's own interpreter gets one turn.
+    attempts = []
+    try:
+        sys.executable = str(pythonw)
+        pipeline.stream_child = lambda command, cwd: (
+            attempts.append(command) or (3221225786, ""))
+        ok = pipeline.run_facebook_feed_script()
+    finally:
+        pipeline.stream_child = original_launcher
+        sys.executable = original_executable
+    check("a silent failure is retried with the app's own interpreter",
+          not ok and len(attempts) == 2 and
+          attempts[0][0] == str(python) and attempts[1][0] == str(pythonw),
+          repr(attempts))
+
+    #  The child is started with pipes this file owns, and never inherits the
+    #  app's stdin - a nested tool must not eat the answer meant for the app.
+    popen_calls = []
+    try:
+        pipeline.subprocess.Popen = lambda command, **kw: (
+            popen_calls.append((command, kw)) or FakeChild(
+                ["one line\n", "two"], 0))
+        with redirect_stdout(StringIO()) as said:
+            code, text = pipeline.stream_child([str(python), "-u", "x.py"],
+                                               root)
+    finally:
+        pipeline.subprocess.Popen = original_popen
+    check("the child writes into a pipe the pipeline owns",
+          popen_calls and popen_calls[0][1].get("stdout") is
+          pipeline.subprocess.PIPE and
+          popen_calls[0][1].get("stderr") is pipeline.subprocess.STDOUT,
+          repr(popen_calls))
+    check("and never reads the app's answers",
+          popen_calls and popen_calls[0][1].get("stdin") is
+          pipeline.subprocess.DEVNULL, repr(popen_calls))
+    check("and is asked not to open a console window of its own",
+          popen_calls and ("creationflags" in popen_calls[0][1] or
+                           os.name != "nt"), repr(popen_calls))
+    check("and is run unbuffered so a crash cannot swallow its output",
+          popen_calls and popen_calls[0][1].get("env", {}).get(
+              "PYTHONUNBUFFERED") == "1", repr(popen_calls))
+    check("its output is kept whole, including a last line with no newline",
+          code == 0 and text == "one line\ntwo", repr(text))
+    check("and every line of it reached the console as it arrived",
+          said.getvalue() == "one line\ntwo\n", repr(said.getvalue()))
+
+
+def test_stale_workbook_is_named(root):
+    """A failed export must never leave yesterday's workbook looking new.
+
+    The name is dated by the day, so an old file opened from Explorer looks
+    exactly like the run's own. The pipeline compares what was on disk before
+    the step with what is there after it, and says so in words.
+    """
+    print()
+    print("== a failed export does not pass off the old workbook ==")
+    original = pipeline.SCRIPT_DIR
+    folder = root / "feed-out"
+    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        pipeline.SCRIPT_DIR = folder.parent
+        check("no workbook at all is a known state",
+              pipeline.facebook_delta_state() is None,
+              str(pipeline.facebook_delta_state()))
+
+        feed_dir = folder.parent / "facebook_merchant_products"
+        feed_dir.mkdir(exist_ok=True)
+        old_delta = feed_dir / "facebook_delta_2026-10-29.xlsx"
+        old_delta.write_bytes(b"old")
+        state = pipeline.facebook_delta_state()
+        check("the workbook on disk is found with its date and size",
+              state is not None and state[0] == str(old_delta) and
+              state[2] == 3, str(state))
+        note = pipeline.stale_facebook_note(state)
+        check("an unchanged workbook is named, with when it was written",
+              "facebook_delta_2026-10-29.xlsx" in note and
+              "does not include this batch" in note, note)
+
+        refreshed = feed_dir / "facebook_delta_2026-10-29.xlsx"
+        refreshed.write_bytes(b"much newer content")
+        check("a rewritten workbook gets no warning",
+              pipeline.stale_facebook_note(state) == "",
+              pipeline.stale_facebook_note(state))
+
+        state = pipeline.facebook_delta_state()
+        newer = feed_dir / "facebook_delta_2026-10-30.xlsx"
+        newer.write_bytes(b"new day")
+        os.utime(newer, (state[1] + 60, state[1] + 60))
+        check("the newest workbook is the one compared",
+              pipeline.facebook_delta_state()[0] == str(newer),
+              str(pipeline.facebook_delta_state()))
+        #  Taken before the newer file existed: a workbook written during the
+        #  step is the run's own, so nothing is said about it.
+        check("a workbook written during the step is not called old",
+              pipeline.stale_facebook_note(state) == "",
+              pipeline.stale_facebook_note(state))
+    finally:
+        pipeline.SCRIPT_DIR = original
+
+
+def test_workbooks_held_open_are_named_before_any_work(root):
+    """A workbook Excel is holding is named before the feed is even fetched."""
+    source = FEED_SCRIPT.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    node = next(n for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == "locked_files")
+    namespace = {"Path": Path}
+    exec(compile(ast.Module(body=[node], type_ignores=[]),
+                 str(FEED_SCRIPT), "exec"), namespace)
+    locked = namespace["locked_files"]
+
+    free = root / "free.xlsx"
+    free.write_bytes(b"not really a workbook")
+    check("a workbook nobody is using is not called locked",
+          locked([free]) == [], locked([free]))
+
+    def refusing(path, mode="r"):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    found = locked([free], opener=refusing)
+    check("a workbook held open by Excel is named",
+          len(found) == 1 and str(free) in found[0][0], found)
+    check("and the reason is kept, not thrown away",
+          isinstance(found[0][1], OSError), found)
+    check("a workbook that does not exist yet is not a lock",
+          locked([root / "missing.xlsx"], opener=refusing) == [])
+
+    answer_at = source.index("_held = locked_files(")
+    fetch_at = source.index("new_df = parse_feed()")
+    check("the answer comes before a single feed request is made",
+          answer_at < fetch_at, (answer_at, fetch_at))
+    check("and it says to close them, not just that something failed",
+          "Close them and run the Facebook step again" in source)
 
 
 def main():
@@ -221,7 +403,13 @@ def main():
         test_first_run_delta_and_baseline(root)
         test_saved_feed_field_overrides_are_applied(root)
         test_ambiguous_or_missing_batch_fails_closed(root)
-        test_nested_gui_python_uses_console_interpreter(root)
+        test_nested_gui_python_uses_console_interpreter(root, None)
+        stale_root = root / "stale"
+        stale_root.mkdir()
+        test_stale_workbook_is_named(stale_root)
+        locked_root = root / "locked"
+        locked_root.mkdir()
+        test_workbooks_held_open_are_named_before_any_work(locked_root)
     print("ALL CHECKS PASSED (%d)" % PASS if not FAIL else
           "FAILED %d   PASSED %d" % (FAIL, PASS))
     return 1 if FAIL else 0

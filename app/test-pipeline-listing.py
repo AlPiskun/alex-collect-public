@@ -18,7 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -97,7 +97,7 @@ def test_rename_stage_reaches_its_confirmation(root):
             patch.object(card_pipeline, "apply_renames",
                          lambda o, copy=False: applied.update(ops=o)), \
             patch.object(card_pipeline, "maybe_create_woocommerce_products",
-                         lambda args, path: False), \
+                         lambda args, path: (False, "")), \
             patch.object(card_pipeline, "run_post_listing_uploads",
                          lambda args, parsed, **kw: None), \
             patch("builtins.input", fake_input), quiet():
@@ -147,7 +147,7 @@ def test_rename_applies_with_yes(root):
             patch.object(card_pipeline, "apply_renames",
                          lambda o, copy=False: applied.update(ops=o)), \
             patch.object(card_pipeline, "maybe_create_woocommerce_products",
-                         lambda args, path: False), \
+                         lambda args, path: (False, "")), \
             patch.object(card_pipeline, "run_post_listing_uploads",
                          lambda args, parsed, **kw: None), \
             patch("builtins.input", boom), quiet():
@@ -301,6 +301,61 @@ def test_plugin_version_reading(root):
           card_pipeline._cs_hook_version(None) == "")
 
 
+def test_nested_helper_output_is_never_lost(root):
+    """A helper that fails must be heard, not summarised by an exit code.
+
+    The user's Facebook run ended with "exited with code 3221225786" and not
+    one line of explanation, because the child's handles were inherited from
+    a windowless parent. Everything a nested tool says now arrives here.
+    """
+    print()
+    print("== 5. a failing helper's own words reach the console ==")
+    talker = root / "talker.py"
+    talker.write_text(
+        "print('first line')\n"
+        "print('a traceback line', flush=True)\n"
+        "raise SystemExit(3)\n", encoding="utf-8")
+    said = StringIO()
+    with redirect_stdout(said), redirect_stderr(said):
+        ok = card_pipeline.run_nested_tool(talker, "The talker")
+    text = said.getvalue()
+    check("a helper that fails is not reported as finished", ok is False,
+          repr(ok))
+    check("both of its lines reached the console",
+          "first line" in text and "a traceback line" in text, text[-400:])
+    check("and its exit code is explained in words, not left as a number",
+          "exit code 3" in text and "its own error message is above" in text,
+          text[-400:])
+    log = root / card_pipeline.NESTED_LOG_NAME
+    check("and everything it printed is saved beside it",
+          log.is_file() and "a traceback line" in
+          log.read_text(encoding="utf-8"), str(log))
+
+    silent = root / "silent.py"
+    silent.write_text("raise SystemExit(4)\n", encoding="utf-8")
+    said = StringIO()
+    with redirect_stdout(said), redirect_stderr(said):
+        ok = card_pipeline.run_nested_tool(silent, "The silent one")
+    text = said.getvalue()
+    check("a helper that says nothing is called what it is: a launch problem",
+          ok is False and "printed nothing at all" in text, text[-400:])
+    check("and the log says so too, with the command that was run",
+          (root / card_pipeline.NESTED_LOG_NAME).read_text(
+              encoding="utf-8").count("$ ") >= 1,
+          (root / card_pipeline.NESTED_LOG_NAME).read_text(
+              encoding="utf-8")[:200])
+
+    check("an OSError while starting is a failure, not a crash",
+          card_pipeline.explain_exit_code(None) ==
+          "it could not be started at all")
+    check("a console-control exit is named in the user's own terms",
+          "Ctrl+C" in card_pipeline.explain_exit_code(3221225786),
+          card_pipeline.explain_exit_code(3221225786))
+    check("an unknown Windows error is still shown as a code",
+          card_pipeline.explain_exit_code(3221225999).startswith(
+              "Windows error 0x"), card_pipeline.explain_exit_code(3221225999))
+
+
 def main():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -316,6 +371,10 @@ def main():
         test_runs_without_the_other_features(root)
 
         test_plugin_version_reading(root / "version-check")
+
+        helper_root = root / "helper"
+        helper_root.mkdir()
+        test_nested_helper_output_is_never_lost(helper_root)
 
     print()
     if FAIL:

@@ -267,6 +267,62 @@ def test_facebook_opening(root):
           "folders=%s urls=%s" % (folders, urls))
 
 
+def test_a_failed_step_fails_the_run():
+    """A run with a step missing must not end as though it finished.
+
+    The user's own run ended with "Re-run finished: facebook." and
+    "finished (OK, exit code 0)" right after the feed helper failed, so a
+    missing workbook looked like a successful run.
+    """
+    print("== 6. a step that fails fails the run ==")
+    calls = []
+    recorded = []
+
+    def failing_facebook(*args, **kwargs):
+        calls.append("facebook")
+        return "Facebook (the feed history helper failed)"
+
+    real_report = card_pipeline.report_unfinished
+
+    def fake_report(failures, still_written):
+        recorded.append((list(failures), still_written))
+        return real_report(failures, still_written)
+
+    with patch.object(card_pipeline, "find_rerun_input",
+                      lambda args: Path("C:/batch/_card_input.txt")), \
+            patch.object(card_pipeline, "maybe_run_facebook",
+                         failing_facebook), \
+            patch.object(card_pipeline, "maybe_run_canadianshopper",
+                         Recorder("canadianshopper", calls)), \
+            patch.object(card_pipeline, "maybe_run_ebay_quicklist",
+                         Recorder("ebay", calls)), \
+            patch.object(card_pipeline, "report_unfinished", fake_report), \
+            quiet() as said:
+        code = card_pipeline.cmd_rerun(make_args(market="facebook"))
+    check("the re-run returns a failing exit code",
+          code == 1, repr(code))
+    check("and names the step that did not finish",
+          recorded and recorded[0][0] ==
+          ["Facebook (the feed history helper failed)"], repr(recorded))
+    check("the Facebook step still ran exactly once",
+          calls.count("facebook") == 1, repr(calls))
+
+    with redirect_stdout(StringIO()) as said:
+        code = card_pipeline.report_unfinished(
+            ["Facebook (the Marketplace xlsx export failed)"],
+            "the WooCommerce CSV")
+        text = said.getvalue()
+    check("the summary says what did not finish",
+          "NOT EVERY STEP FINISHED" in text and
+          "Marketplace xlsx" in text, text)
+    check("and what was still written", "the WooCommerce CSV" in text, text)
+    check("and that the failed step can simply be run again",
+          "can simply be run again" in text
+          and "nothing is done twice" in text, text)
+    check("nothing wrong = the exit code is 0",
+          card_pipeline.report_unfinished([], "anything") == 0)
+
+
 def main():
     print("== 1. the AI text a re-run reuses ==")
     with tempfile.TemporaryDirectory() as td:
@@ -286,6 +342,8 @@ def main():
     print("== 5. the Facebook step opens the image folder ==")
     with tempfile.TemporaryDirectory() as td:
         test_facebook_opening(Path(td))
+
+    test_a_failed_step_fails_the_run()
 
     print()
     if FAIL:

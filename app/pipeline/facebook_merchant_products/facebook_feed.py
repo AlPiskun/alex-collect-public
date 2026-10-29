@@ -263,6 +263,37 @@ def match_latest_woo_batch(feed_df):
 # MAIN
 # -------------------------
 today = datetime.today().strftime("%Y-%m-%d")
+
+
+def locked_files(paths, opener=open):
+    """Paths another program is holding open, so writing them would fail.
+
+    Excel keeps a write lock on the workbook it opened, and Alex Collect opens
+    the delta it just made - so a re-run later the same day meets a
+    PermissionError at the very end, after the feed has been fetched and
+    parsed. Checked here instead, before any of that, and said in words.
+    """
+    held = []
+    for path in paths:
+        if not Path(path).exists():
+            continue
+        try:
+            with opener(str(path), "ab"):
+                pass
+        except OSError as exc:
+            held.append((str(path), exc))
+    return held
+
+
+_held = locked_files([HISTORY_FILE, f"facebook_delta_{today}.xlsx"])
+if _held:
+    print("\u274c These workbooks are open in another program (Excel holds a "
+          "write lock on them):")
+    for _path, _exc in _held:
+        print(f"\u274c   {_path}")
+    print("   Close them and run the Facebook step again. Nothing was "
+          "changed by this attempt.")
+    sys.exit(2)
 if not FEED_URL:
     raise SystemExit("Set the WooCommerce site or product feed URL in User Settings.")
 
@@ -328,7 +359,12 @@ print("======================================\n")
 try:
     confirm = input("Press Enter to generate Excel/log files, or type anything else to cancel: ")
 except EOFError:
-    confirm = ""          # no keyboard attached: treat like Enter
+    # No keyboard attached: treat like Enter, and say so - the line above
+    # shows a question nobody could answer, so an unexplained jump straight
+    # to the next step reads as if the answer was taken for granted.
+    print("\u2139 No one is at the keyboard inside Alex Collect, so this step "
+          "continues as Enter would.")
+    confirm = ""
 if confirm.strip():
     print("⚠ Operation cancelled by user.")
     exit()

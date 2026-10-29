@@ -59,6 +59,13 @@ try:
 except ImportError:
     sys.exit("Pillow is required.  pip install Pillow")
 
+try:
+    from process_utils import no_window_kwargs
+except ImportError:                    # a bare batch folder without the app
+    def no_window_kwargs():
+        """Hide a child console window on Windows; nothing elsewhere."""
+        return {"creationflags": 0x08000000} if os.name == "nt" else {}
+
 # =====================================================================
 #  CONFIGURATION
 # =====================================================================
@@ -1378,9 +1385,11 @@ def refresh_facebook_feed(refresh_url, feed_url, timeout=60, wait=5,
 def console_python_executable(executable=None):
     """Use a console-enabled interpreter for nested tools on Windows.
 
-    The GUI launches card_pipeline.py with pythonw.exe. Reusing sys.executable
-    for a nested script can leave its stdout/stderr detached, hiding the real
-    error and sometimes making print() fail. Prefer the sibling python.exe.
+    The GUI launches card_pipeline.py with pythonw.exe, whose own stdout may
+    be nothing at all. A nested helper runs with pipes this file provides, so
+    it can print either way - but a console-oriented helper belongs on the
+    sibling python.exe, and one helper that cannot write is told apart from a
+    real error by ``run_nested_tool`` rather than assumed here.
     """
     executable = str(executable or sys.executable)
     path = Path(executable)
@@ -1389,6 +1398,166 @@ def console_python_executable(executable=None):
         if console.is_file():
             return str(console)
     return executable
+
+
+#  A nested helper is a shipped script run as its own process. Its output is
+#  the only place its own error can be read, so it is never left to inherit a
+#  handle: a Windows Python alias can lose an inherited pipe, the child gets a
+#  brand-new console when this process has none, and a traceback nobody prints
+#  is a run that "failed with code 1" and nothing else.
+NESTED_LOG_NAME = "helper_last_run.log"
+
+#  Windows exit codes seen from a console program, in words.
+EXIT_CODE_NOTES = {
+    1: "it stopped on an error of its own - its message is above",
+    2: "it refused to continue; its message says why",
+    3221225477: "it crashed inside itself (0xC0000005)",
+    3221225725: "it ran out of stack (0xC00000FD)",
+    3221225786: "Windows stopped it from outside (0xC000013A: Ctrl+C, or a "
+                "console window it opened was closed)",
+    3221226505: "it was killed by Windows (0xC0000409)",
+}
+
+
+def nested_env():
+    """The environment a nested helper runs in.
+
+    Unbuffered, so whatever it printed before dying is not lost in a block
+    buffer - which is exactly how a failing helper ends up printing nothing.
+    """
+    env = dict(os.environ)
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    env["ALEX_COLLECT_NESTED"] = "1"
+    return env
+
+
+def explain_exit_code(code):
+    """What an exit code means, in words a person can act on."""
+    if code is None:
+        return "it could not be started at all"
+    code = int(code)
+    if code in EXIT_CODE_NOTES:
+        return EXIT_CODE_NOTES[code]
+    if code < 0:
+        return "it was killed by signal %d" % -code
+    if code > 0xC0000000:
+        return "Windows error 0x%08X" % code
+    return "its own error message is above"
+
+
+def stream_child(command, cwd):
+    """Run a child, print each line as it arrives, and keep the whole text.
+
+    Output goes through a pipe this file owns - so the console above sees the
+    helper's own words live - and the text is returned as well, because a
+    helper that dies before its first line is otherwise indistinguishable from
+    one that never started.
+    """
+    process = subprocess.Popen(
+        command, cwd=str(cwd), stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", bufsize=1,
+        env=nested_env(), **no_window_kwargs())
+    lines = []
+    try:
+        for line in process.stdout:
+            lines.append(line)
+            print(line, end="" if line.endswith("\n") else "\n")
+    finally:
+        try:
+            process.stdout.close()
+        except (OSError, ValueError):
+            pass
+    return process.wait(), "".join(lines)
+
+
+def run_nested_tool(script, label, log_dir=None):
+    """Run one shipped helper; True when it finished cleanly.
+
+    The console python is tried first (it can print anything), and if it says
+    nothing at all the app's own interpreter gets one turn: a helper that
+    cannot write to this console is a launch problem, not a reason to give up
+    on the step. Everything either of them said is saved to a log beside the
+    script so a failure can be read afterwards instead of guessed at.
+    """
+    script = Path(script)
+    interpreters = [console_python_executable()]
+    app_python = str(sys.executable)
+    if Path(app_python).name.lower() != Path(interpreters[0]).name.lower():
+        interpreters.append(app_python)
+    transcript, code, text = [], None, ""
+    for index, interpreter in enumerate(interpreters, start=1):
+        if index > 1:
+            print("  Trying again with the app's own Python (%s): the helper "
+                  "printed nothing, which is what a launch problem looks "
+                  "like." % Path(interpreter).name)
+        command = [interpreter, "-u", str(script)]
+        try:
+            code, text = stream_child(command, script.parent)
+        except OSError as exc:
+            print("  !! Could not start %s: %s" % (Path(interpreter).name, exc),
+                  file=sys.stderr)
+            code, text = None, ""
+        transcript.append("$ %s\n%s" % (" ".join(command), text))
+        if code == 0:
+            return True
+        if text.strip():
+            break          # it spoke: that is its real error, not a launcher
+    log = (Path(log_dir) if log_dir else script.parent) / NESTED_LOG_NAME
+    try:
+        log.write_text("\n\n".join(transcript), encoding="utf-8",
+                       errors="replace")
+    except OSError as exc:
+        log = "could not be written (%s)" % exc
+    if code is None:
+        print("  !! %s could not be started at all." % label, file=sys.stderr)
+    else:
+        print("  !! %s failed: exit code %s - %s."
+              % (label, code, explain_exit_code(code)), file=sys.stderr)
+    if not text.strip():
+        print("     It printed nothing at all, so it never reached its first "
+              "line: that is the launcher, not the work.", file=sys.stderr)
+    print("     Everything it printed is saved here: %s" % log,
+          file=sys.stderr)
+    return False
+
+
+def facebook_delta_state():
+    """The newest Marketplace workbook on disk, and when it was written.
+
+    Taken before the export so a failed run can say that the workbook in the
+    folder is the previous one - a dated name that did not change looks
+    exactly like a fresh one when it is opened from Explorer.
+    """
+    folder = SCRIPT_DIR / "facebook_merchant_products"
+    try:
+        files = sorted(folder.glob("facebook_delta_*.xlsx"),
+                       key=lambda item: item.stat().st_mtime, reverse=True)
+        if not files:
+            return None
+        found = files[0].stat()
+        return (str(files[0]), found.st_mtime, found.st_size)
+    except OSError:
+        return None
+
+
+def stale_facebook_note(before):
+    """Say plainly that no new workbook was written, or "" when one was."""
+    after = facebook_delta_state()
+    if after is None or after != before:
+        return ""
+    when = datetime.fromtimestamp(after[1]).strftime("%Y-%m-%d %H:%M")
+    return ("Nothing new was written: the workbook in that folder is %s, "
+            "from %s, so it does not include this batch."
+            % (Path(after[0]).name, when))
+
+
+def print_stale_facebook_note(before):
+    note = stale_facebook_note(before)
+    if note:
+        print("  !! " + note, file=sys.stderr)
 
 
 def run_facebook_feed_script():
@@ -1400,23 +1569,10 @@ def run_facebook_feed_script():
         return False
 
     print(f"\nRunning Facebook feed export: {fb_script}")
-    try:
-        result = subprocess.run(
-            [console_python_executable(), str(fb_script)],
-            cwd=str(fb_script.parent),
-        )
-    except Exception as e:
-        print(f"  !! Failed to launch Facebook feed script: {e}",
-              file=sys.stderr)
+    if not run_nested_tool(fb_script, "The Facebook feed helper"):
         return False
-
-    if result.returncode == 0:
-        print("  Facebook feed history updated.")
-        return True
-
-    print(f"  !! Facebook feed script exited with code {result.returncode}.",
-          file=sys.stderr)
-    return False
+    print("  Facebook feed history updated.")
+    return True
 
 
 def run_facebook_export_script():
@@ -1427,22 +1583,10 @@ def run_facebook_export_script():
         return True
 
     print(f"\nRunning Marketplace xlsx export: {fb_export.name}")
-    try:
-        result = subprocess.run(
-            [console_python_executable(), str(fb_export)],
-            cwd=str(fb_export.parent),
-        )
-    except Exception as e:
-        print(f"  !! Failed to launch export: {e}", file=sys.stderr)
+    if not run_nested_tool(fb_export, "The Marketplace xlsx export"):
         return False
-
-    if result.returncode == 0:
-        print("  Facebook Marketplace xlsx export completed.")
-        return True
-
-    print(f"  !! Export exited with code {result.returncode}.",
-          file=sys.stderr)
-    return False
+    print("  Facebook Marketplace xlsx export completed.")
+    return True
 
 
 def open_facebook_delivery():
@@ -1511,7 +1655,12 @@ def ask_yes_no(question, default_no=True):
 
 
 def create_products_from_csv(csv_path, args, ask=True):
-    """Create the batch's products on the website; return True when it ran.
+    """Create the batch's products on the website.
+
+    Returns ``(created, reason)``: whether anything landed on the site, and -
+    when the step did not do what it was asked - a short reason for the
+    NOT EVERY STEP FINISHED block. A batch that stopped halfway is a failed
+    step, not a finished run with a note in it.
 
     The CSV stays the record either way: it is what a re-run, a failure, or a
     person who prefers WP All Import works from.
@@ -1519,7 +1668,7 @@ def create_products_from_csv(csv_path, args, ask=True):
     if woo_create is None:
         print("\n(woo_create is not beside this script, so the products "
               "cannot be created directly. Import the CSV as before.)")
-        return False
+        return False, "WooCommerce (woo_create.py is not beside the pipeline)"
     site, key, secret = woo_keys()
     if not (site and key and secret):
         print("\n-- Products on your website --")
@@ -1530,23 +1679,25 @@ def create_products_from_csv(csv_path, args, ask=True):
         print("  Nothing is lost: the CSV below can still be imported the old "
               "way.")
         print("  CSV: %s" % csv_path)
-        return False
+        return False, ("WooCommerce (the keys in woo-keys.txt are missing or "
+                       "incomplete, so nothing was created)")
     if woo_create.site_root(site) == "":
         print("\n  !! The site address in woo-keys.txt is not a URL (%r), so "
               "nothing was created." % site, file=sys.stderr)
-        return False
+        return False, ("WooCommerce (the site address in woo-keys.txt is not "
+                       "a URL, so nothing was created)")
 
     try:
         read = woo_create.read_rows(csv_path)
     except woo_create.ProductError as exc:
         print("\n  !! %s" % exc.message, file=sys.stderr)
-        return False
+        return False, "WooCommerce (the batch's CSV could not be read)"
     planned = woo_create.plan(read["rows"], [OUTPUT_DIR, read["folder"]])
     if not planned["items"]:
         print("\n  Nothing in this CSV can be created as it stands.")
         for problem in planned["problems"]:
             print("    - %s" % problem["why"])
-        return False
+        return False, "WooCommerce (nothing in the batch could be created)"
 
     print("\n" + "=" * 58)
     print("  PRODUCTS ON YOUR WEBSITE")
@@ -1574,7 +1725,7 @@ def create_products_from_csv(csv_path, args, ask=True):
         if not ask_yes_no("\nCreate these %d product(s) on %s now? [y/N] "
                           % (len(planned["items"]), site)):
             print("Nothing was created. The CSV is unchanged: %s" % csv_path)
-            return False
+            return False, ""
 
     publish = False
     if getattr(args, "publish_products", False):
@@ -1602,23 +1753,65 @@ def create_products_from_csv(csv_path, args, ask=True):
     for line in woo_create.report_text(report, site):
         print("  " + line)
     print("  Report: %s" % report_path)
+    for line in woo_create.recovery_text(report):
+        print("  " + line)
     if report["failed"]:
-        print("  The CSV was not changed, so anything that failed can be "
-              "imported the old way: %s" % csv_path)
-    if report["created"]:
-        print("  The CSV import step is not needed for the products listed "
-              "as created above.")
-    return bool(report["created"])
+        #  Named, because it is the answer to "so what do I do now?": the same
+        #  batch can be finished without the scans, and without a second copy.
+        print("  In the app: Re-run a marketplace -> WooCommerce CSV, and "
+              "choose to put the products on sale. It rebuilds this batch "
+              "from the AI text already on disk, looks every card up by SKU, "
+              "and finishes what this run could not.")
+        print("  The CSV is unchanged: %s" % csv_path)
+    return bool(report["created"]), creation_failure_note(report)
+
+
+def creation_failure_note(report):
+    """The card-creation step in one line, for NOT EVERY STEP FINISHED.
+
+    A card can fail in two different places - it was never created, or it was
+    created and the site would not put it on sale - and they are counted
+    apart, because "not on the website" over a product that exists is the
+    sentence that makes somebody import the CSV twice.
+    """
+    report = report or {}
+    failed = report.get("failed") or []
+    if not failed:
+        return ""
+    cards = set()
+    for key in ("created", "skipped", "failed"):
+        for entry in report.get(key) or []:
+            cards.add(entry.get("sku") or entry.get("name"))
+    total = len(cards) or len(failed)
+    waiting = [entry for entry in failed
+               if str(entry.get("state") or "") == "created-not-live"]
+    missing = len(failed) - len(waiting)
+    parts = []
+    if missing:
+        parts.append("%d of %d card%s %s not on the website"
+                     % (missing, total, "" if total == 1 else "s",
+                        "is" if missing == 1 else "are"))
+    if waiting:
+        parts.append("%d of %d card%s %s created but the site would not put "
+                     "%s on sale"
+                     % (len(waiting), total, "" if total == 1 else "s",
+                        "was" if len(waiting) == 1 else "were",
+                        "it" if len(waiting) == 1 else "them"))
+    return ("WooCommerce (%s - run the batch again to finish %s)"
+            % ("; ".join(parts),
+               "it" if len(failed) == 1 else "them"))
 
 
 def maybe_create_woocommerce_products(args, csv_path):
     """Offer to create the batch's products instead of importing the CSV.
 
-    Returns True when at least one product was actually created, so the
-    following steps can describe the batch as already on the website.
+    Returns ``(created, reason)``: True when at least one product was actually
+    created - so the following steps can describe the batch as already on the
+    website - and, when the step did not do what it was asked, the line that
+    goes into the NOT EVERY STEP FINISHED block.
     """
     if csv_path is None or getattr(args, "no_create_products", False):
-        return False
+        return False, ""
     site, key, secret = woo_keys()
     if not (site and key and secret) and not getattr(args, "create_products",
                                                      False):
@@ -1632,7 +1825,7 @@ def maybe_create_woocommerce_products(args, csv_path):
                 print("  " + line)
         print("  The CSV below is ready for WP All Import in the meantime: %s"
               % csv_path)
-        return False
+        return False, ""
     return create_products_from_csv(
         csv_path, args,
         ask=not (getattr(args, "yes", False)
@@ -1640,9 +1833,14 @@ def maybe_create_woocommerce_products(args, csv_path):
 
 
 def maybe_run_facebook(args, created_directly=False):
-    """Prompt for WooCommerce upload, then refresh feed and run exports."""
+    """Prompt for WooCommerce upload, then refresh feed and run exports.
+
+    Returns "" when the step did what it was asked (or was not asked at all),
+    or a short reason when it did not. A run whose Facebook files are missing
+    must never end with the console saying it has finished.
+    """
     if not getattr(args, "facebook", False):
-        return
+        return ""
 
     print("\n" + "=" * 58)
     print("  FACEBOOK MARKETPLACE EXPORT")
@@ -1691,12 +1889,14 @@ def maybe_run_facebook(args, created_directly=False):
         if answer in ("n", "no", ""):
             print("Stopped before the Facebook step. Your CSV and renamed "
                   "images are ready; re-run with --facebook when done.")
-            return
+            return ""
 
     if not FEED_URL or not FEED_REFRESH_URL:
         print("Set your WooCommerce site/feed URLs in User settings before "
               "running the Facebook feed step.", file=sys.stderr)
-        return
+        return "Facebook (no feed URL saved in User settings)"
+
+    workbook_before = facebook_delta_state()
 
     ok = refresh_facebook_feed(
         FEED_REFRESH_URL, FEED_URL,
@@ -1710,22 +1910,25 @@ def maybe_run_facebook(args, created_directly=False):
         print("  Skipping exports because the feed could not be confirmed.",
               file=sys.stderr)
         print("  (Your CSV and renamed images are unaffected.)")
-        return
+        return "Facebook (the feed could not be confirmed)"
 
     print("\n-- Running Facebook feed history tracker... --")
     if not run_facebook_feed_script():
         print("  Facebook workbook handoff skipped because feed export failed.",
               file=sys.stderr)
-        return
+        print_stale_facebook_note(workbook_before)
+        return "Facebook (the feed history helper failed)"
 
     print("\n-- Running Marketplace xlsx export... --")
     if not run_facebook_export_script():
         print("  Facebook workbook handoff skipped because the export failed.",
               file=sys.stderr)
-        return
+        print_stale_facebook_note(workbook_before)
+        return "Facebook (the Marketplace xlsx export failed)"
 
     print("\n-- Facebook export steps complete. --")
     open_facebook_delivery()
+    return ""
 
 
 # =====================================================================
@@ -2356,10 +2559,42 @@ def maybe_run_ebay_quicklist(cards_parsed):
 
 
 def run_post_listing_uploads(args, cards_parsed, created_directly=False):
-    """Run Facebook, CanadianShopper, and optional eBay Quick List stages."""
-    maybe_run_facebook(args, created_directly=created_directly)
+    """Run Facebook, CanadianShopper, and optional eBay Quick List stages.
+
+    Returns the steps that did not finish, so the command can say so instead
+    of ending with an exit code that reads as success.
+    """
+    failures = []
+    note = maybe_run_facebook(args, created_directly=created_directly)
+    if note:
+        failures.append(note)
     maybe_run_canadianshopper(args, cards_parsed)
     maybe_run_ebay_quicklist(cards_parsed)
+    return failures
+
+
+def report_unfinished(failures, still_written):
+    """Say what did not finish, and what is unaffected, in one place.
+
+    Returns the exit code the command should end with: a run that skipped a
+    step has not finished, and the console must not say it has.
+    """
+    if not failures:
+        return 0
+    print("\n" + "=" * 58)
+    print("  NOT EVERY STEP FINISHED")
+    print("=" * 58)
+    for failure in failures:
+        print("  - %s" % failure)
+    if still_written:
+        print("\n  Everything else this run was asked for is written: %s."
+              % still_written)
+    #  Not "the failed step changed nothing": a batch that stopped halfway
+    #  left products behind, and telling someone a half-written website is
+    #  untouched is the sentence that gets it written twice.
+    print("  Every step named above can simply be run again: the work that "
+          "did land is kept, and nothing is done twice.")
+    return 1
 
 
 # =====================================================================
@@ -2518,15 +2753,22 @@ def cmd_rerun(args):
         quantity = getattr(args, "quantity", 1)
 
     created = False
+    written = []
+    failures = []
     if market in ("woocommerce", "all"):
         rows = build_rows(parsed, quantity)
         csv_path = write_woocommerce_csv(rows)
         print_woocommerce_rows(rows, csv_path)
-        created = maybe_create_woocommerce_products(args, csv_path)
+        written.append("the WooCommerce CSV")
+        created, note = maybe_create_woocommerce_products(args, csv_path)
+        if note:
+            failures.append(note)
 
     if market in ("facebook", "all"):
-        maybe_run_facebook(_with_flags(args, facebook=True),
-                           created_directly=created)
+        note = maybe_run_facebook(_with_flags(args, facebook=True),
+                                  created_directly=created)
+        if note:
+            failures.append(note)
 
     if market in ("canadianshopper", "all"):
         maybe_run_canadianshopper(
@@ -2536,6 +2778,7 @@ def cmd_rerun(args):
         maybe_run_ebay_quicklist(parsed)
 
     print("\nRe-run finished: %s." % market)
+    return report_unfinished(failures, ", ".join(written))
 
 
 def cmd_listing(args):
@@ -2562,9 +2805,12 @@ def cmd_listing(args):
     no_images = getattr(args, "no_images", False)
     if no_images:
         print("\n(--no-images set: skipping image rename step.)")
-        created = maybe_create_woocommerce_products(args, csv_path)
-        run_post_listing_uploads(args, parsed, created_directly=created)
-        return
+        created, note = maybe_create_woocommerce_products(args, csv_path)
+        failures = run_post_listing_uploads(args, parsed,
+                                            created_directly=created)
+        if note:
+            failures.insert(0, note)
+        return report_unfinished(failures, "the WooCommerce CSV")
 
     directory = str(OUTPUT_DIR)
     if not os.path.isdir(directory):
@@ -2626,8 +2872,8 @@ def cmd_listing(args):
         if not getattr(args, "no_create_products", False):
             print("The products were not created, because this batch's photos "
                   "were not prepared.")
-        run_post_listing_uploads(args, parsed)
-        return
+        failures = run_post_listing_uploads(args, parsed)
+        return report_unfinished(failures, "the WooCommerce CSV")
 
     if not auto_yes:
         try:
@@ -2644,8 +2890,13 @@ def cmd_listing(args):
     print(f"\nDone: {len(ops)} image(s) {verb.lower()}d to match the CSV.")
 
     # -- The products themselves, then the Facebook feed --
-    created = maybe_create_woocommerce_products(args, csv_path)
-    run_post_listing_uploads(args, parsed, created_directly=created)
+    created, note = maybe_create_woocommerce_products(args, csv_path)
+    failures = run_post_listing_uploads(args, parsed, created_directly=created)
+    if note:
+        failures.insert(0, note)
+    return report_unfinished(
+        failures, "the WooCommerce CSV, the renamed images and the products "
+                  "themselves")
 
 
 # =====================================================================
@@ -2890,9 +3141,9 @@ def main():
     if args.command == "split":
         cmd_split(args)
     elif args.command == "listing":
-        cmd_listing(args)
+        sys.exit(cmd_listing(args))
     elif args.command == "rerun":
-        cmd_rerun(args)
+        sys.exit(cmd_rerun(args))
     else:
         parser.print_help()
 
