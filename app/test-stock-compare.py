@@ -1309,13 +1309,38 @@ def test_one_click_import():
     check("and it says the drafts are not live",
           any("not live" in text for _tag, text in app.lines),
           str(app.lines[-4:]))
-    check("then it offers the read-only readiness report",
-          any(title == "Preview the new drafts?" for title, _m in asked),
+    check("then it offers to publish what was just created",
+          any(title == "Publish the 1 new draft now?" for title, _m in asked),
           str([title for title, _m in asked]))
-    check("and the preview is the read-only one, with no --apply",
-          any(run["tool"].endswith("cs-publish-drafts.py") and
-              "--apply" not in run["args"] for run in app.runs),
-          str([run["args"] for run in app.runs]))
+    publish_run = next((run for run in app.runs
+                        if run["tool"].endswith("cs-publish-drafts.py")), None)
+    check("and publishing is the publisher the app already has, with --apply",
+          publish_run is not None and "--apply" in publish_run["args"],
+          str(publish_run and publish_run["args"]))
+    check("the publish dialog says it scans every draft, not just the new one",
+          any("every draft on CanadianShopper" in message and
+              "not only this one" in message for title, message in asked
+              if title.startswith("Publish")), str(asked[-1:]))
+    check("and that a typed PUBLISH still stands between it and going live",
+          any("type PUBLISH" in message for title, message in asked
+              if title.startswith("Publish")), str(asked[-1:]))
+    check("the run carries the app's own confirmation string",
+          publish_run is not None and publish_run.get("confirm") not in
+          (None, ""), str(publish_run))
+
+    app.lines.clear()
+    publish_run["on_done"](0)
+    check("a finished publish says the report has the detail",
+          any("Publish finished" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and tells the person to compare again",
+          any("Compare again" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+
+    publish_run["on_done"](2)
+    check("a publish that failed says the drafts are still unpublished",
+          any("did not finish (exit 2)" in text and "unpublished" in text
+              for _tag, text in app.lines), str(app.lines[-3:]))
 
 
 def test_one_click_import_refusals():
@@ -1414,6 +1439,37 @@ def test_one_click_import_refusals():
           any("reported no drafts" in text for _tag, text in lines) and
           not any("draft created" in text for _tag, text in lines),
           str(lines[-3:]))
+
+    # ---- declining the publish leaves the drafts, and offers the report
+    asked[:] = []
+    app.runs.clear()
+    #  List and import yes, publish no - the question under test is the last one.
+    harness._BOX.askyesno = lambda title, message, **k: (
+        asked.append((title, message)) or
+        not title.startswith("Publish the"))
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: import_actions.get(action, "")), \
+            patch.object(gui, "BASE", folder), \
+            patch.object(gui, "open_path", lambda path: None):
+        find(parent, gui.ttk.Button,
+             "List every website-only card...").invoke()
+        run = next(r for r in app.runs if r["tool"].endswith("cs-import.py"))
+        csv_path = next((folder / "canadianshopper_products").glob(
+            "canadianshopper_import_*.csv"))
+        (folder / "canadianshopper_products" / "cs-import-result.json").write_text(
+            json.dumps({"imported": [{"file": csv_path.name, "rows": 1,
+                                      "drafts": 1}]}), encoding="utf-8")
+        asked.clear()
+        #  Inside the patch: the publish and report actions are resolved by
+        #  name when the import finishes, so they must still be stubbed.
+        run["on_done"](0)
+    check("declining the publish leaves the drafts unpublished",
+          not any("--apply" in r["args"] for r in app.runs), str(app.runs))
+    check("and it falls back to the read-only report offer",
+          any(title == "Preview the new drafts?" for title, _m in asked),
+          str([title for title, _m in asked]))
+    harness._BOX.askyesno = lambda title, message, **k: (
+        asked.append((title, message)) or True)
 
     # ---- 1.0.24: a file with nothing new to create is in "failed", with why
     _run, lines = listing_run(

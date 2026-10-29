@@ -275,7 +275,11 @@ class FakeApp:
         #  order as added when the tool reports success, so the test has to be
         #  able to hand back an exit code the way the real runner does.
         self.runs.append({"args": [str(a) for a in args], "title": title,
-                          "tool": str(tool), "on_done": on_done})
+                          "tool": str(tool), "on_done": on_done,
+                          #  The confirmation is part of what a run *is*: a
+                          #  test has to be able to prove that a dangerous run
+                          #  carried one, not merely that it started.
+                          "confirm": confirm})
         return True
 
     def open_webpages(self, urls, new_window=False):

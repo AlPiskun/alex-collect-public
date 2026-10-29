@@ -64,7 +64,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.70"
+VERSION = "2.71"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -971,9 +971,10 @@ that can be put back rather than corrected: the listing buttons write the
 CanadianShopper import file from the website product itself - its title, price,
 photo URL and stock count - in the same fourteen columns and with the same
 filename as a batch from the pipeline. Nothing appears on CanadianShopper until
-that file is imported - which the panel offers to do itself when the plugin
-can, so the drafts normally appear without leaving the app - and it arrives as
-an unpublished draft.
+that file is imported, which the panel offers to do itself when the plugin can.
+It arrives as an unpublished draft, and the same run then offers to publish it:
+the publisher scans every draft, activates only the ones that pass all the
+readiness checks, and still asks for PUBLISH to be typed.
 
 A pair is only made when a shared SKU or the title identifies the same card - a
 wrong pair would accuse a card that is fine - and an unpaired card is never
@@ -1343,8 +1344,8 @@ TOOLTIPS = {
     "Fix the selected cards...": "Set CanadianShopper to the website's count for just the rows selected in the list, after a confirmation listing them",
     "Set the website to the selected cards' counts...": "The reverse fix: set the website's stock count to the count the other site reports, for the selected cards - always shown and confirmed first; needs WooCommerce keys with Read/Write access",
     "Open the selected cards on the website": "Open the website's own product edit page for the selected cards - for a count a plugin owns, a variable product, or anything the stock panel should not touch",
-    "List the selected cards on CanadianShopper...": "Write the CanadianShopper import file for the selected website-only cards, built from the website product - title, price, its own photo and stock count - and then offer to import it as unpublished drafts",
-    "List every website-only card...": "The same file for every card that is on the website and not on CanadianShopper, and then the same offer to import it as drafts",
+    "List the selected cards on CanadianShopper...": "Write the CanadianShopper import file for the selected website-only cards from the website product - title, price, its own photo and stock count - then offer to import it as drafts and to publish them",
+    "List every website-only card...": "The same file for every card that is on the website and not on CanadianShopper, then the same offer to import and publish the drafts",
     "Ignore the selected cards": "Stop comparing the selected cards: a card that is no longer sold on one site disappears from the list until it is restored; nothing on either site changes",
     "Restore ignored cards...": "Put every ignored card back into comparisons, after showing which ones they are",
     "Read a saved eBay page...": "Read an eBay page you saved from your own signed-in browser (Ctrl+S, HTML only) - the way round eBay's \"Pardon our interruption\" check, using the same reader",
@@ -4697,9 +4698,10 @@ def build_stock(parent, app):
             if len(notes) > 6:
                 body += "\n  ... and %d more" % (len(notes) - 6)
         question = ("%s\n\n%s\n\nAlex Collect writes the CanadianShopper "
-                    "import file first - the same file a batch produces - and "
-                    "then offers to import it as unpublished drafts. Nothing "
-                    "goes live either way. Write the file now?" %
+                    "import file first - the same file a batch produces - then "
+                    "offers to import it as drafts and to publish them, with "
+                    "the publisher's own confirmations. Write the file "
+                    "now?" %
                     (cs_listing.summary(built, values), body))
         if not messagebox.askyesno("List these cards on CanadianShopper?",
                                    question, parent=box.winfo_toplevel()):
@@ -4866,9 +4868,13 @@ def build_stock(parent, app):
                 summary.configure(
                     text="The import reported no drafts; check CanadianShopper "
                          "-> Products.")
-            #  The drafts the file did not create may already be sitting on
-            #  CanadianShopper, unpublished - which is exactly what the
-            #  read-only report answers.
+            #  The job the person actually wants is the card on sale again,
+            #  so the publish offer comes first. The read-only report is the
+            #  fallback - both when they decline and when nothing new was
+            #  created, because the listing may already be an unpublished
+            #  draft from an earlier run.
+            if made and publish_drafts(made):
+                return
             if report["imported"]:
                 preview_drafts()
             elif report["failed"] and not report["unknown"]:
@@ -4883,6 +4889,78 @@ def build_stock(parent, app):
         app.run_tool(action, args, "Import CanadianShopper listings",
                      cwd=app.settings.get("pipeline_dir", str(WORK)),
                      on_done=arrived)
+
+    def publish_drafts(count):
+        """Take the drafts live, through the publisher the app already has.
+
+        The listing step left unpublished drafts; this is the rest of the job
+        the person actually wants - the card on sale again. It is the existing
+        publisher with --apply, so the same readiness checks decide what may
+        go live and the same typed PUBLISH confirms it: nothing here weakens
+        that gate, it only stops the person having to find the button in
+        another panel.
+        """
+        if not TOOL_ACTION("marketplace.publish_drafts"):
+            return False
+        if not messagebox.askyesno(
+                "Publish the %d new draft%s now?" %
+                (count, "" if count == 1 else "s"),
+                "%d listing%s %s created as unpublished drafts. Take %s live "
+                "now?\n\nPublishing scans every draft on CanadianShopper and "
+                "activates each one that passes all the readiness checks - "
+                "drafts from earlier runs too, not only %s. A draft that is "
+                "not ready is left alone.\n\nYou will also be asked to type "
+                "PUBLISH in the console, so nothing can go live on one "
+                "click." %
+                (count, "" if count == 1 else "s",
+                 "was" if count == 1 else "were",
+                 "it" if count == 1 else "them",
+                 "the %d here" % count if count != 1 else "this one"),
+                parent=box.winfo_toplevel()):
+            return False
+        report = canadianshopper_results_dir(app) / "cs-publish-report.csv"
+        args = ["--cookie-file", str(CS_COOKIE_FILE), "--report", str(report),
+                "--apply"]
+        app.console_line("Publishing the ready drafts...", "cmd")
+        summary.configure(text="Publishing the ready drafts...")
+        app.run_tool(
+            "cs-publish-drafts.py", args,
+            "Publish ready CanadianShopper drafts",
+            cwd=app.settings.get("pipeline_dir", str(WORK)),
+            confirm=("Scan your CanadianShopper drafts and activate only the "
+                     "ones that pass all readiness checks?\n\nNothing is "
+                     "activated unless you also type PUBLISH in the output "
+                     "console."),
+            on_done=lambda rc: published(rc, count, report))
+        return True
+
+    def published(rc, count, report):
+        """Say what happened, without claiming more than the publisher did."""
+        if rc != 0:
+            app.console_line(
+                "The publish step did not finish (exit %s). The %d draft%s "
+                "from this listing %s still there, unpublished." %
+                (rc, count, "" if count == 1 else "s",
+                 "is" if count == 1 else "are"), "err")
+            summary.configure(text="The drafts were created but not published "
+                                   "(exit %s)." % rc)
+            return
+        app.console_line(
+            "Publish finished. The report lists every draft it looked at and "
+            "what it did: %s" % report, "ok")
+        for hint in ("A draft the report leaves as a draft did not pass a "
+                     "readiness check; its edit link is in the report.",
+                     "Compare again: the cards that are now live on "
+                     "CanadianShopper leave this list."):
+            app.console_line(hint, "dim")
+        summary.configure(text="Publishing finished. Compare again to confirm "
+                               "the cards are on CanadianShopper.")
+        if report.is_file() and messagebox.askyesno(
+                "Open the publish report?",
+                "The report lists every draft the publisher looked at and what "
+                "it did with it.\n\n  %s\n\nOpen it?" % report,
+                parent=box.winfo_toplevel()):
+            open_path(report)
 
     def preview_drafts(title="Preview the new drafts?",
                        message="Read the drafts back and write a readiness "
@@ -5381,7 +5459,9 @@ def build_stock(parent, app):
                    "on the website and no longer on CanadianShopper can be put "
                    "back: the listing buttons write the same import file the "
                    "batch pipeline writes, from the website product itself, "
-                   "and offer to import it as a draft straight away.",
+                   "then offer to import it and publish the drafts - all with "
+                   "the publisher's own confirmations, including the typed "
+                   "PUBLISH.",
               style="Dim.TLabel", wraplength=680, justify="left").pack(
                   anchor="w", pady=(6, 0))
 
