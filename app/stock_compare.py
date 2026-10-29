@@ -39,6 +39,23 @@ IGNORED_FILE = "stock-ignored.json"
 FIX = "fix"
 ONLY_WOO = "only-woo"
 ONLY_OTHER = "only-other"
+#  A card that is on both sites but whose other-site listing is not ON SALE.
+#  It is not a disagreement to correct - a count written to a draft or an
+#  archived listing changes nothing anyone can buy - so it needs its own words
+#  and its own fix: publishing, or the vendor dashboard.
+OFF_SALE = "off-sale"
+
+#  Words a vendor dashboard uses for a listing nobody can buy yet. Anything not
+#  in here is treated as active, because a status the core does not recognise
+#  must never make a live listing look broken.
+_OFF_SALE_WORDS = {
+    "draft", "hidden", "archived", "archive", "inactive", "unpublished",
+    "private", "pending", "disabled", "deleted", "trash", "trashed",
+    "sold out", "sold_out", "soldout", "out of stock", "out_of_stock",
+    "outofstock", "off sale", "off_sale", "offsale", "not active",
+    "expired", "paused", "on hold", "on_hold",
+}
+_DRAFT_WORDS = {"draft", "pending", "unpublished", "private"}
 
 
 class StockError(Exception):
@@ -107,12 +124,49 @@ def read_woo_stock(fetch, base, key, secret, per_page=100, pages=40):
     return products
 
 
+def status_of(item):
+    """A listing's own state, as one of the words the panel can explain.
+
+    Plugin 1.0.25 sends ``status`` for every listing, including the ones that
+    are not on sale; the vendor spells them in its own way and in its own case,
+    so the word is folded here once. A missing status is ``active`` - an older
+    plugin only ever sent listings that were live.
+    """
+    raw = str((item or {}).get("status") or "").strip().lower()
+    if not raw or raw == "unknown":
+        return "active"
+    folded = " ".join(raw.replace("-", " ").replace("_", " ").split())
+    if folded in _DRAFT_WORDS or raw in _DRAFT_WORDS:
+        return "draft"
+    if folded in _OFF_SALE_WORDS or raw in _OFF_SALE_WORDS:
+        return "off-sale"
+    if folded.replace(" ", "_") in _OFF_SALE_WORDS:
+        return "off-sale"
+    return "active"
+
+
+def is_on_sale(item):
+    """Whether this listing can be bought - what a stock count is worth on."""
+    return status_of(item) == "active"
+
+
+def status_words(item):
+    """The state in the words the person sees, or "" when it is on sale."""
+    kind = status_of(item)
+    if kind == "active":
+        return ""
+    raw = str((item or {}).get("status") or "").strip()
+    if kind == "draft":
+        return "a %s" % (raw or "draft")
+    return raw or kind
+
+
 def plugin_items(payload):
     """The listings a plugin reported, in this module's one shape.
 
     The plugin writes ``{"items": [...]}``, each entry with a title, a SKU when
-    it has one, and an inventory number. Rows without a usable number are
-    dropped rather than guessed at.
+    it has one, an inventory number, and from 1.0.25 a status. Rows without a
+    usable number are dropped rather than guessed at.
     """
     if isinstance(payload, dict):
         payload = payload.get("items") or payload.get("listings") or []
@@ -133,7 +187,8 @@ def plugin_items(payload):
         items.append({"name": name,
                       "sku": str(row.get("sku") or "").strip(),
                       "qty": qty,
-                      "id": row.get("id")})
+                      "id": row.get("id"),
+                      "status": str(row.get("status") or "").strip()})
     return items
 
 
@@ -367,7 +422,28 @@ def action_list(pairs, only_woo, only_other, ignored=(), other_label=""):
     that only exists on one side is to stop being asked about it.
     """
     hidden = set(ignored or ())
-    rows = differences(pairs)
+    #  A pair whose other-site listing is not on sale is not a count
+    #  disagreement: setting the count would leave the card unbuyable, and
+    #  stock.set refuses it by design. It becomes its own row instead.
+    rows = []
+    live = []
+    for row in pairs or []:
+        if is_on_sale(row.get("other")):
+            live.append(row)
+            continue
+        other = row["other"]
+        rows.append({"card": row["woo"].get("name") or other.get("name") or "",
+                     "woo": int(row["woo"].get("qty") or 0),
+                     "other": int(other.get("qty") or 0),
+                     "gap": 0, "by": row.get("by", "title"),
+                     "kind": OFF_SALE, "status": status_of(other),
+                     "state": status_words(other),
+                     "woo_id": row["woo"].get("id"),
+                     "woo_sku": row["woo"].get("sku") or "",
+                     "other_id": other.get("id"),
+                     "other_name": other.get("name") or "",
+                     "other_sku": other.get("sku") or ""})
+    rows += differences(live)
     for item in only_woo or []:
         rows.append({"card": item.get("name") or "", "woo": int(item.get("qty") or 0),
                      "other": None, "gap": int(item.get("qty") or 0),
@@ -375,27 +451,47 @@ def action_list(pairs, only_woo, only_other, ignored=(), other_label=""):
                      "woo_sku": item.get("sku") or "", "other_id": None,
                      "other_name": "", "other_sku": ""})
     for item in only_other or []:
+        #  A listing that exists but is not on sale is not "only on the other
+        #  site" - it is on both, and the fix is to put it back on sale.
         rows.append({"card": item.get("name") or "", "woo": None,
                      "other": int(item.get("qty") or 0),
                      "gap": -int(item.get("qty") or 0), "by": "",
                      "kind": ONLY_OTHER, "woo_id": None, "woo_sku": "",
                      "other_id": item.get("id"),
                      "other_name": item.get("name") or "",
-                     "other_sku": item.get("sku") or ""})
+                     "other_sku": item.get("sku") or "",
+                     "status": status_of(item), "state": status_words(item)})
     visible = [row for row in rows if card_key(row["card"]) not in hidden]
-    visible.sort(key=lambda row: (row["kind"] != FIX, -abs(row["gap"]),
-                                  row["card"].lower()))
+    #  Fixable first, then the cards that exist but cannot be bought, then the
+    #  ones that are missing entirely: the first two have a fix, the last one
+    #  is usually a listing that needs creating.
+    order = {FIX: 0, OFF_SALE: 1, ONLY_OTHER: 2, ONLY_WOO: 3}
+    visible.sort(key=lambda row: (order.get(row["kind"], 9),
+                                  -abs(row["gap"]), row["card"].lower()))
     return visible
+
+
+def off_sale_rows(rows):
+    """The rows whose other-site listing exists but is not on sale."""
+    return [row for row in rows or [] if row.get("kind") == OFF_SALE]
+
+
+def draft_rows(rows):
+    """The off-sale rows that are drafts - publishing can activate those."""
+    return [row for row in rows or []
+            if row.get("kind") == OFF_SALE and row.get("status") == "draft"]
 
 
 def hidden_count(pairs, only_woo, only_other, ignored):
     """How many rows the ignore list is keeping off the screen."""
-    hidden = set(ignored or ())
-    if not hidden:
+    if not ignored:
         return 0
-    total = (len(differences(pairs)) + len(only_woo or []) +
-             len(only_other or []))
-    return total - len(action_list(pairs, only_woo, only_other, ignored))
+    #  Counted by asking the same function twice, so the number can never
+    #  disagree with what the list actually shows - a pair whose listing is not
+    #  on sale is one row there whatever its count is, and adding the kinds up
+    #  by hand got that wrong.
+    return (len(action_list(pairs, only_woo, only_other, ())) -
+            len(action_list(pairs, only_woo, only_other, ignored)))
 
 
 def plan_set(rows):
@@ -514,6 +610,10 @@ def label_action(row, other_label="CanadianShopper", mode="count"):
     if row.get("kind") == ONLY_WOO:
         return "%s  -  website %s only, not on %s" % (
             row["card"], row["woo"], other_label)
+    if row.get("kind") == OFF_SALE:
+        return "%s  -  on %s but not on sale (%s)  /  website %s" % (
+            row["card"], other_label, row.get("state") or "not on sale",
+            row.get("woo"))
     if row.get("kind") == ONLY_OTHER:
         return "%s  -  %s only, not on your website" % (row["card"], other_label)
     if mode == "listed":

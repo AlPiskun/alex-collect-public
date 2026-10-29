@@ -64,7 +64,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.72"
+VERSION = "2.73"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -966,6 +966,11 @@ read, so the website is changed on the website's own screen. A card that is no
 longer sold on the other site is ignored, which stops it being compared again
 until it is restored.
 
+A listing that exists but is not on sale - a draft, hidden, archived or out of
+stock - gets its own row, because a stock count cannot fix it and stock.set
+only touches listings that are on sale. When one of them is a draft, publishing
+is offered; anything else is a vendor-dashboard job.
+
 A card that exists on the website and no longer on CanadianShopper is the one
 that can be put back rather than corrected: the listing buttons write the
 CanadianShopper import file from the website product itself - its title, price,
@@ -1347,6 +1352,7 @@ TOOLTIPS = {
     "List the selected cards on CanadianShopper...": "Write the CanadianShopper import file for the selected website-only cards from the website product - title, price, its own photo and stock count - then offer to import it as drafts and to publish them",
     "List every website-only card...": "The same file for every card that is on the website and not on CanadianShopper, then the same offer to import and publish the drafts",
     "Ignore the selected cards": "Stop comparing the selected cards: a card that is no longer sold on one site disappears from the list until it is restored; nothing on either site changes",
+    "Publish the ready drafts...": "Scan CanadianShopper's drafts and activate only the ones that pass every readiness check - for cards whose listing exists but was never published; PUBLISH still has to be typed",
     "Restore ignored cards...": "Put every ignored card back into comparisons, after showing which ones they are",
     "Read a saved eBay page...": "Read an eBay page you saved from your own signed-in browser (Ctrl+S, HTML only) - the way round eBay's \"Pardon our interruption\" check, using the same reader",
     "Read a saved Facebook page...": "Read a Facebook selling page you saved from your own signed-in browser (Ctrl+S, HTML only) - the way round Facebook's HTTP 400, using the same reader",
@@ -4898,7 +4904,7 @@ def build_stock(parent, app):
                      cwd=app.settings.get("pipeline_dir", str(WORK)),
                      on_done=arrived)
 
-    def publish_drafts(count):
+    def publish_drafts(count, reason=""):
         """Take the drafts live, through the publisher the app already has.
 
         The listing step left unpublished drafts; this is the rest of the job
@@ -4918,6 +4924,9 @@ def build_stock(parent, app):
                       (count, "" if count == 1 else "s",
                        "was" if count == 1 else "were",
                        "it" if count == 1 else "them"))
+        elif reason:
+            title = "Publish the ready drafts now?"
+            detail = reason
         else:
             #  Nothing new was needed because the cards are already there. The
             #  listings the import matched may still be unpublished, and
@@ -5075,11 +5084,29 @@ def build_stock(parent, app):
                 [{"card": row["card"], "woo": row["woo"], "other": row["other"],
                   "gap": row["gap"]}], other_label=state["label"],
                 mode=state["mode"])[0], "dim")
+        off_sale = stock_compare.off_sale_rows(rows)
+        drafts = stock_compare.draft_rows(rows)
+        for row in off_sale:
+            app.console_line(
+                "%s is on %s but not on sale (%s) - a count cannot fix that." %
+                (row["card"], state["label"], row.get("state") or "not on sale"),
+                "warn")
         app.console_line(
-            "Compared %d matched cards against %s; %d disagree, %d only on one "
-            "side. Nothing was changed on either site yet." %
-            (len(state["pairs"]), state["label"], len(fixable),
-             len(rows) - len(fixable)), "ok")
+            "Compared %d matched cards against %s; %d disagree, %d not on sale "
+            "there, %d only on one side. Nothing was changed on either site "
+            "yet." %
+            (len(state["pairs"]), state["label"], len(fixable), len(off_sale),
+             len(rows) - len(fixable) - len(off_sale)), "ok")
+        if off_sale:
+            publish_ready.pack(anchor="w", pady=(3, 0))
+        else:
+            publish_ready.pack_forget()
+        if drafts:
+            app.console_line(
+                "%d of those is a draft: %s can activate it once it passes the "
+                "readiness checks." %
+                (len(drafts), "Publishing" if len(drafts) > 1 else "publishing"),
+                "dim")
 
     def narrow(woo, items):
         """Keep only the one card this panel was opened for, if any."""
@@ -5462,9 +5489,20 @@ def build_stock(parent, app):
                command=restore_ignored).pack(side="left", padx=6)
     action_row.pack_forget()
 
+    #  Shown only when a comparison finds listings that exist but are not on
+    #  sale: a count cannot activate those, publishing can.
+    publish_ready = ttk.Button(
+        box, text="Publish the ready drafts...",
+        command=lambda: publish_drafts(
+            0, "Some of these cards have a draft listing on CanadianShopper. "
+               "Publishing activates the drafts that pass every readiness "
+               "check; a draft that is not ready is left alone."))
+    publish_ready.pack_forget()
+
     ttk.Label(box,
               text="The list is what needs attention: a card whose two counts "
-                   "differ, or a card that exists on one side only. The "
+                   "differ, a card whose listing on the other site is not on "
+                   "sale, or a card that exists on one side only. The "
                    "website is usually the right one, so the first button sets "
                    "every differing count to the website's - after showing "
                    "exactly what would change and asking. Select rows to fix "

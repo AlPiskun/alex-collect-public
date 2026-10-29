@@ -1577,6 +1577,156 @@ def test_one_click_import_refusals():
           str(app.lines[-3:]))
 
 
+
+def test_listings_that_are_not_on_sale():
+    print()
+    print("== 17. a listing that exists but cannot be bought ==")
+    payload = {"items": [
+        {"id": 101, "title": "Gretzky #1", "sku": "GR-1", "inventory": 0,
+         "status": "active"},
+        {"id": 102, "title": "Orr #35", "sku": "BO-35", "inventory": 0,
+         "status": "Draft"},
+        {"id": 103, "title": "Dryden #10", "sku": "DR-10", "inventory": 2,
+         "status": "archived"},
+        {"id": 104, "title": "Lafleur #79", "sku": "LA-79", "inventory": 1,
+         "status": "out-of-stock"},
+        {"id": 105, "title": "No status card", "sku": "", "inventory": 1},
+        {"id": 106, "title": "Odd word card", "sku": "", "inventory": 1,
+         "status": "mystery-state"},
+    ]}
+    items = stock_compare.plugin_items(payload)
+    check("the status travels with every listing",
+          [item["status"] for item in items] ==
+          ["active", "Draft", "archived", "out-of-stock", "", "mystery-state"],
+          str([item["status"] for item in items]))
+    words = [stock_compare.status_of(item) for item in items]
+    check("draft, archived and out-of-stock are all 'not on sale'",
+          words == ["active", "draft", "off-sale", "off-sale", "active",
+                    "active"], str(words))
+    check("a status the core does not know is never called broken",
+          stock_compare.is_on_sale(items[5]), "")
+    check("an older plugin with no status still reads as on sale",
+          stock_compare.is_on_sale(items[4]), "")
+    check("the draft is named in the person's words",
+          stock_compare.status_words(items[1]) == "a Draft",
+          stock_compare.status_words(items[1]))
+    check("an archived listing keeps the vendor's own word",
+          stock_compare.status_words(items[2]) == "archived",
+          stock_compare.status_words(items[2]))
+    check("and one that is on sale needs no words at all",
+          stock_compare.status_words(items[0]) == "", "")
+
+    woo = [{"id": 1, "name": "Gretzky #1", "sku": "GR-1", "qty": 2},
+           {"id": 2, "name": "Orr #35", "sku": "BO-35", "qty": 3},
+           {"id": 3, "name": "Dryden #10", "sku": "DR-10", "qty": 2},
+           {"id": 4, "name": "Lafleur #79", "sku": "LA-79", "qty": 1}]
+    pairs, only_woo, only_other = stock_compare.pair(woo, items[:4])
+    rows = stock_compare.action_list(pairs, only_woo, only_other)
+    kinds = {row["card"]: row["kind"] for row in rows}
+    check("a draft listing is not offered as a count to fix",
+          kinds.get("Orr #35") == stock_compare.OFF_SALE, str(kinds))
+    check("and neither is an archived or out-of-stock one",
+          kinds.get("Dryden #10") == stock_compare.OFF_SALE and
+          kinds.get("Lafleur #79") == stock_compare.OFF_SALE, str(kinds))
+    check("a live listing with a different count is still a count to fix",
+          kinds.get("Gretzky #1") == stock_compare.FIX, str(kinds))
+    check("so the count is never written to a listing nobody can buy",
+          [row["id"] for row in stock_compare.plan_set(rows)] == [101],
+          str(stock_compare.plan_set(rows)))
+    check("the row still carries both sides, so the person can see the card",
+          all(row.get("woo_id") and row.get("other_id") for row in rows
+              if row["kind"] == stock_compare.OFF_SALE), str(rows))
+    check("the draft rows are the ones publishing could activate",
+          [row["card"] for row in stock_compare.draft_rows(rows)] ==
+          ["Orr #35"], str(stock_compare.draft_rows(rows)))
+    check("every not-on-sale row is counted as one",
+          len(stock_compare.off_sale_rows(rows)) == 3, str(rows))
+    check("its label says both facts - where it is, and that it is not on sale",
+          stock_compare.label_action(
+              [row for row in rows if row["card"] == "Orr #35"][0]) ==
+          "Orr #35  -  on CanadianShopper but not on sale (a Draft)  /  "
+          "website 3",
+          stock_compare.label_action(
+              [row for row in rows if row["card"] == "Orr #35"][0]))
+    check("a not-on-sale row is hidden by the ignore list like any other",
+          stock_compare.hidden_count(
+              pairs, only_woo, only_other,
+              [stock_compare.card_key("Orr #35")]) == 1, "")
+    check("and the panel still counts a card on both sites as matched",
+          len(pairs) == 4, str(len(pairs)))
+
+
+def test_panel_explains_off_sale():
+    print()
+    print("== 18. the panel says a listing exists but is not on sale ==")
+    folder, app, parent = build_panel()
+    products = [
+        {"id": 1, "name": "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6",
+         "sku": "GR-1", "manage_stock": True, "stock_quantity": 2,
+         "type": "simple"},
+        {"id": 2, "name": "1966-67 Topps Bobby Orr #35", "sku": "BO-35",
+         "manage_stock": True, "stock_quantity": 3, "type": "simple"},
+    ]
+    items = [{"id": 101, "title": "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6",
+              "sku": "GR-1", "inventory": 0, "status": "active"},
+             {"id": 102, "title": "1966-67 Topps Bobby Orr #35", "sku": "BO-35",
+              "inventory": 0, "status": "Draft"}]
+
+    def fetch_ok(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_ok), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+        (folder / "cs-stock.json").write_text(json.dumps({"items": items}),
+                                              encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+    listing = next((w for w in parent.walk()
+                    if isinstance(w, gui.tk.Listbox)), None)
+    check("the draft listing is on the list, not missing from it",
+          any("not on sale (a Draft)" in text for text in listing.items),
+          str(listing.items))
+    check("and it is not offered as a count to fix",
+          not any("website 3  /  CanadianShopper" in text
+                  for text in listing.items), str(listing.items))
+    check("the console says a count cannot fix it",
+          any("a count cannot fix that" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("the summary counts it separately from the missing cards",
+          any("not on sale there" in text for _tag, text in app.lines),
+          str(app.lines[-2:]))
+    check("and publishing is offered for it",
+          find(parent, gui.ttk.Button, "Publish the ready drafts...")
+          is not None and
+          find(parent, gui.ttk.Button,
+               "Publish the ready drafts...").packed, "")
+    asked = []
+    harness._BOX.askyesno = lambda title, message, **k: (
+        asked.append((title, message)) or False)
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/cs-publish-drafts.py"), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button, "Publish the ready drafts...").invoke()
+    check("publishing a draft from here still asks first",
+          asked and asked[0][0] == "Publish the ready drafts now?", str(asked))
+    check("and says a count could not have done this",
+          asked and "draft listing" in asked[0][1], str(asked))
+    app.runs.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/cs-publish-drafts.py"), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button,
+             "Set CanadianShopper to the website's counts...").invoke()
+    check("the default fix writes nothing when the only card is off sale",
+          not app.runs, str(app.runs))
+
+
 def main():
     test_woo_items()
     test_plugin_items()
@@ -1599,6 +1749,8 @@ def main():
     test_listing_skips_what_is_not_a_listing_job()
     test_one_click_import()
     test_one_click_import_refusals()
+    test_listings_that_are_not_on_sale()
+    test_panel_explains_off_sale()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))
