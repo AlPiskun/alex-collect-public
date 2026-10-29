@@ -64,7 +64,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.83"
+VERSION = "2.84"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -8480,10 +8480,11 @@ class PipelineDialog(tk.Toplevel):
                         self.app.console_line(
                             "The listing step finished with a problem - read "
                             "the \"NOT EVERY STEP FINISHED\" block above. "
-                            "Everything it did write is on disk; the step "
-                            "that failed changed nothing, so it can simply "
-                            "be run again (Re-run a marketplace, or its own "
-                            "button on the pipeline panel).", "err")
+                            "Everything it did write is on disk and is kept. "
+                            "Each step named there can simply be run again "
+                            "(Re-run a marketplace, or its own button on the "
+                            "pipeline panel) without doing anything twice.",
+                            "err")
 
                 self.on_run(["listing", "--input", str(input_file),
                              "--facebook"] + product_flags,

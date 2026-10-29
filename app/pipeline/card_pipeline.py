@@ -1655,7 +1655,12 @@ def ask_yes_no(question, default_no=True):
 
 
 def create_products_from_csv(csv_path, args, ask=True):
-    """Create the batch's products on the website; return True when it ran.
+    """Create the batch's products on the website.
+
+    Returns ``(created, reason)``: whether anything landed on the site, and -
+    when the step did not do what it was asked - a short reason for the
+    NOT EVERY STEP FINISHED block. A batch that stopped halfway is a failed
+    step, not a finished run with a note in it.
 
     The CSV stays the record either way: it is what a re-run, a failure, or a
     person who prefers WP All Import works from.
@@ -1663,7 +1668,7 @@ def create_products_from_csv(csv_path, args, ask=True):
     if woo_create is None:
         print("\n(woo_create is not beside this script, so the products "
               "cannot be created directly. Import the CSV as before.)")
-        return False
+        return False, "WooCommerce (woo_create.py is not beside the pipeline)"
     site, key, secret = woo_keys()
     if not (site and key and secret):
         print("\n-- Products on your website --")
@@ -1674,23 +1679,25 @@ def create_products_from_csv(csv_path, args, ask=True):
         print("  Nothing is lost: the CSV below can still be imported the old "
               "way.")
         print("  CSV: %s" % csv_path)
-        return False
+        return False, ("WooCommerce (the keys in woo-keys.txt are missing or "
+                       "incomplete, so nothing was created)")
     if woo_create.site_root(site) == "":
         print("\n  !! The site address in woo-keys.txt is not a URL (%r), so "
               "nothing was created." % site, file=sys.stderr)
-        return False
+        return False, ("WooCommerce (the site address in woo-keys.txt is not "
+                       "a URL, so nothing was created)")
 
     try:
         read = woo_create.read_rows(csv_path)
     except woo_create.ProductError as exc:
         print("\n  !! %s" % exc.message, file=sys.stderr)
-        return False
+        return False, "WooCommerce (the batch's CSV could not be read)"
     planned = woo_create.plan(read["rows"], [OUTPUT_DIR, read["folder"]])
     if not planned["items"]:
         print("\n  Nothing in this CSV can be created as it stands.")
         for problem in planned["problems"]:
             print("    - %s" % problem["why"])
-        return False
+        return False, "WooCommerce (nothing in the batch could be created)"
 
     print("\n" + "=" * 58)
     print("  PRODUCTS ON YOUR WEBSITE")
@@ -1718,7 +1725,7 @@ def create_products_from_csv(csv_path, args, ask=True):
         if not ask_yes_no("\nCreate these %d product(s) on %s now? [y/N] "
                           % (len(planned["items"]), site)):
             print("Nothing was created. The CSV is unchanged: %s" % csv_path)
-            return False
+            return False, ""
 
     publish = False
     if getattr(args, "publish_products", False):
@@ -1746,23 +1753,65 @@ def create_products_from_csv(csv_path, args, ask=True):
     for line in woo_create.report_text(report, site):
         print("  " + line)
     print("  Report: %s" % report_path)
+    for line in woo_create.recovery_text(report):
+        print("  " + line)
     if report["failed"]:
-        print("  The CSV was not changed, so anything that failed can be "
-              "imported the old way: %s" % csv_path)
-    if report["created"]:
-        print("  The CSV import step is not needed for the products listed "
-              "as created above.")
-    return bool(report["created"])
+        #  Named, because it is the answer to "so what do I do now?": the same
+        #  batch can be finished without the scans, and without a second copy.
+        print("  In the app: Re-run a marketplace -> WooCommerce CSV, and "
+              "choose to put the products on sale. It rebuilds this batch "
+              "from the AI text already on disk, looks every card up by SKU, "
+              "and finishes what this run could not.")
+        print("  The CSV is unchanged: %s" % csv_path)
+    return bool(report["created"]), creation_failure_note(report)
+
+
+def creation_failure_note(report):
+    """The card-creation step in one line, for NOT EVERY STEP FINISHED.
+
+    A card can fail in two different places - it was never created, or it was
+    created and the site would not put it on sale - and they are counted
+    apart, because "not on the website" over a product that exists is the
+    sentence that makes somebody import the CSV twice.
+    """
+    report = report or {}
+    failed = report.get("failed") or []
+    if not failed:
+        return ""
+    cards = set()
+    for key in ("created", "skipped", "failed"):
+        for entry in report.get(key) or []:
+            cards.add(entry.get("sku") or entry.get("name"))
+    total = len(cards) or len(failed)
+    waiting = [entry for entry in failed
+               if str(entry.get("state") or "") == "created-not-live"]
+    missing = len(failed) - len(waiting)
+    parts = []
+    if missing:
+        parts.append("%d of %d card%s %s not on the website"
+                     % (missing, total, "" if total == 1 else "s",
+                        "is" if missing == 1 else "are"))
+    if waiting:
+        parts.append("%d of %d card%s %s created but the site would not put "
+                     "%s on sale"
+                     % (len(waiting), total, "" if total == 1 else "s",
+                        "was" if len(waiting) == 1 else "were",
+                        "it" if len(waiting) == 1 else "them"))
+    return ("WooCommerce (%s - run the batch again to finish %s)"
+            % ("; ".join(parts),
+               "it" if len(failed) == 1 else "them"))
 
 
 def maybe_create_woocommerce_products(args, csv_path):
     """Offer to create the batch's products instead of importing the CSV.
 
-    Returns True when at least one product was actually created, so the
-    following steps can describe the batch as already on the website.
+    Returns ``(created, reason)``: True when at least one product was actually
+    created - so the following steps can describe the batch as already on the
+    website - and, when the step did not do what it was asked, the line that
+    goes into the NOT EVERY STEP FINISHED block.
     """
     if csv_path is None or getattr(args, "no_create_products", False):
-        return False
+        return False, ""
     site, key, secret = woo_keys()
     if not (site and key and secret) and not getattr(args, "create_products",
                                                      False):
@@ -1776,7 +1825,7 @@ def maybe_create_woocommerce_products(args, csv_path):
                 print("  " + line)
         print("  The CSV below is ready for WP All Import in the meantime: %s"
               % csv_path)
-        return False
+        return False, ""
     return create_products_from_csv(
         csv_path, args,
         ask=not (getattr(args, "yes", False)
@@ -2540,7 +2589,11 @@ def report_unfinished(failures, still_written):
     if still_written:
         print("\n  Everything else this run was asked for is written: %s."
               % still_written)
-    print("  The failed step changed nothing, so it can simply be run again.")
+    #  Not "the failed step changed nothing": a batch that stopped halfway
+    #  left products behind, and telling someone a half-written website is
+    #  untouched is the sentence that gets it written twice.
+    print("  Every step named above can simply be run again: the work that "
+          "did land is kept, and nothing is done twice.")
     return 1
 
 
@@ -2707,7 +2760,9 @@ def cmd_rerun(args):
         csv_path = write_woocommerce_csv(rows)
         print_woocommerce_rows(rows, csv_path)
         written.append("the WooCommerce CSV")
-        created = maybe_create_woocommerce_products(args, csv_path)
+        created, note = maybe_create_woocommerce_products(args, csv_path)
+        if note:
+            failures.append(note)
 
     if market in ("facebook", "all"):
         note = maybe_run_facebook(_with_flags(args, facebook=True),
@@ -2750,9 +2805,11 @@ def cmd_listing(args):
     no_images = getattr(args, "no_images", False)
     if no_images:
         print("\n(--no-images set: skipping image rename step.)")
-        created = maybe_create_woocommerce_products(args, csv_path)
+        created, note = maybe_create_woocommerce_products(args, csv_path)
         failures = run_post_listing_uploads(args, parsed,
                                             created_directly=created)
+        if note:
+            failures.insert(0, note)
         return report_unfinished(failures, "the WooCommerce CSV")
 
     directory = str(OUTPUT_DIR)
@@ -2833,8 +2890,10 @@ def cmd_listing(args):
     print(f"\nDone: {len(ops)} image(s) {verb.lower()}d to match the CSV.")
 
     # -- The products themselves, then the Facebook feed --
-    created = maybe_create_woocommerce_products(args, csv_path)
+    created, note = maybe_create_woocommerce_products(args, csv_path)
     failures = run_post_listing_uploads(args, parsed, created_directly=created)
+    if note:
+        failures.insert(0, note)
     return report_unfinished(
         failures, "the WooCommerce CSV, the renamed images and the products "
                   "themselves")

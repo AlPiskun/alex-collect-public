@@ -316,8 +316,9 @@ def test_a_failed_step_fails_the_run():
           "NOT EVERY STEP FINISHED" in text and
           "Marketplace xlsx" in text, text)
     check("and what was still written", "the WooCommerce CSV" in text, text)
-    check("and that the failed step changed nothing",
-          "changed nothing" in text, text)
+    check("and that the failed step can simply be run again",
+          "can simply be run again" in text
+          and "nothing is done twice" in text, text)
     check("nothing wrong = the exit code is 0",
           card_pipeline.report_unfinished([], "anything") == 0)
 

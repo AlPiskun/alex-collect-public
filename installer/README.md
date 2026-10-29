@@ -20,7 +20,7 @@ by-default task to install the packages in the repository's
 packages are already installed.
 
 Compile it on a Windows machine with Inno Setup 6. Output:
-`Output\AlexCollect-Setup-2.83.exe`.
+`Output\AlexCollect-Setup-2.84.exe`.
 
 ## B. `alexcollect-bundled.iss` — install a private Python runtime
 

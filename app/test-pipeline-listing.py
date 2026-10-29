@@ -97,7 +97,7 @@ def test_rename_stage_reaches_its_confirmation(root):
             patch.object(card_pipeline, "apply_renames",
                          lambda o, copy=False: applied.update(ops=o)), \
             patch.object(card_pipeline, "maybe_create_woocommerce_products",
-                         lambda args, path: False), \
+                         lambda args, path: (False, "")), \
             patch.object(card_pipeline, "run_post_listing_uploads",
                          lambda args, parsed, **kw: None), \
             patch("builtins.input", fake_input), quiet():
@@ -147,7 +147,7 @@ def test_rename_applies_with_yes(root):
             patch.object(card_pipeline, "apply_renames",
                          lambda o, copy=False: applied.update(ops=o)), \
             patch.object(card_pipeline, "maybe_create_woocommerce_products",
-                         lambda args, path: False), \
+                         lambda args, path: (False, "")), \
             patch.object(card_pipeline, "run_post_listing_uploads",
                          lambda args, parsed, **kw: None), \
             patch("builtins.input", boom), quiet():

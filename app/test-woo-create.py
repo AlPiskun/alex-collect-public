@@ -40,6 +40,8 @@ def load(name):
 
 
 woo_create = load("woo_create.py")
+woo_create.SITE_RETRY_PAUSE = 0        # the tests do not need the waits
+pipeline = load("pipeline/card_pipeline.py")
 
 FIELDS = ["SKU", "Name", "Published", "Is featured?", "Visibility in catalog",
           "Short description", "Description", "In stock?", "Stock",
@@ -88,11 +90,20 @@ def row(n, **changes):
     return base
 
 
+#  What WordPress sends when a PHP fatal ends the request: one sentence, the
+#  same for everybody, and no hint of what actually went wrong.
+CRITICAL_ERROR_PAGE = (
+    b"<p>There has been a critical error on this website.</p>"
+    b"<p><a href=\"https://wordpress.org/documentation/article/faq-"
+    b"troubleshooting/\">Learn more about troubleshooting WordPress.</a></p>")
+
+
 class FakeSite:
     """A site that answers the calls woo_create makes, and remembers them."""
 
     def __init__(self, exist=(), categories=None, refuse=None,
-                 publish_status="publish", existing=None):
+                 publish_status="publish", existing=None, fail_once=(),
+                 save_then_fail=()):
         self.calls = []
         self.products = {}
         self.by_sku = {sku: pid for sku, pid in exist}
@@ -111,6 +122,11 @@ class FakeSite:
         self.refuse = dict(refuse or {})             # (method, keyword) -> code
         self.publish_status = publish_status
         self.uploads = []
+        #  A site that hiccups once and then works, and a site that writes the
+        #  product before its own error page - the two shapes of a real HTTP
+        #  500 that the app has to tell apart.
+        self.fail_once = list(fail_once)
+        self.save_then_fail = set(save_then_fail)
 
     def __call__(self, request, timeout=None):
         method = request.get_method()
@@ -130,8 +146,14 @@ class FakeSite:
                                     "source_url": "https://shop.example/x.webp"}
                                    ).encode("utf-8")
 
+        for pair in self.fail_once:
+            if method == pair[0] and pair[1] in url:
+                self.fail_once.remove(pair)
+                return 500, CRITICAL_ERROR_PAGE
         for (refuse_method, keyword), code in self.refuse.items():
             if method == refuse_method and keyword in url:
+                if code >= 500:
+                    return code, CRITICAL_ERROR_PAGE
                 return code, json.dumps({"message": "refused by test"}).encode()
 
         if "/products/categories" in url:
@@ -161,6 +183,10 @@ class FakeSite:
             self.products[self.next_id] = product
             if body.get("sku"):
                 self.by_sku[body["sku"]] = self.next_id
+            if body.get("sku") in self.save_then_fail:
+                #  The row is written, then the request dies: WordPress's own
+                #  "critical error" page is what comes back.
+                return 500, CRITICAL_ERROR_PAGE
             return 201, json.dumps(product).encode("utf-8")
 
         if "/products/" in url and method == "PUT":
@@ -532,6 +558,166 @@ def test_existing_products():
           "then publish it" in text, text)
 
 
+def test_error_pages():
+    """A website that answers with its own error page is not an answer.
+
+    The run this was written for: nine cards, six created, four put on sale,
+    and five named "Not created" - two of which were on the site as drafts
+    with their photos. A batch told that has to import the CSV to fix it would
+    have made five duplicates.
+    """
+    print()
+    print("== 8. the website's own error page is not an answer ==")
+    categories = {"Sports Card": 11, "Hockey Card": 12}
+
+    # ---- a read that hiccups once costs nothing
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1)])
+    site = FakeSite(categories=categories,
+                    fail_once=[("GET", "sku=OPC1971-001-PR-2")])
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    reads = [call for call in site.calls if call["method"] == "GET"
+             and "sku=" in call["url"]]
+    check("a read answered with an error page is simply asked again",
+          len(reads) == 2 and len(report["created"]) == 1,
+          "%s %s" % (len(reads), report))
+    check("and the batch does not have to apologise for it",
+          report["failed"] == [], str(report["failed"]))
+
+    # ---- every read failing: the card is unconfirmed, never called missing
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1)])
+    site = FakeSite(categories=categories,
+                    refuse={("GET", "sku="): 500})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    reads = [call for call in site.calls if call["method"] == "GET"
+             and "sku=" in call["url"]]
+    text = "\n".join(woo_create.report_text(report, "https://shop.example"))
+    check("a failing read is asked three times before the card is given up on",
+          len(reads) == woo_create.SITE_RETRIES, str(len(reads)))
+    check("the card is called unconfirmed, not missing",
+          "Could not be confirmed" in text and "Not created" not in text,
+          text)
+    check("and the answer says where the real cause is",
+          "PHP error log" in text and "memory limit" in text, text)
+    check("and says outright that the keys are not the problem",
+          "keys are not the problem" in text, text)
+    check("and nothing was sent to be created", not any(
+          call["method"] == "POST" for call in site.calls), str(site.calls))
+
+    # ---- the product was written, then the site died: not a second send
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1)])
+    site = FakeSite(categories=categories,
+                    save_then_fail=["OPC1971-001-PR-2"])
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    posts = [call for call in site.calls if call["method"] == "POST"
+             and "wp/v2/media" not in call["url"]]
+    text = "\n".join(woo_create.report_text(report, "https://shop.example"))
+    check("a product written before the error page is not sent twice",
+          len(posts) == 1, str(len(posts)))
+    check("and it is reported as created, because it is there",
+          len(report["created"]) == 1 and not report["failed"],
+          str(report))
+    check("with the lost answer named rather than hidden",
+          "answered with its own error page" in text
+          and "created once" in text, text)
+
+    # ---- a create that really did nothing says so, and says where to look
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1)])
+    site = FakeSite(categories=categories, refuse={("POST", "products?"): 500})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    text = "\n".join(woo_create.report_text(report, "https://shop.example"))
+    check("a card whose product is not there afterwards is called not created",
+          "Not created" in text and "no product with that SKU is there" in text,
+          text)
+    check("and the reason is the site's error page, in plain words",
+          "HTTP 500" in text, text)
+
+    # ---- a card refused at the second step is not "not created"
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1)])
+    site = FakeSite(categories=categories, refuse={("PUT", "/products/"): 500})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", publish=True,
+                            opener=site)
+    text = "\n".join(woo_create.report_text(report, "https://shop.example"))
+    check("a product the site would not publish is not called not created",
+          "Not created" not in text and "Not on sale" in text, text)
+    check("and it is named with its product id",
+          "product 9" in text, text)
+    check("and it is not counted among the drafts waiting to be published",
+          "left as a draft" not in text, text)
+
+    # ---- a site that keeps failing stops being asked
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(n) for n in range(1, 6)])
+    site = FakeSite(categories=categories, refuse={("GET", "sku="): 500})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    attempted = [entry for entry in report["failed"]
+                 if entry.get("state") != "not-attempted"]
+    rest = [entry for entry in report["failed"]
+            if entry.get("state") == "not-attempted"]
+    check("three error pages in a row stop the run touching the site",
+          len(attempted) == woo_create.SITE_BROKEN_LIMIT and len(rest) == 2,
+          "%s / %s" % (len(attempted), len(rest)))
+    check("the rest are named as not attempted, not as failures",
+          all("not attempted" in entry["why"] for entry in rest),
+          str(rest))
+    text = "\n".join(woo_create.report_text(report, "https://shop.example"))
+    check("and the console says Not attempted for them", "Not attempted" in
+          text, text)
+
+    # ---- the way out is one re-run, never a second copy
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1), row(2)])
+    site = FakeSite(categories=categories, refuse={("PUT", "/products/"): 500})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", publish=True,
+                            opener=site)
+    pipeline_note = pipeline.creation_failure_note(report)
+    text = "\n".join(woo_create.report_text(report, "https://shop.example"))
+    check("a batch that half worked is finished by running it again",
+          "Run the same batch again" in text, text)
+    check("and it says the SKU check is what makes that safe",
+          "by its SKU" in text and "Nothing is created twice" in text, text)
+    check("and it warns against importing the CSV as well",
+          "do not import the CSV" in text, text)
+
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1)])
+    site = FakeSite(categories=categories, refuse={("GET", "sku="): 500})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    text = "\n".join(woo_create.report_text(report, "https://shop.example"))
+    check("a batch that wrote nothing keeps the old CSV road open",
+          "imported the old way" in text
+          and "do not import the CSV" not in text, text)
+
+    check("a broken batch is a failed step, not a finished run",
+          "WooCommerce (" in (pipeline_note or ""), str(pipeline_note))
+    check("and that line counts what is missing out of the batch",
+          "of 2 cards" in (pipeline_note or ""), str(pipeline_note))
+    check("a batch that worked has no failed step to report",
+          pipeline.creation_failure_note(
+              {"created": [{"sku": "S1"}], "skipped": [], "failed": []}) == "",
+          "")
+
+    check("a finished batch is told the CSV import is not needed",
+          "CSV import step is not needed" in "\n".join(
+              woo_create.recovery_text({"created": [{"sku": "S"}],
+                                        "failed": []})), "")
+    check("and nothing is said at all when there was nothing to do",
+          woo_create.recovery_text({"created": [], "skipped": [],
+                                    "failed": []}) == [], "")
+
+
 def test_pipeline_glue(tmp):
     """The pipeline offers this instead of quietly writing a CSV.
 
@@ -567,7 +753,7 @@ def test_pipeline_glue(tmp):
         base.update(changes)
         return argparse.Namespace(**base)
 
-    def glue(argv, keys=("", "", ""), typed=""):
+    def glue(argv, keys=("", "", ""), typed="", failure=False):
         """Run the pipeline's offer; return (created?, output, run calls)."""
         calls = []
 
@@ -582,9 +768,22 @@ def test_pipeline_glue(tmp):
                      "id": 900, "status": "draft", "images": 1}
             if publish:
                 entry["status"] = "publish"
-            return {"created": [entry], "skipped": [], "failed": [],
-                    "published": [entry] if publish else [],
-                    "unpublished": [] if publish else [entry]}
+            failed = []
+            if failure:
+                #  The site wrote the product, then answered with its own
+                #  error page on the second step: exactly the run this section
+                #  was added for.
+                failed = [{"name": entry["name"], "sku": entry["sku"],
+                           "step": "create", "id": 900, "status": 500,
+                           "state": "created-not-live",
+                           "why": "created, but not published: The website "
+                                  "answered with its own error page (HTTP "
+                                  "500) instead of a result.",
+                           "hint": "Run the batch again once the site is "
+                                   "fixed."}]
+            return {"created": [entry], "skipped": [], "failed": failed,
+                    "published": [entry] if publish and not failure else [],
+                    "unpublished": [] if publish and not failure else [entry]}
 
         answers = iter((typed or "n\n").splitlines() or [""])
         prompts = []
@@ -600,7 +799,7 @@ def test_pipeline_glue(tmp):
                 patch.object(card_pipeline.woo_create, "run", fake_run), \
                 patch("builtins.input", fake_input), \
                 redirect_stdout(out):
-            created = card_pipeline.maybe_create_woocommerce_products(
+            created, _note = card_pipeline.maybe_create_woocommerce_products(
                 argv, csv_path)
         return created, out.getvalue(), calls, prompts
 
@@ -667,6 +866,16 @@ def test_pipeline_glue(tmp):
           created is True and calls and calls[0]["publish"] is True,
           str(calls))
 
+    created, output, calls, prompts = glue(
+        args(create_products=True, publish_products=True, confirmed=True),
+        keys=(site, "ck_a", "cs_b"), failure=True)
+    check("a batch the site broke names the button that finishes it",
+          "Re-run a marketplace" in output and "WooCommerce CSV" in output,
+          output[-500:])
+    check("and never offers the CSV import over cards that already exist",
+          "imported the old way" not in output and
+          "do not import the CSV" in output, output[-500:])
+
 
 def main():
     test_reading()
@@ -676,6 +885,7 @@ def main():
     test_existing_products()
     test_refusals()
     test_categories_and_help()
+    test_error_pages()
     with tempfile.TemporaryDirectory() as td:
         test_pipeline_glue(Path(td))
     print()
