@@ -28,6 +28,7 @@ These are outside the marketplace result rollups and may grow or persist by desi
 - `output/` contains renamed/split WebP card photos. It is a user-facing image workspace and is **not** automatically cleaned; review it periodically if it gets large.
 - `canadianshopper_products/cs-image-cache.json` grows as images are uploaded. It prevents duplicate uploads, so do not delete it casually. The older plugin-side cache is moved here if needed.
 - `facebook_runlog_YYYY-MM-DD.txt` accumulates one run log per day; `feed_debug_response.txt` is only written on feed-fetch failure and is overwritten on the next such failure.
+- `facebook_merchant_products/helper_last_run.log` holds everything a nested Facebook helper printed on its last failure - the traceback the console used to lose. It is overwritten by the next failing helper and written only when one fails.
 - `gui-log.txt` is append-only and can grow over time.
 - `sold-cards-ledger.json` and `sold-cards-checklist.csv` are persistent workflow state, not disposable output. `sold-cards-report.csv` is refreshed by runs.
 - `_card_input.txt` is an intermediate file overwritten for each pipeline run.

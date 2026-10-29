@@ -109,7 +109,7 @@ Notes:
 | `test-gui.py` | Tk | Boots a real window; flashes dialogs for a minute or two. ~209 checks. |
 | `test-gui-ergonomics.py` | Tk | Headless-ish layout assertions. |
 | `test-ai-agent-flow.py`, `test-custom-ai-commands.py` | Tk | Import `gui.py`, so they need the toolkit. |
-| `test-facebook-feed.py` | pandas, openpyxl | |
+| `test-facebook-feed.py` | pandas, openpyxl | Also the nested-helper launcher: the console python, `-u`, the helper's own folder, a helper that explains itself not being retried, a silent failure retried once on the app's own interpreter, and the child's pipes - stdout/stderr owned by the pipeline, stdin never the app's, unbuffered, no console window. Plus the stale-workbook check: a failed export names the older `facebook_delta_*.xlsx` instead of letting it look like this run's. And the workbook-lock check, which reads the shipped `locked_files` out of `facebook_feed.py`: a free workbook is not called locked, a locked one is named with its reason kept, a workbook that does not exist yet is not a lock, and the answer comes before the first feed request. |
 | `test-user-settings.py`, `test-ebay-quicklist.py` | Pillow | Prints `Pillow is required` and stops if missing. |
 | `test-linux-packaging.py` | Tk, Xvfb | Linux only; skips itself on Windows. |
 | `test-market-rerun.py`, `test-pipeline-listing.py` | Pillow | Pipeline regression suite; no GUI. `test-pipeline-listing.py` also reads the plugin version rules: 1.0.27 is the streaming version, an unreadable or missing manifest is never treated as new. |
