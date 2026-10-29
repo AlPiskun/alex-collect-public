@@ -3648,10 +3648,13 @@ def _rerun_market(app, market, input_path=None):
             return
         args += ["--input", str(text)]
     if market == "woocommerce":
-        #  A re-run is how a corrected batch reaches the website, so it asks
-        #  the same question the batch itself asks - including when no keys
-        #  are saved yet.
-        choice = ask_create_products(app)
+        #  This button rebuilds the CSV. Creating the products from it is an
+        #  extra that is only offered once the keys are there - asking a
+        #  person to set up keys for a CSV rebuild would be the app mistaking
+        #  what they pressed. The batch itself still asks every time.
+        site, key, secret = read_woo_credentials(BASE / "woo-keys.txt")
+        choice = "none" if not (site and key and secret) \
+            else ask_create_products(app)
         if choice is None:
             return
         args += {

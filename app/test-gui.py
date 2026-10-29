@@ -326,9 +326,13 @@ def main():
     app.cs_addon = original_cs_addon
 
     original_newest = gui.newest_ai_text
+    original_keys_reader = gui.read_woo_credentials
     fake_text = TMP / "_card_input.txt"
     try:
         gui.newest_ai_text = lambda *a, **k: fake_text
+        #  No keys, so the CSV re-run asks nothing - and a clone that does
+        #  have keys saved cannot open the products window mid-test.
+        gui.read_woo_credentials = lambda *a, **k: ("", "", "")
         panel("markets")
         shown_before = len(answers["shown"])
         find_button(app, "Facebook feed + xlsx", exact=True).invoke()
@@ -337,9 +341,15 @@ def main():
               cap.last["args"] == ["rerun", "--market", "facebook"],
               str(cap.last))
         find_button(app, "WooCommerce CSV", exact=True).invoke()
+        #  No keys are saved in this test, so a CSV rebuild creates nothing and
+        #  asks nothing - the flags say so out loud instead of leaving the
+        #  pipeline to wonder. With keys, the same button asks first
+        #  (section 20b covers the question itself).
         check("woocommerce re-run reuses the AI text already on disk",
               cap.last["args"] == ["rerun", "--market", "woocommerce",
-                                   "--input", str(fake_text)], str(cap.last))
+                                   "--input", str(fake_text),
+                                   "--no-create-products", "--confirmed"],
+              str(cap.last))
         find_button(app, "CanadianShopper CSV", exact=True).invoke()
         check("canadianshopper re-run reuses the AI text already on disk",
               cap.last["args"] == ["rerun", "--market", "canadianshopper",
@@ -366,6 +376,7 @@ def main():
               str(cap.last))
     finally:
         gui.newest_ai_text = original_newest
+        gui.read_woo_credentials = original_keys_reader
 
     panel("combine")
     find_button(app, "Preview (--dry-run)").invoke()
@@ -1267,8 +1278,15 @@ def main():
               len(answers["next_prompts"]) == prior_questions + 1 and
               "build the CSV" in answers["next_prompts"][-1][0][1],
               str(answers["next_prompts"][-1:] ))
-        find_button(dlg, "Split the scans", exact=False).invoke()
-        app.update()
+        #  The products question is a real modal window; it is answered for
+        #  this run and checked on its own in section 20b.
+        real_ask_products = gui.ask_create_products
+        gui.ask_create_products = lambda a=None, cards=None: "none"
+        try:
+            find_button(dlg, "Split the scans", exact=False).invoke()
+            app.update()
+        finally:
+            gui.ask_create_products = real_ask_products
         a = cap.last
         check("phase 1 = split --front --back (like the .bat)",
               a["script"] == str(tmpdir / "card_pipeline.py") and
@@ -1279,7 +1297,8 @@ def main():
         a = cap.last
         check("phase 2 = listing --input _card_input.txt --facebook",
               a["args"] == ["listing", "--input",
-                            str(tmpdir / "_card_input.txt"), "--facebook"],
+                            str(tmpdir / "_card_input.txt"), "--facebook",
+                            "--no-create-products", "--confirmed"],
               str(a["args"]))
         input_file = tmpdir / "_card_input.txt"
         check("the AI answer was captured for the pipeline",
@@ -1757,7 +1776,15 @@ def main():
     app.runner.start = cap
     check("hint: the publish gate",
           "PUBLISHED" in gui._prompt_hint_for(
-              "Have you finished the WP All Import and media upload?"))
+              "Are the products created and published on the website? "))
+    check("hint: creating the products",
+          "drafts" in (gui._prompt_hint_for(
+              "Create these 9 product(s) on https://shop.example now? [y/N] ")
+              or ""))
+    check("hint: putting them on sale after the photos",
+          "draft" in (gui._prompt_hint_for(
+              "  Put the ones whose photos upload on sale when they are "
+              "created? [y/N] ") or ""))
     check("hint: categories",
           gui._prompt_hint_for("pick a category [1/2/3]: ") is not None)
     check("hint: enter for the excel files",
