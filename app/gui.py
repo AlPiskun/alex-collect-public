@@ -64,7 +64,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.79"
+VERSION = "2.82"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -104,6 +104,11 @@ CS_STOCK_STATUS_VERSION = "1.0.25"
 #  state, which reads as the app being stale when it is only repeating what it
 #  was given - so the version decides what the panel is allowed to claim.
 CS_STOCK_CACHE_VERSION = "1.0.26"
+#  1.0.27 streams the publisher instead of capturing it, so the "type PUBLISH"
+#  question reaches the console. Before it the question was invisible and a
+#  run could sit there looking frozen - which is what the panel says, and why
+#  the version decides which sentence a silent run gets.
+CS_NESTED_STREAM_VERSION = "1.0.27"
 #  Creating listings is the plugin's own importer: the core writes the CSV it
 #  has always written, and this action takes that file and makes the drafts.
 CS_IMPORT_ACTION = "marketplace.import_csv"
@@ -534,13 +539,33 @@ def to_clipboard(app, text):
 
 
 PIPELINE_PROMPT_HINTS = [
-    ("Have you finished the WP All Import",
+    ("Are the products created and published on the website?",
      "The pipeline asks whether the new cards are already PUBLISHED on "
-     "your website. 'y' + Send continues to the Facebook files (they only "
-     "include published products); 'n' or an empty Send stops here - the "
-     "Woo + CanadianShopper CSVs are already written, nothing is lost. "
-     "If the cards are not live yet: publish first, then use the "
-     "Facebook feed updater button afterwards."),
+     "your website - whether the app created them or you imported the CSV. "
+     "'y' + Send continues to the Facebook files (they only include "
+     "published products); 'n' or an empty Send stops here - the Woo + "
+     "CanadianShopper CSVs are already written, nothing is lost. "
+     "If the cards are still drafts: publish them on the website, then use "
+     "the Facebook feed updater button afterwards."),
+    ("product(s) on",
+     "The products are about to be created on your website with the saved "
+     "WooCommerce keys. 'y' + Send creates them as drafts (photos uploaded "
+     "first, every product read back); 'n' or an empty Send leaves the "
+     "website untouched and keeps the CSV. Nothing is ever deleted - a "
+     "card whose SKU is already there is skipped."),
+    ("Put the ones whose photos upload on sale",
+     "'y' puts each product on sale once its front/back photos are on the "
+     "site; a product whose photos did not upload stays a draft and the "
+     "report says why. 'n' or an empty Send leaves them all as drafts, "
+     "which you can publish any time from the website."),
+    ("Create these listings as drafts",
+     "The CanadianShopper plugin has staged the CSVs with the square front + "
+     "back photos and is offering to send them to CanadianShopper's import "
+     "service. 'y' + Send creates the listings as UNPUBLISHED DRAFTS - it "
+     "never publishes anything and never changes an existing listing, and a "
+     "title already on your vendor account is skipped. 'n' or an empty Send "
+     "leaves the CSVs in cs-ready to import by hand. This is a different "
+     "question from the one about creating products on your own website."),
     ("pick a category",
      "The pipeline detected categories - type the number(s) it shows and "
      "press Send."),
@@ -590,11 +615,48 @@ def _prompt_hint_for(text):
     return None
 
 
+#  The CanadianShopper plugin runs its publisher as its own process, so the
+#  publisher's "type PUBLISH" question can be swallowed and the run simply
+#  stops moving. Nobody can answer a question they cannot see, so the app
+#  says what to type after this long with no output at all.
+PUBLISHER_WAIT_SECONDS = 20
+PUBLISHER_WAIT_MARKER = "Publishing ready CanadianShopper drafts"
+PUBLISHER_WAIT_NOTE = (
+    "The plugin's publisher is running and has printed nothing since. This "
+    "plugin is older than 1.0.27, which is the version that keeps the "
+    "publisher's question visible: in this one it waits for the word PUBLISH "
+    "without showing its prompt. Type PUBLISH in the answer box below and "
+    "press Send, then update the plugin. If nothing happens after that, "
+    "press Stop and use the card-pipeline panel's \"Publish ready drafts\" "
+    "button - it is the same publisher, run so its prompt is always visible.")
+PUBLISHER_WAIT_NOTE_STREAMED = (
+    "The plugin's publisher has printed nothing for a while. Plugin 1.0.27 "
+    "and later keep its question on screen, so this is the wait itself - "
+    "reading your draft listings and checking each one - not a question "
+    "nobody can see. Give it a little longer; if it never moves, press Stop "
+    "and use the card-pipeline panel's \"Publish ready drafts\" button, "
+    "which runs the same publisher on its own.")
+
+
+def publisher_wait_note(text, version=""):
+    """The note to show when a run has gone quiet at the publisher, or "".
+
+    What the sentence may claim depends on the plugin: 1.0.27 streams the
+    publisher, so silence there means work rather than a hidden question.
+    """
+    if PUBLISHER_WAIT_MARKER not in (text or ""):
+        return ""
+    if version and version_at_least(version, CS_NESTED_STREAM_VERSION):
+        return PUBLISHER_WAIT_NOTE_STREAMED
+    return PUBLISHER_WAIT_NOTE
+
+
 MARKET_RERUNS = {
     "woocommerce": (
         "WooCommerce CSV",
         "Rebuild woocommerce_import_<time>.csv from the AI text already on "
-        "disk. Images are not moved or renamed."),
+        "disk, and create the products on the website if you ask for it. "
+        "Images are not moved or renamed."),
     "canadianshopper": (
         "CanadianShopper CSV",
         "Rebuild the CanadianShopper import CSV (and let the plugin stage "
@@ -665,6 +727,22 @@ def find_pipeline_script(settings):
     return None
 
 
+def tool_env():
+    """The environment every tool this app starts is given.
+
+    A plugin tool that runs its own children must stream them rather than
+    capture their output: this console is where the person reads the question
+    they are expected to answer. Plugin 1.0.27 and later read
+    ``ALEX_COLLECT_NESTED`` and add progress around each child; older ones
+    ignore it, so it is safe to set for every tool.
+    """
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    env["ALEX_COLLECT_NESTED"] = "1"
+    return env
+
+
 # ------------------------------------------------------------------ runner
 class Runner:
     """Runs ONE tool at a time, streams its output into the console,
@@ -682,6 +760,10 @@ class Runner:
         #  tool's own words ("Drafts found: 0") can read them instead of
         #  guessing from a file whose format the core does not own.
         self.output = ""
+        #  Watched so a run that stops at the plugin's hidden PUBLISH question
+        #  is explained instead of looking hung.
+        self._publish_watch = None
+        self._publish_note_shown = False
 
     def busy(self):
         return self.proc is not None and self.proc.poll() is None
@@ -697,14 +779,14 @@ class Runner:
             log("user declined: %s" % title)
             return False
         cmd = [sys.executable, "-u", str(script)] + [str(a) for a in args]
-        env = dict(os.environ)
-        env["PYTHONIOENCODING"] = "utf-8"
-        env["PYTHONUTF8"] = "1"
+        env = tool_env()
         self.cmd = " ".join(cmd)
         self.title = title
         self.on_done = on_done
         self._dialog_buffer = ""
         self.output = ""
+        self._publish_watch = None
+        self._publish_note_shown = False
         try:
             self.proc = subprocess.Popen(
                 cmd, cwd=str(cwd), stdin=subprocess.PIPE,
@@ -791,6 +873,39 @@ class Runner:
             text = text[end_pos + len(end):]
         return "".join(shown)
 
+    def _watch_publisher(self):
+        """Notice a run that stops at the plugin's invisible PUBLISH prompt.
+
+        The marker is the plugin's own line, printed just before it starts the
+        publisher; if nothing at all follows it, the answer box is the only
+        thing standing between the person and a window that looks frozen.
+        """
+        if self._publish_note_shown or not publisher_wait_note(self.output):
+            return
+        length = len(self.output)
+        if self._publish_watch and self._publish_watch[0] == length:
+            return
+        self._publish_watch = (length, self.app.after(
+            PUBLISHER_WAIT_SECONDS * 1000, self._publish_still_waiting))
+
+    def _publish_still_waiting(self):
+        """After the wait: say what to type, if the run really went quiet."""
+        if self._publish_note_shown or not self.busy():
+            return
+        if not self._publish_watch \
+                or len(self.output) != self._publish_watch[0]:
+            return
+        self._publish_note_shown = True
+        try:
+            self.app.console_line(
+                "NOTE: " + publisher_wait_note(self.output, plugin_version()),
+                "dim")
+            self.app.status.config(
+                text="Waiting for the word PUBLISH - type it below and press "
+                     "Send (or Stop the run).")
+        except Exception:
+            pass          # the window went away while the timer was waiting
+
     def drain(self):
         """Called from the Tk loop; moves queued output into the console."""
         got = False
@@ -806,6 +921,7 @@ class Runner:
                 shown = self._consume_dialog_protocol(payload)
                 if shown:
                     self.app.console_write(shown)
+                    self._watch_publisher()
                     hint = _prompt_hint_for(shown)
                     if hint and hint not in self.app._hinted:
                         self.app._hinted.add(hint)
@@ -1353,6 +1469,7 @@ TOOLTIPS = {
     # -- a new batch ------------------------------------------------------
     "Run the card pipeline": "Open the pipeline dialog: choose the scans and run split then listing",
     "Split the scans and build the CSV": "Split the scans and run the listing step with the AI answer on the clipboard",
+    "Continue": "Start the batch with the choice selected above; nothing has been written to your website yet",
     "Split the scans only": "Split the scans into card images and stop, so the AI steps can be done on their own",
     "Combine CSVs": "Join the marketplace CSVs into one import batch",
     "Combine now": "Join the CSVs now, after the preview",
@@ -3344,6 +3461,133 @@ def open_woo_keys_file(app, current_site_url=""):
                      "out of public repos and messages.", "dim")
 
 
+class CreateProductsDialog(tk.Toplevel):
+    """Asks whether this batch's cards become products on the website.
+
+    The answer is one of ``"draft"``, ``"publish"`` or ``"none"``; closing the
+    window answers ``None``, which cancels the batch instead of quietly
+    choosing for the user.
+    """
+
+    def __init__(self, parent, site, keys_ready, cards=None):
+        super().__init__(parent)
+        self.answer = None
+        self.title("Create the products on your website?")
+        self.transient(parent.winfo_toplevel())
+        self.resizable(False, False)
+        self.grab_set()
+        box = ttk.Frame(self, padding=(12, 10))
+        box.pack(fill="both", expand=True)
+        ttk.Label(box, text="The cards become products on your website",
+                  style="H2.TLabel").pack(anchor="w")
+        site_text = site or "your website"
+        if cards:
+            what = "This batch's %d card%s" % (cards, "" if cards == 1 else "s")
+        else:
+            what = "This batch's cards"
+        ttk.Label(box, text=(
+            "%s can be created directly on %s, without "
+            "WP All Import.\n\n"
+            "Each product is made as an UNPUBLISHED DRAFT with its front and "
+            "back photos uploaded first, and every one is read back from the "
+            "site before it is reported as created. A card whose SKU is "
+            "already there is skipped, so running the same batch twice never "
+            "duplicates it.\n\n"
+            "The WooCommerce CSV is written either way: it stays the record, "
+            "the WP All Import fallback, and what the Facebook and "
+            "CanadianShopper steps read."
+            % (what, site_text)),
+            wraplength=620, justify="left").pack(anchor="w", pady=(4, 0))
+        if not keys_ready:
+            ttk.Label(box, text=(
+                "No WooCommerce keys are saved yet, so nothing can be created "
+                "until they are in woo-keys.txt."),
+                wraplength=620, justify="left",
+                foreground="#b26a00").pack(anchor="w", pady=(6, 0))
+        self.choice = tk.StringVar(master=self, value="draft"
+                                   if keys_ready else "none")
+        for value, text, tip in (
+                ("draft", "Create them as drafts - I will publish when ready",
+                 "Safest choice: the products are unpublished, so the shop "
+                 "never shows a card before its photos and price are right."),
+                ("publish", "Create them and put them on sale once the photos "
+                            "are on",
+                 "Only products whose front/back photos uploaded are put on "
+                 "sale; one without photos stays a draft and the report says "
+                 "why."),
+                ("none", "Only build the CSV - no products are created",
+                 "Use WP All Import as before. Nothing is written to the "
+                 "website.")):
+            row = ttk.Frame(box)
+            row.pack(anchor="w", pady=(6, 0))
+            button = ttk.Radiobutton(row, text=text, value=value,
+                                     variable=self.choice)
+            button.pack(side="left")
+            add_tooltip(button, tip)
+        ttk.Label(box, text=(
+            "Publishing is always a second step, after the photos land: a "
+            "product is never put on sale with an empty gallery."),
+            style="Dim.TLabel", wraplength=620,
+            justify="left").pack(anchor="w", pady=(8, 0))
+        buttons = ttk.Frame(box)
+        buttons.pack(fill="x", pady=(10, 0))
+        ttk.Button(buttons, text="Not now",
+                   command=self.destroy).pack(side="right")
+        go = ttk.Button(buttons, text="Continue", style="Task.TButton",
+                        command=self.accept)
+        go.pack(side="right", padx=(0, 8))
+        add_tooltip(go, "Start the batch with the choice selected above; "
+                        "nothing has been written to your website yet")
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        attach_tooltips(self)
+
+    def accept(self):
+        self.answer = self.choice.get()
+        self.destroy()
+
+
+def ask_create_products(app, cards=None):
+    """Ask about creating this batch on the website; None means don't run.
+
+    Missing keys are put in front of the user instead of falling back to the
+    CSV silently: the keys file is opened, and the answer is waiting for them
+    when they come back.
+    """
+    site, key, secret = read_woo_credentials(BASE / "woo-keys.txt")
+    ready = bool(site and key and secret)
+    if not ready:
+        enter = messagebox.askyesno(
+            "Enter your WooCommerce keys?",
+            "Alex Collect can create this batch's products directly on your "
+            "website.\n\n"
+            "That needs the WooCommerce keys in woo-keys.txt (lines 1-3), and "
+            "the WordPress username and Application Password (lines 4-5) so "
+            "the front and back photos upload with each product.\n\n"
+            "Enter them now? Answer No to build only the CSV, which WP All "
+            "Import can still use.", parent=app)
+        if not enter:
+            return "none"
+        open_woo_keys_file(app, app.settings.get("woo_site_url", ""))
+        messagebox.showinfo(
+            "Save the keys, then continue",
+            "woo-keys.txt is open. Fill in the site address, the consumer key "
+            "and secret, and - if the photos should upload - the WordPress "
+            "username and Application Password. Save the file, then continue.",
+            parent=app)
+        site, key, secret = read_woo_credentials(BASE / "woo-keys.txt")
+        ready = bool(site and key and secret)
+        if not ready:
+            only_csv = messagebox.askyesno(
+                "The keys are still missing",
+                "woo-keys.txt does not hold a complete key pair yet, so no "
+                "product can be created.\n\n"
+                "Build the CSV only for now?", parent=app)
+            return "none" if only_csv else None
+    dialog = CreateProductsDialog(app, site, ready, cards)
+    app.wait_window(dialog)
+    return dialog.answer
+
+
 def build_pipeline(parent, app):
     panel_header(parent, app, "pipeline")
     box = ttk.Frame(parent)
@@ -3422,16 +3666,27 @@ def build_pipeline(parent, app):
                "BACK scan. Alex Collect opens your saved AI page and copies "
                "the selected prompt; upload the scans and paste it manually. "
                "When you copy the complete reply, the app asks whether to "
-               "split and build or split only. Review the prepared import files "
-               "before importing; this step does not publish listings.",
+               "split and build or split only.",
                style="Dim.TLabel", wraplength=680, justify="left").pack(
                    anchor="w")
+    ttk.Label(box, text="Before it runs, it asks what to do with the "
+               "products. With your WooCommerce keys saved it creates them "
+               "straight on your website - drafts first, front and back "
+               "photos uploaded with each one, and a card whose SKU is "
+               "already there is skipped. Put them on sale as they are "
+               "created, or leave them as drafts and publish when the price "
+               "and photos look right. Without the keys it offers to open "
+               "woo-keys.txt instead of quietly leaving you at the CSV.",
+               style="Dim.TLabel", wraplength=680, justify="left").pack(
+                   anchor="w", pady=(2, 0))
     next_steps = ("Next: combine pending batches if needed, stage the photos, "
                   "confirm the CanadianShopper draft import, then answer the "
-                  "pipeline's v/y/n draft prompt (or use the controls above)." if app.cs_addon else
+                  "pipeline's v/y/n draft prompt (or use the controls above). "
+                  "The CSV stays the record either way." if app.cs_addon else
                   "Next: combine pending batches if needed, then review and "
-                  "manually import and publish the files. Photo staging and "
-                  "back-photo wiring require the CanadianShopper plugin.")
+                  "publish what was created (or import the CSV with WP All "
+                  "Import). Photo staging and back-photo wiring require the "
+                  "CanadianShopper plugin.")
     ttk.Label(box, text=next_steps, style="Dim.TLabel", wraplength=680,
               justify="left").pack(anchor="w", pady=(4, 0))
 
@@ -3495,6 +3750,22 @@ def _rerun_market(app, market, input_path=None):
         if text is None:
             return
         args += ["--input", str(text)]
+    if market == "woocommerce":
+        #  This button rebuilds the CSV. Creating the products from it is an
+        #  extra that is only offered once the keys are there - asking a
+        #  person to set up keys for a CSV rebuild would be the app mistaking
+        #  what they pressed. The batch itself still asks every time.
+        site, key, secret = read_woo_credentials(BASE / "woo-keys.txt")
+        choice = "none" if not (site and key and secret) \
+            else ask_create_products(app)
+        if choice is None:
+            return
+        args += {
+            "draft": ["--create-products", "--draft-products", "--confirmed"],
+            "publish": ["--create-products", "--publish-products",
+                        "--confirmed"],
+            "none": ["--no-create-products", "--confirmed"],
+        }[choice]
     app.run_tool(str(script), args, "Re-run: " + label,
                  cwd=str(script.parent))
 
@@ -8142,6 +8413,22 @@ class PipelineDialog(tk.Toplevel):
                 % (verdict, "{:,}".format(len(answer))),
                 parent=self):
             return
+        #  Ask about the products before the run starts: the answer decides
+        #  the flags the pipeline gets, so the console never has to wonder.
+        product_choice = ask_create_products(self.app)
+        if product_choice is None:
+            self.app.console_line(
+                "Nothing was started: the batch was cancelled before the "
+                "products question. No files were changed.", "dim")
+            return
+        product_flags = {
+            "draft": ["--create-products", "--draft-products", "--confirmed"],
+            "publish": ["--create-products", "--publish-products",
+                        "--confirmed"],
+            "none": ["--no-create-products", "--confirmed"],
+        }[product_choice]
+        self._product_choice = product_choice
+
         input_file = self.script.parent / "_card_input.txt"
         try:
             input_file.write_text(answer + "\n", encoding="utf-8-sig")
@@ -8162,6 +8449,23 @@ class PipelineDialog(tk.Toplevel):
                             "listing finished. The Woo + CanadianShopper "
                             "CSVs are in the pipeline folder (%s)."
                             % self.script.parent)
+                        if getattr(self, "_product_choice", "none") == "none":
+                            self.app.console_line(
+                                "No products were created: the CSV is ready "
+                                "for WP All Import. Re-run the pipeline and "
+                                "choose \"Create them as drafts\" to create "
+                                "them straight on the website instead.")
+                        else:
+                            self.app.console_line(
+                                "Products: read the \"PRODUCTS ON YOUR "
+                                "WEBSITE\" block above - it lists what was "
+                                "created, what already existed, what failed "
+                                "and why, and where the photos landed. The "
+                                "same lines are saved beside the CSV as "
+                                "woo-create-result.json. Anything left as a "
+                                "draft is unpublished on purpose: publish it "
+                                "from the website when the price and photos "
+                                "look right.", "ok")
                         self.app.console_line(
                             "No Facebook delta xlsx? That step only runs "
                             "after the cards are PUBLISHED on your website: "
@@ -8174,7 +8478,7 @@ class PipelineDialog(tk.Toplevel):
                             "configured Facebook page for review.", "ok")
 
                 self.on_run(["listing", "--input", str(input_file),
-                             "--facebook"],
+                             "--facebook"] + product_flags,
                             listing_done,
                             "Card pipeline: listing")
             else:

@@ -37,6 +37,7 @@ Category / sub-category:
 import argparse
 import csv
 import html
+import json
 import math
 import os
 import re
@@ -69,8 +70,13 @@ for _module_dir in (str(APP_DIR), str(SCRIPT_DIR)):
 from browser_utils import available_browsers, browser_label, open_urls as launch_urls
 from output_history import (consolidate_csv_history,
                             consolidate_ebay_history, write_ebay_sidecar)
-from user_settings import (load_user_settings, save_user_settings,
+from user_settings import (load_user_settings, read_woo_credentials,
+                           read_wordpress_credentials, save_user_settings,
                            site_admin_url, site_url, feed_urls)
+try:
+    import woo_create
+except ImportError:                      # a bare batch folder with no app
+    woo_create = None
 
 USER_SETTINGS = load_user_settings(APP_DIR / "gui-settings.json")
 OUTPUT_DIR = SCRIPT_DIR / "output"
@@ -1469,7 +1475,171 @@ def open_facebook_delivery():
         pass
 
 
-def maybe_run_facebook(args):
+# =====================================================================
+#  CREATING THE PRODUCTS ON THE WEBSITE
+# =====================================================================
+#  The batch used to end at woocommerce_import_<time>.csv and a manual WP All
+#  Import. Now that the saved keys can write, the same file can be *created*
+#  through the site's own REST API: drafts first, photos uploaded first, and
+#  each product read back before it is believed.
+def woo_keys():
+    """The saved ``(site, key, secret)``, or empty strings when unusable."""
+    try:
+        return read_woo_credentials(APP_DIR / "woo-keys.txt")
+    except Exception:
+        return "", "", ""
+
+
+def woo_photo_keys():
+    """The saved ``(site, username, application_password)`` for photo upload."""
+    try:
+        return read_wordpress_credentials(APP_DIR / "woo-keys.txt")
+    except Exception:
+        return "", "", ""
+
+
+def ask_yes_no(question, default_no=True):
+    try:
+        answer = input(question).strip().lower()
+    except EOFError:
+        answer = ""
+    if answer in ("y", "yes"):
+        return True
+    if answer in ("n", "no"):
+        return False
+    return not default_no
+
+
+def create_products_from_csv(csv_path, args, ask=True):
+    """Create the batch's products on the website; return True when it ran.
+
+    The CSV stays the record either way: it is what a re-run, a failure, or a
+    person who prefers WP All Import works from.
+    """
+    if woo_create is None:
+        print("\n(woo_create is not beside this script, so the products "
+              "cannot be created directly. Import the CSV as before.)")
+        return False
+    site, key, secret = woo_keys()
+    if not (site and key and secret):
+        print("\n-- Products on your website --")
+        print("  The saved WooCommerce keys are missing or incomplete, so the "
+              "products were NOT created.")
+        print("  " + woo_create.keys_missing_hint(
+            str(APP_DIR / "woo-keys.txt")).replace("\n", "\n  "))
+        print("  Nothing is lost: the CSV below can still be imported the old "
+              "way.")
+        print("  CSV: %s" % csv_path)
+        return False
+    if woo_create.site_root(site) == "":
+        print("\n  !! The site address in woo-keys.txt is not a URL (%r), so "
+              "nothing was created." % site, file=sys.stderr)
+        return False
+
+    try:
+        read = woo_create.read_rows(csv_path)
+    except woo_create.ProductError as exc:
+        print("\n  !! %s" % exc.message, file=sys.stderr)
+        return False
+    planned = woo_create.plan(read["rows"], [OUTPUT_DIR, read["folder"]])
+    if not planned["items"]:
+        print("\n  Nothing in this CSV can be created as it stands.")
+        for problem in planned["problems"]:
+            print("    - %s" % problem["why"])
+        return False
+
+    print("\n" + "=" * 58)
+    print("  PRODUCTS ON YOUR WEBSITE")
+    print("=" * 58)
+    print("  %s" % woo_create.summary(planned, site))
+    for line in woo_create.describe(planned):
+        print(line)
+    for problem in planned["problems"]:
+        print("  Note: %s %s" % (problem["why"], problem.get("hint") or ""))
+    missing = [item for item in planned["items"] if item["missing_images"]]
+    if missing:
+        print("  %d card%s ha%s no photo file in %s: %s. Those are created "
+              "without photos and are never put on sale."
+              % (len(missing), "" if len(missing) == 1 else "s",
+                 "s" if len(missing) == 1 else "ve", planned["folder"],
+                 ", ".join(item["name"] for item in missing[:5])))
+    print("\n  Each product is created as an UNPUBLISHED DRAFT first, with its "
+          "photos uploaded before it is made, and every one is read back.")
+
+    #  --confirmed is how the app answers these two questions with its own
+    #  windows: the console then only has to say what it is doing.
+    asked = ask and not getattr(args, "yes", False) \
+        and not getattr(args, "confirmed", False)
+    if asked:
+        if not ask_yes_no("\nCreate these %d product(s) on %s now? [y/N] "
+                          % (len(planned["items"]), site)):
+            print("Nothing was created. The CSV is unchanged: %s" % csv_path)
+            return False
+
+    publish = False
+    if getattr(args, "publish_products", False):
+        publish = True
+        print("  The ones whose photos landed will be put on sale too.")
+    elif not getattr(args, "draft_products", False):
+        if asked:
+            publish = ask_yes_no(
+                "  Put the ones whose photos upload on sale when they are "
+                "created? [y/N] ")
+
+    _, username, app_password = woo_photo_keys()
+
+    def progress(step):
+        if step["stage"] == "start":
+            print("  [%d/%d] %s" % (step["index"], step["total"],
+                                    step["item"]["name"]))
+
+    report = woo_create.run(planned, site, key, secret, username=username,
+                            app_password=app_password, publish=publish,
+                            on_item=progress)
+    report_path = woo_create.write_report(
+        Path(csv_path).parent / "woo-create-result.json", report, site)
+    print("")
+    for line in woo_create.report_text(report, site):
+        print("  " + line)
+    print("  Report: %s" % report_path)
+    if report["failed"]:
+        print("  The CSV was not changed, so anything that failed can be "
+              "imported the old way: %s" % csv_path)
+    if report["created"]:
+        print("  The CSV import step is not needed for the products listed "
+              "as created above.")
+    return bool(report["created"])
+
+
+def maybe_create_woocommerce_products(args, csv_path):
+    """Offer to create the batch's products instead of importing the CSV.
+
+    Returns True when at least one product was actually created, so the
+    following steps can describe the batch as already on the website.
+    """
+    if csv_path is None or getattr(args, "no_create_products", False):
+        return False
+    site, key, secret = woo_keys()
+    if not (site and key and secret) and not getattr(args, "create_products",
+                                                     False):
+        #  Said once, without nagging: the CSV route still works, and the keys
+        #  are one file away when they are wanted.
+        print("\nThe products were not created on the website: no "
+              "WooCommerce keys are saved yet.")
+        if woo_create is not None:
+            hint = woo_create.keys_missing_hint(str(APP_DIR / "woo-keys.txt"))
+            for line in hint.splitlines():
+                print("  " + line)
+        print("  The CSV below is ready for WP All Import in the meantime: %s"
+              % csv_path)
+        return False
+    return create_products_from_csv(
+        csv_path, args,
+        ask=not (getattr(args, "yes", False)
+                 or getattr(args, "confirmed", False)))
+
+
+def maybe_run_facebook(args, created_directly=False):
     """Prompt for WooCommerce upload, then refresh feed and run exports."""
     if not getattr(args, "facebook", False):
         return
@@ -1477,10 +1647,19 @@ def maybe_run_facebook(args):
     print("\n" + "=" * 58)
     print("  FACEBOOK MARKETPLACE EXPORT")
     print("=" * 58)
-    print("\nBefore the feed can be refreshed, finish the WooCommerce upload:")
-    print("  1. Import the CSV with your WooCommerce importer (this creates products).")
-    print("  2. Upload the renamed media files from the output folder.")
-    print("  3. Confirm the products are published/live on your store.")
+    if created_directly:
+        print("\nThe products for this batch were created directly on the "
+              "website.")
+        print("  The Facebook feed reads the website, so check that the "
+              "products are published.")
+    else:
+        print("\nBefore the feed can be refreshed, finish the products on "
+              "your website:")
+        print("  1. Import the CSV with your WooCommerce importer, or re-run "
+              "with --create-products.")
+        print("  2. Upload the renamed media files from the output folder, "
+              "unless they were uploaded already.")
+        print("  3. Confirm the products are published/live on your store.")
     print("\nThe Facebook feed only includes products already published.")
     media_url = site_admin_url("wp-admin/media-new.php", USER_SETTINGS)
     if not media_url:
@@ -1502,7 +1681,7 @@ def maybe_run_facebook(args):
     while True:
         try:
             answer = input(
-                "\nHave you finished the WP All Import, uploaded the media, and created/published the products? "
+                "\nAre the products created and published on the website? "
                 "Type 'y' to refresh the feed, or 'n' to stop: "
             ).strip().lower()
         except EOFError:
@@ -1772,6 +1951,44 @@ def _find_cs_stage_hook():
     return next((candidate for candidate in legacy if candidate.is_file()), None)
 
 
+#  1.0.27 streams the publisher instead of capturing it, so its "type PUBLISH"
+#  question is visible in the console the person is actually reading.
+CS_STREAM_VERSION = "1.0.27"
+
+
+def _version_tuple(text):
+    parts = []
+    for piece in str(text or "").strip().split("."):
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        if digits == "":
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def _cs_version_at_least(version, wanted):
+    """Whether ``version`` is known and at least ``wanted``."""
+    got, need = _version_tuple(version), _version_tuple(wanted)
+    return bool(got) and got >= need
+
+
+def _cs_hook_version(hook):
+    """The plugin's declared version from the ``plugin.json`` above its tools.
+
+    A hook copied beside the app (the pre-plugin layout) has no manifest, so
+    its version is unknown - and an unknown version is never treated as a new
+    one, because the sentence printed for an old plugin is the safe one.
+    """
+    if not hook:
+        return ""
+    manifest = Path(hook).parent.parent / "plugin.json"
+    try:
+        return str(json.loads(manifest.read_text(encoding="utf-8"))
+                   .get("version") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
 def canadianshopper_import_folder(output_paths, stage_hook=None):
     """Find the folder containing the final CS import CSVs."""
     if not stage_hook:
@@ -1834,7 +2051,31 @@ def maybe_run_canadianshopper(args, cards_parsed):
     print("  3. Without the plugin, import the CSVs manually and review each draft.")
     # ---- Optional CanadianShopper photo stage: square front + back gallery
     _cs_hook = _find_cs_stage_hook()
+    _cs_version = _cs_hook_version(_cs_hook)
+    if _cs_hook is not None and _cs_version_at_least(_cs_version,
+                                                     CS_STREAM_VERSION):
+        print("\n  Plugin %s keeps the publisher's PUBLISH question on screen, "
+              "so it can be answered." % _cs_version)
+    elif _cs_hook is not None:
+        #  Before 1.0.27 the plugin captured its publisher's output, so the
+        #  publisher's "type PUBLISH" question never reached this console and
+        #  the run simply stopped moving. Said here, before the plugin takes
+        #  over, because afterwards this line is the last thing on screen.
+        print("\n  The installed plugin is %s, and the publisher's question "
+              "stays hidden in that version."
+              % (_cs_version or "older than 1.0.27 (no version to read)"))
+        print("  If it offers to publish the new drafts, type PUBLISH in the "
+              "answer box and press Send.")
+        print("  Update the plugin to 1.0.27 or later, which keeps the question "
+              "visible; until then, if nothing moves,")
+        print("  stop the run and use the card-pipeline panel's \"Publish ready "
+              "drafts\" button.")
     if _cs_hook is not None:
+        #  A plugin 1.0.27+ reads this and adds progress around each child; it
+        #  also tells any tool it runs that this console is where its output
+        #  has to go. Set here as well as in the app, because a batch folder
+        #  can be run from a terminal with no app above it.
+        os.environ["ALEX_COLLECT_NESTED"] = "1"
         import importlib.util as _ilu
         import inspect as _inspect
         _spec = _ilu.spec_from_file_location("cs_stage_hook", str(_cs_hook))
@@ -2114,9 +2355,9 @@ def maybe_run_ebay_quicklist(cards_parsed):
     print("  Quick List page: %s" % output)
 
 
-def run_post_listing_uploads(args, cards_parsed):
+def run_post_listing_uploads(args, cards_parsed, created_directly=False):
     """Run Facebook, CanadianShopper, and optional eBay Quick List stages."""
-    maybe_run_facebook(args)
+    maybe_run_facebook(args, created_directly=created_directly)
     maybe_run_canadianshopper(args, cards_parsed)
     maybe_run_ebay_quicklist(cards_parsed)
 
@@ -2276,12 +2517,16 @@ def cmd_rerun(args):
     else:
         quantity = getattr(args, "quantity", 1)
 
+    created = False
     if market in ("woocommerce", "all"):
         rows = build_rows(parsed, quantity)
-        print_woocommerce_rows(rows, write_woocommerce_csv(rows))
+        csv_path = write_woocommerce_csv(rows)
+        print_woocommerce_rows(rows, csv_path)
+        created = maybe_create_woocommerce_products(args, csv_path)
 
     if market in ("facebook", "all"):
-        maybe_run_facebook(_with_flags(args, facebook=True))
+        maybe_run_facebook(_with_flags(args, facebook=True),
+                           created_directly=created)
 
     if market in ("canadianshopper", "all"):
         maybe_run_canadianshopper(
@@ -2310,13 +2555,15 @@ def cmd_listing(args):
     # -- Category detection, quantity, and the WooCommerce CSV --
     default_quantity = confirm_card_metadata(parsed, args)
     rows = build_rows(parsed, default_quantity)
-    print_woocommerce_rows(rows, write_woocommerce_csv(rows))
+    csv_path = write_woocommerce_csv(rows)
+    print_woocommerce_rows(rows, csv_path)
 
     # -- Rename images --
     no_images = getattr(args, "no_images", False)
     if no_images:
         print("\n(--no-images set: skipping image rename step.)")
-        run_post_listing_uploads(args, parsed)
+        created = maybe_create_woocommerce_products(args, csv_path)
+        run_post_listing_uploads(args, parsed, created_directly=created)
         return
 
     directory = str(OUTPUT_DIR)
@@ -2376,6 +2623,9 @@ def cmd_listing(args):
 
     if not ops:
         print("\nNo matching source files found — nothing to rename.")
+        if not getattr(args, "no_create_products", False):
+            print("The products were not created, because this batch's photos "
+                  "were not prepared.")
         run_post_listing_uploads(args, parsed)
         return
 
@@ -2393,8 +2643,9 @@ def cmd_listing(args):
     apply_renames(ops, copy=copy_mode)
     print(f"\nDone: {len(ops)} image(s) {verb.lower()}d to match the CSV.")
 
-    # -- WooCommerce upload + Facebook feed --
-    run_post_listing_uploads(args, parsed)
+    # -- The products themselves, then the Facebook feed --
+    created = maybe_create_woocommerce_products(args, csv_path)
+    run_post_listing_uploads(args, parsed, created_directly=created)
 
 
 # =====================================================================
@@ -2419,6 +2670,9 @@ def main():
 
               # Skip image renames (CSV only):
               python card_pipeline.py listing --input card_input.txt --no-images
+
+              # Create the products on the website, drafts only:
+              python card_pipeline.py listing --input card_input.txt --draft-products
 
               # Facebook workflow, followed automatically by CanadianShopper CSV:
               python card_pipeline.py listing --input card_input.txt --facebook
@@ -2496,6 +2750,29 @@ def main():
     p_list.add_argument(
         "-y", "--yes", action="store_true",
         help="Skip confirmation prompts"
+    )
+    p_list.add_argument(
+        "--create-products", action="store_true",
+        help="Create this batch's products on the website with the saved "
+             "WooCommerce keys (asked anyway when the keys are there)"
+    )
+    p_list.add_argument(
+        "--no-create-products", action="store_true",
+        help="Only write the CSV; never create anything on the website"
+    )
+    p_list.add_argument(
+        "--publish-products", action="store_true",
+        help="Put the created products on sale once their photos are on "
+             "(default: leave them as drafts and ask)"
+    )
+    p_list.add_argument(
+        "--draft-products", action="store_true",
+        help="Leave every created product as a draft without asking"
+    )
+    p_list.add_argument(
+        "--confirmed", action="store_true",
+        help="Creating and publishing were already confirmed in the app, "
+             "so the console must not ask again"
     )
     p_list.add_argument(
         "--facebook", action="store_true",
@@ -2586,6 +2863,26 @@ def main():
     p_rerun.add_argument(
         "--browser", default=None,
         help="Override the saved browser for the refresh URL"
+    )
+    p_rerun.add_argument(
+        "--create-products", action="store_true",
+        help="Create the re-built WooCommerce products on the website"
+    )
+    p_rerun.add_argument(
+        "--no-create-products", action="store_true",
+        help="Only rebuild the CSV; never create anything on the website"
+    )
+    p_rerun.add_argument(
+        "--publish-products", action="store_true",
+        help="Put the created products on sale once their photos are on"
+    )
+    p_rerun.add_argument(
+        "--draft-products", action="store_true",
+        help="Leave every created product as a draft without asking"
+    )
+    p_rerun.add_argument(
+        "--confirmed", action="store_true",
+        help="Creating and publishing were already confirmed in the app"
     )
 
     args = parser.parse_args()

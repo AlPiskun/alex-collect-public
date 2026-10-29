@@ -117,6 +117,7 @@ version as well as the action:
 | --- | --- |
 | `--mode replace` without a staged CSV | plugin **1.0.15** or newer |
 | `--back` replacing the gallery row | plugin **1.0.16** or newer |
+| the publisher's `PUBLISH` question reaching the console | plugin **1.0.27** or newer |
 
 `--back` was additive before 1.0.16 - it added the new back beside the old one
 - so sending it to 1.0.15 would leave the previous back photo on the listing.
@@ -139,6 +140,37 @@ plugin" message rather than risking the CSV error.
 
 Whole-batch wiring remains a separate action (`batch.photo_wire`) in its own
 panel.
+
+### Nested tools: streaming, and `ALEX_COLLECT_NESTED` (1.0.27)
+
+Everything the core runs is watched: the app streams a tool's stdout into the
+console the person is reading and writes their typed answer to its stdin.
+A plugin tool that runs **another** tool of its own has to keep that chain
+intact, because a question asked by a grandchild is just as invisible as a
+question asked by the tool itself.
+
+The rule:
+
+- run children with `stdin=sys.stdin`, `stdout=sys.stdout`, `stderr=sys.stderr`
+  and `text=True` - never `capture_output=True`, `stdout=PIPE` or `input=...`;
+- print and **flush** a confirmation question before reading the answer, even
+  when stdout is a pipe (`print(question, flush=True)` or `sys.stdout.flush()`);
+- the core may set **`ALEX_COLLECT_NESTED=1`** in the environment. It does that
+  for every tool it launches, and again before `batch.pipeline_stage`, so a
+  batch folder run from a terminal gets it too. When it is set, print a line
+  before and after each child so the console is never silent for long. A
+  plugin that ignores the variable loses nothing; it simply cannot add the
+  progress lines.
+
+Why it is a rule: the publisher (`marketplace.publish_drafts`) waits for the
+word `PUBLISH` on stdin. Plugin 1.0.26 ran it with its output captured, so the
+question never reached the console, the answer was never typed, and the run
+looked frozen. 1.0.27 streams it; the core names the version in the console
+when the plugin is older, and after 20 s of silence at
+*Publishing ready CanadianShopper drafts* it says what to type.
+
+`ALEX_COLLECT_NESTED` is a hint, not a gate: the core makes no decision on it
+and no action changes shape.
 
 ## Dialog channel
 

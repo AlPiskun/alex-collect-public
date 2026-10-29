@@ -1,9 +1,13 @@
 https://your-store.example
 ck_replace_with_your_consumer_key
 cs_replace_with_your_consumer_secret
+# Lines 1-3 are also what creates a batch's products on the website, instead
+# of importing the CSV with WP All Import.
 # Optional, lines 4 and 5: lets Alex Collect upload a replacement photo and
-# set it on the product by itself. Without them the app still saves and names
-# the image, and you attach it in the media library.
+# set it on the product by itself, and upload a new product's front and back
+# photos with it. Without them the products are still created - as drafts,
+# waiting for their photos - and the app still saves and names every image
+# for the media library.
 # WooCommerce keys cannot touch the media library, so this needs a WordPress
 # Application Password, not another WooCommerce key.
 # Users > Profile > Application Passwords > Add New, then paste the name here:
@@ -11,6 +15,7 @@ wp_replace_with_your_wordpress_username
 wp_replace_with_your_application_password
 # Replace every example value with your own settings.
 # WooCommerce > Settings > Advanced > REST API > Add key. Reading products
-# needs Read-only; setting a product's photo needs Read/Write.
+# needs Read-only; setting a product's photo, its stock, or creating a
+# product needs Read/Write.
 # Application Passwords need HTTPS, and WordPress 5.6 or newer.
 # Save a private copy as woo-keys.txt; never publish that file.

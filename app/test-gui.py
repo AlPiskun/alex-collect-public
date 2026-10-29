@@ -326,9 +326,13 @@ def main():
     app.cs_addon = original_cs_addon
 
     original_newest = gui.newest_ai_text
+    original_keys_reader = gui.read_woo_credentials
     fake_text = TMP / "_card_input.txt"
     try:
         gui.newest_ai_text = lambda *a, **k: fake_text
+        #  No keys, so the CSV re-run asks nothing - and a clone that does
+        #  have keys saved cannot open the products window mid-test.
+        gui.read_woo_credentials = lambda *a, **k: ("", "", "")
         panel("markets")
         shown_before = len(answers["shown"])
         find_button(app, "Facebook feed + xlsx", exact=True).invoke()
@@ -337,9 +341,15 @@ def main():
               cap.last["args"] == ["rerun", "--market", "facebook"],
               str(cap.last))
         find_button(app, "WooCommerce CSV", exact=True).invoke()
+        #  No keys are saved in this test, so a CSV rebuild creates nothing and
+        #  asks nothing - the flags say so out loud instead of leaving the
+        #  pipeline to wonder. With keys, the same button asks first
+        #  (section 20b covers the question itself).
         check("woocommerce re-run reuses the AI text already on disk",
               cap.last["args"] == ["rerun", "--market", "woocommerce",
-                                   "--input", str(fake_text)], str(cap.last))
+                                   "--input", str(fake_text),
+                                   "--no-create-products", "--confirmed"],
+              str(cap.last))
         find_button(app, "CanadianShopper CSV", exact=True).invoke()
         check("canadianshopper re-run reuses the AI text already on disk",
               cap.last["args"] == ["rerun", "--market", "canadianshopper",
@@ -366,6 +376,7 @@ def main():
               str(cap.last))
     finally:
         gui.newest_ai_text = original_newest
+        gui.read_woo_credentials = original_keys_reader
 
     panel("combine")
     find_button(app, "Preview (--dry-run)").invoke()
@@ -1267,8 +1278,15 @@ def main():
               len(answers["next_prompts"]) == prior_questions + 1 and
               "build the CSV" in answers["next_prompts"][-1][0][1],
               str(answers["next_prompts"][-1:] ))
-        find_button(dlg, "Split the scans", exact=False).invoke()
-        app.update()
+        #  The products question is a real modal window; it is answered for
+        #  this run and checked on its own in section 20b.
+        real_ask_products = gui.ask_create_products
+        gui.ask_create_products = lambda a=None, cards=None: "none"
+        try:
+            find_button(dlg, "Split the scans", exact=False).invoke()
+            app.update()
+        finally:
+            gui.ask_create_products = real_ask_products
         a = cap.last
         check("phase 1 = split --front --back (like the .bat)",
               a["script"] == str(tmpdir / "card_pipeline.py") and
@@ -1279,7 +1297,8 @@ def main():
         a = cap.last
         check("phase 2 = listing --input _card_input.txt --facebook",
               a["args"] == ["listing", "--input",
-                            str(tmpdir / "_card_input.txt"), "--facebook"],
+                            str(tmpdir / "_card_input.txt"), "--facebook",
+                            "--no-create-products", "--confirmed"],
               str(a["args"]))
         input_file = tmpdir / "_card_input.txt"
         check("the AI answer was captured for the pipeline",
@@ -1757,7 +1776,48 @@ def main():
     app.runner.start = cap
     check("hint: the publish gate",
           "PUBLISHED" in gui._prompt_hint_for(
-              "Have you finished the WP All Import and media upload?"))
+              "Are the products created and published on the website? "))
+    check("hint: creating the products",
+          "drafts" in (gui._prompt_hint_for(
+              "Create these 9 product(s) on https://shop.example now? [y/N] ")
+              or ""))
+    #  Both prompts start with "Create these": a needle that only matches one
+    #  of them is the difference between help and misinformation.
+    cs_import = gui._prompt_hint_for("Create these listings as drafts now? "
+                                     "[y/N] ")
+    check("hint: the CanadianShopper draft import", "UNPUBLISHED DRAFTS" in
+          (cs_import or ""), str(cs_import))
+    check("the two 'Create these' questions never share a hint", cs_import !=
+          gui._prompt_hint_for("\nCreate these 9 product(s) on "
+                               "https://shop.example now? [y/N] "),
+          str(cs_import))
+    check("the publisher's hidden question gets a note of its own",
+          gui.publisher_wait_note("Publishing ready CanadianShopper drafts...\n")
+          == gui.PUBLISHER_WAIT_NOTE and
+          gui.publisher_wait_note("some other output") == "",
+          str(gui.publisher_wait_note("other")))
+    #  What the note may claim depends on the plugin: 1.0.27 keeps the
+    #  publisher's question on screen, so silence there is work, not a hidden
+    #  prompt - and telling someone to type PUBLISH blind would be a lie.
+    quiet = "Publishing ready CanadianShopper drafts...\n"
+    old_note = gui.publisher_wait_note(quiet, "1.0.26")
+    new_note = gui.publisher_wait_note(quiet, "1.0.27")
+    check("an older plugin is told the question is invisible, and to update",
+          "older than 1.0.27" in old_note and "update the plugin" in
+          old_note, old_note)
+    check("1.0.27 is told the wait is work, not a hidden question",
+          new_note == gui.PUBLISHER_WAIT_NOTE_STREAMED and
+          "hidden" not in new_note and "not a question nobody can see" in
+          new_note, new_note)
+    check("an unreadable version gets the safe sentence",
+          gui.publisher_wait_note(quiet, "") == gui.PUBLISHER_WAIT_NOTE)
+    check("every tool is told a console is reading its output",
+          gui.tool_env().get("ALEX_COLLECT_NESTED") == "1",
+          str(gui.tool_env().get("ALEX_COLLECT_NESTED")))
+    check("hint: putting them on sale after the photos",
+          "draft" in (gui._prompt_hint_for(
+              "  Put the ones whose photos upload on sale when they are "
+              "created? [y/N] ") or ""))
     check("hint: categories",
           gui._prompt_hint_for("pick a category [1/2/3]: ") is not None)
     check("hint: enter for the excel files",
@@ -1964,11 +2024,13 @@ def main():
         "    print('STAGE-RAN tools=%s' % tools_dir)\n"
         "    print('STAGE-COOKIE=%s' % cookie_file)\n"
         "    print('STAGE-BROWSER=%s' % browser_name)\n"
-        "    print('STAGE-N=%d' % len(list(output_paths)))\n")
+        "    print('STAGE-N=%d' % len(list(output_paths)))\n"
+        "    import os\n"
+        "    print('STAGE-NESTED=%s' % os.environ.get('ALEX_COLLECT_NESTED'))\n")
     inp_txt = "SEO Image titles:\n" + "x" * 220
 
     def sandbox(name, install_root=None, legacy=False, plugin=False,
-                plugin_enabled=True):
+                plugin_enabled=True, plugin_version="1.0.0"):
         d = TMP / name
         shutil.rmtree(d, ignore_errors=True)
         (d / "pipeline" / "canadianshopper" / "tools").mkdir(parents=True)
@@ -2003,7 +2065,7 @@ def main():
             (plugin_dir / "tools" / "cs_stage_hook.py").write_text(stub_hook)
             (plugin_dir / "plugin.json").write_text(json.dumps({
                 "id": "test-stage-plugin", "name": "Test stage plugin",
-                "version": "1.0.0", "host_api": 1,
+                "version": plugin_version, "host_api": 1,
                 "capabilities": ["batch.pipeline_stage"],
                 "actions": {"batch.pipeline_stage": "pipeline_stage"},
                 "tools": {"pipeline_stage": "tools/cs_stage_hook.py"}}))
@@ -2064,6 +2126,19 @@ def main():
           r.stdout[-260:])
     check("the configured browser is passed to the plugin hook",
           "STAGE-BROWSER=test-browser" in r.stdout, r.stdout[-260:])
+    check("a plugin hook is told it runs inside a console that reads its output",
+          "STAGE-NESTED=1" in r.stdout, r.stdout[-300:])
+    check("a 1.0.0 plugin gets the hidden-question warning, not a claim",
+          "stays hidden in that version" in r.stdout and
+          "1.0.27" in r.stdout, r.stdout[-400:])
+    r = sandbox("gui-v227-plugin", plugin=True, plugin_version="1.0.27")
+    check("a 1.0.27 plugin is told its publisher's question stays visible",
+          r.returncode == 0 and
+          "keeps the publisher's PUBLISH question on screen" in r.stdout and
+          "stays hidden in that version" not in r.stdout,
+          r.stdout[-420:] + r.stderr[-200:])
+    check("and it still receives the nested-console flag",
+          "STAGE-NESTED=1" in r.stdout, r.stdout[-300:])
     r = sandbox("gui-v221-plugin-disabled", install_root=True,
                 plugin=True, plugin_enabled=False)
     check("disabled managed plugin does not fall through to stale legacy tools",
@@ -2071,7 +2146,8 @@ def main():
           "photo stage not installed" in r.stdout,
           r.stdout[-260:] + r.stderr[-200:])
     for junk in ("gui-v211-installed", "gui-v211-legacy", "gui-v211-none",
-                 "gui-v221-plugin", "gui-v221-plugin-disabled"): 
+                 "gui-v221-plugin", "gui-v221-plugin-disabled",
+                 "gui-v227-plugin"):
         shutil.rmtree(TMP / junk, ignore_errors=True)
 
     # The Plugins panel manages optional plugin packages from local ZIPs.
@@ -2226,8 +2302,19 @@ def main():
     app.clipboard_clear()
     app.clipboard_append(long_answer)
     app.update()
-    big.invoke()
-    app.update()
+    #  The products question is a real modal window: it is answered for the
+    #  test, and checked on its own in section 20b below.
+    asked_products = []
+    real_ask_products = gui.ask_create_products
+    gui.ask_create_products = lambda a=None, cards=None: (
+        asked_products.append(1) or "none")
+    try:
+        big.invoke()
+        app.update()
+    finally:
+        gui.ask_create_products = real_ask_products
+    check("the products question is asked before the batch starts",
+          len(asked_products) == 1, str(asked_products))
     check("a failed start keeps the dialog open (no silent close)",
           bool(dlg.winfo_exists()))
     app.runner.start = cap2
@@ -2239,6 +2326,61 @@ def main():
           dlg2.front_var.get() == str(dfront) and
           dlg2.back_var.get() == str(dback))
     dlg2.destroy()
+    # ------------------------------------------------------------------
+    # 20b. what happens to the products when the batch runs
+    # ------------------------------------------------------------------
+    print("== 20b. the products question before a batch ==")
+    real_keys = gui.read_woo_credentials
+    real_ask = gui.messagebox.askyesno
+    real_info = gui.messagebox.showinfo
+    real_open_keys = gui.open_woo_keys_file
+    opened = []
+    notes = []
+    try:
+        gui.read_woo_credentials = lambda *a, **k: ("", "", "")
+        gui.open_woo_keys_file = lambda app_, site="": opened.append(site)
+        gui.messagebox.showinfo = lambda *a, **k: notes.append(a[0])
+        gui.messagebox.askyesno = lambda *a, **k: False
+        check("no keys and no keys wanted = the CSV only, asked first",
+              gui.ask_create_products(app) == "none", "")
+
+        gui.messagebox.askyesno = lambda *a, **k: True
+        check("saying yes opens woo-keys.txt", gui.ask_create_products(app)
+              == "none" and opened, str(opened))
+        check("and says what was still missing", len(notes) >= 1, str(notes))
+
+        gui.read_woo_credentials = lambda *a, **k: (
+            "https://shop.example", "ck_a", "cs_b")
+        dialog = gui.CreateProductsDialog(app, "https://shop.example", True)
+        app.update()
+        check("with the keys saved the question offers three answers",
+              dialog.choice.get() == "draft", dialog.choice.get())
+        dialog.choice.set("publish")
+        find_button(dialog, "Continue").invoke()
+        app.update()
+        check("choosing publish is what the dialog answers",
+              dialog.answer == "publish", str(dialog.answer))
+        check("the window closes after the answer", not dialog.winfo_exists())
+
+        dialog2 = gui.CreateProductsDialog(app, "https://shop.example", True)
+        app.update()
+        dialog2.destroy()
+        app.update()
+        check("closing the window answers nothing, so the batch is cancelled",
+              dialog2.answer is None, str(dialog2.answer))
+
+        dialog3 = gui.CreateProductsDialog(app, "", False)
+        app.update()
+        check("without keys the safe answer is the CSV only",
+              dialog3.choice.get() == "none", dialog3.choice.get())
+        dialog3.destroy()
+        app.update()
+    finally:
+        gui.read_woo_credentials = real_keys
+        gui.messagebox.askyesno = real_ask
+        gui.messagebox.showinfo = real_info
+        gui.open_woo_keys_file = real_open_keys
+
     # ------------------------------------------------------------------
     # 21. order from a pasted card list (no network: no keys saved here)
     # ------------------------------------------------------------------

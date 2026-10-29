@@ -96,8 +96,10 @@ def test_rename_stage_reaches_its_confirmation(root):
                          lambda *a, **k: (list(ops), [])), \
             patch.object(card_pipeline, "apply_renames",
                          lambda o, copy=False: applied.update(ops=o)), \
+            patch.object(card_pipeline, "maybe_create_woocommerce_products",
+                         lambda args, path: False), \
             patch.object(card_pipeline, "run_post_listing_uploads",
-                         lambda args, parsed: None), \
+                         lambda args, parsed, **kw: None), \
             patch("builtins.input", fake_input), quiet():
         card_pipeline.cmd_listing(make_args())
 
@@ -144,8 +146,10 @@ def test_rename_applies_with_yes(root):
                          lambda *a, **k: (list(ops), [])), \
             patch.object(card_pipeline, "apply_renames",
                          lambda o, copy=False: applied.update(ops=o)), \
+            patch.object(card_pipeline, "maybe_create_woocommerce_products",
+                         lambda args, path: False), \
             patch.object(card_pipeline, "run_post_listing_uploads",
-                         lambda args, parsed: None), \
+                         lambda args, parsed, **kw: None), \
             patch("builtins.input", boom), quiet():
         card_pipeline.cmd_listing(make_args(yes=True))
 
@@ -251,6 +255,52 @@ def test_runs_without_the_other_features(tmp_path):
           str(decoded))
 
 
+def test_plugin_version_reading(root):
+    """What the pipeline is allowed to say about the plugin it found.
+
+    1.0.27 is the version that streams the publisher, so its question is
+    visible; anything older - or unreadable - gets the safe sentence instead
+    of a claim the plugin cannot back up.
+    """
+    print()
+    print("== 4. the plugin's own version decides what may be claimed ==")
+    check("1.0.27 is the streaming version",
+          card_pipeline._cs_version_at_least("1.0.27",
+                                             card_pipeline.CS_STREAM_VERSION))
+    check("1.0.26 is not",
+          not card_pipeline._cs_version_at_least(
+              "1.0.26", card_pipeline.CS_STREAM_VERSION))
+    check("a later minor version still counts",
+          card_pipeline._cs_version_at_least(
+              "1.1.0", card_pipeline.CS_STREAM_VERSION))
+    check("an unreadable version is never treated as new",
+          not card_pipeline._cs_version_at_least(
+              "", card_pipeline.CS_STREAM_VERSION) and
+          not card_pipeline._cs_version_at_least(
+              "unknown", card_pipeline.CS_STREAM_VERSION))
+
+    plugin = root / "plugins" / "canadianshopper"
+    (plugin / "tools").mkdir(parents=True)
+    hook = plugin / "tools" / "cs_stage_hook.py"
+    hook.write_text("def run_stage(*a, **k):\n    pass\n", encoding="utf-8")
+    check("no manifest = no version claimed",
+          card_pipeline._cs_hook_version(hook) == "")
+    (plugin / "plugin.json").write_text(
+        json.dumps({"id": "canadianshopper", "version": "1.0.27"}),
+        encoding="utf-8")
+    check("the manifest above the tools folder is read",
+          card_pipeline._cs_hook_version(hook) == "1.0.27",
+          card_pipeline._cs_hook_version(hook))
+    (plugin / "plugin.json").write_text("{not json", encoding="utf-8")
+    check("an unreadable manifest claims nothing",
+          card_pipeline._cs_hook_version(hook) == "")
+    (plugin / "plugin.json").unlink()
+    check("a hook with no manifest at all claims nothing",
+          card_pipeline._cs_hook_version(plugin / "tools" / "nope.py") == "")
+    check("and no hook at all is not an error",
+          card_pipeline._cs_hook_version(None) == "")
+
+
 def main():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -264,6 +314,8 @@ def main():
         print("== 2. the shipped script runs end to end ==")
         test_shipped_script_runs_end_to_end(root)
         test_runs_without_the_other_features(root)
+
+        test_plugin_version_reading(root / "version-check")
 
     print()
     if FAIL:
