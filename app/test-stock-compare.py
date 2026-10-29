@@ -10,6 +10,7 @@ import json
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 APP = Path(__file__).resolve().parent
@@ -1886,6 +1887,191 @@ def test_old_reader_is_named():
           str(lines[-3:]))
 
 
+def test_publisher_tally():
+    print()
+    print("== 21. the publisher's own tally decides, not its report file ==")
+    check("a tally of zero is read from the publisher's own line",
+          stock_compare.draft_count(
+              "Drafts found: 0 | ready: 0 | blocked: 0") == 0, "")
+    check("a tally of several drafts is read too",
+          stock_compare.draft_count(
+              "Drafts found: 3 | ready: 2 | blocked: 1") == 3, "")
+    check("the older phrasing is understood",
+          stock_compare.draft_count("Scanned 12 draft(s)...") == 12, "")
+    check("a publisher that says nothing is unknown, never zero",
+          stock_compare.draft_count("Re-reading the shop...") is None, "")
+    check("and an empty string is unknown too",
+          stock_compare.draft_count("") is None, "")
+
+    #  The run's transcript is where that sentence comes from.
+    check("the transcript of the last run is read from the runner",
+          gui.last_tool_output(
+              SimpleNamespace(runner=SimpleNamespace(output="Drafts found: 0")))
+          == "Drafts found: 0", "")
+    check("and an app with no runner is not an error",
+          gui.last_tool_output(SimpleNamespace()) == "", "")
+
+    #  A report with preamble lines in it is not a report full of drafts: the
+    #  file is the plugin's format, and this is exactly the shape that made an
+    #  "empty" report look like it had rows.
+    folder = Path(tempfile.mkdtemp(prefix="cs-tally-"))
+    report = folder / "cs-publish-report.csv"
+    report.write_text("CanadianShopper vendor: Alex Collect\n"
+                      "Drafts found: 0 | ready: 0 | blocked: 0\n",
+                      encoding="utf-8")
+    check("a summary line in the file is not counted as a draft",
+          stock_compare.report_rows(report) == 1, "")
+
+    folder, app, parent = build_panel()
+    products = PRODUCTS + [
+        {"id": 9, "name": "Only on the website card", "sku": "",
+         "manage_stock": True, "stock_quantity": 1, "type": "simple",
+         "price": "3.00", "images": [{"src": "https://shop.example/f.webp"}]}]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    actions = {"marketplace.import_csv": "/plugins/cs/cs-import.py",
+               "marketplace.publish_drafts": "/plugins/cs/cs-publish-drafts.py"}
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_all), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+        (folder / "cs-stock.json").write_text(json.dumps({"items": CS_ITEMS}),
+                                              encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+
+    asked = []
+    harness._BOX.askyesno = lambda title, message, **k: (
+        asked.append((title, message)) or True)
+    app.runs.clear()
+    app.lines.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: actions.get(action, "")), \
+            patch.object(gui, "BASE", folder), \
+            patch.object(gui, "open_path", lambda path: None):
+        find(parent, gui.ttk.Button,
+             "List every website-only card...").invoke()
+        run = next(r for r in app.runs if r["tool"].endswith("cs-import.py"))
+        name = next((folder / "canadianshopper_products").glob(
+            "canadianshopper_import_*.csv")).name
+        (folder / "canadianshopper_products" / "cs-import-result.json"
+         ).write_text(json.dumps(
+             {"imported": [],
+              "failed": [{"file": name, "why": "every CSV row matched an "
+                                              "existing listing"}]}),
+             encoding="utf-8")
+        asked.clear()
+        app.lines.clear()
+        run["on_done"](0)
+
+    look = next((r for r in app.runs
+                 if r["tool"].endswith("cs-publish-drafts.py")), None)
+    check("the look runs before any PUBLISH question", look is not None
+          and "--apply" not in look["args"], str(look and look["args"]))
+
+    #  The publisher says zero while its own report carries a summary line.
+    (folder / "canadianshopper_products" / "cs-publish-report.csv").write_text(
+        "CanadianShopper vendor: Alex Collect\n"
+        "Drafts found: 0 | ready: 0 | blocked: 0\n", encoding="utf-8")
+    app.runner = SimpleNamespace(
+        output="Scanned 0 draft(s)...\n\nCanadianShopper vendor: Alex "
+               "Collect\n\nDrafts found: 0 | ready: 0 | blocked: 0\n")
+    asked.clear()
+    app.runs.clear()
+    app.lines.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: actions.get(action, "")), \
+            patch.object(gui, "BASE", folder):
+        look["on_done"](0)
+    check("a tally of zero beats a report with lines in it",
+          any("No drafts on CanadianShopper" in text
+              for _tag, text in app.lines), str(app.lines[-3:]))
+    check("and it never asks for a typed PUBLISH", not app.runs, str(app.runs))
+    check("and never offers the report to open",
+          not any(title == "Open the publish report?" for title, _m in asked),
+          str([title for title, _m in asked]))
+    check("the empty report is explained rather than left as a mystery",
+          any("one row per draft" in text for _tag, text in app.lines),
+          str(app.lines[-4:]))
+    check("the cards that could not be found are named, so the dashboard "
+          "search has something to search for",
+          any("Only on the website card" in text for _tag, text in app.lines),
+          str(app.lines[-6:]))
+
+    #  A publisher that says nothing either way is not "no drafts".
+    app.runner = SimpleNamespace(output="")
+    try:
+        (folder / "canadianshopper_products" /
+         "cs-publish-report.csv").unlink()
+    except FileNotFoundError:
+        pass
+    asked.clear()
+    app.runs.clear()
+    app.lines.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: actions.get(action, "")), \
+            patch.object(gui, "BASE", folder):
+        look["on_done"](0)
+    check("a publisher that says nothing is unknown, not zero drafts",
+          any("said nothing about how many drafts" in text
+              for _tag, text in app.lines), str(app.lines[-2:]))
+    check("and nothing is published on a guess", not app.runs, str(app.runs))
+
+def test_listing_without_a_count():
+    print()
+    print("== 22. a listing that has no count is not a listing that is not there ==")
+    raw = {"items": [
+        {"id": 201, "title": "1965 Topps Sandy Koufax #300", "sku": "KO-300",
+         "inventory": None, "status": "Draft"},
+        {"id": 202, "title": "A live listing with no count", "sku": "LC-1",
+         "inventory": None, "status": "Active"},
+        {"id": 203, "title": "A live listing with a count", "sku": "LC-2",
+         "inventory": 5, "status": "Active"},
+    ]}
+    items = stock_compare.plugin_items(raw)
+    names = [item["name"] for item in items]
+    check("a listing that is not on sale is kept even without a count",
+          "1965 Topps Sandy Koufax #300" in names, str(names))
+    check("its state is the one the plugin sent",
+          next(item for item in items
+               if item["name"] == "1965 Topps Sandy Koufax #300")["status"]
+          == "Draft", str(items))
+    check("and its count stays unknown rather than becoming zero",
+          next(item for item in items if item["name"].startswith("1965"))["qty"]
+          is None, str(items))
+    check("a live listing with no count is still left out, as before",
+          "A live listing with no count" not in names, str(names))
+    check("a live listing with a count is untouched",
+          "A live listing with a count" in names, str(names))
+
+    woo = [{"name": "1965 Topps Sandy Koufax #300", "sku": "KO-300", "qty": 2,
+            "id": 1}]
+    pairs, only_woo, only_other = stock_compare.pair(woo, items)
+    check("the card pairs with its draft instead of looking missing",
+          len(pairs) == 1 and not only_woo, str(pairs))
+    rows = stock_compare.action_list(pairs, only_woo, only_other)
+    draft_row = next((row for row in rows if row["card"].startswith("1965")),
+                     None)
+    check("so it becomes a not-on-sale row, not a one-sided one",
+          draft_row is not None
+          and draft_row["kind"] == stock_compare.OFF_SALE, str(rows))
+    check("and it is offered for publishing",
+          len(stock_compare.draft_rows(rows)) == 1, str(rows))
+    check("its label never invents a count for the site",
+          "not on sale" in stock_compare.label_action(draft_row)
+          and "CanadianShopper 0" not in stock_compare.label_action(draft_row),
+          stock_compare.label_action(draft_row))
+    check("and no write plan can name it",
+          stock_compare.plan_set(rows) == [], str(stock_compare.plan_set(rows)))
+
+
 def main():
     test_woo_items()
     test_plugin_items()
@@ -1912,6 +2098,8 @@ def main():
     test_panel_explains_off_sale()
     test_report_rows()
     test_old_reader_is_named()
+    test_publisher_tally()
+    test_listing_without_a_count()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))

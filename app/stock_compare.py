@@ -165,8 +165,13 @@ def plugin_items(payload):
     """The listings a plugin reported, in this module's one shape.
 
     The plugin writes ``{"items": [...]}``, each entry with a title, a SKU when
-    it has one, an inventory number, and from 1.0.25 a status. Rows without a
-    usable number are dropped rather than guessed at.
+    it has one, an inventory number, and from 1.0.25 a status.
+
+    A live listing without a number is dropped rather than guessed at: there
+    is nothing to compare. A listing that is *not* on sale is kept without one,
+    because the fact worth showing is its state - and dropping it there is how
+    a draft with no stock ends up being reported as a card that does not exist
+    on the other site at all.
     """
     if isinstance(payload, dict):
         payload = payload.get("items") or payload.get("listings") or []
@@ -175,20 +180,28 @@ def plugin_items(payload):
         if not isinstance(row, dict):
             continue
         name = str(row.get("title") or row.get("name") or "").strip()
+        if not name:
+            continue
         quantity = row.get("inventory")
         if quantity is None:
             quantity = row.get("quantity")
-        if not name or quantity is None:
+        entry = {"name": name,
+                 "sku": str(row.get("sku") or "").strip(),
+                 "qty": None,
+                 "id": row.get("id"),
+                 "status": str(row.get("status") or "").strip()}
+        if quantity is None:
+            #  No count: worth keeping only when the listing says why it has
+            #  none, which is that it is not for sale.
+            if status_of(entry) == "active":
+                continue
+            items.append(entry)
             continue
         try:
-            qty = int(quantity)
+            entry["qty"] = int(quantity)
         except (TypeError, ValueError):
             continue
-        items.append({"name": name,
-                      "sku": str(row.get("sku") or "").strip(),
-                      "qty": qty,
-                      "id": row.get("id"),
-                      "status": str(row.get("status") or "").strip()})
+        items.append(entry)
     return items
 
 
@@ -434,7 +447,8 @@ def action_list(pairs, only_woo, only_other, ignored=(), other_label=""):
         other = row["other"]
         rows.append({"card": row["woo"].get("name") or other.get("name") or "",
                      "woo": int(row["woo"].get("qty") or 0),
-                     "other": int(other.get("qty") or 0),
+                     "other": (None if other.get("qty") is None
+                               else int(other.get("qty") or 0)),
                      "gap": 0, "by": row.get("by", "title"),
                      "kind": OFF_SALE, "status": status_of(other),
                      "state": status_words(other),
@@ -492,6 +506,32 @@ def hidden_count(pairs, only_woo, only_other, ignored):
     #  by hand got that wrong.
     return (len(action_list(pairs, only_woo, only_other, ())) -
             len(action_list(pairs, only_woo, only_other, ignored)))
+
+
+#  The publisher states its own tally in the console - "Drafts found: 0 |
+#  ready: 0 | blocked: 0" - and that sentence is the one fact the core can act
+#  on. Its report file is the plugin's format, not the core's, so an empty
+#  file, a header-only file and a file of preamble lines all have to mean the
+#  same thing: not a single draft.
+_DRAFT_TALLY = re.compile(r"drafts?\s*found\s*[:=\-]?\s*(\d+)", re.I)
+_SCANNED = re.compile(r"scanned\s+(\d+)\s+drafts?", re.I)
+
+
+def draft_count(text):
+    """How many drafts a publisher's own output says it found, or ``None``.
+
+    ``None`` means it did not say, which is not zero: a caller that cannot
+    read the tally must not tell someone their drafts do not exist.
+    """
+    said = str(text or "")
+    for pattern in (_DRAFT_TALLY, _SCANNED):
+        found = pattern.search(said)
+        if found:
+            try:
+                return int(found.group(1))
+            except (TypeError, ValueError):
+                return None
+    return None
 
 
 def report_rows(path):

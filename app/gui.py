@@ -64,7 +64,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.74"
+VERSION = "2.75"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -151,6 +151,17 @@ def TOOL_ACTION(action_id):
         return str(PLUGIN_MANAGER.resolve_action(action_id))
     except PluginError:
         return ""
+
+
+def last_tool_output(app):
+    """What the tool that just finished printed, or "" when nothing is known.
+
+    A plugin's own summary is the only reliable answer to "how many drafts
+    did you find" - its report file is its format, not the core's. The runner
+    keeps the text of the current run for exactly that question, and a caller
+    that cannot find it gets "" rather than a guess.
+    """
+    return str(getattr(getattr(app, "runner", None), "output", "") or "")
 
 
 def plugin_version(plugin_id=CS_PLUGIN_ID):
@@ -661,6 +672,10 @@ class Runner:
         self.cmd = ""
         self.on_done = None
         self._dialog_buffer = ""
+        #  What the running tool printed, so a step that has to act on the
+        #  tool's own words ("Drafts found: 0") can read them instead of
+        #  guessing from a file whose format the core does not own.
+        self.output = ""
 
     def busy(self):
         return self.proc is not None and self.proc.poll() is None
@@ -683,6 +698,7 @@ class Runner:
         self.title = title
         self.on_done = on_done
         self._dialog_buffer = ""
+        self.output = ""
         try:
             self.proc = subprocess.Popen(
                 cmd, cwd=str(cwd), stdin=subprocess.PIPE,
@@ -779,6 +795,8 @@ class Runner:
                 break
             got = True
             if kind == "out":
+                if len(self.output) < 400000:
+                    self.output += payload
                 shown = self._consume_dialog_protocol(payload)
                 if shown:
                     self.app.console_write(shown)
@@ -1724,6 +1742,13 @@ class App(tk.Tk):
         stop_button.pack(side="left", padx=4)
         add_tooltip(stop_button, "Stop the currently running tool")
         self._input_enable(False)
+        #  The version is the first line of the console on purpose: a pasted
+        #  console then says which build produced it, which a question about
+        #  "still broken after the rebuild" needs to be answerable.
+        self.console_line("Alex Collect %s" % VERSION, "dim")
+        plugin = plugin_version()
+        if plugin:
+            self.console_line("CanadianShopper plugin %s" % plugin, "dim")
         self.console_line(
             "Ready. Pick a task above. Nothing changes on any website "
             "without a preview and a confirmation.", "dim")
@@ -5012,6 +5037,7 @@ def build_stock(parent, app):
 
     def found(rc, report):
         """What the read-only look found: publish only if there is something."""
+        said = stock_compare.draft_count(last_tool_output(app))
         rows = stock_compare.report_rows(report)
         if rc != 0:
             app.console_line(
@@ -5019,25 +5045,50 @@ def build_stock(parent, app):
                 "was published and nothing was changed." % rc, "err")
             summary.configure(text="Could not look for drafts (exit %s)." % rc)
             return
+        #  The publisher's own sentence beats anything read out of its file:
+        #  the file is its format, and a report with a header and a summary
+        #  line in it is still "no drafts".
+        if said is not None:
+            rows = said
         if rows is None:
-            #  A report nobody can read is not the same as "there is no draft",
-            #  and saying so would be a guess dressed as an answer.
+            #  Nothing readable either way is not the same as "there is no
+            #  draft", and saying so would be a guess dressed as an answer.
             app.console_line(
-                "The publisher finished but left no report to read, so it is "
-                "not known whether there is a draft. Nothing was published.",
-                "err")
-            summary.configure(text="No draft report was written.")
+                "The publisher finished but said nothing about how many "
+                "drafts it found, so it is not known whether there is one. "
+                "Nothing was published.", "err")
+            summary.configure(text="The publisher did not say how many drafts "
+                                   "it found.")
             return
         if not rows:
             app.console_line(
                 "No drafts on CanadianShopper: there is nothing to publish, "
                 "and nothing was changed.", "warn")
             app.console_line(
+                "An empty report is not a missing answer: the publisher "
+                "writes one row per draft, so no drafts means no rows.",
+                "dim")
+            app.console_line(
                 "A listing that exists but is not a draft is hidden, "
                 "archived, private or off sale - or a variation of a "
                 "variable product, which the stock reader does not return. "
                 "Those are put back on sale in the vendor dashboard, not "
                 "from here.", "dim")
+            #  Name the cards, so the dashboard search is a search for
+            #  something rather than a hunt through 2,478 listings.
+            one_sided = [row.get("card") or "" for row in state["rows"]
+                         if row.get("kind") == stock_compare.ONLY_WOO]
+            if one_sided:
+                app.console_line(
+                    "The %d card%s this comparison could not find on "
+                    "CanadianShopper - search these in the vendor dashboard:"
+                    % (len(one_sided), "" if len(one_sided) == 1 else "s"),
+                    "dim")
+                for name in one_sided[:12]:
+                    app.console_line("  " + name, "dim")
+                if len(one_sided) > 12:
+                    app.console_line(
+                        "  ... and %d more" % (len(one_sided) - 12), "dim")
             version = plugin_version()
             if version and not version_at_least(version,
                                                 CS_STOCK_STATUS_VERSION):
@@ -5073,7 +5124,9 @@ def build_stock(parent, app):
                     "published and nothing was changed." % rc, "err")
                 summary.configure(text="Nothing was published (exit %s)." % rc)
             return
-        if stock_compare.report_rows(report) == 0:
+        said = stock_compare.draft_count(last_tool_output(app))
+        rows = stock_compare.report_rows(report)
+        if said == 0 or rows == 0:
             #  The look said there was a draft and the publisher then found
             #  none: a race, not a failure. Say the plain thing rather than
             #  offering an empty report as if it were the answer.
