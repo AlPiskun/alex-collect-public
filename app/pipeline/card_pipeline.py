@@ -71,7 +71,6 @@ from output_history import (consolidate_csv_history,
                             consolidate_ebay_history, write_ebay_sidecar)
 from user_settings import (load_user_settings, save_user_settings,
                            site_admin_url, site_url, feed_urls)
-import cs_listing
 
 USER_SETTINGS = load_user_settings(APP_DIR / "gui-settings.json")
 OUTPUT_DIR = SCRIPT_DIR / "output"
@@ -1556,8 +1555,41 @@ def maybe_run_facebook(args):
 #  The import template and its defaults live in cs_listing, because the stock
 #  panel writes the same file for cards that are only on the website. One
 #  definition, so a batch and a listing cannot disagree about a column.
-from cs_listing import (CANADIANSHOPPER_BATCH_SIZE, CANADIANSHOPPER_FIELDNAMES,
-                        defaults as _cs_defaults)
+#
+#  This script is also shipped and run on its own - a batch folder with a copy
+#  of card_pipeline.py and its four neighbours, no app around it - so the import
+#  cannot be a hard requirement. The fallback below is the same template, and
+#  test-cs-listing asserts the two agree; what it must never do is stop a
+#  pipeline run because a file that belongs to another feature is missing.
+try:
+    from cs_listing import (CANADIANSHOPPER_BATCH_SIZE,
+                            CANADIANSHOPPER_FIELDNAMES,
+                            defaults as _cs_defaults)
+except ImportError:                                   # pragma: no cover - path
+    CANADIANSHOPPER_BATCH_SIZE = 500
+    CANADIANSHOPPER_FIELDNAMES = [
+        "title", "price_cad", "category", "description", "image_url",
+        "inventory", "is_made_to_order", "ship_from_province",
+        "shipping_flat_cad", "free_shipping", "handling_days", "transit_days",
+        "sizes", "colors",
+    ]
+
+    def _cs_defaults(settings=None):
+        settings = settings or {}
+        return {
+            "category": str(settings.get("canadianshopper_category",
+                                         "Antiques & Collectibles")),
+            "ship_from_province": str(settings.get(
+                "canadianshopper_ship_from_province", "ON")),
+            "shipping_flat_cad": str(settings.get(
+                "canadianshopper_shipping_flat", "4.00")),
+            "free_shipping": ("true" if settings.get(
+                "canadianshopper_free_shipping", False) else "false"),
+            "handling_days": str(settings.get(
+                "canadianshopper_handling_days", 2)),
+            "transit_days": str(settings.get(
+                "canadianshopper_transit_days", 5)),
+        }
 
 _CS_DEFAULTS = _cs_defaults(USER_SETTINGS)
 CANADIANSHOPPER_CATEGORY = _CS_DEFAULTS["category"]
@@ -1660,12 +1692,46 @@ def build_canadianshopper_rows(cards_parsed, image_base_url):
     return rows
 
 
+def _write_import_rows(rows, folder):
+    """Write the batch through cs_listing, or by hand when it is not there."""
+    try:
+        import cs_listing
+        return cs_listing.write_rows(rows, folder)
+    except ImportError:
+        return _write_import_rows_here(rows, folder)
+
+
+def _write_import_rows_here(rows, folder):
+    """The standalone writer: same columns, same names, same folders."""
+    rows = list(rows or [])
+    if not rows:
+        return []
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    total = (len(rows) + CANADIANSHOPPER_BATCH_SIZE - 1) // CANADIANSHOPPER_BATCH_SIZE
+    written = []
+    for index in range(total):
+        batch = rows[index * CANADIANSHOPPER_BATCH_SIZE:
+                     (index + 1) * CANADIANSHOPPER_BATCH_SIZE]
+        path = folder / ("canadianshopper_import_%s_%02d_of_%02d.csv" %
+                         (stamp, index + 1, total))
+        with open(path, "w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.DictWriter(handle,
+                                    fieldnames=CANADIANSHOPPER_FIELDNAMES,
+                                    lineterminator="\n", extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(batch)
+        written.append((path, len(batch)))
+    return written
+
+
 def write_canadianshopper_csvs(rows):
     """Write timestamped CSVs, each containing no more than 500 products."""
     if not rows:
         return []
 
-    written = cs_listing.write_rows(rows, CANADIANSHOPPER_DIR)
+    written = _write_import_rows(rows, CANADIANSHOPPER_DIR)
     output_paths = [path for path, _count in written]
 
     _roll_csv_history(

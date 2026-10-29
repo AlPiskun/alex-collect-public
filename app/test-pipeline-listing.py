@@ -159,8 +159,10 @@ def test_shipped_script_runs_end_to_end(root):
     (d / "pipeline").mkdir(parents=True)
     for name in ("card_pipeline.py", "output_history.py"):
         shutil.copyfile(PIPELINE / name, d / "pipeline" / name)
-    for name in ("browser_utils.py", "user_settings.py", "plugin_manager.py",
-                 "cs_listing.py"):
+    #  Deliberately NOT cs_listing.py: this is the layout a batch folder has,
+    #  and the shipped script has to run there. 2.66 made that a hard import
+    #  and every pipeline run outside the app died with ModuleNotFoundError.
+    for name in ("browser_utils.py", "user_settings.py", "plugin_manager.py"):
         shutil.copyfile(APP / name, d / name)
     (d / "gui-settings.json").write_text(
         json.dumps({"browser_name": "system"}), encoding="utf-8")
@@ -195,6 +197,60 @@ def test_shipped_script_runs_end_to_end(root):
           "No matching source files" in result.stdout, output[-300:])
 
 
+def test_runs_without_the_other_features(tmp_path):
+    """The shipped script, with only what a batch folder carries."""
+    print()
+    print("== 3. the pipeline runs on its own, without the app's other modules ==")
+    d = Path(tmp_path) / "alone"
+    (d / "pipeline").mkdir(parents=True)
+    shutil.copyfile(PIPELINE / "card_pipeline.py",
+                    d / "pipeline" / "card_pipeline.py")
+    shutil.copyfile(PIPELINE / "output_history.py",
+                    d / "pipeline" / "output_history.py")
+    for name in ("browser_utils.py", "user_settings.py", "plugin_manager.py"):
+        shutil.copyfile(APP / name, d / name)
+    (d / "gui-settings.json").write_text(json.dumps({"browser_name": "system"}),
+                                         encoding="utf-8")
+    cs_listing_present = (d / "cs_listing.py").is_file()
+    check("the folder really has no cs_listing.py to borrow",
+          not cs_listing_present, str(cs_listing_present))
+
+    run = subprocess.run([sys.executable, str(d / "pipeline" / "card_pipeline.py"),
+                          "--help"], capture_output=True, text=True, timeout=120)
+    check("it starts and answers --help", run.returncode == 0,
+          run.stderr[-300:])
+    check("and does not die on a missing module",
+          "ModuleNotFoundError" not in (run.stderr or ""), run.stderr[-300:])
+
+    script = (
+        "import sys, json\n"
+        "sys.path[:0] = [%r, %r]\n"
+        "import card_pipeline as cp\n"
+        "print(json.dumps({'columns': cp.CANADIANSHOPPER_FIELDNAMES,\n"
+        "                  'category': cp.CANADIANSHOPPER_CATEGORY,\n"
+        "                  'province': cp.CANADIANSHOPPER_PROVINCE,\n"
+        "                  'flat': cp.CANADIANSHOPPER_FLAT_SHIPPING,\n"
+        "                  'free': cp.CANADIANSHOPPER_FREE_SHIPPING,\n"
+        "                  'batch': cp.CANADIANSHOPPER_BATCH_SIZE}))\n"
+        % (str(d), str(d / "pipeline")))
+    run = subprocess.run([sys.executable, "-c", script], capture_output=True,
+                         text=True, timeout=120, cwd=str(d))
+    decoded = {}
+    if run.returncode == 0:
+        decoded = json.loads(run.stdout.strip().splitlines()[-1])
+    check("its import template is the canonical fourteen columns",
+          decoded.get("columns") == [
+              "title", "price_cad", "category", "description", "image_url",
+              "inventory", "is_made_to_order", "ship_from_province",
+              "shipping_flat_cad", "free_shipping", "handling_days",
+              "transit_days", "sizes", "colors"], str(decoded)[:300])
+    check("and its defaults are the same as the app's",
+          (decoded.get("category"), decoded.get("province"),
+           decoded.get("flat"), decoded.get("free"), decoded.get("batch")) ==
+          ("Antiques & Collectibles", "ON", "4.00", "false", 500),
+          str(decoded))
+
+
 def main():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -207,6 +263,7 @@ def main():
 
         print("== 2. the shipped script runs end to end ==")
         test_shipped_script_runs_end_to_end(root)
+        test_runs_without_the_other_features(root)
 
     print()
     if FAIL:
