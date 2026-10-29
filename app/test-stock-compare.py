@@ -1168,6 +1168,8 @@ def test_listing_the_leftovers():
     # ---- confirming writes the file the importer already knows
     asked[:] = []
     opened = []
+    infos_after = []
+    harness._BOX.showinfo = lambda *a, **k: infos_after.append(a)
     harness._BOX.askyesno = lambda title, message, **k: (
         asked.append((title, message)) or True)
     with patch.object(gui, "BASE", folder), \
@@ -1191,10 +1193,14 @@ def test_listing_the_leftovers():
     check("the row carries the website's photo, price and count",
           "lafleur-front.webp" in body and "9.00" in body and
           "Sharp corner copy." in body, str(body.splitlines()[1:2]))
-    check("the console says what to do with it",
-          any("Import 2 rows on CanadianShopper" in text
+    check("the console names the file it wrote",
+          any("Wrote %s" % (import_csv[0] if import_csv else "") in text
+              or ("canadianshopper_import_" in text and "Wrote" in text)
               for _tag, text in app.lines), str(app.lines[-3:]))
-    check("the folder is offered rather than assumed",
+    check("with no import action the file is handed over by hand, not dropped",
+          any("cannot import a CSV itself yet" in str(payload)
+              for payload in infos_after), str(infos_after[-1:]))
+    check("and the folder is offered rather than assumed",
           opened and str(product_folder) == str(opened[-1]), str(opened))
     check("and the cards stay on the list until CanadianShopper has them",
           any("not on CanadianShopper" in text for text in listing.items or []),
@@ -1223,6 +1229,219 @@ def test_listing_skips_what_is_not_a_listing_job():
           not list(folder.glob("canadianshopper_products/*.csv")), "")
 
 
+
+def test_one_click_import():
+    print()
+    print("== 15. the import is finished in one click, when the plugin can ==")
+    folder, app, parent = build_panel()
+    products = PRODUCTS + [
+        {"id": 9, "name": "1972-73 O-Pee-Chee Guy Lafleur #79", "sku": "LA-79",
+         "manage_stock": True, "stock_quantity": 3, "type": "simple",
+         "price": "9.00", "images": [{"src": "https://shop.example/f.webp"}]},
+    ]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_all), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+        (folder / "cs-stock.json").write_text(json.dumps({"items": CS_ITEMS}),
+                                              encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+
+    asked = []
+    harness._BOX.askyesno = lambda title, message, **k: (
+        asked.append((title, message)) or True)
+    app.runs.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: {"marketplace.import_csv":
+                                      "/plugins/cs/cs-import.py",
+                                      "marketplace.publish_drafts":
+                                      "/plugins/cs/cs-publish-drafts.py"}.get(
+                                          action, "")), \
+            patch.object(gui, "BASE", folder), \
+            patch.object(gui, "open_path", lambda path: None):
+        find(parent, gui.ttk.Button,
+             "List every website-only card...").invoke()
+    import_run = next((run for run in app.runs
+                       if run["tool"].endswith("cs-import.py")), None)
+    check("confirming offers to import as well as write",
+          any(title.startswith("Import 1 listing") for title, _m in asked),
+          str([title for title, _m in asked]))
+    check("the import question says the listings arrive as drafts",
+          any("unpublished drafts" in message for title, message in asked
+              if title.startswith("Import")), "")
+    args = import_run["args"] if import_run else []
+    check("the import is asked for by the plugin's own action, with the file",
+          import_run is not None and
+          "--csv" in args and args[args.index("--csv") + 1].endswith(".csv"),
+          str(args))
+    check("and it is never asked to publish",
+          not any(flag in args for flag in ("--apply", "--publish")), str(args))
+    check("the result is written where the panel can read it",
+          "--result" in args and
+          args[args.index("--result") + 1].endswith("cs-import-result.json"),
+          str(args))
+
+    made_csv = next((folder / "canadianshopper_products").glob(
+        "canadianshopper_import_*.csv"))
+    (folder / "canadianshopper_products" / "cs-import-result.json").write_text(
+        json.dumps({"imported": [{"file": made_csv.name, "rows": 1,
+                                  "drafts": 1}]}), encoding="utf-8")
+    app.lines.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: {"marketplace.import_csv":
+                                      "/plugins/cs/cs-import.py",
+                                      "marketplace.publish_drafts":
+                                      "/plugins/cs/cs-publish-drafts.py"}.get(
+                                          action, "")):
+        import_run["on_done"](0)
+    check("a finished import is reported with the drafts it made",
+          any("1 draft created on CanadianShopper" in text
+              for _tag, text in app.lines), str(app.lines[-4:]))
+    check("and it says the drafts are not live",
+          any("not live" in text for _tag, text in app.lines),
+          str(app.lines[-4:]))
+    check("then it offers the read-only readiness report",
+          any(title == "Preview the new drafts?" for title, _m in asked),
+          str([title for title, _m in asked]))
+    check("and the preview is the read-only one, with no --apply",
+          any(run["tool"].endswith("cs-publish-drafts.py") and
+              "--apply" not in run["args"] for run in app.runs),
+          str([run["args"] for run in app.runs]))
+
+
+def test_one_click_import_refusals():
+    print()
+    print("== 16. an import that did not happen is never reported as one ==")
+    folder, app, parent = build_panel()
+    products = PRODUCTS + [
+        {"id": 9, "name": "Only on the website card", "sku": "",
+         "manage_stock": True, "stock_quantity": 1, "type": "simple",
+         "price": "3.00", "images": [{"src": "https://shop.example/f.webp"}]}]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    import_actions = {"marketplace.import_csv": "/plugins/cs/cs-import.py"}
+
+    def listing_run(action_map, make_answer):
+        """Write a listing file, run the import, and hand back what happened.
+
+        The answer is built from the file that was actually written, because
+        the plugin names each file in its result and the panel matches on that
+        name - a test with a made-up name would prove nothing.
+        """
+        asked[:] = []
+        app.runs.clear()
+        with patch.object(gui, "TOOL_ACTION",
+                          lambda action: action_map.get(action, "")), \
+                patch.object(gui, "BASE", folder), \
+                patch.object(gui, "open_path", lambda path: None):
+            find(parent, gui.ttk.Button,
+                 "List every website-only card...").invoke()
+            run = next((r for r in app.runs
+                        if r["tool"].endswith("cs-import.py")), None)
+            if run is None:
+                return None, []
+            csv_path = next((folder / "canadianshopper_products").glob(
+                "canadianshopper_import_*.csv"))
+            answer = make_answer(csv_path.name) if make_answer else None
+            if answer is not None:
+                (folder / "canadianshopper_products" /
+                 "cs-import-result.json").write_text(json.dumps(answer),
+                                                    encoding="utf-8")
+            app.lines.clear()
+            run["on_done"](0)
+        return run, list(app.lines)
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_all), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+        (folder / "cs-stock.json").write_text(json.dumps({"items": CS_ITEMS}),
+                                              encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+
+    asked = []
+    harness._BOX.askyesno = lambda title, message, **k: (
+        asked.append((title, message)) or True)
+
+    # ---- a file the plugin did not mention is unknown, not imported
+    _run, lines = listing_run(import_actions,
+                              lambda name: {"imported": [], "failed": []})
+    check("a file the plugin did not report on is called unknown",
+          any("not reported on by the plugin" in text for _tag, text in lines),
+          str(lines[-3:]))
+    check("and no draft count is claimed",
+          not any("draft" in text and "created" in text and
+                  "not reported" not in text for _tag, text in lines),
+          str(lines[-3:]))
+
+    # ---- a plugin that refuses the file says why
+    _run, lines = listing_run(
+        import_actions,
+        lambda name: {"imported": [],
+                      "failed": [{"file": name,
+                                  "why": "3 rows had no image URL"}]})
+    check("a refused file keeps the plugin's reason",
+          any("3 rows had no image URL" in text for _tag, text in lines),
+          str(lines[-3:]))
+    check("and nothing is called imported",
+          not any("draft created" in text for _tag, text in lines),
+          str(lines[-3:]))
+
+    # ---- declining the import leaves the file, and nothing runs
+    asked[:] = []
+    app.runs.clear()
+    harness._BOX.askyesno = lambda title, message, **k: (
+        asked.append((title, message)) or
+        title != "Import 1 listing on CanadianShopper now?")
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: import_actions.get(action, "")), \
+            patch.object(gui, "BASE", folder), \
+            patch.object(gui, "open_path", lambda path: None):
+        find(parent, gui.ttk.Button,
+             "List every website-only card...").invoke()
+    check("declining the import runs nothing",
+          not any(r["tool"].endswith("cs-import.py") for r in app.runs),
+          str(app.runs))
+    check("and the file is still written for the hand route",
+          any((folder / "canadianshopper_products").glob(
+              "canadianshopper_import_*.csv")), "")
+    harness._BOX.askyesno = lambda title, message, **k: (
+        asked.append((title, message)) or True)
+
+    # ---- a plugin that fails outright leaves the file for the hand route
+    asked[:] = []
+    app.runs.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: import_actions.get(action, "")), \
+            patch.object(gui, "BASE", folder), \
+            patch.object(gui, "open_path", lambda path: None):
+        find(parent, gui.ttk.Button,
+             "List every website-only card...").invoke()
+    run = next(r for r in app.runs if r["tool"].endswith("cs-import.py"))
+    app.lines.clear()
+    run["on_done"](1)
+    check("an import that failed says so and keeps the file",
+          any("did not finish (exit 1)" in text for _tag, text in app.lines) and
+          any(folder.joinpath("canadianshopper_products").glob("*.csv")),
+          str(app.lines[-3:]))
+
+
 def main():
     test_woo_items()
     test_plugin_items()
@@ -1243,6 +1462,8 @@ def main():
     test_ignoring()
     test_listing_the_leftovers()
     test_listing_skips_what_is_not_a_listing_job()
+    test_one_click_import()
+    test_one_click_import_refusals()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))

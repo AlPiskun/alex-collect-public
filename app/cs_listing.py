@@ -163,6 +163,63 @@ def build_rows(products, values=None):
     return rows, notes
 
 
+def import_report(written, answer):
+    """What the plugin's own import result says about each file written.
+
+    ``written`` is ``[(path, row_count), ...]``; ``answer`` the plugin's
+    ``{"imported": [...], "failed": [...]}``. A file the result does not
+    mention is *unknown*, never assumed imported: an import that did not
+    confirm itself has not happened as far as the person's shop is concerned,
+    and saying so costs nothing while the opposite would hide a batch of
+    drafts that is not there.
+    """
+    written = list(written or [])
+    if not isinstance(answer, dict):
+        answer = {}
+
+    def entries(name):
+        rows = []
+        for entry in answer.get(name) or []:
+            if isinstance(entry, dict):
+                rows.append(entry)
+        return rows
+
+    imported, failed, unknown = [], [], []
+    for path, count in written:
+        name = Path(str(path)).name
+        hit_fail = None
+        for entry in entries("failed"):
+            label = str(entry.get("file") or entry.get("csv") or
+                        entry.get("path") or "")
+            if label and Path(label).name == name:
+                hit_fail = entry
+                break
+        if hit_fail is not None:
+            failed.append({"file": name,
+                           "why": str(hit_fail.get("why") or
+                                      hit_fail.get("reason") or
+                                      hit_fail.get("message") or
+                                      "the plugin gave no reason")})
+            continue
+        hit = None
+        for entry in entries("imported"):
+            label = str(entry.get("file") or entry.get("csv") or
+                        entry.get("path") or "")
+            if label and Path(label).name == name:
+                hit = entry
+                break
+        if hit is None:
+            unknown.append({"file": name, "rows": count})
+            continue
+        try:
+            made = int(hit.get("drafts") if hit.get("drafts") is not None
+                       else hit.get("rows") or count)
+        except (TypeError, ValueError):
+            made = count
+        imported.append({"file": name, "rows": count, "drafts": made})
+    return {"imported": imported, "failed": failed, "unknown": unknown}
+
+
 def write_rows(rows, folder, batch_size=CANADIANSHOPPER_BATCH_SIZE,
                when=None):
     """Write the import CSV(s); returns ``[(path, row_count), ...]``.

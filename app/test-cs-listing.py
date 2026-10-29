@@ -235,9 +235,53 @@ def test_pipeline_shares_it():
            cs_listing.defaults()["free_shipping"]), "")
 
 
+def test_import_report():
+    print()
+    print("== 6. what the plugin's import result is allowed to mean ==")
+    written = [(Path("/x/canadianshopper_import_1_01_of_02.csv"), 2),
+               (Path("/x/canadianshopper_import_1_02_of_02.csv"), 1)]
+    report = cs_listing.import_report(written, {
+        "imported": [{"file": "canadianshopper_import_1_01_of_02.csv",
+                      "rows": 2, "drafts": 2}],
+        "failed": [{"file": "/x/canadianshopper_import_1_02_of_02.csv",
+                    "why": "the importer refused row 1"}]})
+    check("a file the plugin imported is counted with its drafts",
+          report["imported"] == [{"file": "canadianshopper_import_1_01_of_02.csv",
+                                  "rows": 2, "drafts": 2}], str(report))
+    check("a file it refused keeps the reason",
+          report["failed"] == [{"file": "canadianshopper_import_1_02_of_02.csv",
+                                "why": "the importer refused row 1"}],
+          str(report["failed"]))
+    check("and a refused file is never also counted as imported",
+          not any(entry["file"].endswith("02_of_02.csv")
+                  for entry in report["imported"]), str(report))
+
+    report = cs_listing.import_report(written, {"imported": [], "failed": []})
+    check("a file the result ignores is unknown, never assumed imported",
+          len(report["unknown"]) == 2 and not report["imported"], str(report))
+    report = cs_listing.import_report(written, None)
+    check("a missing result file means nothing is claimed",
+          len(report["unknown"]) == 2, str(report))
+    report = cs_listing.import_report(written, {
+        "imported": [{"file": "canadianshopper_import_1_01_of_02.csv"}],
+        "failed": []})
+    check("a result without a draft count falls back to the rows written",
+          report["imported"][0]["drafts"] == 2, str(report))
+    check("an unreadable draft count is not a reason to claim zero",
+          cs_listing.import_report(
+              [(Path("a.csv"), 3)],
+              {"imported": [{"file": "a.csv", "drafts": "many"}]})
+          ["imported"][0]["drafts"] == 3, "")
+    check("only the file name is compared, not the whole path",
+          cs_listing.import_report(
+              [(Path("C:/deep/folder/a.csv"), 1)],
+              {"imported": [{"file": "a.csv", "drafts": 1}]})["imported"],
+          "")
+
+
 def test_listing_products():
     print()
-    print("== 6. only a product the comparison actually read can be listed ==")
+    print("== 7. only a product the comparison actually read can be listed ==")
     rows = [{"kind": "only-woo", "woo_id": 41, "woo": 3, "card": "A"},
             {"kind": "only-woo", "woo_id": 99, "woo": 1, "card": "B"},
             {"kind": "fix", "woo_id": 41, "woo": 3, "other": 0, "card": "C"}]
@@ -262,6 +306,7 @@ def main():
     test_rows_and_notes()
     test_file()
     test_pipeline_shares_it()
+    test_import_report()
     test_listing_products()
     print()
     if FAIL:

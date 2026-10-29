@@ -64,7 +64,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.66"
+VERSION = "2.67"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -92,6 +92,9 @@ CS_STOCK_ACTION = "stock.list"
 #  The write half. It is asked for exactly as the plugin names it, so an
 #  older plugin that cannot set stock is detected rather than assumed.
 CS_STOCK_SET_ACTION = "stock.set"
+#  Creating listings is the plugin's own importer: the core writes the CSV it
+#  has always written, and this action takes that file and makes the drafts.
+CS_IMPORT_ACTION = "marketplace.import_csv"
 #  batch.photo_replace existed in 1.0.14 but only matched a staged CSV
 #  row. The CSV-free --mode replace arrived in 1.0.15, so the action ID
 #  alone cannot tell the two apart - the version has to be checked.
@@ -887,6 +890,8 @@ inside Alex Collect - no bookmarklet is required for publishing:
 
   1. Open CanadianShopper (button below) and log in.
   2. Vendor dashboard -> Products -> upload / import the CSV.
+     (A listing made from the stock panel writes the same file and can
+     import it as drafts itself, when the plugin supports it.)
   3. Use the newest file from the cs-ready folder - the name starts
      with canadianshopper_import_ and ends _01_of_NN.csv.
   4. Choose Preview drafts. It lists ready and blocked drafts and writes
@@ -966,7 +971,9 @@ that can be put back rather than corrected: the listing buttons write the
 CanadianShopper import file from the website product itself - its title, price,
 photo URL and stock count - in the same fourteen columns and with the same
 filename as a batch from the pipeline. Nothing appears on CanadianShopper until
-that file is imported, and it arrives as an unpublished draft.
+that file is imported - which the panel offers to do itself when the plugin
+can, so the drafts normally appear without leaving the app - and it arrives as
+an unpublished draft.
 
 A pair is only made when a shared SKU or the title identifies the same card - a
 wrong pair would accuse a card that is fine - and an unpaired card is never
@@ -1069,6 +1076,8 @@ runs behind your login in the browser (with or without the add-on):
 
   1. Open CanadianShopper (button below) and log in.
   2. Vendor dashboard -> Products -> upload / import the CSV.
+     (A listing made from the stock panel writes the same file and can
+     import it as drafts itself, when the plugin supports it.)
   3. Use the newest file from the cs-ready folder or your batch folder.
   4. Keep each file under 500 rows (that is what Combine ensures).
   5. When the import shows the products, publish them.
@@ -1334,8 +1343,8 @@ TOOLTIPS = {
     "Fix the selected cards...": "Set CanadianShopper to the website's count for just the rows selected in the list, after a confirmation listing them",
     "Set the website to the selected cards' counts...": "The reverse fix: set the website's stock count to the count the other site reports, for the selected cards - always shown and confirmed first; needs WooCommerce keys with Read/Write access",
     "Open the selected cards on the website": "Open the website's own product edit page for the selected cards - for a count a plugin owns, a variable product, or anything the stock panel should not touch",
-    "List the selected cards on CanadianShopper...": "Write the CanadianShopper import file for the selected website-only cards, built from the website product - title, price, its own photo and stock count; nothing appears on either site until you import it",
-    "List every website-only card...": "The same import file, for every card that is on the website and not on CanadianShopper",
+    "List the selected cards on CanadianShopper...": "Write the CanadianShopper import file for the selected website-only cards, built from the website product - title, price, its own photo and stock count - and then offer to import it as unpublished drafts",
+    "List every website-only card...": "The same file for every card that is on the website and not on CanadianShopper, and then the same offer to import it as drafts",
     "Ignore the selected cards": "Stop comparing the selected cards: a card that is no longer sold on one site disappears from the list until it is restored; nothing on either site changes",
     "Restore ignored cards...": "Put every ignored card back into comparisons, after showing which ones they are",
     "Read a saved eBay page...": "Read an eBay page you saved from your own signed-in browser (Ctrl+S, HTML only) - the way round eBay's \"Pardon our interruption\" check, using the same reader",
@@ -4684,9 +4693,9 @@ def build_stock(parent, app):
             if len(notes) > 6:
                 body += "\n  ... and %d more" % (len(notes) - 6)
         question = ("%s\n\n%s\n\nAlex Collect writes the CanadianShopper "
-                    "import file and nothing else: no listing appears until "
-                    "you import it, and it arrives as an unpublished draft. "
-                    "Write the file now?" %
+                    "import file first - the same file a batch produces - and "
+                    "then offers to import it as unpublished drafts. Nothing "
+                    "goes live either way. Write the file now?" %
                     (cs_listing.summary(built, values), body))
         if not messagebox.askyesno("List these cards on CanadianShopper?",
                                    question, parent=box.winfo_toplevel()):
@@ -4709,24 +4718,144 @@ def build_stock(parent, app):
         for path, count in written:
             app.console_line("Wrote %s (%d listing%s)." %
                              (path, count, "" if count == 1 else "s"), "ok")
-        app.console_line(
-            "Import %d row%s on CanadianShopper, then use Import / publish "
-            "drafts to review them before they go live. Compare again "
-            "afterwards and they leave this list." %
-            (total, "" if total == 1 else "s"), "ok")
-        summary.configure(
-            text="%d listing%s written to %s. Import it on CanadianShopper; "
-                 "the drafts are reviewed in Import / publish drafts." %
-                 (total, "" if total == 1 else "s", written[0][0].name))
         for note in notes:
             app.console_line("Note: %s - %s" % note, "dim")
-        if messagebox.askyesno(
-                "Import file written",
-                "%d listing%s written:\n\n  %s\n\nOpen the folder so it can "
-                "be imported on CanadianShopper?" %
-                (total, "" if total == 1 else "s", written[0][0]),
+        summary.configure(
+            text="%d listing%s written to %s." %
+                 (total, "" if total == 1 else "s", written[0][0].name))
+        import_written(written, total)
+
+    def import_written(written, total):
+        """Finish the job: hand the file to the plugin's own importer.
+
+        The file is written either way - it is the same CSV a batch produces -
+        so an older plugin still finishes the job by hand. What this adds is
+        the click: the drafts appear without opening the folder, and nothing is
+        published, because an import only ever creates drafts.
+        """
+        folder = written[0][0].parent
+        names = "\n".join("  %s (%d row%s)" %
+                          (path.name, count, "" if count == 1 else "s")
+                          for path, count in written)
+        action = TOOL_ACTION(CS_IMPORT_ACTION)
+        if not action:
+            messagebox.showinfo(
+                "The file is ready to import",
+                "%d listing%s written:\n\n%s\n\nThis plugin cannot import "
+                "a CSV itself yet, so the file has to go in by hand: "
+                "CanadianShopper -> vendor dashboard -> Products -> Import "
+                "from CSV.\n\nWhen the plugin declares \"%s\", this button "
+                "will do that step too." %
+                (total, "" if total == 1 else "s", names, CS_IMPORT_ACTION),
+                parent=box.winfo_toplevel())
+            if messagebox.askyesno(
+                    "Import file written",
+                    "Open the folder so %s can be imported on CanadianShopper?"
+                    % ("it" if len(written) == 1 else "they"),
+                    parent=box.winfo_toplevel()):
+                open_path(folder)
+            return
+        if not messagebox.askyesno(
+                "Import %d listing%s on CanadianShopper now?" %
+                (total, "" if total == 1 else "s"),
+                "%s\n\nImported listings arrive as unpublished drafts: "
+                "nothing is published and nothing goes live. They can be "
+                "previewed and published from Import / publish drafts when "
+                "you are ready." % names,
                 parent=box.winfo_toplevel()):
-            open_path(folder)
+            app.console_line(
+                "The file was written but not imported; it is in %s." % folder,
+                "dim")
+            if messagebox.askyesno(
+                    "Import file written",
+                    "Open the folder so %s can be imported by hand?" %
+                    ("it" if len(written) == 1 else "they"),
+                    parent=box.winfo_toplevel()):
+                open_path(folder)
+            return
+        result = folder / "cs-import-result.json"
+        try:
+            result.unlink()
+        except FileNotFoundError:
+            pass
+        args = []
+        for path, _count in written:
+            args += ["--csv", str(path)]
+        if CS_COOKIE_FILE.is_file():
+            args += ["--cookie-file", str(CS_COOKIE_FILE)]
+        args += ["--result", str(result)]
+        summary.configure(text="Importing %d listing%s on CanadianShopper..." %
+                               (total, "" if total == 1 else "s"))
+        app.console_line("Importing %d listing%s on CanadianShopper..." %
+                         (total, "" if total == 1 else "s"), "cmd")
+
+        def arrived(rc):
+            answer = {}
+            if result.is_file():
+                try:
+                    answer = json.loads(result.read_text(encoding="utf-8"))
+                except Exception:
+                    answer = {}
+            report = cs_listing.import_report(written, answer)
+            for entry in report["failed"]:
+                app.console_line("Not imported: %s - %s" %
+                                 (entry["file"], entry["why"]), "err")
+            if rc != 0:
+                app.console_line(
+                    "The import did not finish (exit %s). The file is still "
+                    "in %s, so it can be imported by hand." % (rc, folder),
+                    "err")
+                summary.configure(text="The import did not finish (exit %s); "
+                                       "the file is still there." % rc)
+                return
+            made = sum(entry["drafts"] for entry in report["imported"])
+            if report["imported"]:
+                app.console_line(
+                    "%d draft%s created on CanadianShopper. They are not "
+                    "live: Preview drafts lists which are ready and which "
+                    "need work." %
+                    (made, "" if made == 1 else "s"), "ok")
+            if report["unknown"]:
+                app.console_line(
+                    "%d file%s was not reported on by the plugin, so it is not "
+                    "known whether those drafts exist: check CanadianShopper "
+                    "-> Products before importing it again." %
+                    (len(report["unknown"]),
+                     "" if len(report["unknown"]) == 1 else "s"), "err")
+            if not report["imported"] and not report["unknown"]:
+                app.console_line(
+                    "Nothing was imported: the plugin reported no file as "
+                    "imported. The file is in %s." % folder, "err")
+            summary.configure(
+                text="%d draft%s created on CanadianShopper. Compare again "
+                     "after you publish them." %
+                     (made, "" if made == 1 else "s"))
+            if report["imported"]:
+                preview_drafts()
+
+        app.run_tool(action, args, "Import CanadianShopper listings",
+                     cwd=app.settings.get("pipeline_dir", str(WORK)),
+                     on_done=arrived)
+
+    def preview_drafts():
+        """Offer the read-only draft report that follows an import."""
+        if not TOOL_ACTION("marketplace.publish_drafts"):
+            return
+        if not messagebox.askyesno(
+                "Preview the new drafts?",
+                "Read the drafts back and write a readiness report - which "
+                "can be published and which need work?\n\nNothing is "
+                "published by this step.",
+                parent=box.winfo_toplevel()):
+            return
+        report = canadianshopper_results_dir(app) / "cs-publish-report.csv"
+        args = ["--cookie-file", str(CS_COOKIE_FILE), "--report", str(report)]
+        app.console_line("Reading the drafts back for a readiness report...",
+                         "cmd")
+        summary.configure(text="Reading the drafts back...")
+        app.run_tool("cs-publish-drafts.py", args,
+                     "Preview CanadianShopper drafts",
+                     cwd=app.settings.get("pipeline_dir", str(WORK)))
 
     def list_selected():
         list_rows(selected_rows())
@@ -5206,7 +5335,7 @@ def build_stock(parent, app):
                    "on the website and no longer on CanadianShopper can be put "
                    "back: the listing buttons write the same import file the "
                    "batch pipeline writes, from the website product itself, "
-                   "for you to import and review as a draft.",
+                   "and offer to import it as a draft straight away.",
               style="Dim.TLabel", wraplength=680, justify="left").pack(
                   anchor="w", pady=(6, 0))
 
