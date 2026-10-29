@@ -250,6 +250,43 @@ _ALIASES = (
 )
 
 
+#  A card's condition, as the two sites write it. Two titles that otherwise
+#  agree but name different conditions are two different items - the same card
+#  number in a different grade sells for different money - so pairing them
+#  would write one copy's count onto the other's listing.
+_GRADES = (
+    ("near mint-mint", "nm-mt"), ("nm-mt", "nm-mt"), ("nmmt", "nm-mt"),
+    ("excellent-mint", "ex-mt"), ("ex-mt", "ex-mt"), ("exmt", "ex-mt"),
+    ("very good-excellent", "vg-ex"), ("vg-ex", "vg-ex"), ("vgex", "vg-ex"),
+    ("near mint", "nm"), ("nm", "nm"),
+    ("excellent", "ex"), ("ex", "ex"),
+    ("very good", "vg"), ("vg", "vg"),
+    ("good", "gd"), ("gd", "gd"),
+    ("fair", "fr"), ("fr", "fr"),
+    ("poor", "pr"), ("pr", "pr"),
+    ("mint", "mt"), ("mt", "mt"),
+)
+_GRADE_PATTERNS = [(re.compile(r"(?<![a-z])%s(?![a-z])" %
+                               re.escape(word).replace(r"\ ", r"[\s-]+"), re.I),
+                    label) for word, label in _GRADES]
+def grade_of(name):
+    """The condition a title names, as a short label, or "" when it names none.
+
+    Deliberately literal: only conditions, never "creased" or "miscut" (those
+    are notes about one copy, not a grade). A title with no grade is "". The
+    caller only compares two grades when *both* are known, so a listing that
+    never states one still pairs as it always did.
+    """
+    text = str(name or "")
+    for pattern, label in _GRADE_PATTERNS:
+        if pattern.search(text):
+            #  The words only. "VG-EX 4" and "VG-EX" are the same condition
+            #  written with and without its number, and refusing to pair those
+            #  would invent a difference instead of finding one.
+            return label
+    return ""
+
+
 def fold(name):
     """A title with the set names spelled one way, before weighing."""
     text = str(name or "")
@@ -349,6 +386,12 @@ def pair(woo, other, minimum=DEFAULT_MIN_SCORE):
             #  other side says.
             here, other_name = fold(item["name"]), fold(other[index]["name"])
             other_number = card_number(other[index]["name"])
+            grade, other_grade = grade_of(item["name"]), grade_of(other[index]["name"])
+            if grade and other_grade and grade != other_grade:
+                #  Two copies of one card in different conditions are two
+                #  items: pairing them would set one copy's count on the
+                #  other's listing.
+                continue
             if number and other_number and number != other_number:
                 #  Two different card numbers are two different cards, however
                 #  alike the rest of the words are - a set has one #25.
@@ -566,6 +609,76 @@ def owner_of(pairs, item):
 def same_words(a, b):
     """Whether two titles are the same card's words, in any order and case."""
     return bool(str(a or "").strip()) and card_key(a) == card_key(b)
+
+
+def status_tally(items):
+    """How many listings the reader reported in each state, in its own words.
+
+    Printed after the read so the person can check it against the dashboard:
+    if a listing was moved there and this still says "archived", the reading
+    is stale and that is the plugin's page, not the comparison's.
+    """
+    counts, spelled = {}, {}
+    for item in items or []:
+        kind = status_of(item)
+        if kind == "active":
+            word = "on sale"
+        else:
+            word = (str((item or {}).get("status") or "").strip()
+                    or "not on sale")
+        #  The same word in two cases is one state: the vendor's own spelling
+        #  is kept for the line, but it must not be counted twice.
+        key = word.lower()
+        counts[key] = counts.get(key, 0) + 1
+        spelled.setdefault(key, word)
+    return {spelled[key]: counts[key] for key in counts}
+
+
+def tally_line(items):
+    """One sentence saying what states the reader reported."""
+    tally = status_tally(items)
+    if not tally:
+        return ""
+    on_sale = tally.pop("on sale", 0)
+    parts = ["%d on sale" % on_sale]
+    for word in sorted(tally):
+        parts.append("%d %s" % (tally[word], word))
+    return "%d listing(s): %s" % (sum(tally.values()) + on_sale,
+                                  ", ".join(parts))
+
+
+def out_of_stock_rows(rows):
+    """Rows the other site holds at zero - the listing exists, unsold stock
+    is what it has none of."""
+    return [row for row in rows or []
+            if row.get("kind") == FIX and int(row.get("other") or 0) == 0]
+
+
+def held_elsewhere(pairs, only_woo, other_items, minimum=0.45):
+    """One-sided cards whose card number is listed under another product.
+
+    A card cannot be matched twice, so a website product whose listing is
+    already held by a different product with a similar title is not missing
+    from the other site - the listing is there, under something else. Whether
+    that means "duplicate" or "another grade" is decided by the words, and
+    both are reported, because only the person knows which copy is which.
+    """
+    found = []
+    for item in only_woo or []:
+        listing, score = closest(other_items, item.get("name") or "")
+        if listing is None or score < minimum:
+            continue
+        owner = owner_of(pairs, listing)
+        if owner is None:
+            continue
+        found.append({
+            "card": item.get("name") or "",
+            "listing": listing.get("name") or "",
+            "owner": owner.get("name") or "",
+            "score": score,
+            "same": same_words(item.get("name"), owner.get("name")),
+        })
+    return found
 
 
 def no_count(items):

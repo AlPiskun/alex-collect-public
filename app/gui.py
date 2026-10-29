@@ -64,7 +64,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.77"
+VERSION = "2.78"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -5269,6 +5269,16 @@ def build_stock(parent, app):
                 "%s is on %s but not on sale (%s) - a count cannot fix that." %
                 (row["card"], state["label"], row.get("state") or "not on sale"),
                 "warn")
+        unsold = stock_compare.out_of_stock_rows(rows)
+        if unsold:
+            #  The listing exists and is on sale; it simply has no stock. That
+            #  is a count job, not a listing job, and saying so stops it being
+            #  read as "this card is not on CanadianShopper".
+            app.console_line(
+                "%d of the disagreements are listings %s holds at 0: the "
+                "listing exists, it just cannot be bought. \"Set "
+                "CanadianShopper to the website's counts...\" puts the "
+                "stock back." % (len(unsold), state["label"]), "warn")
         no_count = stock_compare.no_count_rows(rows)
         for row in no_count:
             app.console_line(
@@ -5299,37 +5309,50 @@ def build_stock(parent, app):
                 if same:
                     twins.append((row["card"], owner))
             if near:
-                app.console_line(
-                    "%d of those %d have a similar title on %s - check these "
-                    "by hand before listing them again:" %
-                    (len(near), len(missing), state["label"]), "warn")
-                for card, other_name, score, owner, same in near[:8]:
-                    line = "  %s\n      closest: %s (%d%%)" % (
-                        card, other_name, round(score * 100))
-                    if same:
-                        line += ("  - that listing already belongs to %s, "
-                                 "which has the same title" %
-                                 (owner.get("name") or "another website "
-                                                       "product"))
-                    elif owner is not None:
-                        line += ("  - already compared with %s" %
-                                 (owner.get("name") or "another website "
-                                                       "product"))
-                    app.console_line(line, "dim")
-                if len(near) > 8:
-                    app.console_line("  ... and %d more" % (len(near) - 8),
-                                     "dim")
-            if twins:
-                #  The one fact that settles it: a listing cannot be shared,
-                #  so two website products with one title means the card is
-                #  listed once and duplicated on the website - not missing.
-                app.console_line(
-                    "%d of those have the same title as a website product "
-                    "that already holds the listing: the listing exists, and "
-                    "the duplicate on your website does not. Listing it again "
-                    "would make a second one there - merge or delete the "
-                    "duplicate on the website, or ignore the card here." %
-                    len(twins), "warn")
+                held = [row for row in near if row[3] is not None]
+                twins = [row for row in held if row[4]]
+                free = [row for row in near if row[3] is None]
+                if held:
+                    app.console_line(
+                        "%d of those %d %s a card %s already lists under a "
+                        "different website product - the listing is there, so "
+                        "nothing is missing:" %
+                        (len(held), len(missing),
+                         "names" if len(held) == 1 else "name",
+                         state["label"]), "warn")
+                    if twins:
+                        app.console_line(
+                            "  %d of them %s that product's exact title: a "
+                            "duplicate on your website, not a card to list - "
+                            "merge or delete it, or ignore the card here." %
+                            (len(twins), "has" if len(twins) == 1 else "have"),
+                            "dim")
+                    others = len(held) - len(twins)
+                    if others:
+                        app.console_line(
+                            "  %d are worded differently (another grade, copy "
+                            "or condition): that copy is not listed, so it can "
+                            "be listed if you sell it separately." % others,
+                            "dim")
+                    for card, other_name, score, owner, same in held[:8]:
+                        app.console_line(
+                            "  %s\n      nearest: %s (%d%%)  - held by %s" %
+                            (card, other_name, round(score * 100),
+                             owner.get("name") or "another product"), "dim")
+                    if len(held) > 8:
+                        app.console_line("  ... and %d more" % (len(held) - 8),
+                                         "dim")
+                if free:
+                    app.console_line(
+                        "%d of those %s a similar title on %s that no website "
+                        "product holds yet - those are wording problems, not "
+                        "missing cards:" %
+                        (len(free), "has" if len(free) == 1 else "have",
+                         state["label"]), "warn")
+                    for card, other_name, score, owner, same in free[:6]:
+                        app.console_line(
+                            "  %s\n      nearest: %s (%d%%)" %
+                            (card, other_name, round(score * 100)), "dim")
             if nothing:
                 app.console_line(
                     "%d of those %d have nothing similar on %s: those cards "
@@ -5461,6 +5484,11 @@ def build_stock(parent, app):
             clear_list()
             return False
         state["label"], state["mode"] = "CanadianShopper", "count"
+        #  The states the reader claims, in its own words: if a listing was
+        #  moved in the dashboard and this still shows the old state, the
+        #  reading is stale - and that is worth knowing before acting on it.
+        app.console_line("What the reader returned - %s."
+                         % stock_compare.tally_line(items), "dim")
         compare_items(items, "CanadianShopper", "count", creds)
         return True
 

@@ -2266,19 +2266,151 @@ def test_a_duplicate_on_the_website():
                                    "inventory": 0, "status": "Active"}]}),
             encoding="utf-8")
         app.runs[-1]["on_done"](0)
-    check("the panel names the listing that is already held",
-          any("already belongs to" in text for _tag, text in app.lines),
+    check("the panel names the listing that is already held, and by whom",
+          any("held by" in text for _tag, text in app.lines),
           str(app.lines[-6:]))
-    check("and says the listing exists while the duplicate does not",
-          any("the listing exists" in text and "duplicate on your website"
-              in text for _tag, text in app.lines), str(app.lines[-5:]))
-    check("and warns that listing it again would make a second one",
-          any("Listing it again would make a second one" in text
-              for _tag, text in app.lines), str(app.lines[-5:]))
+    check("and says the listing is there, so nothing is missing",
+          any("the listing is there" in text and "nothing is missing" in text
+              for _tag, text in app.lines), str(app.lines[-6:]))
+    check("and calls the identical one a duplicate, not a card to list",
+          any("a duplicate on your website, not a card to list" in text
+              for _tag, text in app.lines), str(app.lines[-6:]))
     check("and the duplicate is not counted among the cards that are really "
           "missing",
           any("nothing similar" in text and "2 of those 3" in text
               for _tag, text in app.lines), str(len(app.lines)))
+
+
+def test_what_the_reader_claimed():
+    print()
+    print("== 26. the reader's own states are reported, so a stale read shows ==")
+    items = stock_compare.plugin_items({"items": [
+        {"title": "A live card", "inventory": 3, "status": "Active"},
+        {"title": "Another live card", "inventory": 0, "status": "active"},
+        {"title": "An archived card", "inventory": 0, "status": "Archived"},
+        {"title": "A draft card", "inventory": 0, "status": "draft"},
+        {"title": "An archived card in another case", "inventory": 0,
+         "status": "ARCHIVED"},
+    ]})
+    tally = stock_compare.status_tally(items)
+    check("the reader's states are counted in its own words",
+          tally == {"on sale": 2, "Archived": 2, "draft": 1}, str(tally))
+    check("and one case of the same word is counted once",
+          list(tally).count("Archived") + list(tally).count("ARCHIVED") == 1,
+          str(tally))
+    check("the line says how many are in each state",
+          stock_compare.tally_line(items) ==
+          "5 listing(s): 2 on sale, 2 Archived, 1 draft",
+          stock_compare.tally_line(items))
+    check("nothing read back says so rather than inventing a tally",
+          stock_compare.tally_line([]) == "", "")
+
+    #  A listing the other site holds at zero: it exists, it just has no
+    #  stock. That is a count job, not a listing job.
+    rows = [
+        {"kind": stock_compare.FIX, "card": "Zero card", "woo": 6, "other": 0},
+        {"kind": stock_compare.FIX, "card": "Agreeing card", "woo": 2,
+         "other": 2},
+        {"kind": stock_compare.FIX, "card": "Other way", "woo": 1, "other": 6},
+        {"kind": stock_compare.ONLY_WOO, "card": "Missing card", "woo": 1,
+         "other": None},
+    ]
+    zeros = stock_compare.out_of_stock_rows(rows)
+    check("only the listings the other side holds at zero are picked",
+          [row["card"] for row in zeros] == ["Zero card"], str(zeros))
+
+
+def test_held_under_another_product():
+    print()
+    print("== 27. a card listed under another product is not a missing card ==")
+    woo = [
+        #  The live copy holds the listing.
+        {"name": "#25 Pete Stemkowski (EX) 1970-71 O-Pee-Chee", "sku": "",
+         "qty": 2, "id": 12},
+        #  Same words, sold: a duplicate that cannot hold it.
+        {"name": "#25 Pete Stemkowski (EX) 1970-71 O-Pee-Chee", "sku": "",
+         "qty": 0, "id": 11},
+        #  The copy the listing belongs to, and beside it another grade.
+        {"name": "#24 1st Series Checklist (PR) 1970-71 O-Pee-Chee", "sku": "",
+         "qty": 1, "id": 15},
+        {"name": "#24 1st Series Checklist (VG) 1970-71 O-Pee-Chee", "sku": "",
+         "qty": 1, "id": 13},
+        #  Nothing like it anywhere.
+        {"name": "1985 Topps Mark McGwire #401", "sku": "", "qty": 1,
+         "id": 14},
+    ]
+    other = stock_compare.plugin_items({"items": [
+        {"id": 501, "title": "#25 Pete Stemkowski (EX) 1970-71 O-Pee-Chee",
+         "inventory": 2, "status": "Active"},
+        {"id": 502, "title": "#24 1st Series Checklist (PR) 1970-71 O-Pee-Chee",
+         "inventory": 1, "status": "Active"},
+    ]})
+    pairs, only_woo, only_other = stock_compare.pair(woo, other)
+    found = stock_compare.held_elsewhere(pairs, only_woo, other)
+    by_card = {row["card"]: row for row in found}
+    check("the sold duplicate is found under the live product",
+          any(row["card"].startswith("#25") and row["same"]
+              for row in found), str(found))
+    check("the copy in another grade is found too, but not called the same",
+          any(row["card"].startswith("#24") and not row["same"]
+              for row in found), str(found))
+    check("the card nothing resembles is not claimed as listed",
+          not any("McGwire" in row["card"] for row in found), str(found))
+
+    #  ...and the panel says which is which, in one block each.
+    folder, app, parent = build_panel()
+    products = PRODUCTS + [
+        {"id": 12, "name": "#25 Pete Stemkowski (EX) 1970-71 O-Pee-Chee",
+         "sku": "", "manage_stock": True, "stock_quantity": 6,
+         "type": "simple"},
+        {"id": 11, "name": "#25 Pete Stemkowski (EX) 1970-71 O-Pee-Chee",
+         "sku": "", "manage_stock": True, "stock_quantity": 0,
+         "type": "simple"},
+        {"id": 13, "name": "#24 1st Series Checklist (VG) 1970-71 O-Pee-Chee",
+         "sku": "", "manage_stock": True, "stock_quantity": 1,
+         "type": "simple"},
+        {"id": 15, "name": "#24 1st Series Checklist (PR) 1970-71 O-Pee-Chee",
+         "sku": "", "manage_stock": True, "stock_quantity": 1,
+         "type": "simple"},
+    ]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    app.lines.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_all), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+        (folder / "cs-stock.json").write_text(json.dumps({"items": [
+            {"id": 501, "title": "#25 Pete Stemkowski (EX) 1970-71 O-Pee-Chee",
+             "inventory": 0, "status": "Active"},
+            {"id": 502,
+             "title": "#24 1st Series Checklist (PR) 1970-71 O-Pee-Chee",
+             "inventory": 1, "status": "Active"}]}), encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+    check("the panel groups them as cards the site already lists",
+          any("already lists under a different website product" in text
+              for _tag, text in app.lines), str(app.lines[-8:]))
+    check("it counts the duplicates separately from the other grades",
+          any("exact title" in text for _tag, text in app.lines) and
+          any("another grade, copy or condition" in text
+              for _tag, text in app.lines), str(app.lines[-8:]))
+    check("and still warns that a different grade may be worth listing",
+          any("can be listed if you sell it separately" in text
+              for _tag, text in app.lines), str(app.lines[-8:]))
+    check("and a listing held at zero is called a count job, not a listing "
+          "job",
+          any("holds at 0" in text and "puts the stock back" in text
+              for _tag, text in app.lines), str(app.lines[-8:]))
+    check("and the reader's own states are printed for checking",
+          any("What the reader returned" in text for _tag, text in app.lines),
+          str(app.lines[:4]))
 
 
 def main():
@@ -2312,6 +2444,8 @@ def main():
     test_a_listing_that_counts_nothing()
     test_nearest_title_diagnosis()
     test_a_duplicate_on_the_website()
+    test_what_the_reader_claimed()
+    test_held_under_another_product()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))
