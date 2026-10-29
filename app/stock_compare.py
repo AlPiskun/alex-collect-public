@@ -44,6 +44,12 @@ ONLY_OTHER = "only-other"
 #  archived listing changes nothing anyone can buy - so it needs its own words
 #  and its own fix: publishing, or the vendor dashboard.
 OFF_SALE = "off-sale"
+#  A card that IS on the other site, paired by title, but whose listing carries
+#  no stock count at all - no inventory value to compare. It is not missing and
+#  it is not a disagreement: there is nothing to write in either direction, and
+#  saying "only on your website" would be a plain lie about a listing that
+#  exists. It needs its own words because the fix is on that listing itself.
+NO_COUNT = "no-count"
 
 #  Words a vendor dashboard uses for a listing nobody can buy yet. Anything not
 #  in here is treated as active, because a status the core does not recognise
@@ -165,8 +171,13 @@ def plugin_items(payload):
     """The listings a plugin reported, in this module's one shape.
 
     The plugin writes ``{"items": [...]}``, each entry with a title, a SKU when
-    it has one, an inventory number, and from 1.0.25 a status. Rows without a
-    usable number are dropped rather than guessed at.
+    it has one, an inventory number, and from 1.0.25 a status.
+
+    Every listing the reader reports is kept, even one with no stock number:
+    a listing with no number still exists, and dropping it is how a card that
+    is really there comes back as "only on your website". Rows with no usable
+    title are the only ones dropped, because nothing can be matched against
+    them.
     """
     if isinstance(payload, dict):
         payload = payload.get("items") or payload.get("listings") or []
@@ -175,20 +186,25 @@ def plugin_items(payload):
         if not isinstance(row, dict):
             continue
         name = str(row.get("title") or row.get("name") or "").strip()
+        if not name:
+            continue
         quantity = row.get("inventory")
         if quantity is None:
             quantity = row.get("quantity")
-        if not name or quantity is None:
-            continue
-        try:
-            qty = int(quantity)
-        except (TypeError, ValueError):
-            continue
-        items.append({"name": name,
-                      "sku": str(row.get("sku") or "").strip(),
-                      "qty": qty,
-                      "id": row.get("id"),
-                      "status": str(row.get("status") or "").strip()})
+        entry = {"name": name,
+                 "sku": str(row.get("sku") or "").strip(),
+                 "qty": None,
+                 "id": row.get("id"),
+                 "status": str(row.get("status") or "").strip()}
+        if quantity is not None and str(quantity).strip() != "":
+            try:
+                entry["qty"] = int(quantity)
+            except (TypeError, ValueError):
+                #  A number the core cannot read is no better than no number,
+                #  and dropping the row would turn a listing that exists into
+                #  a card that "is not there".
+                entry["qty"] = None
+        items.append(entry)
     return items
 
 
@@ -232,6 +248,43 @@ _ALIASES = (
     (re.compile(r"\bpro[\s._-]?set\b", re.I), " proset "),
     (re.compile(r"\btops\b", re.I), " topps "),
 )
+
+
+#  A card's condition, as the two sites write it. Two titles that otherwise
+#  agree but name different conditions are two different items - the same card
+#  number in a different grade sells for different money - so pairing them
+#  would write one copy's count onto the other's listing.
+_GRADES = (
+    ("near mint-mint", "nm-mt"), ("nm-mt", "nm-mt"), ("nmmt", "nm-mt"),
+    ("excellent-mint", "ex-mt"), ("ex-mt", "ex-mt"), ("exmt", "ex-mt"),
+    ("very good-excellent", "vg-ex"), ("vg-ex", "vg-ex"), ("vgex", "vg-ex"),
+    ("near mint", "nm"), ("nm", "nm"),
+    ("excellent", "ex"), ("ex", "ex"),
+    ("very good", "vg"), ("vg", "vg"),
+    ("good", "gd"), ("gd", "gd"),
+    ("fair", "fr"), ("fr", "fr"),
+    ("poor", "pr"), ("pr", "pr"),
+    ("mint", "mt"), ("mt", "mt"),
+)
+_GRADE_PATTERNS = [(re.compile(r"(?<![a-z])%s(?![a-z])" %
+                               re.escape(word).replace(r"\ ", r"[\s-]+"), re.I),
+                    label) for word, label in _GRADES]
+def grade_of(name):
+    """The condition a title names, as a short label, or "" when it names none.
+
+    Deliberately literal: only conditions, never "creased" or "miscut" (those
+    are notes about one copy, not a grade). A title with no grade is "". The
+    caller only compares two grades when *both* are known, so a listing that
+    never states one still pairs as it always did.
+    """
+    text = str(name or "")
+    for pattern, label in _GRADE_PATTERNS:
+        if pattern.search(text):
+            #  The words only. "VG-EX 4" and "VG-EX" are the same condition
+            #  written with and without its number, and refusing to pair those
+            #  would invent a difference instead of finding one.
+            return label
+    return ""
 
 
 def fold(name):
@@ -333,6 +386,12 @@ def pair(woo, other, minimum=DEFAULT_MIN_SCORE):
             #  other side says.
             here, other_name = fold(item["name"]), fold(other[index]["name"])
             other_number = card_number(other[index]["name"])
+            grade, other_grade = grade_of(item["name"]), grade_of(other[index]["name"])
+            if grade and other_grade and grade != other_grade:
+                #  Two copies of one card in different conditions are two
+                #  items: pairing them would set one copy's count on the
+                #  other's listing.
+                continue
             if number and other_number and number != other_number:
                 #  Two different card numbers are two different cards, however
                 #  alike the rest of the words are - a set has one #25.
@@ -353,7 +412,12 @@ def pair(woo, other, minimum=DEFAULT_MIN_SCORE):
                 continue
             scored.append((value, numbers_ok, item, index,
                            "number" if shared_number else "title"))
-    scored.sort(key=lambda row: (-row[0], not row[1]))
+    #  When two website products score identically - which is what a
+    #  duplicate does - the one that can actually sell is the one that should
+    #  hold the listing. Otherwise a sold-out copy quietly owns the only
+    #  listing and the live product beside it is reported as missing.
+    scored.sort(key=lambda row: (-row[0], not row[1],
+                                 -int((row[2].get("qty") or 0) > 0)))
 
     used_woo = set()
     for value, _numbers_ok, item, index, how in scored:
@@ -380,6 +444,10 @@ def differences(pairs):
     """
     rows = []
     for row in pairs or []:
+        #  A pair whose other side counts nothing is not a disagreement, and
+        #  turning "no number" into 0 would invent one - it gets its own row.
+        if row["other"].get("qty") is None:
+            continue
         woo_qty = int(row["woo"].get("qty") or 0)
         other_qty = int(row["other"].get("qty") or 0)
         if woo_qty == other_qty:
@@ -428,13 +496,28 @@ def action_list(pairs, only_woo, only_other, ignored=(), other_label=""):
     rows = []
     live = []
     for row in pairs or []:
-        if is_on_sale(row.get("other")):
+        if is_on_sale(row.get("other")) and row["other"].get("qty") is not None:
             live.append(row)
             continue
         other = row["other"]
+        if is_on_sale(other):
+            #  On sale, paired, but counting nothing: there is no number to
+            #  compare or write, so the listing is named for what it is.
+            rows.append({"card": row["woo"].get("name") or other.get("name") or "",
+                         "woo": int(row["woo"].get("qty") or 0),
+                         "other": None, "gap": 0, "by": row.get("by", "title"),
+                         "kind": NO_COUNT, "status": status_of(other),
+                         "state": "",
+                         "woo_id": row["woo"].get("id"),
+                         "woo_sku": row["woo"].get("sku") or "",
+                         "other_id": other.get("id"),
+                         "other_name": other.get("name") or "",
+                         "other_sku": other.get("sku") or ""})
+            continue
         rows.append({"card": row["woo"].get("name") or other.get("name") or "",
                      "woo": int(row["woo"].get("qty") or 0),
-                     "other": int(other.get("qty") or 0),
+                     "other": (None if other.get("qty") is None
+                               else int(other.get("qty") or 0)),
                      "gap": 0, "by": row.get("by", "title"),
                      "kind": OFF_SALE, "status": status_of(other),
                      "state": status_words(other),
@@ -465,7 +548,7 @@ def action_list(pairs, only_woo, only_other, ignored=(), other_label=""):
     #  Fixable first, then the cards that exist but cannot be bought, then the
     #  ones that are missing entirely: the first two have a fix, the last one
     #  is usually a listing that needs creating.
-    order = {FIX: 0, OFF_SALE: 1, ONLY_OTHER: 2, ONLY_WOO: 3}
+    order = {FIX: 0, OFF_SALE: 1, NO_COUNT: 2, ONLY_OTHER: 3, ONLY_WOO: 4}
     visible.sort(key=lambda row: (order.get(row["kind"], 9),
                                   -abs(row["gap"]), row["card"].lower()))
     return visible
@@ -474,6 +557,133 @@ def action_list(pairs, only_woo, only_other, ignored=(), other_label=""):
 def off_sale_rows(rows):
     """The rows whose other-site listing exists but is not on sale."""
     return [row for row in rows or [] if row.get("kind") == OFF_SALE]
+
+
+def no_count_rows(rows):
+    """The rows whose other-site listing carries no stock count at all."""
+    return [row for row in rows or [] if row.get("kind") == NO_COUNT]
+
+
+def closest(items, name):
+    """The other site's nearest title to ``name``, as ``(item, score)``.
+
+    Only a diagnostic, never a pair: when a card comes back one-sided, the
+    question that decides what to do is whether the listing is missing or
+    merely worded differently. This answers it with the same weighing the
+    pairing uses, so "nothing here comes close" is a fact rather than a guess.
+    """
+    here = fold(name)
+    number = card_number(name)
+    digits = _digits(name)
+    best, best_score = None, 0.0
+    for item in items or []:
+        other = fold(item.get("name") or "")
+        if not other:
+            continue
+        #  The same rule the pairing uses: two different card numbers are two
+        #  different cards, however alike the rest of the words are. Without
+        #  it every title in a set looks like a near miss.
+        if number and card_number(item.get("name") or "") not in ("", number):
+            continue
+        other_digits = _digits(item.get("name") or "")
+        if digits and other_digits and not (digits & other_digits):
+            continue
+        forward, _n1 = woo_orders.analyse(here, other)
+        backward, _n2 = woo_orders.analyse(other, here)
+        value = max(forward, backward)
+        if value > best_score:
+            best, best_score = item, value
+    return best, round(best_score, 3)
+
+
+def owner_of(pairs, item):
+    """The website product a listing is already compared with, or ``None``."""
+    if item is None:
+        return None
+    for row in pairs or []:
+        if row.get("other") is item:
+            return row.get("woo")
+    return None
+
+
+def same_words(a, b):
+    """Whether two titles are the same card's words, in any order and case."""
+    return bool(str(a or "").strip()) and card_key(a) == card_key(b)
+
+
+def status_tally(items):
+    """How many listings the reader reported in each state, in its own words.
+
+    Printed after the read so the person can check it against the dashboard:
+    if a listing was moved there and this still says "archived", the reading
+    is stale and that is the plugin's page, not the comparison's.
+    """
+    counts, spelled = {}, {}
+    for item in items or []:
+        kind = status_of(item)
+        if kind == "active":
+            word = "on sale"
+        else:
+            word = (str((item or {}).get("status") or "").strip()
+                    or "not on sale")
+        #  The same word in two cases is one state: the vendor's own spelling
+        #  is kept for the line, but it must not be counted twice.
+        key = word.lower()
+        counts[key] = counts.get(key, 0) + 1
+        spelled.setdefault(key, word)
+    return {spelled[key]: counts[key] for key in counts}
+
+
+def tally_line(items):
+    """One sentence saying what states the reader reported."""
+    tally = status_tally(items)
+    if not tally:
+        return ""
+    on_sale = tally.pop("on sale", 0)
+    parts = ["%d on sale" % on_sale]
+    for word in sorted(tally):
+        parts.append("%d %s" % (tally[word], word))
+    return "%d listing(s): %s" % (sum(tally.values()) + on_sale,
+                                  ", ".join(parts))
+
+
+def out_of_stock_rows(rows):
+    """Rows the other site holds at zero - the listing exists, unsold stock
+    is what it has none of."""
+    return [row for row in rows or []
+            if row.get("kind") == FIX and int(row.get("other") or 0) == 0]
+
+
+def held_elsewhere(pairs, only_woo, other_items, minimum=0.45):
+    """One-sided cards whose card number is listed under another product.
+
+    A card cannot be matched twice, so a website product whose listing is
+    already held by a different product with a similar title is not missing
+    from the other site - the listing is there, under something else. Whether
+    that means "duplicate" or "another grade" is decided by the words, and
+    both are reported, because only the person knows which copy is which.
+    """
+    found = []
+    for item in only_woo or []:
+        listing, score = closest(other_items, item.get("name") or "")
+        if listing is None or score < minimum:
+            continue
+        owner = owner_of(pairs, listing)
+        if owner is None:
+            continue
+        found.append({
+            "card": item.get("name") or "",
+            "listing": listing.get("name") or "",
+            "owner": owner.get("name") or "",
+            "score": score,
+            "same": same_words(item.get("name"), owner.get("name")),
+        })
+    return found
+
+
+def no_count(items):
+    """How many of these listings carry no stock number."""
+    return len([item for item in items or [] if item.get("qty") is None])
 
 
 def draft_rows(rows):
@@ -492,6 +702,59 @@ def hidden_count(pairs, only_woo, only_other, ignored):
     #  by hand got that wrong.
     return (len(action_list(pairs, only_woo, only_other, ())) -
             len(action_list(pairs, only_woo, only_other, ignored)))
+
+
+#  The publisher states its own tally in the console - "Drafts found: 0 |
+#  ready: 0 | blocked: 0" - and that sentence is the one fact the core can act
+#  on. Its report file is the plugin's format, not the core's, so an empty
+#  file, a header-only file and a file of preamble lines all have to mean the
+#  same thing: not a single draft.
+_DRAFT_TALLY = re.compile(r"drafts?\s*found\s*[:=\-]?\s*(\d+)", re.I)
+_SCANNED = re.compile(r"scanned\s+(\d+)\s+drafts?", re.I)
+
+
+def draft_count(text):
+    """How many drafts a publisher's own output says it found, or ``None``.
+
+    ``None`` means it did not say, which is not zero: a caller that cannot
+    read the tally must not tell someone their drafts do not exist.
+    """
+    said = str(text or "")
+    for pattern in (_DRAFT_TALLY, _SCANNED):
+        found = pattern.search(said)
+        if found:
+            try:
+                return int(found.group(1))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def report_rows(path):
+    """How many rows of detail a CSV report holds, the header excluded.
+
+    ``None`` means the file could not be read, which is not the same as an
+    empty report: a report nobody can read must not be described as "no
+    drafts". A file that holds only a header - or nothing at all, which is what
+    a publisher that found no drafts leaves behind - is a real, countable
+    zero.
+    """
+    try:
+        text = Path(str(path)).read_text(encoding="utf-8-sig",
+                                         errors="replace")
+    except (OSError, TypeError, ValueError):
+        return None
+    rows = 0
+    seen_header = False
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        if not seen_header:
+            #  The first non-blank line is the header a report always writes.
+            seen_header = True
+            continue
+        rows += 1
+    return rows
 
 
 def plan_set(rows):
@@ -588,10 +851,15 @@ def plugin_write_report(plan, answer):
 
 
 def describe_plan(plan, other_label="CanadianShopper"):
-    """The confirmation: exactly what would be written, one line per card."""
+    """The confirmation: exactly what would be written, one line per card.
+
+    Every line names the side the number comes from, because the same dialog
+    exists for the other direction and the direction is the one thing that
+    must never be guessed at.
+    """
     lines = []
     for item in plan or []:
-        lines.append("  %s\n      %s %d -> %d" % (
+        lines.append("  %s\n      %s %d -> %d   (from your website)" % (
             item["card"][:90], other_label, item["from"], item["to"]))
     return lines
 
@@ -614,6 +882,9 @@ def label_action(row, other_label="CanadianShopper", mode="count"):
         return "%s  -  on %s but not on sale (%s)  /  website %s" % (
             row["card"], other_label, row.get("state") or "not on sale",
             row.get("woo"))
+    if row.get("kind") == NO_COUNT:
+        return "%s  -  on %s but no stock count there  /  website %s" % (
+            row["card"], other_label, row["woo"])
     if row.get("kind") == ONLY_OTHER:
         return "%s  -  %s only, not on your website" % (row["card"], other_label)
     if mode == "listed":

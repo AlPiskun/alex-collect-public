@@ -242,8 +242,10 @@ def test_rows_to_plan():
           plan[0]["from"] == 2 and plan[0]["to"] == 0, str(plan))
     check("and the card's name, so the confirmation can say which one",
           plan[0]["title"] == "Card one", str(plan))
-    check("the confirmation reads card by card",
-          stock_write.describe(plan) == ["  Card one\n      website 2 -> 0"],
+    check("the confirmation reads card by card, and says where the new "
+          "number comes from",
+          stock_write.describe(plan) ==
+          ["  Card one\n      website 2 -> 0   (from CanadianShopper)"],
           str(stock_write.describe(plan)))
     check("one sentence says how much would change",
           stock_write.summary(plan) ==

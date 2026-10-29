@@ -10,6 +10,7 @@ import json
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 APP = Path(__file__).resolve().parent
@@ -90,10 +91,18 @@ def test_plugin_items():
         {"title": "", "inventory": 4},
         {"title": "Old key name", "quantity": 1}]}
     items = stock_compare.plugin_items(payload)
-    check("a title, a SKU and an inventory make a row", len(items) == 2,
+    check("a title, a SKU and an inventory make a row", len(items) == 3,
           str(items))
-    check("a listing with no inventory is dropped, not assumed",
-          all(item["name"] != "No number given" for item in items), "")
+    check("a listing with no inventory is kept, with no number to compare",
+          next((item for item in items
+                if item["name"] == "No number given"), {}).get("qty") is None,
+          str(items))
+    check("and not one number is invented for it",
+          not any(item["name"] == "No number given" and item["qty"] == 0
+                  for item in items), str(items))
+    check("a row with no title is still dropped - nothing can be matched to "
+          "it",
+          not any(item["name"] == "" for item in items), str(items))
     check("'quantity' is accepted as the older name",
           any(item["name"] == "Old key name" for item in items), str(items))
     check("'listings' is accepted as the older envelope",
@@ -570,6 +579,33 @@ def test_the_cookies_canadian_shopper_is_told_about():
           any("cookie.txt" in text and "bytes" in text and "saved" in text
               for _tag, text in app.lines), str(app.lines[-3:]))
 
+    # ---- a failed read must never fall back to a list from an earlier run,
+    #      which is the shape a cached answer takes once it is on disk.
+    #      (1.0.26 refuses to write a partial list; this proves the app does
+    #      not compare one either.)
+    app.runs.clear()
+    app.lines[:] = []
+    out = folder / "cs-stock.json"
+    out.write_text(json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "BASE", folder):
+        compare.invoke()
+        check("the old stock list is thrown away before the read, so a failed "
+              "read cannot compare it",
+              not out.exists(), str(out))
+        app.runs[0]["on_done"](1)
+    check("a failed read says nothing was compared",
+          any("nothing was compared" in text for _tag, text in app.lines),
+          str(app.lines[-2:]))
+    check("and it does not claim a comparison happened",
+          not any("Compared" in text for _tag, text in app.lines),
+          str(app.lines[-2:]))
+
 
 def test_one_card():
     print()
@@ -863,6 +899,10 @@ def test_the_fix_flow():
     check("the whole list asks before writing anything",
           asked and "Set CanadianShopper to these counts?" == asked[0][0],
           str(asked))
+    check("and the question names the direction, so the website is never "
+          "mistaken for the side that changes",
+          asked and "your website's count  ->  CanadianShopper" in asked[0][1]
+          and "Your website is not changed" in asked[0][1], str(asked[:1]))
     check("and the question lists the exact card and both counts",
           asked and "Gretzky" in asked[0][1] and "0 -> 2" in asked[0][1],
           str(asked))
@@ -973,9 +1013,16 @@ def test_the_fix_flow():
             patch.object(gui, "BASE", folder):
         set_site.invoke()
     check("the reverse fix asks before writing to the website",
-          asked and asked[0][0] == "Set the website to these counts?", str(asked))
-    check("and shows the website's count against the new one",
-          asked and "website 2 -> 0" in asked[0][1], str(asked))
+          asked and asked[0][0] ==
+          "Write CanadianShopper's counts onto your website?", str(asked))
+    check("and the question states the direction, so the two writes cannot "
+          "be taken for each other",
+          asked and "CanadianShopper's count  ->  your website" in asked[0][1]
+          and "CanadianShopper is not changed" in asked[0][1], str(asked[:1]))
+    check("and shows the website's count against the new one, and where the "
+          "new one came from",
+          asked and "website 2 -> 0" in asked[0][1]
+          and "(from CanadianShopper)" in asked[0][1], str(asked))
     check("declining sends nothing to the website", not writes, str(writes))
 
     wrote = {"updated": [{"id": 1, "inventory": 0, "title": "Gretzky"}],
@@ -1329,6 +1376,8 @@ def test_one_click_import():
           publish_run is not None and publish_run.get("confirm") not in
           (None, ""), str(publish_run))
 
+    report_csv = (folder / "canadianshopper_products" / "cs-publish-report.csv")
+    report_csv.write_text("card,state\nGretzky,published\n", encoding="utf-8")
     app.lines.clear()
     publish_run["on_done"](0)
     check("a finished publish says the report has the detail",
@@ -1337,6 +1386,21 @@ def test_one_click_import():
     check("and tells the person to compare again",
           any("Compare again" in text for _tag, text in app.lines),
           str(app.lines[-3:]))
+
+    # ---- a publisher that wrote no rows is never handed over as a report
+    asked.clear()
+    app.lines.clear()
+    report_csv.write_text("", encoding="utf-8")
+    publish_run["on_done"](0)
+    check("a publish that found no drafts says so plainly",
+          any("found no drafts" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and never claims the report has the detail",
+          not any("Publish finished" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and does not offer an empty report to open",
+          not any(title == "Open the publish report?"
+                  for title, _m in asked), str(asked))
 
     publish_run["on_done"](2)
     check("a publish that failed says the drafts are still unpublished",
@@ -1497,21 +1561,71 @@ def test_one_click_import_refusals():
     check("and nothing on the page says \"0 drafts\"",
           not any("0 draft" in str(w.cget("text")) for w in parent.walk()
                   if isinstance(w, gui.ttk.Label)), "")
-    check("and it offers to publish, because the matched listings may still "
-          "be drafts",
-          any(title == "Publish any ready drafts now?" for title, _m in asked),
-          str([title for title, _m in asked]))
     check("the console explains why nothing was created",
           any("already have a listing on CanadianShopper" in text
               for _tag, text in lines), str(lines[-4:]))
     check("and says which states the stock reader cannot see",
           any("a draft, hidden, archived, or off sale" in text
               for _tag, text in lines), str(lines[-4:]))
-    declined_publish = [title for title, _m in asked
-                        if title.startswith("Publish")]
     check("a file with nothing new never claims a draft was created",
           not any("draft created" in text for _tag, text in lines),
           str(lines[-4:]))
+    #  Nothing was created, so nobody knows whether there is a draft. The
+    #  publisher is asked to look first - never to apply blind.
+    look = next((r for r in app.runs
+                 if r["tool"].endswith("cs-publish-drafts.py")), None)
+    check("a publish is looked for before anyone is asked to type PUBLISH",
+          look is not None and "--apply" not in look["args"],
+          str(look and look["args"]))
+    check("and no PUBLISH question is asked until the look finds one",
+          not any(title.startswith("Publish") for title, _m in asked),
+          str([title for title, _m in asked]))
+
+    #  A look that finds nothing is an answer: no PUBLISH, no empty report.
+    report_csv = (folder / "canadianshopper_products" / "cs-publish-report.csv")
+    report_csv.write_text("card,state\n", encoding="utf-8")
+    asked.clear()
+    app.lines.clear()
+    look["on_done"](0)
+    check("a look that finds no drafts says there is nothing to publish",
+          any("No drafts on CanadianShopper" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and names the states a count cannot fix, pointing at the dashboard",
+          any("vendor dashboard" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and never asks for a typed PUBLISH for nothing",
+          not any(title.startswith("Publish") for title, _m in asked),
+          str([title for title, _m in asked]))
+    check("and never offers the empty report to open",
+          not any(title == "Open the publish report?" for title, _m in asked),
+          str([title for title, _m in asked]))
+
+    #  A plugin that cannot see listings that are not on sale is named, so the
+    #  one-sided cards are not left as a mystery.
+    check("an older reader is named when one is installed",
+          not any("plugin is" in text and "1.0.25" in text
+                  for _tag, text in app.lines)
+          or gui.plugin_version() != "", str(app.lines[-2:]))
+
+    #  A look that does find a draft asks the same question as before, and
+    #  only then is the publisher asked to apply.
+    report_csv.write_text("card,state\nGretzky,draft\n", encoding="utf-8")
+    asked.clear()
+    app.runs.clear()
+    #  Inside the patch: the publisher is resolved by action name when the
+    #  question is asked, so the stub has to still be in place.
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: import_actions.get(action, "")), \
+            patch.object(gui, "BASE", folder):
+        look["on_done"](0)
+    check("a look that finds a draft asks before publishing it",
+          any(title.startswith("Publish") for title, _m in asked),
+          str([title for title, _m in asked]))
+    applied = next((r for r in app.runs
+                    if r["tool"].endswith("cs-publish-drafts.py")
+                    and "--apply" in r["args"]), None)
+    check("and only then is the publisher asked to apply",
+          applied is not None, str(app.runs))
 
     # ---- a genuine per-file refusal keeps its red reason
     _run, lines = listing_run(
@@ -1727,6 +1841,672 @@ def test_panel_explains_off_sale():
           not app.runs, str(app.runs))
 
 
+def test_report_rows():
+    print()
+    print("== 19. a report is only worth opening when it has something in it ==")
+    folder = Path(tempfile.mkdtemp(prefix="cs-report-"))
+    path = folder / "cs-publish-report.csv"
+    check("a report that is not there is unknown, not empty",
+          stock_compare.report_rows(path) is None, "")
+    path.write_text("", encoding="utf-8")
+    check("a file with nothing in it holds no rows",
+          stock_compare.report_rows(path) == 0, "")
+    path.write_text("card,state\n", encoding="utf-8")
+    check("a header on its own is still no rows - what a publisher with no "
+          "drafts leaves behind",
+          stock_compare.report_rows(path) == 0, "")
+    path.write_text("card,state\nGretzky,published\nOrr,blocked\n",
+                    encoding="utf-8")
+    check("every draft line counts", stock_compare.report_rows(path) == 2, "")
+    path.write_text("\n\ncard,state\nGretzky,published\n", encoding="utf-8")
+    check("blank lines are not drafts", stock_compare.report_rows(path) == 1, "")
+
+
+def test_old_reader_is_named():
+    print()
+    print("== 20. a reader that cannot see a hidden listing says so ==")
+    folder, app, parent = build_panel()
+    products = PRODUCTS + [
+        {"id": 9, "name": "Only on the website card", "sku": "",
+         "manage_stock": True, "stock_quantity": 1, "type": "simple"}]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    def compare(version=None):
+        app.lines.clear()
+        with patch.object(gui, "TOOL_ACTION",
+                          lambda action: "/plugins/cs/stock.py"), \
+                patch.object(gui, "read_woo_credentials",
+                             lambda path=None: ("https://shop.example", "ck_a",
+                                                "cs_b")), \
+                patch.object(gui, "woo_get", fetch_all), \
+                patch.object(gui, "in_background", sync_background), \
+                patch.object(gui, "plugin_version",
+                             lambda *a, **k: version or ""), \
+                patch.object(gui, "BASE", folder):
+            find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+            (folder / "cs-stock.json").write_text(
+                json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+            app.runs[-1]["on_done"](0)
+        return list(app.lines)
+
+    lines = compare()
+    listed = next((w for w in parent.walk()
+                   if isinstance(w, gui.tk.Listbox)), None)
+    check("the card only on the website is listed as such",
+          listed is not None and any("not on CanadianShopper" in item
+                                    for item in listed.items),
+          str(listed and listed.items))
+    check("and the summary separates it from the count disagreement",
+          any("1 disagree" in text and "1 only on one side" in text
+              for _tag, text in lines), str(lines[-3:]))
+    check("and no version is claimed when the plugin cannot be read",
+          not any("reader in your plugin is" in text for _tag, text in lines),
+          str(lines[-3:]))
+
+    lines = compare("1.0.24")
+    check("an old reader is named, with the version that fixes it",
+          any("1.0.24" in text and "1.0.25" in text for _tag, text in lines),
+          str(lines[-3:]))
+    check("and it says what such a reader cannot see",
+          any("draft, hidden or archived looks missing" in text
+              for _tag, text in lines), str(lines[-3:]))
+    check("and it does not claim the card is absent from the shop",
+          any("Update the plugin, then compare again" in text
+              for _tag, text in lines), str(lines[-3:]))
+
+    lines = compare("1.0.25")
+    check("a reader that reports every listing is not nagged about",
+          not any("reader in your plugin is" in text for _tag, text in lines),
+          str(lines[-3:]))
+
+
+def test_publisher_tally():
+    print()
+    print("== 21. the publisher's own tally decides, not its report file ==")
+    check("a tally of zero is read from the publisher's own line",
+          stock_compare.draft_count(
+              "Drafts found: 0 | ready: 0 | blocked: 0") == 0, "")
+    check("a tally of several drafts is read too",
+          stock_compare.draft_count(
+              "Drafts found: 3 | ready: 2 | blocked: 1") == 3, "")
+    check("the older phrasing is understood",
+          stock_compare.draft_count("Scanned 12 draft(s)...") == 12, "")
+    check("a publisher that says nothing is unknown, never zero",
+          stock_compare.draft_count("Re-reading the shop...") is None, "")
+    check("and an empty string is unknown too",
+          stock_compare.draft_count("") is None, "")
+
+    #  The run's transcript is where that sentence comes from.
+    check("the transcript of the last run is read from the runner",
+          gui.last_tool_output(
+              SimpleNamespace(runner=SimpleNamespace(output="Drafts found: 0")))
+          == "Drafts found: 0", "")
+    check("and an app with no runner is not an error",
+          gui.last_tool_output(SimpleNamespace()) == "", "")
+
+    #  A report with preamble lines in it is not a report full of drafts: the
+    #  file is the plugin's format, and this is exactly the shape that made an
+    #  "empty" report look like it had rows.
+    folder = Path(tempfile.mkdtemp(prefix="cs-tally-"))
+    report = folder / "cs-publish-report.csv"
+    report.write_text("CanadianShopper vendor: Alex Collect\n"
+                      "Drafts found: 0 | ready: 0 | blocked: 0\n",
+                      encoding="utf-8")
+    check("a summary line in the file is not counted as a draft",
+          stock_compare.report_rows(report) == 1, "")
+
+    folder, app, parent = build_panel()
+    products = PRODUCTS + [
+        {"id": 9, "name": "Only on the website card", "sku": "",
+         "manage_stock": True, "stock_quantity": 1, "type": "simple",
+         "price": "3.00", "images": [{"src": "https://shop.example/f.webp"}]}]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    actions = {"marketplace.import_csv": "/plugins/cs/cs-import.py",
+               "marketplace.publish_drafts": "/plugins/cs/cs-publish-drafts.py"}
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_all), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+        (folder / "cs-stock.json").write_text(json.dumps({"items": CS_ITEMS}),
+                                              encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+
+    asked = []
+    harness._BOX.askyesno = lambda title, message, **k: (
+        asked.append((title, message)) or True)
+    app.runs.clear()
+    app.lines.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: actions.get(action, "")), \
+            patch.object(gui, "BASE", folder), \
+            patch.object(gui, "open_path", lambda path: None):
+        find(parent, gui.ttk.Button,
+             "List every website-only card...").invoke()
+        run = next(r for r in app.runs if r["tool"].endswith("cs-import.py"))
+        name = next((folder / "canadianshopper_products").glob(
+            "canadianshopper_import_*.csv")).name
+        (folder / "canadianshopper_products" / "cs-import-result.json"
+         ).write_text(json.dumps(
+             {"imported": [],
+              "failed": [{"file": name, "why": "every CSV row matched an "
+                                              "existing listing"}]}),
+             encoding="utf-8")
+        asked.clear()
+        app.lines.clear()
+        run["on_done"](0)
+
+    look = next((r for r in app.runs
+                 if r["tool"].endswith("cs-publish-drafts.py")), None)
+    check("the look runs before any PUBLISH question", look is not None
+          and "--apply" not in look["args"], str(look and look["args"]))
+
+    #  The publisher says zero while its own report carries a summary line.
+    (folder / "canadianshopper_products" / "cs-publish-report.csv").write_text(
+        "CanadianShopper vendor: Alex Collect\n"
+        "Drafts found: 0 | ready: 0 | blocked: 0\n", encoding="utf-8")
+    app.runner = SimpleNamespace(
+        output="Scanned 0 draft(s)...\n\nCanadianShopper vendor: Alex "
+               "Collect\n\nDrafts found: 0 | ready: 0 | blocked: 0\n")
+    asked.clear()
+    app.runs.clear()
+    app.lines.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: actions.get(action, "")), \
+            patch.object(gui, "BASE", folder):
+        look["on_done"](0)
+    check("a tally of zero beats a report with lines in it",
+          any("No drafts on CanadianShopper" in text
+              for _tag, text in app.lines), str(app.lines[-3:]))
+    check("and it never asks for a typed PUBLISH", not app.runs, str(app.runs))
+    check("and never offers the report to open",
+          not any(title == "Open the publish report?" for title, _m in asked),
+          str([title for title, _m in asked]))
+    check("the empty report is explained rather than left as a mystery",
+          any("one row per draft" in text for _tag, text in app.lines),
+          str(app.lines[-4:]))
+    check("the cards that could not be found are named, so the dashboard "
+          "search has something to search for",
+          any("Only on the website card" in text for _tag, text in app.lines),
+          str(app.lines[-6:]))
+
+    #  A publisher that says nothing either way is not "no drafts".
+    app.runner = SimpleNamespace(output="")
+    try:
+        (folder / "canadianshopper_products" /
+         "cs-publish-report.csv").unlink()
+    except FileNotFoundError:
+        pass
+    asked.clear()
+    app.runs.clear()
+    app.lines.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: actions.get(action, "")), \
+            patch.object(gui, "BASE", folder):
+        look["on_done"](0)
+    check("a publisher that says nothing is unknown, not zero drafts",
+          any("said nothing about how many drafts" in text
+              for _tag, text in app.lines), str(app.lines[-2:]))
+    check("and nothing is published on a guess", not app.runs, str(app.runs))
+
+def test_listing_without_a_count():
+    print()
+    print("== 22. a listing that has no count is not a listing that is not there ==")
+    raw = {"items": [
+        {"id": 201, "title": "1965 Topps Sandy Koufax #300", "sku": "KO-300",
+         "inventory": None, "status": "Draft"},
+        {"id": 202, "title": "A live listing with no count", "sku": "LC-1",
+         "inventory": None, "status": "Active"},
+        {"id": 203, "title": "A live listing with a count", "sku": "LC-2",
+         "inventory": 5, "status": "Active"},
+    ]}
+    items = stock_compare.plugin_items(raw)
+    names = [item["name"] for item in items]
+    check("a listing that is not on sale is kept even without a count",
+          "1965 Topps Sandy Koufax #300" in names, str(names))
+    check("its state is the one the plugin sent",
+          next(item for item in items
+               if item["name"] == "1965 Topps Sandy Koufax #300")["status"]
+          == "Draft", str(items))
+    check("and its count stays unknown rather than becoming zero",
+          next(item for item in items if item["name"].startswith("1965"))["qty"]
+          is None, str(items))
+    check("a live listing with no count is kept too, and says so by having "
+          "no count",
+          "A live listing with no count" in names, str(names))
+    check("a live listing with a count is untouched",
+          "A live listing with a count" in names, str(names))
+
+    woo = [{"name": "1965 Topps Sandy Koufax #300", "sku": "KO-300", "qty": 2,
+            "id": 1}]
+    pairs, only_woo, only_other = stock_compare.pair(woo, items)
+    check("the card pairs with its draft instead of looking missing",
+          len(pairs) == 1 and not only_woo, str(pairs))
+    rows = stock_compare.action_list(pairs, only_woo, only_other)
+    draft_row = next((row for row in rows if row["card"].startswith("1965")),
+                     None)
+    check("so it becomes a not-on-sale row, not a one-sided one",
+          draft_row is not None
+          and draft_row["kind"] == stock_compare.OFF_SALE, str(rows))
+    check("and it is offered for publishing",
+          len(stock_compare.draft_rows(rows)) == 1, str(rows))
+    check("its label never invents a count for the site",
+          "not on sale" in stock_compare.label_action(draft_row)
+          and "CanadianShopper 0" not in stock_compare.label_action(draft_row),
+          stock_compare.label_action(draft_row))
+    check("and no write plan can name it",
+          stock_compare.plan_set(rows) == [], str(stock_compare.plan_set(rows)))
+
+
+def test_a_listing_that_counts_nothing():
+    print()
+    print("== 23. a card that exists but counts nothing is not a missing card ==")
+    raw = {"items": [
+        #  The listing is on the other site, paired by title - it simply
+        #  carries no inventory value, which a stock comparison cannot use.
+        {"id": 301, "title": "1965 Topps Sandy Koufax #300", "sku": "KO-300",
+         "inventory": None, "status": "Active"},
+    ]}
+    items = stock_compare.plugin_items(raw)
+    woo = [{"name": "1965 Topps Sandy Koufax #300", "sku": "KO-300", "qty": 2,
+            "id": 1}]
+    pairs, only_woo, only_other = stock_compare.pair(woo, items)
+    check("the card still pairs, so it is not called missing",
+          len(pairs) == 1 and not only_woo and not only_other,
+          str((pairs, only_woo, only_other)))
+    check("and it is not a disagreement either - there is no number to "
+          "disagree with",
+          stock_compare.differences(pairs) == [],
+          str(stock_compare.differences(pairs)))
+    rows = stock_compare.action_list(pairs, only_woo, only_other)
+    check("it gets its own row, named for what it is",
+          len(rows) == 1 and rows[0]["kind"] == stock_compare.NO_COUNT,
+          str(rows))
+    check("the label says the site counts no stock, not a made-up zero",
+          "no stock count there" in stock_compare.label_action(rows[0])
+          and "CanadianShopper 0" not in stock_compare.label_action(rows[0]),
+          stock_compare.label_action(rows[0]))
+    check("no write plan can name it", stock_compare.plan_set(rows) == [],
+          str(stock_compare.plan_set(rows)))
+    check("and the reverse plan cannot either",
+          __import__("stock_write").plan_from_rows(rows) == [], "")
+    check("publishing is not offered for it - it is not a draft",
+          stock_compare.draft_rows(rows) == [] and
+          stock_compare.off_sale_rows(rows) == [], str(rows))
+    check("its kind is counted on its own",
+          len(stock_compare.no_count_rows(rows)) == 1, str(rows))
+
+    #  ...and the panel says so out loud.
+    folder, app, parent = build_panel()
+    products = PRODUCTS + [
+        {"id": 9, "name": "1965 Topps Sandy Koufax #300", "sku": "KO-300",
+         "manage_stock": True, "stock_quantity": 2, "type": "simple"}]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_all), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+        (folder / "cs-stock.json").write_text(json.dumps(raw),
+                                             encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+    listed = next((w for w in parent.walk()
+                   if isinstance(w, gui.tk.Listbox)), None)
+    check("the panel lists the card instead of hiding it",
+          listed is not None and any("no stock count there" in item
+                                    for item in listed.items),
+          str(listed and listed.items))
+    check("the console explains there is no number to compare or write",
+          any("counts no stock" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and the summary counts it separately from the one-sided cards",
+          any("counting no stock" in text and "only on one side" in text
+              for _tag, text in app.lines), str(app.lines[-2:]))
+
+
+def test_nearest_title_diagnosis():
+    print()
+    print("== 24. a one-sided card is diagnosed, not just reported ==")
+    other = stock_compare.plugin_items({"items": [
+        {"id": 401, "title": "#237a Phil Esposito 1970-71 O-Pee-Chee",
+         "inventory": 3, "status": "Active"},
+        {"id": 402, "title": "#236 Bobby Orr 1970-71 O-Pee-Chee",
+         "inventory": 1, "status": "Active"},
+    ]})
+    item, score = stock_compare.closest(
+        other, "#237a Phil Esposito (VG) 1970-71 O-Pee-Chee")
+    check("the nearest title is found for a card worded differently",
+          item is not None and item["name"].startswith("#237a"), str(item))
+    check("and its score is high enough to mean something", score >= 0.9,
+          str(score))
+    item, score = stock_compare.closest(other, "1985 Topps Mark McGwire #401")
+    check("a card with a different number matches nothing at all",
+          item is None, str(item))
+    item, score = stock_compare.closest(
+        other, "1970-71 O-Pee-Chee Bobby Orr #236 First Team All-Star")
+    check("word order and a longer title do not hide the right listing",
+          item is not None and item["name"].startswith("#236"), str(item))
+
+    folder, app, parent = build_panel()
+    products = PRODUCTS + [
+        {"id": 9, "name": "#237a Phil Esposito (VG) 1970-71 O-Pee-Chee",
+         "sku": "", "manage_stock": True, "stock_quantity": 2,
+         "type": "simple"}]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_all), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+        #  The listing that should have paired is unreachable to the pairing:
+        #  a different card number in the same set.
+        (folder / "cs-stock.json").write_text(json.dumps({"items": [
+            {"id": 401, "title": "1970-71 O-Pee-Chee Phil Esposito #238",
+             "inventory": 3, "status": "Active"}]}), encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+    check("a one-sided card is reported as one-sided first",
+          any("only on one side" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and the console says nothing similar exists, rather than guessing",
+          any("nothing similar" in text for _tag, text in app.lines),
+          str(app.lines[-4:]))
+
+
+def test_a_duplicate_on_the_website():
+    print()
+    print("== 25. two website products, one listing: the duplicate is named ==")
+    title = "#25 Pete Stemkowski (EX) 1970-71 O-Pee-Chee"
+    woo = [{"name": title, "sku": "", "qty": 0, "id": 11},
+           {"name": title, "sku": "", "qty": 2, "id": 12}]
+    cs = stock_compare.plugin_items({"items": [
+        {"id": 501, "title": title, "inventory": 0, "status": "Active"}]})
+    pairs, only_woo, only_other = stock_compare.pair(woo, cs)
+    check("the listing goes to the product that can sell, not the sold-out "
+          "duplicate",
+          len(pairs) == 1 and pairs[0]["woo"]["id"] == 12, str(pairs))
+    check("and the duplicate is the one left over",
+          [item["id"] for item in only_woo] == [11],
+          str([item["id"] for item in only_woo]))
+    item, score = stock_compare.closest(cs, only_woo[0]["name"])
+    check("its nearest title is the very listing the other one holds",
+          item is not None and score == 1.0, str((item, score)))
+    owner = stock_compare.owner_of(pairs, item)
+    check("and the owner of that listing can be named",
+          owner is not None and owner["id"] == 12, str(owner))
+    check("the two titles are recognised as the same card's words",
+          stock_compare.same_words(only_woo[0]["name"], owner["name"]), "")
+    check("a different card is not called the same words",
+          not stock_compare.same_words(title,
+                                       "#26 Pete Stemkowski 1970-71 O-Pee-Chee"),
+          "")
+    check("an unpaired listing has no owner",
+          stock_compare.owner_of(pairs, cs[0]) is not None and
+          stock_compare.owner_of([], cs[0]) is None, "")
+
+    # ---- and the panel says exactly that, in words that name the duplicate
+    folder, app, parent = build_panel()
+    products = PRODUCTS + [
+        {"id": 11, "name": title, "sku": "", "manage_stock": True,
+         "stock_quantity": 0, "type": "simple"},
+        {"id": 12, "name": title, "sku": "", "manage_stock": True,
+         "stock_quantity": 2, "type": "simple"}]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    app.lines.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_all), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+        (folder / "cs-stock.json").write_text(
+            json.dumps({"items": [{"id": 501, "title": title,
+                                   "inventory": 0, "status": "Active"}]}),
+            encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+    check("the panel names the listing that is already held, and by whom",
+          any("held by" in text for _tag, text in app.lines),
+          str(app.lines[-6:]))
+    check("and says the listing is there, so nothing is missing",
+          any("the listing is there" in text and "nothing is missing" in text
+              for _tag, text in app.lines), str(app.lines[-6:]))
+    check("and calls the identical one a duplicate, not a card to list",
+          any("a duplicate on your website, not a card to list" in text
+              for _tag, text in app.lines), str(app.lines[-6:]))
+    check("and the duplicate is not counted among the cards that are really "
+          "missing",
+          any("nothing similar" in text and "2 of those 3" in text
+              for _tag, text in app.lines), str(len(app.lines)))
+
+
+def test_what_the_reader_claimed():
+    print()
+    print("== 26. the reader's own states are reported, so a stale read shows ==")
+    items = stock_compare.plugin_items({"items": [
+        {"title": "A live card", "inventory": 3, "status": "Active"},
+        {"title": "Another live card", "inventory": 0, "status": "active"},
+        {"title": "An archived card", "inventory": 0, "status": "Archived"},
+        {"title": "A draft card", "inventory": 0, "status": "draft"},
+        {"title": "An archived card in another case", "inventory": 0,
+         "status": "ARCHIVED"},
+    ]})
+    tally = stock_compare.status_tally(items)
+    check("the reader's states are counted in its own words",
+          tally == {"on sale": 2, "Archived": 2, "draft": 1}, str(tally))
+    check("and one case of the same word is counted once",
+          list(tally).count("Archived") + list(tally).count("ARCHIVED") == 1,
+          str(tally))
+    check("the line says how many are in each state",
+          stock_compare.tally_line(items) ==
+          "5 listing(s): 2 on sale, 2 Archived, 1 draft",
+          stock_compare.tally_line(items))
+    check("nothing read back says so rather than inventing a tally",
+          stock_compare.tally_line([]) == "", "")
+
+    #  A listing the other site holds at zero: it exists, it just has no
+    #  stock. That is a count job, not a listing job.
+    rows = [
+        {"kind": stock_compare.FIX, "card": "Zero card", "woo": 6, "other": 0},
+        {"kind": stock_compare.FIX, "card": "Agreeing card", "woo": 2,
+         "other": 2},
+        {"kind": stock_compare.FIX, "card": "Other way", "woo": 1, "other": 6},
+        {"kind": stock_compare.ONLY_WOO, "card": "Missing card", "woo": 1,
+         "other": None},
+    ]
+    zeros = stock_compare.out_of_stock_rows(rows)
+    check("only the listings the other side holds at zero are picked",
+          [row["card"] for row in zeros] == ["Zero card"], str(zeros))
+
+
+def test_held_under_another_product():
+    print()
+    print("== 27. a card listed under another product is not a missing card ==")
+    woo = [
+        #  The live copy holds the listing.
+        {"name": "#25 Pete Stemkowski (EX) 1970-71 O-Pee-Chee", "sku": "",
+         "qty": 2, "id": 12},
+        #  Same words, sold: a duplicate that cannot hold it.
+        {"name": "#25 Pete Stemkowski (EX) 1970-71 O-Pee-Chee", "sku": "",
+         "qty": 0, "id": 11},
+        #  The copy the listing belongs to, and beside it another grade.
+        {"name": "#24 1st Series Checklist (PR) 1970-71 O-Pee-Chee", "sku": "",
+         "qty": 1, "id": 15},
+        {"name": "#24 1st Series Checklist (VG) 1970-71 O-Pee-Chee", "sku": "",
+         "qty": 1, "id": 13},
+        #  Nothing like it anywhere.
+        {"name": "1985 Topps Mark McGwire #401", "sku": "", "qty": 1,
+         "id": 14},
+    ]
+    other = stock_compare.plugin_items({"items": [
+        {"id": 501, "title": "#25 Pete Stemkowski (EX) 1970-71 O-Pee-Chee",
+         "inventory": 2, "status": "Active"},
+        {"id": 502, "title": "#24 1st Series Checklist (PR) 1970-71 O-Pee-Chee",
+         "inventory": 1, "status": "Active"},
+    ]})
+    pairs, only_woo, only_other = stock_compare.pair(woo, other)
+    found = stock_compare.held_elsewhere(pairs, only_woo, other)
+    by_card = {row["card"]: row for row in found}
+    check("the sold duplicate is found under the live product",
+          any(row["card"].startswith("#25") and row["same"]
+              for row in found), str(found))
+    check("the copy in another grade is found too, but not called the same",
+          any(row["card"].startswith("#24") and not row["same"]
+              for row in found), str(found))
+    check("the card nothing resembles is not claimed as listed",
+          not any("McGwire" in row["card"] for row in found), str(found))
+
+    #  ...and the panel says which is which, in one block each.
+    folder, app, parent = build_panel()
+    products = PRODUCTS + [
+        {"id": 12, "name": "#25 Pete Stemkowski (EX) 1970-71 O-Pee-Chee",
+         "sku": "", "manage_stock": True, "stock_quantity": 6,
+         "type": "simple"},
+        {"id": 11, "name": "#25 Pete Stemkowski (EX) 1970-71 O-Pee-Chee",
+         "sku": "", "manage_stock": True, "stock_quantity": 0,
+         "type": "simple"},
+        {"id": 13, "name": "#24 1st Series Checklist (VG) 1970-71 O-Pee-Chee",
+         "sku": "", "manage_stock": True, "stock_quantity": 1,
+         "type": "simple"},
+        {"id": 15, "name": "#24 1st Series Checklist (PR) 1970-71 O-Pee-Chee",
+         "sku": "", "manage_stock": True, "stock_quantity": 1,
+         "type": "simple"},
+    ]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    app.lines.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_all), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+        (folder / "cs-stock.json").write_text(json.dumps({"items": [
+            {"id": 501, "title": "#25 Pete Stemkowski (EX) 1970-71 O-Pee-Chee",
+             "inventory": 0, "status": "Active"},
+            {"id": 502,
+             "title": "#24 1st Series Checklist (PR) 1970-71 O-Pee-Chee",
+             "inventory": 1, "status": "Active"}]}), encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+    check("the panel groups them as cards the site already lists",
+          any("already lists under a different website product" in text
+              for _tag, text in app.lines), str(app.lines[-8:]))
+    check("it counts the duplicates separately from the other grades",
+          any("exact title" in text for _tag, text in app.lines) and
+          any("another grade, copy or condition" in text
+              for _tag, text in app.lines), str(app.lines[-8:]))
+    check("and still warns that a different grade may be worth listing",
+          any("can be listed if you sell it separately" in text
+              for _tag, text in app.lines), str(app.lines[-8:]))
+    check("and a listing held at zero is called a count job, not a listing "
+          "job",
+          any("holds at 0" in text and "puts the stock back" in text
+              for _tag, text in app.lines), str(app.lines[-8:]))
+    check("and the reader's own states are printed for checking",
+          any("What the reader returned" in text for _tag, text in app.lines),
+          str(app.lines[:4]))
+
+
+def test_a_reader_that_cannot_ask_for_a_fresh_page():
+    print()
+    print("== 28. a cached page is the reader's limit, not the app's reading ==")
+    folder, app, parent = build_panel()
+    products = PRODUCTS + [
+        {"id": 9, "name": "#319 Val Fonteyne 1972-73 O-Pee-Chee", "sku": "",
+         "manage_stock": True, "stock_quantity": 1, "type": "simple"}]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    stock = {"items": [
+        {"id": 401, "title": "#319 Val Fonteyne 1972-73 O-Pee-Chee",
+         "inventory": 1, "status": "Archived"},
+        {"id": 402, "title": "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6",
+         "inventory": 0, "status": "Active"},
+    ]}
+
+    def compare(version):
+        app.lines.clear()
+        with patch.object(gui, "TOOL_ACTION",
+                          lambda action: "/plugins/cs/stock.py"), \
+                patch.object(gui, "read_woo_credentials",
+                             lambda path=None: ("https://shop.example", "ck_a",
+                                                "cs_b")), \
+                patch.object(gui, "woo_get", fetch_all), \
+                patch.object(gui, "in_background", sync_background), \
+                patch.object(gui, "plugin_version",
+                             lambda *a, **k: version), \
+                patch.object(gui, "BASE", folder):
+            find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+            (folder / "cs-stock.json").write_text(json.dumps(stock),
+                                                 encoding="utf-8")
+            app.runs[-1]["on_done"](0)
+        return list(app.lines)
+
+    lines = compare("1.0.26")
+    check("a reader that can ask for a fresh page says so on the tally line",
+          any("plugin 1.0.26, cache-checked" in text for _tag, text in lines),
+          str(lines[:3]))
+    check("and no warning is raised about a cached page",
+          not any("serve from its cache" in text for _tag, text in lines),
+          str(lines[-3:]))
+    check("the archived listing is still reported as archived",
+          any("not on sale (Archived)" in text for _tag, text in lines),
+          str(lines[-4:]))
+
+    lines = compare("1.0.25")
+    check("an older reader is named on the tally line, without the claim",
+          any("plugin 1.0.25" in text and "cache-checked" not in text
+              for _tag, text in lines), str(lines[:3]))
+    check("and a moved listing is allowed to be a stale read",
+          any("serve from its cache" in text and "1.0.26" in text
+              for _tag, text in lines), str(lines[-4:]))
+    check("and it says so before the states are acted on",
+          any("before acting on the states above" in text
+              for _tag, text in lines), str(lines[-4:]))
+
+    lines = compare("")
+    check("an unreadable plugin version is not guessed at",
+          any(text.startswith("What the reader returned - ")
+              for _tag, text in lines), str(lines[:3]))
+    check("and no cache warning is invented for it",
+          not any("serve from its cache" in text for _tag, text in lines),
+          str(lines[-3:]))
+
+
 def main():
     test_woo_items()
     test_plugin_items()
@@ -1751,6 +2531,16 @@ def main():
     test_one_click_import_refusals()
     test_listings_that_are_not_on_sale()
     test_panel_explains_off_sale()
+    test_report_rows()
+    test_old_reader_is_named()
+    test_publisher_tally()
+    test_listing_without_a_count()
+    test_a_listing_that_counts_nothing()
+    test_nearest_title_diagnosis()
+    test_a_duplicate_on_the_website()
+    test_what_the_reader_claimed()
+    test_held_under_another_product()
+    test_a_reader_that_cannot_ask_for_a_fresh_page()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))
