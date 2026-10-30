@@ -38,7 +38,7 @@ from datetime import datetime
 from pathlib import Path
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import colorchooser, filedialog, messagebox, simpledialog, ttk
 
 from browser_utils import available_browsers, browser_label, open_urls as launch_urls
 from plugin_manager import (PluginError, PluginManager,
@@ -53,6 +53,8 @@ import sale_preview
 import cs_listing
 import stock_compare
 import stock_write
+import quote as quote_model
+import quote_pdf
 import woo_media
 import woo_orders
 from sale_inputs import woo_get
@@ -64,10 +66,12 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.84"
+VERSION = "2.85"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
+#  The colour a quote is printed in until the user picks their own.
+DEFAULT_QUOTE_COLOR = quote_model.DEFAULT_COLOR
 
 BASE = Path(__file__).resolve().parent          # the tools folder
 HERE_HAS_PIPELINE = (BASE.parent / "card_pipeline.py").exists()
@@ -983,13 +987,17 @@ installed) is a live login; do not share it, and refresh it when the plugin
 reports that authentication has expired."""
 
 DOCS["folders"] = """\
-Two folders the tools should know about:
+Three folders the tools should know about:
 
 * Batch folder - where card_pipeline.py and generated CSVs live. It is
   detected beside the tools by default; change it if your files are elsewhere.
 
 * Scan folder - where your scanner drops files. Choose it here; the
-  photo-replacement tool opens it when you replace a card's photos."""
+  photo-replacement tool opens it when you replace a card's photos.
+
+* Quotes folder - where the quote panel saves each quote and its PDF. Leave
+  it blank to keep them in the app's own quotes folder, which is the one
+  **Open the quotes folder** opens."""
 
 DOCS["pipeline"] = """\
 Use this for a new batch of cards. Choose the FRONT scan and, if you have
@@ -1136,6 +1144,37 @@ Square up a photo (or a whole folder) by padding it onto a white
 square - for the occasional card you upload by hand through the
 dashboard instead of through a batch. The square copy is written next
 to the original; the original is never touched. No cookie needed."""
+
+DOCS["quote"] = """\
+Price a batch of cards for a customer without creating an order yet.
+
+Search your stock for a player, a year or a set - \"Batman\" - and
+**Add all the matches** puts one of each card on the quote in a single
+press. A single card can be added on its own, and a card that is not in your
+stock can be typed in with its own price; nothing here guesses which card
+was meant.
+
+The quote is a file. It carries a number (Q-2026-0001), the customer's name,
+address, email and phone, a discount as a percentage or a flat amount, and
+the notes printed under the total. It adds up the cards' prices from the
+website, shows how many cards and how many items, and prints as a PDF on A4
+with your logo, your colour and a signature line - or arrives on the
+clipboard as text for an email.
+
+Quotes are saved in the quotes folder, one file each, and can be opened
+again, edited, re-priced or printed. **Re-price from the website** reads
+today's prices and shows every one that moved before changing anything,
+because a quote is a promise to a customer.
+
+**Turn into an order** creates a pending order on the website from the quote
+- nothing is charged and no email is sent - and then reads the total back:
+if a price moved since the quote was written, the difference is named
+instead of being hidden. Without WooCommerce keys in woo-keys.txt the quote
+still saves and prints; only reading the stock and creating the order need
+them, and the report says so.
+
+Nothing here changes a price, a listing or a stock count on any site. A
+quote is a document; only the last button writes, and only when confirmed."""
 
 DOCS["ordertext"] = """\
 A customer texts you a list of cards. Paste it here and Alex Collect
@@ -1454,6 +1493,24 @@ TOOLTIPS = {
     "Use this browser": "Use the selected browser for every page Alex Collect opens",
     # -- selling to a customer -------------------------------------------
     "Build the order": "Match the pasted list to products and preview the order before writing it",
+    # -- quoting ----------------------------------------------------------
+    "Search the stock": "Search your website for the card and list every match, ready to add",
+    "Add all the matches": "Put one of each card in the search results on the quote, skipping any already there",
+    "Add the selected card": "Put the one card selected in the search results on the quote",
+    "Type a card in by hand": "Add a card that is not in your stock, with its own price - works without keys",
+    "Remove the selected row": "Take the selected card off this quote; nothing on the website changes",
+    "Change the quantity...": "Set how many of the selected card the customer is asking about",
+    "Change a price...": "Give the selected card a different price on this quote only",
+    "Re-price from the website...": "Read today's prices and show every one that moved before changing anything",
+    "Save the quote": "Write the quote to the quotes folder as a file that can be opened next week",
+    "Print the PDF...": "Draw the quote as a PDF with the logo and colour, save it, and open it",
+    "Turn into an order...": "Create a pending order on the website from this quote, after showing every card and the total",
+    "Copy it as text": "Put the whole quote on the clipboard, to paste into an email or a message",
+    "Open the quotes folder": "Open the folder every quote and its PDF is saved in",
+    "Open this quote": "Load the quote selected in the list so it can be edited or printed",
+    "Start a new quote": "Begin a fresh quote with the next number, keeping the logo, colour and business name",
+    "Pick a colour...": "Choose the colour the quote is printed in",
+    "No logo": "Print the quote without a logo",
     "Create the order": "Write the previewed order to the store as pending; nothing is charged",
     "Open the order list": "Open the WooCommerce order screen to paste the list by hand",
     "Search": "Search the store for the typed card and list the matches",
@@ -2378,8 +2435,9 @@ class App(tk.Tk):
 PANEL_ORDER = ["cookie", "pipeline", "combine", "stage", "importpanel",
                "wire", "rerun", "sold", "checklist", "stock", "zerostock",
                "square",
-               "newphotos", "ordertext", "markets", "logs", "plugins"]
-GROUPS_FULL = [("Sell to a customer", ["ordertext"]),
+               "newphotos", "ordertext", "quote", "markets", "logs",
+               "plugins"]
+GROUPS_FULL = [("Sell to a customer", ["ordertext", "quote"]),
                ("Sell a new batch", ["pipeline", "combine", "stage",
                                      "importpanel", "wire"]),
                ("After a sale", ["sold", "checklist", "stock", "zerostock"]),
@@ -2395,7 +2453,7 @@ def groups_for(has_cs):
     """
     if has_cs:
         return GROUPS_FULL
-    return [("Sell to a customer", ["ordertext"]),
+    return [("Sell to a customer", ["ordertext", "quote"]),
             ("Sell a new batch", ["pipeline", "combine", "importpanel"]),
             ("After a sale", ["sold", "checklist"]),
             ("Photos", ["square", "newphotos"]),
@@ -2416,6 +2474,7 @@ TITLES = {
     "plugins": "Plugins",
     "newphotos": "Replace a card's photos",
     "ordertext": "Make an order from a card list",
+    "quote": "Make a quote for a customer",
     "markets": "Re-run a marketplace step",
     "logs": "Logs and reports",
 }
@@ -2434,6 +2493,7 @@ MENU_LABELS = {
     "square": "Square up a photo",
     "newphotos": "Replace card photos",
     "ordertext": "Order from a text list",
+    "quote": "Quote for a customer",
     "markets": "Re-run a marketplace",
     "logs": "Logs & reports",
     "plugins": "Plugins",
@@ -2455,6 +2515,7 @@ BLURBS = {
     "plugins": "Install and manage optional plugins.",
     "newphotos": "Find a card, open its replacement images, and refresh its pages.",
     "ordertext": "Paste the list a customer texted you and turn it into a website order.",
+    "quote": "Price cards for a customer, print the quote as a PDF, and make it an order when they say yes.",
     "markets": "Redo just one marketplace (Woo, CanadianShopper, Facebook, eBay) without repeating the AI or image steps.",
     "logs": "Where every run is recorded.",
 }
@@ -2661,7 +2722,9 @@ SETTINGS_DOCS = {
     "folders": (
         "Where the tools write and where the scans are read from. The batch "
         "folder holds card_pipeline.py and its outputs; the scanner folder is "
-        "where the scan dialog opens. Both are used by the GUI and by the "
+        "where the scan dialog opens; the quotes folder is where the quote "
+        "panel saves each quote and its PDF, and blank keeps them in the "
+        "app's own quotes folder. All are used by the GUI and by the "
         "command-line tools."),
     "cs_login": (
         "The CanadianShopper session cookie from a signed-in browser. It is a "
@@ -3176,16 +3239,21 @@ def build_cookie(parent, app):
         master=grid, value=app.settings.get("pipeline_dir", str(WORK)))
     app._scan_var = tk.StringVar(
         master=grid, value=app.settings.get("scan_dir", DEFAULT_SCAN_DIR))
+    app._quotes_var = tk.StringVar(
+        master=grid, value=app.settings.get("quotes_dir", ""))
     fields["pipeline_dir"] = app._pipeline_var
     fields["scan_dir"] = app._scan_var
-    for r, (label, var) in enumerate((
-            ("Batch folder (card_pipeline.py):", app._pipeline_var),
-            ("Scanner folder:", app._scan_var))):
+    fields["quotes_dir"] = app._quotes_var
+    for r, (label, var, start) in enumerate((
+            ("Batch folder (card_pipeline.py):", app._pipeline_var, WORK),
+            ("Scanner folder:", app._scan_var, Path.home()),
+            ("Quotes folder (blank = the app's own):", app._quotes_var,
+             Path.home()))):
         ttk.Label(grid, text=label).grid(row=r, column=0, sticky="w",
                                          padx=(0, 6), pady=2)
         ttk.Entry(grid, textvariable=var).grid(row=r, column=1, sticky="ew",
                                                padx=3, pady=2)
-        def browse_dir(v=var, initial=WORK if r == 0 else Path.home()):
+        def browse_dir(v=var, initial=start):
             directory = filedialog.askdirectory(initialdir=v.get() or str(initial))
             if directory:
                 v.set(directory)
@@ -3307,6 +3375,7 @@ def build_cookie(parent, app):
             "canadianshopper_ship_from_province"].get().strip()
         app.settings["pipeline_dir"] = app._pipeline_var.get().strip() or str(WORK)
         app.settings["scan_dir"] = app._scan_var.get().strip() or DEFAULT_SCAN_DIR
+        app.settings["quotes_dir"] = app._quotes_var.get().strip()
         save_settings(app.settings)
         sync_site_url_to_woo_keys(app.settings["woo_site_url"])
         app.console_line("User settings saved.", "ok")
@@ -6771,6 +6840,933 @@ def build_ordertext(parent, app):
                command=lambda: open_orders()).pack(side="right", padx=8)
 
 
+def quote_folder(app):
+    """Where quotes are saved: the chosen folder, or ``app/quotes``."""
+    chosen = str(app.settings.get("quotes_dir") or "").strip()
+    if chosen:
+        return Path(chosen)
+    return quote_model.folder_for(BASE)
+
+
+def confirm_long_text(parent, app, title, text, ok_text="Continue"):
+    """Ask yes/no over text that may not fit in a message box.
+
+    A quote being turned into an order is checked line by line, and a batch of
+    forty cards is past what a Windows message box will show - the same
+    problem the order panel had, solved the same way.
+    """
+    if len(text) < 1200 and text.count("\n") < 20:
+        return messagebox.askyesno(title, text, parent=app)
+    top = tk.Toplevel(app)
+    top.title(title)
+    top.transient(app)
+    top.geometry("780x560")
+    top.grab_set()
+    body = ttk.Frame(top)
+    body.pack(fill="both", expand=True, padx=8, pady=(8, 3))
+    view = tk.Text(body, wrap="word", height=24, state="normal")
+    scroll = ttk.Scrollbar(body, orient="vertical", command=view.yview)
+    view.configure(yscrollcommand=scroll.set)
+    view.pack(side="left", fill="both", expand=True)
+    scroll.pack(side="right", fill="y")
+    view.insert("1.0", text)
+    view.configure(state="disabled")
+    result = {"ok": False}
+    buttons = ttk.Frame(top)
+    buttons.pack(fill="x", padx=8, pady=6)
+    ttk.Button(buttons, text=ok_text,
+               command=lambda: (result.update(ok=True), top.destroy())
+               ).pack(side="right")
+    ttk.Button(buttons, text="Cancel", command=top.destroy).pack(side="right",
+                                                                padx=8)
+    top.protocol("WM_DELETE_WINDOW", top.destroy)
+    attach_tooltips(top)
+    app.wait_window(top)
+    return result["ok"]
+
+
+def build_quote(parent, app):
+    """Price a batch of cards for a customer, print it, and order it later.
+
+    The same cards the order builder matches, but the result is a *document*:
+    it is saved, it carries a customer and a discount, it prints as a PDF with
+    the shop's own logo and colour, and it can sit for a fortnight before the
+    customer says yes. Turning it into an order is one button at the end - and
+    the total the website comes to is read back, because a quote sent last week
+    is not a promise the shop has to keep at today's price silently.
+
+    Without keys, everything except reading the stock and creating the order
+    still works: cards can be typed in by hand, the quote saves and prints, and
+    the printed total is what gets pasted into the dashboard.
+    """
+    panel_header(parent, app, "quote")
+    notes = getattr(parent, "_notes_frame", parent)
+    state = {"quote": quote_model.new_quote(
+        currency=app.settings.get("currency_prefix", "C$") or "",
+        company=app.settings.get("quote_company", "") or "",
+        today=datetime.now().date()),
+        "results": [], "path": None, "saved": ""}
+
+    def say(message, tag=None):
+        try:
+            status.configure(text=message)
+        except Exception:
+            pass
+        if tag:
+            try:
+                app.console_line("Quote: %s" % message, tag)
+            except Exception:
+                pass
+
+    status = ttk.Label(notes, text="", style="Dim.TLabel", wraplength=780,
+                       justify="left")
+    status.pack(anchor="w", pady=(3, 0))
+
+    # ---------------------------------------------------------- the settings
+    def look_value(key, fallback=""):
+        return str((state["quote"].get("look") or {}).get(key) or fallback)
+
+    company_var = tk.StringVar(value=look_value("company"))
+    colour_var = tk.StringVar(value=look_value("color", DEFAULT_QUOTE_COLOR))
+    logo_var = tk.StringVar(value=look_value("logo"))
+    name_var = tk.StringVar(value="")
+    email_var = tk.StringVar(value="")
+    phone_var = tk.StringVar(value="")
+    discount_kind = tk.StringVar(value="")
+    discount_value = tk.StringVar(value="")
+    search_var = tk.StringVar(value="")
+    saved_var = tk.StringVar(value="")
+
+    def read_box(widget):
+        try:
+            return widget.get("1.0", "end").strip()
+        except Exception:
+            return ""
+
+    def write_box(widget, text):
+        try:
+            widget.delete("1.0", "end")
+            widget.insert("1.0", str(text or ""))
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------- sections
+    head = ttk.Frame(parent)
+    head.pack(fill="x", pady=(2, 4))
+    #  The quote's own identity, not the panel's name again: the panel already
+    #  has its title (on the section border in the tabs view, above this row in
+    #  the task menu), and a second "Quote" heading under it said nothing.
+    number_label = ttk.Label(head, text="", style="H2.TLabel")
+    number_label.pack(side="left")
+
+    saved_row = ttk.Frame(parent)
+    saved_row.pack(fill="x", pady=(0, 6))
+    ttk.Label(saved_row, text="Saved quotes:").pack(side="left")
+    saved_box = ttk.Combobox(saved_row, textvariable=saved_var, width=26,
+                             state="readonly")
+    saved_box.pack(side="left", padx=(4, 8))
+    open_saved_button = ttk.Button(saved_row, text="Open this quote",
+                                   command=lambda: open_saved())
+    open_saved_button.pack(side="left")
+    new_button = ttk.Button(saved_row, text="Start a new quote",
+                            command=lambda: start_new())
+    new_button.pack(side="left", padx=(8, 0))
+
+    #  -- 1. the cards from the shop ---------------------------------------
+    pick = ttk.LabelFrame(parent, text="1. Cards from your stock", padding=6)
+    pick.pack(fill="x", pady=(0, 6))
+    search_row = ttk.Frame(pick)
+    search_row.pack(fill="x")
+    ttk.Label(search_row, text="Search the shop:").pack(side="left")
+    search_entry = ttk.Entry(search_row, textvariable=search_var, width=34)
+    search_entry.pack(side="left", padx=(4, 6))
+    search_button = ttk.Button(search_row, text="Search the stock",
+                               command=lambda: do_search())
+    search_button.pack(side="left")
+    search_entry.bind("<Return>", lambda *_: do_search())
+    add_all_button = ttk.Button(search_row, text="Add all the matches",
+                                command=lambda: add_results(all_of=True))
+    add_all_button.pack(side="left", padx=(8, 0))
+    add_one_button = ttk.Button(search_row, text="Add the selected card",
+                                command=lambda: add_results(all_of=False))
+    add_one_button.pack(side="left", padx=(6, 0))
+    manual_button = ttk.Button(search_row, text="Type a card in by hand",
+                               command=lambda: add_manual())
+    manual_button.pack(side="left", padx=(6, 0))
+    result_label = ttk.Label(pick, text="Search for a player, a year or a "
+                                        "set - then add every match at once.",
+                             style="Dim.TLabel")
+    result_label.pack(anchor="w", pady=(4, 0))
+    results_list = tk.Listbox(pick, height=6, exportselection=False,
+                              font=("Consolas", 9))
+    results_list.pack(fill="x", pady=(2, 0))
+
+    #  -- 2. the quote itself ----------------------------------------------
+    cards = ttk.LabelFrame(parent, text="2. The cards on the quote", padding=6)
+    cards.pack(fill="x", pady=(0, 6))
+    card_buttons = ttk.Frame(cards)
+    card_buttons.pack(fill="x")
+    for text, command in (("Remove the selected row", lambda: edit_row("remove")),
+                          ("Change the quantity...", lambda: edit_row("qty")),
+                          ("Change a price...", lambda: edit_row("price")),
+                          ("Re-price from the website...",
+                           lambda: reprice())):
+        ttk.Button(card_buttons, text=text, command=command).pack(
+            side="left", padx=(0, 6))
+    rows_list = tk.Listbox(cards, height=8, exportselection=False,
+                           font=("Consolas", 9))
+    rows_list.pack(fill="x", pady=(4, 0))
+    totals_label = ttk.Label(cards, text="", style="Dim.TLabel",
+                             wraplength=760, justify="left")
+    totals_label.pack(anchor="w", pady=(4, 0))
+
+    #  -- 3. the customer ---------------------------------------------------
+    who = ttk.LabelFrame(parent, text="3. The customer, the discount and the "
+                                      "notes", padding=6)
+    who.pack(fill="x", pady=(0, 6))
+    who_form = ttk.Frame(who)
+    who_form.pack(fill="x")
+    for column, (label, var, width) in enumerate((
+            ("Name:", name_var, 26), ("Email:", email_var, 26),
+            ("Phone:", phone_var, 18))):
+        ttk.Label(who_form, text=label).grid(row=0, column=column * 2,
+                                             sticky="w")
+        ttk.Entry(who_form, textvariable=var, width=width).grid(
+            row=0, column=column * 2 + 1, sticky="w", padx=(3, 12))
+    ttk.Label(who, text="Address (the way it would go on an envelope):"
+              ).pack(anchor="w", pady=(6, 0))
+    address_box = tk.Text(who, height=4, wrap="word", font=("Consolas", 9))
+    address_box.pack(fill="x")
+    discount_row = ttk.Frame(who)
+    discount_row.pack(fill="x", pady=(6, 0))
+    ttk.Label(discount_row, text="Discount:").pack(side="left")
+    discount_box = ttk.Combobox(discount_row, textvariable=discount_kind,
+                                width=8, state="readonly",
+                                values=["", "Percent", "Amount"])
+    discount_box.pack(side="left", padx=(4, 6))
+    ttk.Entry(discount_row, textvariable=discount_value, width=8).pack(
+        side="left")
+    ttk.Label(discount_row, text="empty for none - a percentage of the "
+                                 "subtotal, or a flat amount off",
+              style="Dim.TLabel").pack(side="left", padx=(6, 0))
+    ttk.Label(who, text="Notes printed under the total:").pack(anchor="w",
+                                                               pady=(6, 0))
+    notes_box = tk.Text(who, height=3, wrap="word", font=("Consolas", 9))
+    notes_box.pack(fill="x")
+
+    #  -- 4. the look ------------------------------------------------------
+    look = ttk.LabelFrame(parent, text="4. The logo and the colour", padding=6)
+    look.pack(fill="x", pady=(0, 6))
+    look_row = ttk.Frame(look)
+    look_row.pack(fill="x")
+    ttk.Label(look_row, text="Business name:").pack(side="left")
+    ttk.Entry(look_row, textvariable=company_var, width=24).pack(
+        side="left", padx=(4, 12))
+    ttk.Label(look_row, text="Colour:").pack(side="left")
+    ttk.Entry(look_row, textvariable=colour_var, width=10).pack(
+        side="left", padx=(4, 4))
+    colour_button = ttk.Button(look_row, text="Pick a colour...",
+                               command=lambda: pick_colour())
+    colour_button.pack(side="left", padx=(0, 12))
+    swatch = tk.Label(look_row, text="   ", background=DEFAULT_QUOTE_COLOR,
+                      relief="solid", borderwidth=1)
+    swatch.pack(side="left")
+    logo_row = ttk.Frame(look)
+    logo_row.pack(fill="x", pady=(6, 0))
+    ttk.Label(logo_row, text="Logo file:").pack(side="left")
+    ttk.Entry(logo_row, textvariable=logo_var, width=44).pack(
+        side="left", padx=(4, 4))
+    ttk.Button(logo_row, text="Browse...", command=lambda: choose_logo()).pack(
+        side="left")
+    ttk.Button(logo_row, text="No logo", command=lambda: logo_var.set("")).pack(
+        side="left", padx=(6, 0))
+    ttk.Label(look, text="Contact lines printed beside the logo (address, "
+                         "phone, website - one per line):",
+              style="Dim.TLabel").pack(anchor="w", pady=(6, 0))
+    contact_box = tk.Text(look, height=2, wrap="word", font=("Consolas", 9))
+    contact_box.pack(fill="x")
+
+    #  -- 5. save, print, order -------------------------------------------
+    finish = ttk.LabelFrame(parent, text="5. Save it, print it, or order it",
+                            padding=6)
+    finish.pack(fill="x", pady=(0, 6))
+    finish_row = ttk.Frame(finish)
+    finish_row.pack(fill="x")
+    for text, command in (("Save the quote", lambda: save_quote()),
+                          ("Print the PDF...", lambda: print_pdf()),
+                          ("Turn into an order...", lambda: turn_into_order()),
+                          ("Copy it as text", lambda: copy_text()),
+                          ("Open the quotes folder",
+                           lambda: open_path(quote_model.ensure_folder(
+                               quote_folder(app))))):
+        ttk.Button(finish_row, text=text, command=command).pack(
+            side="left", padx=(0, 6))
+    folder_label = ttk.Label(finish, text="", style="Dim.TLabel",
+                             wraplength=760, justify="left")
+    folder_label.pack(anchor="w", pady=(6, 0))
+
+    # --------------------------------------------------------------- fields
+    def collect():
+        """Whatever is on screen, into the quote that is about to be saved."""
+        current = state["quote"]
+        customer = current.setdefault("customer", {})
+        customer["name"] = name_var.get().strip()
+        customer["email"] = email_var.get().strip()
+        customer["phone"] = phone_var.get().strip()
+        customer["address"] = read_box(address_box)
+        current["notes"] = read_box(notes_box)
+        kind = str(discount_kind.get() or "").strip().lower()
+        current["discount"] = {
+            "kind": {"percent": "percent", "amount": "amount"}.get(kind, ""),
+            "value": 0.0}
+        text = str(discount_value.get() or "").strip().replace("%", "").strip()
+        if current["discount"]["kind"] and text:
+            try:
+                current["discount"]["value"] = max(0.0, float(text))
+            except ValueError:
+                current["discount"]["value"] = 0.0
+        current.setdefault("look", {})
+        current["look"].update({"company": company_var.get().strip(),
+                                "contact": read_box(contact_box),
+                                "color": colour_var.get().strip(),
+                                "logo": logo_var.get().strip()})
+        return current
+
+    def populate(current):
+        """The quote that was just loaded, onto the screen."""
+        state["quote"] = current
+        customer = current.get("customer") or {}
+        name_var.set(customer.get("name", ""))
+        email_var.set(customer.get("email", ""))
+        phone_var.set(customer.get("phone", ""))
+        write_box(address_box, customer.get("address", ""))
+        write_box(notes_box, current.get("notes", ""))
+        discount = current.get("discount") or {}
+        kind = str(discount.get("kind") or "")
+        discount_kind.set({"percent": "Percent", "amount": "Amount"}.get(
+            kind, ""))
+        value = discount.get("value") or 0
+        discount_value.set("" if not value else ("%g" % value))
+        company_var.set(look_value("company"))
+        write_box(contact_box, look_value("contact"))
+        colour_var.set(look_value("color", DEFAULT_QUOTE_COLOR))
+        logo_var.set(look_value("logo"))
+        paint_swatch()
+        refresh()
+
+    # --------------------------------------------------------------- screen
+    def paint_swatch():
+        try:
+            red, green, blue = quote_pdf.parse_colour(colour_var.get())
+            swatch.configure(background="#%02X%02X%02X" % (red, green, blue))
+        except Exception:
+            pass
+
+    def refresh():
+        current = state["quote"]
+        rows_list.delete(0, "end")
+        currency = current.get("currency") or ""
+        for index, item in enumerate(quote_model.items_of(current), 1):
+            price = quote_model.item_price(item)
+            total = quote_model.line_total(item)
+            rows_list.insert("end", "%2d  %-46s  x%-2d %10s %10s" % (
+                index, item["name"][:46], quote_model.item_quantity(item),
+                quote_model.money(price, currency) if price is not None
+                else "no price",
+                quote_model.money(total, currency) if total is not None
+                else "-"))
+        sums = quote_model.totals(current)
+        bits = ["%d card%s on the quote" % (sums["lines"],
+                                            "" if sums["lines"] == 1 else "s")]
+        if sums["units"] != sums["lines"]:
+            bits.append("%d item%s in all" % (sums["units"],
+                                              "" if sums["units"] == 1 else "s"))
+        bits.append("subtotal %s" % quote_model.money(sums["subtotal"],
+                                                      currency))
+        if sums["discount"]:
+            bits.append("%s -%s" % (sums["discount_label"],
+                                    quote_model.money(sums["discount"],
+                                                      currency)))
+        bits.append("TOTAL %s" % quote_model.money(sums["total"], currency))
+        if sums["unpriced"]:
+            bits.append("%d with no price yet" % sums["unpriced"])
+        totals_label.configure(text="   |   ".join(bits))
+        number = current.get("number") or ""
+        words = quote_model.STATUS_WORDS.get(current.get("status", ""),
+                                             "Draft")
+        text = ("%s  -  %s" % (number, words) if number
+                else "New quote - not saved yet")
+        if current.get("order_number"):
+            text += "  (order #%s)" % current["order_number"]
+        number_label.configure(text=text)
+        folder_label.configure(text="Quotes are saved in %s" % quote_folder(app))
+        saved_numbers = [row["number"] for row in
+                         quote_model.list_quotes(quote_folder(app))[:40]]
+        try:
+            saved_box.configure(values=saved_numbers)
+        except Exception:
+            pass
+        if number in saved_numbers and not saved_var.get():
+            saved_var.set(number)
+
+    # ---------------------------------------------------------------- cards
+    def do_search():
+        term = str(search_var.get() or "").strip()
+        if not term:
+            messagebox.showinfo("What should I look for?",
+                                "Type part of a card's name - a player, a "
+                                "year, \"Batman\" - and press Search again.",
+                                parent=app)
+            return
+        site, key, secret = read_woo_credentials()
+        site = site or app.settings.get("woo_site_url", "")
+        if not (site and key and secret):
+            messagebox.showinfo(
+                "The stock cannot be read yet",
+                "Searching your stock needs the WooCommerce keys in "
+                "woo-keys.txt (lines 1-3).\n\n"
+                "A quote can still be built: press \"Type a card in by "
+                "hand\", or add the keys and come back - the search will "
+                "then offer every match at once.",
+                parent=app)
+            return
+        say("Searching the shop for %r..." % term)
+        result_label.configure(text="Searching...")
+        state["results"] = []
+
+        def work():
+            try:
+                found = quote_model.search(woo_get, site, key, secret, term)
+            except quote_model.QuoteError as exc:
+                #  Tk runs this later, after Python has already deleted the
+                #  caught name - reading exc.message inside the lambda would
+                #  be a NameError on the one path that has to explain itself.
+                message = exc.message
+                app.after(0, lambda: failed(message))
+                return
+            app.after(0, lambda: show_results(found))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def failed(message):
+        result_label.configure(text=message)
+        say(message, "err")
+
+    def show_results(found):
+        state["results"] = list(found)
+        results_list.delete(0, "end")
+        currency = state["quote"].get("currency") or ""
+        for product in state["results"]:
+            price = quote_model.parse_money(product.get("price"))
+            stock = product.get("stock_status") or ""
+            results_list.insert("end", "%-52s %10s%s" % (
+                product["name"][:52],
+                quote_model.money(price, currency) if price is not None
+                else "no price",
+                "   OUT OF STOCK" if stock == "outofstock" else ""))
+        if not state["results"]:
+            result_label.configure(text="No card on the website matched %r."
+                                        % search_var.get().strip())
+            say("Nothing matched.")
+            return
+        result_label.configure(
+            text="%d card%s matched - \"Add all the matches\" puts one of "
+                 "each on the quote." % (len(state["results"]),
+                                         "" if len(state["results"]) == 1
+                                         else "s"))
+        say("Found %d card(s)." % len(state["results"]))
+
+    def add_results(all_of):
+        if all_of:
+            chosen = list(state["results"])
+        else:
+            picked = results_list.curselection()
+            if not picked or not state["results"]:
+                messagebox.showinfo("Which card?",
+                                    "Search first, then click a card in the "
+                                    "list above.", parent=app)
+                return
+            chosen = [state["results"][picked[0]]]
+        if not chosen:
+            return
+        added, already = add_products(chosen)
+        say("%d card%s added%s." % (
+            added, "" if added == 1 else "s",
+            ", %d already on the quote" % already if already else ""))
+
+    def add_products(products):
+        """One of each, skipping anything already on the quote."""
+        added, already = quote_model.add_items(
+            state["quote"], products, quantity=1, skip_existing=True)
+        refresh()
+        return added, already
+
+    def add_manual():
+        name = simpledialog.askstring(
+            "Add a card by hand",
+            "The card as it should read on the quote:", parent=app) or ""
+        name = " ".join(name.split())
+        if not name:
+            return
+        price = simpledialog.askstring(
+            "Add a card by hand", "Its price (leave empty for no price yet):",
+            parent=app)
+        if price is None:
+            return
+        quote_model.add_item(state["quote"],
+                             {"name": name, "price": price or ""})
+        refresh()
+        say("%s added to the quote." % name)
+
+    def edit_row(what):
+        picked = rows_list.curselection()
+        items = quote_model.items_of(state["quote"])
+        if not picked or not items:
+            messagebox.showinfo("Which row?",
+                                "Click a row in the list above first.",
+                                parent=app)
+            return
+        index = picked[0]
+        item = items[index]
+        if what == "remove":
+            if not messagebox.askyesno(
+                    "Take it off the quote?",
+                    "%s\n\nIt is only taken off this quote; nothing on the "
+                    "website changes." % item["name"], parent=app):
+                return
+            quote_model.remove_item(state["quote"], index)
+            refresh()
+            return
+        if what == "qty":
+            answer = simpledialog.askstring(
+                "Quantity", "How many of %s?" % item["name"], parent=app,
+                initialvalue=str(quote_model.item_quantity(item)))
+            if answer is None:
+                return
+            try:
+                quantity = int(str(answer).strip() or "1")
+            except ValueError:
+                messagebox.showwarning("Not a quantity",
+                                       "%r is not a whole number." % answer,
+                                       parent=app)
+                return
+            quote_model.set_quantity(state["quote"], index, quantity)
+            refresh()
+            return
+        answer = simpledialog.askstring(
+            "Price", "What price should %s carry on this quote?\n\n"
+            "Leave it empty for \"no price yet\"." % item["name"],
+            parent=app,
+            initialvalue=str(item.get("price") or ""))
+        if answer is None:
+            return
+        if str(answer).strip() and quote_model.parse_money(answer) is None:
+            messagebox.showwarning("Not a price",
+                                   "%r is not a price." % answer, parent=app)
+            return
+        quote_model.set_price(state["quote"], index, answer)
+        refresh()
+
+    def reprice():
+        """Ask the website what these cards cost today, and say the difference.
+
+        A quote is a promise to a customer, so nothing here changes until the
+        person has seen every price that moved.
+        """
+        current = state["quote"]
+        items = [item for item in quote_model.items_of(current)
+                 if item.get("product_id")]
+        if not items:
+            messagebox.showinfo(
+                "Nothing to re-price",
+                "None of the cards on this quote came from the website, so "
+                "there is no price to read.", parent=app)
+            return
+        site, key, secret = read_woo_credentials()
+        site = site or app.settings.get("woo_site_url", "")
+        if not (site and key and secret):
+            messagebox.showinfo(
+                "The stock cannot be read yet",
+                "Reading today's prices needs the WooCommerce keys in "
+                "woo-keys.txt.", parent=app)
+            return
+        ids = sorted({int(item["product_id"]) for item in items})
+        say("Reading today's prices from the website...")
+
+        def work():
+            products = []
+            for start in range(0, len(ids), 100):
+                chunk = ids[start:start + 100]
+                try:
+                    code, data = woo_get(site, "/wp-json/wc/v3/products",
+                                         {"include": ",".join(str(i) for i in
+                                                              chunk),
+                                          "per_page": 100}, key, secret)
+                except Exception:
+                    code, data = 0, []
+                if code == 200 and isinstance(data, list):
+                    products.extend(row for row in data
+                                    if isinstance(row, dict) and row.get("id"))
+            app.after(0, lambda: compare_prices(products))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def compare_prices(products):
+        current = state["quote"]
+        changed, missing = quote_model.refresh_prices(current, products)
+        if not changed and not missing:
+            say("Every price on the quote is what the website says today.")
+            messagebox.showinfo(
+                "Prices are unchanged",
+                "Every card on this quote still costs what the website says.",
+                parent=app)
+            return
+        lines = []
+        if changed:
+            lines.append("These prices have changed since the quote was "
+                         "written:")
+            for row in changed:
+                lines.append("  %s   %s -> %s" % (
+                    row["name"][:52],
+                    quote_model.money(row["old"], current.get("currency")),
+                    quote_model.money(row["new"], current.get("currency"))))
+            lines.append("")
+        if missing:
+            lines.append("%d card%s no longer on the website:"
+                         % (len(missing), "" if len(missing) == 1 else "s"))
+            lines += ["  %s" % item["name"][:60] for item in missing]
+            lines.append("")
+        lines.append("Take the website's price for the cards that changed?")
+        if not messagebox.askyesno("Prices have moved", "\n".join(lines),
+                                   parent=app):
+            say("Prices left as they were - the quote still says what the "
+                "customer was told.")
+            return
+        quote_model.apply_prices(current, products)
+        refresh()
+        say("%d price%s taken from the website." % (
+            len(changed), "" if len(changed) == 1 else "s"))
+
+    # -------------------------------------------------------- saving/printing
+    def save_quote(quiet=False):
+        current = collect()
+        if not quote_model.items_of(current) and not quiet:
+            if not messagebox.askyesno(
+                    "No cards on it yet",
+                    "This quote has no cards on it. Save it anyway?",
+                    parent=app):
+                return None
+        try:
+            path = quote_model.save(current, quote_folder(app))
+        except quote_model.QuoteError as exc:
+            messagebox.showerror("The quote was not saved", exc.message,
+                                 parent=app)
+            return None
+        state["path"] = path
+        state["saved"] = path.name
+        remember_defaults(current)
+        refresh()
+        if not quiet:
+            say("Saved %s." % path.name, "ok")
+        return path
+
+    def remember_defaults(current):
+        """Keep the look, and where quotes go, for the next quote."""
+        look = current.get("look") or {}
+        changed = {}
+        for key, value in (("quote_company", look.get("company", "")),
+                           ("quote_contact", look.get("contact", "")),
+                           ("quote_color", look.get("color", "")),
+                           ("quote_logo", look.get("logo", ""))):
+            if str(app.settings.get(key, "")) != str(value):
+                app.settings[key] = value
+                changed[key] = value
+        if changed:
+            save = getattr(app, "_save_user_settings_callback", None)
+            try:
+                if callable(save):
+                    save()
+                else:
+                    save_settings(app.settings)
+            except Exception:
+                pass
+
+    def print_pdf():
+        current = collect()
+        if not quote_model.items_of(current):
+            messagebox.showinfo("No cards on it yet",
+                                "Add the cards first, then print the PDF.",
+                                parent=app)
+            return
+        path = save_quote(quiet=True)
+        if path is None:
+            return
+        folder = quote_model.ensure_folder(quote_folder(app))
+        target = folder / ("%s.pdf" % (current.get("number") or "quote"))
+        say("Drawing the PDF...")
+        try:
+            info = quote_pdf.render(current, target)
+        except quote_model.QuoteError as exc:
+            messagebox.showerror("The PDF was not written",
+                                 "%s %s" % (exc.message, exc.hint), parent=app)
+            say("The PDF was not written.", "err")
+            return
+        missing_logo = bool((current.get("look") or {}).get("logo")) and \
+            not info["logo"]
+        say("PDF written: %s (%d page%s)%s." % (
+            info["path"], info["pages"], "" if info["pages"] == 1 else "s",
+            " - the logo file could not be read, so it printed without it"
+            if missing_logo else ""), "warn" if missing_logo else "ok")
+        if missing_logo:
+            messagebox.showwarning(
+                "The logo could not be used",
+                "The quote was printed without the logo: the file in "
+                "\"Logo file\" could not be read as an image.\n\n%s"
+                % info["path"], parent=app)
+        open_path(info["path"])
+
+    # ------------------------------------------------------------- ordering
+    def turn_into_order():
+        current = collect()
+        if not quote_model.items_of(current):
+            messagebox.showinfo("No cards on it yet",
+                                "Add the cards first, then turn the quote "
+                                "into an order.", parent=app)
+            return
+        site, key, secret = read_woo_credentials()
+        site = site or app.settings.get("woo_site_url", "")
+        if not (site and key and secret):
+            open_woo_keys_file(app, app.settings.get("woo_site_url", ""))
+            copied = copy_quote_text(current)
+            messagebox.showinfo(
+                "Turning a quote into an order needs the keys",
+                "The quote itself is finished and can be printed and sent: "
+                "press \"Print the PDF...\".\n\n"
+                "Creating the order on the website needs the WooCommerce keys "
+                "in woo-keys.txt (lines 1-3), which are about to open.%s"
+                % ("\n\nIn the meantime the quote is on your clipboard, so it "
+                   "can be pasted into an order by hand." if copied else ""),
+                parent=app)
+            return
+        if current.get("status") == "ordered":
+            if not messagebox.askyesno(
+                    "It is already an order",
+                    "This quote says it became order #%s.\n\nCreate another "
+                    "order from it?" % current.get("order_number"),
+                    parent=app):
+                return
+            current["status"] = "draft"
+            current["order_id"] = 0
+            current["order_number"] = ""
+        unlinked = [item for item in quote_model.items_of(current)
+                    if not int(item.get("product_id") or 0)]
+        if unlinked:
+            say("Matching the hand-typed cards to the shop...")
+            matched, unmatched = link_rows(current, site, key, secret)
+            if unmatched:
+                messagebox.showwarning(
+                    "Some cards are not from the shop",
+                    "These rows were typed in by hand and could not be "
+                    "matched to a product, so an order cannot point at "
+                    "them:\n\n%s\n\nRemove them, or search the stock and add "
+                    "the real card instead."
+                    % "\n".join("  %s" % item["name"] for item in unmatched),
+                    parent=app)
+                refresh()
+                return
+            say("%d hand-typed card%s matched to the shop."
+                % (matched, "" if matched == 1 else "s"))
+        preview = ["This creates a PENDING order on %s." % site, "",
+                   quote_model.as_text(current), "",
+                   "Nothing is charged and no email is sent. The order shows "
+                   "up in the dashboard with these cards at the website's "
+                   "own prices - which is checked after it is written, and "
+                   "any difference from the quote above is reported.", "",
+                   "Create the order?"]
+        if not confirm_long_text(parent, app, "Turn the quote into an order?",
+                                 "\n".join(preview), "Create the order"):
+            say("Cancelled - nothing was sent.")
+            return
+        save_quote(quiet=True)
+        say("Creating the order...")
+
+        def work():
+            try:
+                result = quote_model.create_order(current, site, key, secret,
+                                                  api=woo_orders.api_request)
+            except quote_model.QuoteError as exc:
+                problem = exc            # the caught name dies with the block
+                app.after(0, lambda: order_failed(problem))
+                return
+            app.after(0, lambda: order_done(current, result))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def link_rows(current, site, key, secret):
+        """Give a hand-typed row the product id an order needs, or give up.
+
+        Only a confident match is taken, and only when it is the one product
+        the search found: guessing here puts the wrong card on an invoice.
+        """
+        matched, unmatched = 0, []
+        for item in quote_model.items_of(current):
+            if int(item.get("product_id") or 0):
+                continue
+            found = []
+            for term in woo_orders.search_terms(item["name"]):
+                try:
+                    found += quote_model.search(woo_get, site, key, secret,
+                                                term)
+                except quote_model.QuoteError:
+                    found = []
+                    break
+                if woo_orders.auto_pick(item["name"], found):
+                    break
+            product = woo_orders.auto_pick(item["name"], found)
+            if product is None:
+                unmatched.append(item)
+                continue
+            item["product_id"] = int(product["id"])
+            item["sku"] = product.get("sku") or item.get("sku") or ""
+            matched += 1
+        #  A card typed in by hand can turn out to be a card already on the
+        #  quote; folding the two rows together is what keeps the order from
+        #  holding the same product twice.
+        quote_model.merge_same_products(current)
+        return matched, unmatched
+
+    def copy_text():
+        current = collect()
+        if not quote_model.items_of(current):
+            messagebox.showinfo("No cards on it yet",
+                                "There is nothing to copy until the cards are "
+                                "on the quote.", parent=app)
+            return
+        copied = copy_quote_text(current)
+        say("The quote is on the clipboard as text - ready to paste into an "
+            "email." if copied else "The clipboard could not be used.",
+            "ok" if copied else "err")
+
+    def copy_quote_text(current):
+        try:
+            app.clipboard_clear()
+            app.clipboard_append(quote_model.as_text(current))
+            return True
+        except Exception:
+            return False
+
+    def order_failed(exc):
+        messagebox.showerror("The order was not written",
+                             "%s %s" % (exc.message, exc.hint), parent=app)
+        say("The order was not written.", "err")
+
+    def order_done(current, result):
+        quote_model.mark_ordered(current, result, quote_folder(app))
+        remember_defaults(current)
+        number = result["number"]
+        say("Quote %s is order #%s on the website." % (current.get("number"),
+                                                       number), "ok")
+        if result.get("note"):
+            say(result["note"], "warn")
+            messagebox.showwarning(
+                "The order came to a different total",
+                result["note"] + "\n\nThe order exists and is right; the "
+                "quote is the number the customer is holding, so it is worth "
+                "a word with them.", parent=app)
+        refresh()
+        url = woo_orders.order_edit_url(
+            app.settings.get("woo_site_url", "") or "", result.get("id"))
+        if url:
+            app.open_webpages([url])
+
+    # --------------------------------------------------------------- quotes
+    def open_saved():
+        chosen = str(saved_var.get() or "").strip()
+        folder = quote_folder(app)
+        candidates = [folder / ("%s.json" % chosen)] if chosen else []
+        path = next((p for p in candidates if p.is_file()), None)
+        if path is None:
+            messagebox.showinfo(
+                "Pick a quote",
+                "Choose one of the saved quotes in the list first.",
+                parent=app)
+            return
+        try:
+            current = quote_model.load(path)
+        except quote_model.QuoteError as exc:
+            messagebox.showerror("That quote could not be opened",
+                                 "%s %s" % (exc.message, exc.hint),
+                                 parent=app)
+            return
+        state["path"] = path
+        populate(current)
+        say("Opened %s." % path.name)
+
+    def start_new():
+        current = state["quote"]
+        if quote_model.items_of(current) and not messagebox.askyesno(
+                "Start a new quote?",
+                "This quote has %d card(s) on it. Anything not saved is lost."
+                % len(quote_model.items_of(current)), parent=app):
+            return
+        blank = quote_model.new_quote(
+            currency=app.settings.get("currency_prefix", "C$") or "",
+            company=app.settings.get("quote_company", "") or "",
+            today=datetime.now().date())
+        blank["look"]["color"] = (app.settings.get("quote_color")
+                                  or DEFAULT_QUOTE_COLOR)
+        blank["look"]["logo"] = app.settings.get("quote_logo", "") or ""
+        blank["look"]["contact"] = app.settings.get("quote_contact", "") or ""
+        state["path"] = None
+        saved_var.set("")
+        populate(blank)
+        say("A new quote - %s." % (blank.get("number") or "unnumbered yet"))
+
+    # ------------------------------------------------------------- the look
+    def pick_colour():
+        chosen = colorchooser.askcolor(
+            color=quote_pdf.parse_colour(colour_var.get()), parent=app,
+            title="The quote's colour")
+        if not chosen or not chosen[1]:
+            return
+        colour_var.set(str(chosen[1]).upper())
+        paint_swatch()
+
+    def choose_logo():
+        path = filedialog.askopenfilename(
+            title="The logo for the quote",
+            filetypes=[("Images", "*.png *.jpg *.jpeg *.gif *.bmp *.webp"),
+                       ("All files", "*.*")], parent=app)
+        if not path:
+            return
+        try:
+            from PIL import Image as _PILImage
+            with _PILImage.open(path) as opened:
+                opened.verify()
+        except Exception:
+            messagebox.showwarning(
+                "That file is not an image",
+                "%s could not be opened as a picture, so the quote would "
+                "print without it." % Path(path).name, parent=app)
+            return
+        logo_var.set(str(path))
+        say("Logo: %s" % Path(path).name)
+
+    try:
+        colour_var.trace_add("write", lambda *_: paint_swatch())
+    except Exception:
+        pass
+
+    # -------------------------------------------------------------- starting
+    folder = quote_folder(app)
+    refresh()
+    folder_label.configure(text="Quotes are saved in %s" % folder)
+    say("A new quote. Search the stock and add the cards, or open a saved "
+        "quote above.")
+    start_new()
+    attach_tooltips(parent)
+
+
 def build_newphotos(parent, app):
     """Replace one card's photos, then put every marketplace page on screen.
 
@@ -7982,6 +8978,7 @@ PANEL_BUILDERS = {
     "square": build_square,
     "newphotos": build_newphotos,
     "ordertext": build_ordertext,
+    "quote": build_quote,
     "markets": build_markets,
     "logs": build_logs,
     "plugins": build_plugins,

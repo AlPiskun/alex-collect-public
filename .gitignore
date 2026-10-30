@@ -16,6 +16,9 @@ app/woo-keys.txt.local
 app/*history.xlsx
 app/pipeline/**/facebook_history.xlsx
 
+# Quotes written by the app: customer details, part of the user's own records
+app/quotes/
+
 # Temporary runtime files
 *.log
 *.tmp

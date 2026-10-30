@@ -237,13 +237,20 @@ def install_tk():
     box.askyesnocancel = lambda *a, **k: None
     prompt = types.ModuleType("tkinter.simpledialog")
     prompt.askstring = lambda *a, **k: ""
+    #  The colour picker is a real dialog too, and the quote panel asks it for
+    #  a colour - so the stand-in answers like one that was cancelled, which
+    #  leaves the panel's own colour alone.
+    colour = types.ModuleType("tkinter.colorchooser")
+    colour.askcolor = lambda *a, **k: (None, None)
     for name, module in (("tkinter", tk), ("tkinter.ttk", ttk),
                          ("tkinter.filedialog", dialog),
                          ("tkinter.messagebox", box),
-                         ("tkinter.simpledialog", prompt)):
+                         ("tkinter.simpledialog", prompt),
+                         ("tkinter.colorchooser", colour)):
         sys.modules[name] = module
     tk.ttk, tk.filedialog = ttk, dialog
     tk.messagebox, tk.simpledialog = box, prompt
+    tk.colorchooser = colour
     return tk, ttk, dialog, box
 
 
@@ -1301,16 +1308,23 @@ def test_tabs_are_sections():
           [name for _tab, name in getattr(notebook, "tabs", [])] ==
           [group for group, _ids in gui.groups_for(app.cs_addon)],
           str([name for _tab, name in getattr(notebook, "tabs", [])]))
+    #  A panel may group its own controls in bordered boxes (the quote panel
+    #  numbers five of them). Those are the panel's business, not the tabs
+    #  view's: a section is only the frame the tabs view draws, which is what
+    #  the style says. Filtering by the style keeps the order check strict -
+    #  a section that lost its style disappears from the list and fails.
+    def is_section(w):
+        return (isinstance(w, gui.ttk.LabelFrame) and
+                w.cget("style") == "PanelSection.TLabelframe")
+
     sections, problems, repeated = [], [], []
     for tab, group in getattr(notebook, "tabs", []):
         ids = dict(gui.groups_for(app.cs_addon))[group]
-        frames = [w for w in tab.walk() if isinstance(w, gui.ttk.LabelFrame)]
+        frames = [w for w in tab.walk() if is_section(w)]
         sections.extend(frames)
         if [f.cget("text") for f in frames] != [gui.TITLES[pid] for pid in ids]:
             problems.append((group, [f.cget("text") for f in frames]))
         for pid, frame in zip(ids, frames):
-            if frame.cget("style") != "PanelSection.TLabelframe":
-                problems.append((pid, frame.cget("style")))
             if gui.TITLES[pid] in _labels_below(frame):
                 repeated.append(pid)
     check("every panel in a group has its own section, in order",
@@ -1320,6 +1334,10 @@ def test_tabs_are_sections():
                                gui.groups_for(app.cs_addon)) and
           all(s.cget("text") for s in sections),
           str([s.cget("text") for s in sections]))
+    check("no panel dresses its own boxes as sections",
+          not [w for w in parent.walk() if is_section(w) and w not in sections],
+          str([w.cget("text") for w in parent.walk()
+               if is_section(w) and w not in sections]))
     check("the title is not printed twice inside the section",
           not repeated, str(repeated))
     photos = next((s for s in sections

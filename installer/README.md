@@ -20,7 +20,7 @@ by-default task to install the packages in the repository's
 packages are already installed.
 
 Compile it on a Windows machine with Inno Setup 6. Output:
-`Output\AlexCollect-Setup-2.84.exe`.
+`Output\AlexCollect-Setup-2.85.exe`.
 
 ## B. `alexcollect-bundled.iss` — install a private Python runtime
 
@@ -49,14 +49,14 @@ Both scripts use the existing Alex Collect AppId and install to
 `%LOCALAPPDATA%\AlexCollect`, so Inno Setup can upgrade an existing install
 in place. The uninstaller removes installed program files; it deliberately
 leaves app-created state (settings, checklists, reports, cookies, ledgers,
-and the per-user `plugins` directory) in place. The bundled variant removes
-only its own `runtime\python-embed` directory.
+customer quotes, and the per-user `plugins` directory) in place. The bundled
+variant removes only its own `runtime\python-embed` directory.
 
 The installer source list explicitly excludes runtime credentials/state,
-Python caches, generated history, tests, and any legacy
-`app\addons\canadianshopper` tree. To verify the package boundary, run the
-core test suites from the repository and inspect the compiled package before
-publishing a release.
+Python caches, generated history, tests, the `app\quotes` folder (customer
+names, addresses and prices), and any legacy `app\addons\canadianshopper`
+tree. To verify the package boundary, run the core test suites from the
+repository and inspect the compiled package before publishing a release.
 
 ## Build note
 

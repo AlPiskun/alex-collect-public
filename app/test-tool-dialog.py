@@ -126,13 +126,17 @@ def install_tk():
     box.askyesnocancel = lambda *a, **k: None
     prompt = types.ModuleType("tkinter.simpledialog")
     prompt.askstring = lambda *a, **k: ""
+    colour = types.ModuleType("tkinter.colorchooser")
+    colour.askcolor = lambda *a, **k: (None, None)
     for name, module in (("tkinter", tk), ("tkinter.ttk", ttk),
                          ("tkinter.filedialog", dialog),
                          ("tkinter.messagebox", box),
-                         ("tkinter.simpledialog", prompt)):
+                         ("tkinter.simpledialog", prompt),
+                         ("tkinter.colorchooser", colour)):
         sys.modules[name] = module
     tk.ttk, tk.filedialog = ttk, dialog
     tk.messagebox, tk.simpledialog = box, prompt
+    tk.colorchooser = colour
     return tk, ttk, box
 
 

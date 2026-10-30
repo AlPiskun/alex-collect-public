@@ -32,6 +32,7 @@ These are outside the marketplace result rollups and may grow or persist by desi
 - `gui-log.txt` is append-only and can grow over time.
 - `sold-cards-ledger.json` and `sold-cards-checklist.csv` are persistent workflow state, not disposable output. `sold-cards-report.csv` is refreshed by runs.
 - `_card_input.txt` is an intermediate file overwritten for each pipeline run.
+- `app/quotes/` (or the folder chosen in the quote panel) holds one `<number>.json` per customer quote, with the customer's name, address and the cards, plus the `<number>.pdf` printed from it. It is the user's record of what was promised to whom, so no run cleans it, and it is kept out of Git.
 - `canadianshopper_products/cs-ready/back-map.json` and `cs-image-report.csv` are refreshed during staging. The staged history CSV is preserved separately from the import-ready current batch.
 
 No other core pipeline result file was found that creates a dated, unbounded series in the pipeline root. The GUI log, Facebook daily logs, and image workspace are the main remaining accumulation points.
