@@ -443,7 +443,9 @@ def drive(app, sheet, yes_for=(), nocancel=None, wordpress=("owner", "pw"),
     gui.build_newphotos(parent, app)
     widgets = list(parent.walk())
     find = next(w for w in widgets if w.cget("text") == "Find the card...")
-    entry = next(w._kw["textvariable"] for w in widgets
+    #  The card-name entry, not the order-number one: both are text entries,
+    #  and the queue's sits above this row.
+    entry = next(w._kw["textvariable"] for w in find.parent.walk()
                  if w._kw.get("textvariable") is not None)
     entry.set("gretzky")
     asked = []
@@ -1053,8 +1055,8 @@ def test_assign_window():
           str(names))
     check("one image per card is used up",
           app.photo_pool.progress() == (2, 7), str(app.photo_pool.progress()))
-    check("the rows left over still say they have no title",
-          any("no title" in str(x) for x in listing.items),
+    check("the rows left over still say they have no card",
+          any("no card" in str(x) for x in listing.items),
           str(listing.items[:3]))
     _BOX.askyesno = lambda *a, **k: False
     _BOX.askyesnocancel = lambda *a, **k: None
@@ -1968,6 +1970,241 @@ def test_the_scroll_bar_is_drawn_when_the_page_grows():
           str(getattr(scroller, "jobs", {})))
 
 
+def test_the_order_queue():
+    print()
+    print("== 31. an order's cards are worked through nine at a time ==")
+    folder = Path(tempfile.mkdtemp(prefix="photo-queue-panel-"))
+    sheet = make_sheet(folder / "Scan-front.jpg", blanks=())
+    app = FakeApp(folder)
+    app.photo_pool = photo_pool.PhotoPool(tiles_dir=folder / "tiles")
+    app.photo_pool.add_sheet(sheet, index=0)
+    remembered = {"orders": {}}
+    UPLOADED.clear()
+
+    #  The order: thirteen cards, of which one is sold out, one does not
+    #  track its stock, and one the shop does not return at all.
+    lines = [{"product_id": pid, "name": "Card #%d" % pid, "quantity": 1}
+             for pid in range(1, 14)]
+    order = {"id": 7, "number": "1042", "line_items": lines,
+             "billing": {"first_name": "Dana", "last_name": "Lee"}}
+    products = {}
+    for pid in range(1, 13):
+        products[pid] = {"id": pid, "name": "Card #%d" % pid,
+                         "sku": "S%d" % pid, "manage_stock": pid != 7,
+                         "stock_quantity": 0 if pid == 5 else 2,
+                         "images": [{"id": 900 + pid}]}
+
+    def fake_order(site, key, secret, number):
+        return order if str(number) == "1042" else {}
+
+    def fake_get(site, path, params, key, secret):
+        pid = int(str(path).rstrip("/").split("/")[-1])
+        return (200, products[pid]) if pid in products else (404, {})
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:           # the panel draws the message
+            result, error = None, exc
+        return done(result, error)
+
+    def save_state(path, state):
+        remembered["orders"] = dict(state.get("orders") or {})
+        return Path(str(path))
+
+    parent = FakeWidget()
+    with patch.object(gui.photo_queue, "load_state",
+                      lambda path: {"orders": remembered["orders"]}), \
+            patch.object(gui.photo_queue, "save_state", save_state), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck", "cs")), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui.woo_orders, "find_order", fake_order), \
+            patch.object(gui, "woo_get", fake_get):
+        gui.build_newphotos(parent, app)
+
+        def by(label):
+            return next((w for w in parent.walk() if w.cget("text") == label),
+                        None)
+
+        queue_frame = next(w for w in parent.walk()
+                           if w._kw.get("text") ==
+                           "An order's cards, nine at a time")
+        number = next(w._kw["textvariable"] for w in queue_frame.walk()
+                      if w._kw.get("textvariable") is not None)
+        listing = next(w for w in queue_frame.walk()
+                       if w._kw.get("height") == gui.photo_queue.SHEET)
+        sentence = next(w for w in queue_frame.walk()
+                        if w._kw.get("style") == "Dim.TLabel")
+        check("the order's cards start empty",
+              "No queue yet" in sentence.cget("text"), sentence.cget("text"))
+
+        #  An empty box asks which order rather than reading order "".
+        _BOX.shown[:] = []
+        by("Build the queue from this order...").invoke()
+        check("no order number, a question instead of a read",
+              any("Which order?" in str(shown[1])
+                  for shown in _BOX.shown), str(_BOX.shown))
+        check("and nothing is listed", listing.items == [], str(listing.items))
+
+        number.set("1042")
+        by("Build the queue from this order...").invoke()
+        check("nine cards are on the table",
+              len(listing.items) == 9, str(len(listing.items)))
+        check("they are the first nine that can still be bought",
+              ["[S%d]" % pid in "".join(listing.items)
+               for pid in (1, 2, 3, 4, 6, 8, 9, 10, 11)] == [True] * 9,
+              str(listing.items))
+        check("the sold-out card is not among them",
+              "[S5]" not in "".join(listing.items), str(listing.items))
+        check("the card with no stock count is not either",
+              "[S7]" not in "".join(listing.items), str(listing.items))
+        check("the sentence says which nine this is",
+              sentence.cget("text") ==
+              "Order 1042: 9 cards in this sitting, 1 behind them.",
+              sentence.cget("text"))
+        said = " ".join(str(line[1]) for line in app.lines)
+        check("the console names the order and the count",
+              "Order 1042 for Dana Lee: 10 cards need a photograph here, "
+              "9 in this sitting." in said, said[:200])
+        check("and every card left out is named with its reason",
+              said.count("Not in the queue:") == 3, said[:400])
+        check("the reason says what happened",
+              "sold out" in said and "does not track its stock" in said and
+              "did not return this product" in said, said[:400])
+
+        #  The scans and the website disagree about the order often enough
+        #  that the nine have to be rearrangeable before they are matched.
+        listing.selection = (1,)
+        by("Move up").invoke()
+        check("a card can be moved up the sheet",
+              "[S2]" in listing.items[0] and "[S1]" in listing.items[1],
+              str(listing.items[:3]))
+        by("Move down").invoke()
+        check("and back down again",
+              "[S1]" in listing.items[0] and "[S2]" in listing.items[1],
+              str(listing.items[:3]))
+        check("the numbering follows the list",
+              listing.items[0].startswith("1. ") and
+              listing.items[8].startswith("9. "), str(listing.items[:2]))
+        listing.selection = ()
+
+        #  The nine cards are already filled in when the window opens.
+        by("Assign photos to cards...").invoke()
+        top = app.photo_assign_window
+        box = next(w for w in top.walk() if w._kw.get("height") == 10)
+        check("the assignment window is already filled in with the nine",
+              len(box.items) == 9, str(len(box.items)))
+        check("each row names the card it is for",
+              "Card #1" in box.items[0] and "Card #11" in box.items[-1],
+              str(box.items))
+        top.destroy()
+
+        #  Photographing them is remembered, so the sitting after this one
+        #  starts at the tenth card instead of the first.
+        by("Mark these photographed").invoke()
+        check("the next sitting is the card that was behind them",
+              len(listing.items) == 1, str(listing.items))
+        check("and it says the other nine are done",
+              "9 already photographed" in sentence.cget("text"),
+              sentence.cget("text"))
+        check("the memory holds those nine",
+              remembered["orders"]["1042"]["done"] ==
+              ["1", "2", "3", "4", "6", "8", "9", "10", "11"],
+              str(remembered["orders"]))
+        check("the console says what was marked",
+              any("marked as photographed" in str(line[1])
+                  for line in app.lines), str(app.lines[-3:]))
+
+        #  Looking at another tab rebuilds the panel; the nine on the table
+        #  have to survive that.
+        parent = FakeWidget()
+        gui.build_newphotos(parent, app)
+        queue_frame = next(w for w in parent.walk()
+                           if w._kw.get("text") ==
+                           "An order's cards, nine at a time")
+        listing = next(w for w in queue_frame.walk()
+                       if w._kw.get("height") == gui.photo_queue.SHEET)
+        sentence = next(w for w in queue_frame.walk()
+                        if w._kw.get("style") == "Dim.TLabel")
+        check("opening another tab keeps the sitting",
+              len(listing.items) == 1 and "[S12]" in listing.items[0],
+              str(listing.items))
+
+        #  Starting the order again offers every card, and changes nothing
+        #  on the website.
+        _BOX.askyesno = lambda *a, **k: False
+        by_text = lambda label: next(w for w in parent.walk()
+                                     if w.cget("text") == label)
+        by_text("Start this order again").invoke()
+        check("answering No keeps the memory",
+              remembered["orders"]["1042"]["done"] ==
+              ["1", "2", "3", "4", "6", "8", "9", "10", "11"],
+              str(remembered["orders"]))
+        _BOX.askyesno = lambda *a, **k: True
+        by_text("Start this order again").invoke()
+        check("forgetting starts the order from the first card",
+              len(listing.items) == 9 and "[S1]" in listing.items[0],
+              str(listing.items[:2]))
+        check("and the memory is empty again",
+              remembered["orders"] == {}, str(remembered["orders"]))
+        check("nothing was uploaded by any of this", not UPLOADED,
+              str(UPLOADED))
+
+    _BOX.askyesno = lambda *a, **k: False
+    _BOX.shown[:] = []
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+
+def test_one_way_to_name_the_cards():
+    print()
+    print("== 32. naming the cards: an order's nine, or a pasted list ==")
+    folder = Path(tempfile.mkdtemp(prefix="photo-ways-"))
+    sheet = make_sheet(folder / "Scan-front.jpg")
+    app = FakeApp(folder)
+    app.photo_pool = photo_pool.PhotoPool(tiles_dir=folder / "tiles")
+    app.photo_pool.add_sheet(sheet, index=0)
+    parent = FakeWidget()
+    gui.build_newphotos(parent, app)
+    opener = next(w for w in parent.walk()
+                  if w.cget("text") == "Assign photos to cards...")
+
+    def radios(where):
+        return [w for w in where.walk() if isinstance(w, _TTK.Radiobutton)]
+
+    def labels(where):
+        return " ".join(str(w.cget("text")) for w in where.walk())
+
+    check("the panel offers no sheet-reading choice", radios(parent) == [],
+          str(radios(parent)))
+    said = labels(parent)
+    check("and nothing in it mentions an AI answer",
+          "AI answer" not in said and "sheet's titles" not in said,
+          said[:200])
+    check("the help does not mention one either",
+          "AI" not in gui.DOCS["newphotos"] and
+          "AI" not in gui.BLURBS["newphotos"],
+          gui.DOCS["newphotos"][:120])
+    check("the one-at-a-time way of naming a card is still there",
+          "Find the card..." in said, said[:200])
+
+    opener.invoke()
+    top = app.photo_assign_window
+    check("the assignment window opens", top is not None)
+    check("with no method to choose between", radios(top) == [],
+          str(radios(top)))
+    said = labels(top)
+    check("and no offer to read the sheet's titles", "AI" not in said,
+          said[:200])
+    check("it offers the pasted list instead", "Read these" in said,
+          said[:200])
+    check("and a card can still be chosen for one row",
+          "Choose a card for this row" in said, said[:200])
+    top.destroy()
+    shutil.rmtree(folder, ignore_errors=True)
+
+
 def main():
     test_version_gates()
     test_pair_saved_and_sent()
@@ -1994,6 +2231,8 @@ def main():
     test_pinned_help_still_opens()
     test_the_page_fills_the_window()
     test_the_scroll_bar_is_drawn_when_the_page_grows()
+    test_the_order_queue()
+    test_one_way_to_name_the_cards()
     test_grid_fits_a_small_screen()
     test_loading_is_visible()
     test_spent_sitting()

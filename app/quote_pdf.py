@@ -23,6 +23,7 @@ from PIL import Image, ImageDraw, ImageFont
 import doc_images
 import pdf_writer
 import quote as quote_model
+from user_settings import restrict_file_permissions
 
 #  A4, in inches. The page is drawn at PRINT_DPI and saved at the same
 #  resolution, so a 10pt line is 28 pixels tall and stays sharp when printed.
@@ -739,6 +740,9 @@ def render(quote, path, dpi=PRINT_DPI, images=None):
         raise quote_model.QuoteError(
             "The PDF could not be written to %s (%s)." % (target, exc),
             "Close the file if it is open in a viewer, then print it again.")
+    #  The printed quote holds the customer's name and address, so the file
+    #  is readable by this Windows account only - as the keys file is.
+    restrict_file_permissions(target)
     logo = str((quote.get("look") or {}).get("logo") or "").strip()
     return {"path": target, "pages": len(pages),
             "logo": bool(logo) and _load_logo(logo) is not None,

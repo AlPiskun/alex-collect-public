@@ -26,6 +26,7 @@ import doc_images
 import pdf_writer
 import quote as quote_model
 import quote_pdf
+from user_settings import restrict_file_permissions
 
 #: What the shop asks when we fetch a picture, and where the pictures are kept
 #: between prints. Both live in :mod:`doc_images` now, so a picture downloaded
@@ -643,6 +644,9 @@ def render(document, path, images=None, dpi=quote_pdf.PRINT_DPI):
         raise quote_model.QuoteError(
             "The PDF could not be written to %s (%s)." % (target, exc),
             "Close the file if it is open in a viewer, then print it again.")
+    #  A packed order's sheet names the customer and their delivery address,
+    #  so it belongs to this Windows account only.
+    restrict_file_permissions(target)
     return {"path": target, "pages": len(pages),
             "pictures": counts["pictures"], "missing": counts["missing"]}
 

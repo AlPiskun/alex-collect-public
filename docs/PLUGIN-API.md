@@ -62,6 +62,8 @@ screens. The current core recognizes the following action IDs:
 - `batch.photo_cache_repair`
 - `batch.pipeline_stage`
 - `marketplace.publish_drafts`
+- `marketplace.import_csv`
+- `stock.set`
 
 The three photo actions are separate jobs even though one script usually
 backs them all, so the core resolves each one by ID rather than by filename:
@@ -118,6 +120,8 @@ version as well as the action:
 | `--mode replace` without a staged CSV | plugin **1.0.15** or newer |
 | `--back` replacing the gallery row | plugin **1.0.16** or newer |
 | the publisher's `PUBLISH` question reaching the console | plugin **1.0.27** or newer |
+| writing a stock count on the other site (`stock.set`) | plugin **1.0.21** or newer |
+| importing a written CSV into the vendor dashboard (`marketplace.import_csv`) | plugin **1.0.23** or newer |
 
 `--back` was additive before 1.0.16 - it added the new back beside the old one
 - so sending it to 1.0.15 would leave the previous back photo on the listing.
@@ -252,6 +256,113 @@ configured browser ID (or an empty string when no preference is set). The
 core never executes browser bookmarklets. New capabilities require a
 corresponding core integration; merely declaring a new capability does not
 add UI controls or run code.
+
+## Writing on the marketplace
+
+Two actions change the other site, and both are called only after the person
+has confirmed exactly what will change. The core starts one only when the
+plugin declares it; a plugin without it gets a message naming the version
+that added it and what to do by hand, never a half-done job.
+
+### `stock.set` - writing a stock count (plugin 1.0.21)
+
+Reading the other site's stock is all the comparison can do on its own. With
+`stock.set` declared, the panel can also write one listing's count, and the
+direction is fixed and named in every line of the confirmation: **your
+website's count goes onto the other site**. Your website is never changed by
+it.
+
+```
+cs-stock.py --set-file "<plan.json>" [--cookie-file "<cookie.txt>"] --set-out "<result.json>"
+```
+
+The plan file is written by the core, one entry per card, and every entry
+names the listing three ways because a plugin may know it by id, by SKU or
+only by its title:
+
+```json
+{"items": [{"id": 13820, "sku": "OPC1971-001-PR-2",
+            "title": "1971-72 O-Pee-Chee Test Card #001 (PR)",
+            "card": "1971-72 O-Pee-Chee Test Card #001 (PR)",
+            "from": 2, "to": 1}]}
+```
+
+- `from` is the count the reader last reported; `to` is the website's count.
+  The plugin writes `to`.
+- Only a listing that is **on sale** is ever in a plan. A draft, hidden or
+  archived listing is a row of its own on the panel (`stock.set` cannot fix
+  it), and a listing with no stock count is never sent either - there is no
+  number to write, and inventing one is how a card that cannot be bought
+  starts claiming it can.
+- Every id, SKU and title in the plan is a real listing the reader returned.
+  Nothing else is being asked for: no titles change, no prices, no listings
+  are added, archived or republished.
+
+The result file is the plugin's answer, and it is what the panel reads:
+
+```json
+{"updated": [{"id": 13820}],
+ "failed":  [{"id": 13821, "why": "that listing is not on sale"}]}
+```
+
+- An entry is matched to the plan by `id` (also accepted: `product_id`,
+  `listing_id`), then by `sku`, then by `title`, `card` or `name`. The id
+  wins when both sides have one, because two cards in one set are exactly
+  similar enough for a title match to land on the wrong listing.
+- `why`, `reason`, `error` and `message` are all accepted as the failure's
+  sentence; it is shown to the person unedited.
+- A card the result does not mention is **unknown**, never assumed written:
+  it stays on the list and the console says so.
+- The core always passes `--set-out`; write the result there. A run that
+  writes no result is treated as reporting nothing, so every card stays on
+  the list. Pressing **Compare again** is the confirmation the panel offers
+  afterwards, so a plugin does not have to read its own write back.
+
+Exit non-zero to mean *nothing was written*: the core takes that at its word,
+leaves the list exactly as it was, and names the exit code. A partial write
+with a zero exit is the one shape that cannot be reported honestly, so a
+plugin that writes several listings should report the ones that failed in
+`failed` rather than exiting non-zero after a success.
+
+### `marketplace.import_csv` - importing a written CSV (plugin 1.0.23)
+
+Listing a card on the other site is done by writing the same CSV the batch
+pipeline writes and importing it. With `marketplace.import_csv` declared the
+core can do the import as well; without it, the file is written, the folder
+is opened, and the panel says where the import lives in the vendor dashboard.
+
+```
+cs-import.py --csv "<file>" [--csv "<file>" ...] [--cookie-file "<cookie.txt>"] --result "<result.json>"
+```
+
+- `--csv` is repeated once per file, in the order they were written. The core
+  names them itself (`canadianshopper_import_<stamp>_NN_of_MM.csv`, 500 rows
+  per file) and imports **only** the files it passes - a run must not sweep a
+  folder for more, because an older batch may be sitting in it.
+- `--cookie-file` is passed only when the file exists.
+- `--result` is where the answer goes, and it must be written even when
+  nothing was imported:
+
+```json
+{"imported": [{"file": "canadianshopper_import_20261030_120000_01_of_02.csv",
+               "drafts": 3}],
+ "failed":   [{"file": "canadianshopper_import_20261030_120000_02_of_02.csv",
+               "why": "every listing in this file already exists"}]}
+```
+
+- Every listing is created **unpublished**: nothing is published and nothing
+  goes live. The panel offers the publisher as the next step.
+- A file is named by `file`, `csv` or `path`; the core compares basenames, so
+  an absolute path is fine.
+- `drafts` may be omitted, then `rows` is used, and then the row count the
+  core wrote. A file named in neither list is **unknown** - the core says so
+  and tells the person to check the dashboard before importing again, rather
+  than assuming the drafts exist.
+- "Every listing in this file already exists" is a legitimate, useful answer,
+  not a failure to be dressed up: it means the card already has a listing
+  that the reader could not see, and the core says exactly that.
+- Exit non-zero when the import did not finish. The CSV is still in its
+  folder and can be imported by hand.
 
 ## Security
 

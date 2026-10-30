@@ -1,6 +1,12 @@
 # Replacing card photos — proposed redesign
 
-Status: mostly built. 2.52 ships the assignment window: one row per card image, filled by an AI read of the sheet, by the cards in scan order, or one at a time - and applied in a batch. 2.53 makes the pictures usable on a small screen: the picker's grid scrolls, a caption is the slot alone, the pictures are decoded after the window is up and kept for the sitting, and splitting a scan says so while it runs. Still proposals: matching a batch to an order number, and the nine-at-a-time queue with the "still needs a photo" list.
+Status: built. 2.52 shipped the assignment window - one row per card image, applied
+in a batch - and 2.53 made the pictures usable on a small screen: the picker's grid
+scrolls, a caption is the slot alone, the pictures are decoded after the window is up
+and kept for the sitting, and splitting a scan says so while it runs. 2.89 finishes
+the rest of this design: the order-number queue and the nine-at-a-time sitting that
+carries on where the last one stopped. The AI read of the sheet is gone - it was the
+least reliable way to name a card, and two ways remain.
 
 ![The proposed window](mockups/photo-replace-flow.png)
 
@@ -52,18 +58,21 @@ a picture of each card, so a tile can be matched to a product by sight.
 
 ### How a tile finds its card
 
-Three sources, in this order, and the user always confirms:
+Two sources, in this order, and the user always confirms:
 
 - **The batch already waiting.** Products whose stock dropped without reaching
   zero (the order-number queue from issue #15) are matched first, since those
-  are the cards actually being replaced today.
-- **An AI read of the sheet**, optional. The pipeline already has prompts that
-  read titles off a scan; a variant of that can propose a title per slot. It is
-  a *suggestion*: its title fills the search box, and the photo confirms it.
-  Slightly-wrong AI titles stop mattering because the picture decides.
-- **A plain search.** Type anything — player, set, card number — and the
+  are the cards actually being replaced today. The nine on the table are in the
+  list before a single scan is read, and can be reordered to match the sheet.
+- **A plain search.** Type anything - player, set, card number - and the
   results carry their current photo, so an ambiguous list can be resolved by
-  looking rather than reading.
+  looking rather than reading. A single card is named the same way, one at a
+  time, from the panel.
+
+An **AI read of the sheet** was tried in 2.52 and removed in 2.89. A slightly
+wrong title is worse than no title: it costs a search to disprove, and the
+picture still has to confirm it. The pipeline's own prompts keep reading titles
+for the listing step, which is a different job with a different answer.
 
 No filename is ever shown as the thing to reason about. It stays available as
 a tooltip for support, not as a decision.
@@ -101,10 +110,14 @@ gates, and the "leave the rest of the gallery alone" behaviour are all reused.
 
 ## Open questions
 
-1. Assignment: click a tile then search a card (as drawn), or fill the nine
-   slots from a filtered card list?
-2. The AI read: wanted as an optional pre-fill, or never involved here?
-3. Where this lives: replace the Photos panel, or a new tab that also holds the
-   nine-at-a-time queue and the "still needs a photo" list from issue #15?
-4. Scope now: the full window in one go, or pictures-in-the-current-picker first
-   so the pain stops this week?
+1. ~~Assignment: click a tile then search a card, or fill the nine slots from a
+   filtered card list?~~ Answered: the list is filled from the sitting (or a
+   pasted list in scan order), and one row can be pointed at another card by
+   hand.
+2. ~~The AI read: wanted as an optional pre-fill, or never involved here?~~
+   Answered in 2.89: never involved.
+3. ~~Where this lives: a new tab, or the Photos panel?~~ Answered: the Photos
+   panel, with the order queue at the top of it and the sitting above the
+   sheets.
+4. ~~Scope now: the full window in one go, or pictures first?~~ Answered: in
+   pieces - pictures in 2.52, the queue in 2.89.

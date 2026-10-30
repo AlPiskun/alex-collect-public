@@ -9,9 +9,11 @@ the page, and the paper itself is compared with the quote's - same band, same
 colour, same logo plate - because "the same settings as the quote PDF" is a
 claim about pixels, not about intentions.
 """
+import os
 import tempfile
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 
@@ -341,6 +343,30 @@ def test_pages():
           len(pages) == 1, len(pages))
 
 
+def test_private_file():
+    print()
+    print("== 5. the sheet belongs to this account, not the whole PC ==")
+    root = Path(tempfile.mkdtemp())
+    sheet = order_pdf.document(order=order_for(quote_with_cards()))
+    seen = []
+    with patch.object(order_pdf, "restrict_file_permissions",
+                      lambda path: seen.append(Path(path)) or True):
+        info = order_pdf.render(sheet, root / "private-order.pdf", dpi=90)
+    check("the order sheet is restricted as it is written",
+          seen == [info["path"]], str(seen))
+    check("after the file exists, not before",
+          Path(info["path"]).is_file(), str(info["path"]))
+    real = order_pdf.render(sheet, root / "private-order-2.pdf", dpi=90)
+    if os.name == "posix":
+        check("and it is readable by this account only",
+              (Path(real["path"]).stat().st_mode & 0o777) == 0o600,
+              oct(Path(real["path"]).stat().st_mode))
+    else:
+        #  Windows restricts with an ACL; its own check lives in
+        #  test-user-settings.py, because mode bits mean nothing there.
+        check("and it is on disk", Path(real["path"]).is_file(), str(real))
+
+
 def main():
     print("Order sheet checks")
     print("=" * 60)
@@ -348,6 +374,7 @@ def main():
     test_pictures()
     test_paper()
     test_pages()
+    test_private_file()
     print()
     print("=" * 60)
     if FAIL:
