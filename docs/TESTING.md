@@ -65,6 +65,12 @@ The top commit must match the PR page on GitHub.
 
 ## 4. Run the suite
 
+The first line every GUI suite prints names the version and the folder it is
+running from — for example `== 0. Alex Collect 2.87, from
+C:\...\alex-collect-public\app ==`. Check it against the PR before reading
+any failure: a clone left on an older commit has an older `gui.py` beside an
+older test file, and its failures look exactly like the current work's.
+
 From the clone's `app` folder, one command per line:
 
 ```cmd

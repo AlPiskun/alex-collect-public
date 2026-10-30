@@ -169,6 +169,12 @@ class Capture:
 
 def main():
     ensure_display()
+    #  Which tree is being tested, said out loud before anything else.
+    #  A clone left on an older commit runs an older gui.py, and its failures
+    #  read exactly like the current work's - so the first line names the
+    #  version and the folder that version came from.
+    print("== 0. Alex Collect %s, from %s ==" % (
+        gui.VERSION, Path(gui.__file__).resolve().parent))
     import tkinter.messagebox as mb
     answers = {"askyesno": True, "shown": [],
                "ai_url": "https://ai.example/chat", "opened_urls": [],
