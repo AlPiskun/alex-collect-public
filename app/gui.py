@@ -53,6 +53,8 @@ import sale_preview
 import cs_listing
 import stock_compare
 import stock_write
+import doc_images
+import order_pdf
 import quote as quote_model
 import quote_pdf
 import woo_media
@@ -66,7 +68,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.85"
+VERSION = "2.87"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1177,6 +1179,12 @@ instead of being hidden. Without WooCommerce keys in woo-keys.txt the quote
 still saves and prints; only reading the stock and creating the order need
 them, and the report says so.
 
+When the customer says yes, **Turn into an order...** makes the order; the
+sheet that gets packed against - the same paper with a picture of every card
+on it - is printed from **Print an order**, on the task menu after the
+after-a-sale jobs and in the After a sale tab, where it can also find an
+order by the customer's name or a card's name.
+
 Nothing here changes a price, a listing or a stock count on any site. A
 quote is a document; only the last button writes, and only when confirmed."""
 
@@ -1206,6 +1214,40 @@ sent. Open it in the dashboard to check it and take payment.
 
 Without website API keys the order list opens instead, and the pasted
 list is copied to the clipboard so you can paste it there.
+
+**Print an order**, on the task menu after the after-a-sale jobs and in the
+After a sale tab, prints any order once it exists: find it by its number, the
+customer's name, or a card's name.
+"""
+
+DOCS["ordersheet"] = """\
+Print any order on the quote's own paper - your logo, your colour and a
+picture of every card - by finding it first.
+
+One search box takes all three ways an order is remembered: the number on
+the dashboard (1042 or #1042), the customer's name, or the name of a card
+that was in it. Press **Find the orders** - or just Return - and every match
+is listed with the reason it is there: the number matched, the shop's own
+search answered, a card's name matched, or it is a quote saved in your
+quotes folder.
+
+The website is asked when the WooCommerce keys are saved: its order search
+covers numbers and customer names, and a card's name is looked up among your
+products first, then each match is asked which orders hold it. The quotes
+folder is read either way, because a quote carries the customer's name and
+the name of every card on it - and it can be printed from its own record when
+the shop will not answer or the keys are missing, with a note saying so.
+
+Click a row and press **Save the order as a PDF...** (or double-click it).
+The sheet carries the order's own number, its state and the day it was paid,
+the customer's name and address, every card with its picture, the totals and
+the notes - and it is saved beside the quotes in the orders folder, then
+opened. The pictures are downloaded once and kept, so printing the same order
+again reads nothing at all; a card whose picture cannot be fetched is printed
+as a "no photo" box and counted in the report rather than stopping the sheet.
+
+Nothing here changes an order, a price or a stock count. Without keys the
+order list on the website can be opened from the same row.
 """
 
 DOCS["newphotos"] = """\
@@ -1510,13 +1552,15 @@ TOOLTIPS = {
     "Print the PDF...": "Draw the quote as a PDF with the logo and colour, save it, and open it",
     "Turn into an order...": "Create a pending order on the website from this quote, after showing every card and the total",
     "Copy it as text": "Put the whole quote on the clipboard, to paste into an email or a message",
+    "Save the order as a PDF...": "Print an order as a PDF on the quote's own paper - same logo and colour - with a picture of every card; the order is read from the website, so its number, state and paid date are current, and nothing is changed",
     "Open the quotes folder": "Open the folder every quote and its PDF is saved in",
     "Open this quote": "Load the quote selected in the list so it can be edited or printed",
     "Start a new quote": "Begin a fresh quote with the next number, keeping the logo, colour and business name",
     "Pick a colour...": "Choose the colour the quote is printed in",
     "No logo": "Print the quote without a logo",
     "Create the order": "Write the previewed order to the store as pending; nothing is charged",
-    "Open the order list": "Open the WooCommerce order screen to paste the list by hand",
+    "Open the order list": "Open the WooCommerce order screen in your browser - to paste a card list by hand, or to find an order yourself; nothing is changed",
+    "Find the orders": "Look for the order on the website and in the saved quotes - by its number, a customer's name, or a card's name - and list every match; nothing is changed",
     "Search": "Search the store for the typed card and list the matches",
     # -- a sale -----------------------------------------------------------
     "A card sold": "Open the sold panel: type what sold and tick off the other marketplaces",
@@ -2438,15 +2482,23 @@ class App(tk.Tk):
 #  menu, the tabs view and the wizard pages.
 PANEL_ORDER = ["cookie", "pipeline", "combine", "stage", "importpanel",
                "wire", "rerun", "sold", "checklist", "stock", "zerostock",
-               "square",
+               "ordersheet", "square",
                "newphotos", "ordertext", "quote", "markets", "logs",
                "plugins"]
 GROUPS_FULL = [("Sell to a customer", ["ordertext", "quote"]),
                ("Sell a new batch", ["pipeline", "combine", "stage",
                                      "importpanel", "wire"]),
                ("After a sale", ["sold", "checklist", "stock", "zerostock"]),
+               ("Print an order", ["ordersheet"]),
                ("Photos", ["square", "rerun", "newphotos"]),
                ("Re-run a marketplace", ["markets"])]
+
+#: Where a panel's own task-menu section belongs in the tabs view, when it is
+#: not the section it is named after. Printing an order is its own job in the
+#: task menu - it prints any order, not only the one just sold - but it is an
+#: after-the-sale job, so the tabs view keeps it in the "After a sale" tab
+#: instead of giving it a tab of its own with one button in it.
+TAB_HOME = {"ordersheet": "After a sale"}
 
 
 def groups_for(has_cs):
@@ -2460,6 +2512,7 @@ def groups_for(has_cs):
     return [("Sell to a customer", ["ordertext", "quote"]),
             ("Sell a new batch", ["pipeline", "combine", "importpanel"]),
             ("After a sale", ["sold", "checklist"]),
+            ("Print an order", ["ordersheet"]),
             ("Photos", ["square", "newphotos"]),
             ("Re-run a marketplace", ["markets"])]
 TITLES = {
@@ -2474,6 +2527,7 @@ TITLES = {
     "checklist": "The tick-off checklist",
     "stock": "Stock on every site",
     "zerostock": "Archive CanadianShopper listings already at 0",
+    "ordersheet": "Print an order as a PDF",
     "square": "Square up a photo (manual upload)",
     "plugins": "Plugins",
     "newphotos": "Replace a card's photos",
@@ -2494,6 +2548,7 @@ MENU_LABELS = {
     "checklist": "The checklist",
     "stock": "Compare stock",
     "zerostock": "Archive listings at 0",
+    "ordersheet": "Print an order",
     "square": "Square up a photo",
     "newphotos": "Replace card photos",
     "ordertext": "Order from a text list",
@@ -2515,6 +2570,8 @@ BLURBS = {
     "stock": "Find the cards whose counts disagree between your website "
              "and CanadianShopper.",
     "zerostock": "Sweep: archive everything sitting at quantity 0.",
+    "ordersheet": "Find an order by its number, the customer's name, or a "
+                  "card's name, and print it with a picture of every card.",
     "square": "Pad a photo onto a white square for a manual dashboard upload.",
     "plugins": "Install and manage optional plugins.",
     "newphotos": "Find a card, open its replacement images, and refresh its pages.",
@@ -6473,11 +6530,22 @@ def build_ordertext(parent, app):
                        justify="left")
     status.pack(anchor="w", pady=(3, 0))
 
-    def say(message):
+    def say(message, tag=None):
+        """The status line, and the console when the message is worth keeping.
+
+        The tag was added with the order sheet: which record a sheet was
+        printed from, and whether a card arrived without its picture, is the
+        sort of thing someone looks up afterwards rather than reads once.
+        """
         try:
             status.configure(text=message)
         except Exception:
             pass
+        if tag:
+            try:
+                app.console_line("Order: %s" % message, tag)
+            except Exception:
+                pass
 
     discount = tk.StringVar(value="")
     ttk.Label(row, text="Discount %:").pack(side="left")
@@ -6799,7 +6867,8 @@ def build_ordertext(parent, app):
                              % (number, len(result.get("line_items") or []),
                                 ", %d skipped" % len(skipped) if skipped
                                 else ""), "ok")
-            say("Order #%s is ready - opening it now." % number)
+            say("Order #%s is ready - opening it now. The Print an order "
+                "panel prints its sheet." % number)
             url = woo_orders.order_edit_url(site, result.get("id"))
             if url:
                 app.open_webpages([url])
@@ -6850,6 +6919,331 @@ def quote_folder(app):
     if chosen:
         return Path(chosen)
     return quote_model.folder_for(BASE)
+
+
+def order_folder(app):
+    """Where an order's sheet is saved: ``orders`` beside the quotes."""
+    return Path(str(quote_folder(app))) / "orders"
+
+
+def quote_look(app):
+    """The look the quote panel saved, for a sheet printed without a quote."""
+    return {"company": app.settings.get("quote_company", "") or "",
+            "contact": app.settings.get("quote_contact", "") or "",
+            "color": app.settings.get("quote_color", "") or DEFAULT_QUOTE_COLOR,
+            "logo": app.settings.get("quote_logo", "") or ""}
+
+
+def write_order_sheet(app, parent, quote=None, order=None, say=None,
+                      open_it=True):
+    """Draw an order as a PDF - the quote's paper, with a picture per card.
+
+    The order's own facts win when there is one; a quote fills in the rest, so
+    the same call prints the sheet for an order that was just written, an order
+    read back by its number, or a quote whose order the website will not hand
+    over. The pictures are downloaded first (cached in the documents folder, so
+    a reprint reads no shop at all), which is the slow part, so it runs off the
+    window thread and reports back on it.
+    """
+    sheet = order_pdf.document(quote=quote, order=order, look=quote_look(app),
+                               currency=app.settings.get("currency_prefix",
+                                                         "") or "")
+    if not sheet.get("items"):
+        messagebox.showinfo("Nothing to print",
+                            "There are no cards on it yet, so there is no "
+                            "order sheet to write.", parent=parent)
+        return None
+    folder = Path(str(order_folder(app)))
+    stamp = "".join(character for character in
+                    str(sheet.get("number") or "order")
+                    if character.isalnum() or character in "-_") or "order"
+    target = folder / ("order-%s.pdf" % stamp)
+    wanted = len(order_pdf.picture_urls(sheet))
+    if say:
+        say("Reading the shop's pictures for %d card%s..."
+            % (len(sheet["items"]),
+               "" if len(sheet["items"]) == 1 else "s")
+            if wanted else "Drawing the order sheet...")
+
+    def note(done_count, total):
+        """Say how far the pictures have got, from the thread that fetched.
+
+        Posted back to the window thread, which is the only thread allowed to
+        touch Tk - the same route :func:`in_background` uses for its answer.
+        """
+        if not say:
+            return
+        try:
+            app.after(0, lambda: say("Fetching the cards' pictures (%d of "
+                                     "%d)..." % (done_count, total)))
+        except Exception:
+            pass
+
+    def work():
+        folder.mkdir(parents=True, exist_ok=True)
+        return order_pdf.render_with_pictures(sheet, target, folder,
+                                              progress=note)
+
+    def done(info, error):
+        if error is not None:
+            message = getattr(error, "message", None) or str(error)
+            if say:
+                say("The order sheet was not written: %s" % message, "err")
+            messagebox.showerror("The order sheet was not written", message,
+                                 parent=parent)
+            return
+        missing = info.get("missing") or 0
+        text = "Order sheet written: %s (%d page%s, %d picture%s%s)" % (
+            info["path"], info["pages"], "" if info["pages"] == 1 else "s",
+            info["pictures"], "" if info["pictures"] == 1 else "s",
+            ", %d without a photo" % missing if missing else "")
+        if say:
+            say(text, "warn" if missing else "ok")
+        if open_it:
+            open_path(info["path"])
+
+    in_background(app, work, done)
+    return target
+
+
+def build_ordersheet(parent, app):
+    """Find an order - by number, customer, or card - and print its sheet.
+
+    The sheet itself is :func:`write_order_sheet`: the quote's paper, with a
+    picture of every card and the order's own number, state and paid date.
+    What this panel adds is finding it, because an order is remembered by one
+    of three things and only the person looking knows which: the number on the
+    dashboard, the customer who asked, or a card that was in it.
+
+    One box takes all three. The website answers the search when the keys are
+    there - by its own order search for a number or a customer, and by looking
+    up the card and then asking which orders hold it. The quotes saved in the
+    quotes folder are read either way: a quote carries the customer's name and
+    every card's name, and prints from its own record when the shop cannot be
+    asked at all.
+
+    Nothing here changes an order, a price or a stock count.
+    """
+    panel_header(parent, app, "ordersheet")
+    notes = getattr(parent, "_notes_frame", parent)
+    state = {"rows": [], "busy": False}
+
+    status = ttk.Label(notes, text="", style="Dim.TLabel", wraplength=760,
+                       justify="left")
+    status.pack(anchor="w", pady=(3, 0))
+
+    def say(message, tag=None):
+        try:
+            status.configure(text=message)
+        except Exception:
+            pass
+        if tag:
+            try:
+                app.console_line("Order sheet: %s" % message, tag)
+            except Exception:
+                pass
+
+    def open_orders():
+        """The dashboard's own order list, for when the search finds nothing."""
+        site = (read_woo_credentials()[0] or
+                app.settings.get("woo_site_url", ""))
+        url = woo_orders.orders_admin_url(site)
+        if not url:
+            messagebox.showinfo(
+                "No store address yet",
+                "Set the store address on User settings first - the order "
+                "list lives on it.", parent=app)
+            return
+        app.open_webpages([url])
+
+    #  -- 1. the search ---------------------------------------------------
+    find = ttk.LabelFrame(parent, text="1. Find the order", padding=6)
+    find.pack(fill="x", pady=(0, 6))
+    row = ttk.Frame(find)
+    row.pack(fill="x")
+    ttk.Label(row, text="Search:").pack(side="left")
+    term_var = tk.StringVar(master=parent)
+    entry = ttk.Entry(row, textvariable=term_var, width=38)
+    entry.pack(side="left", padx=(4, 6))
+    find_button = ttk.Button(row, text="Find the orders",
+                             command=lambda: search())
+    find_button.pack(side="left")
+    ttk.Button(row, text="Open the order list",
+               command=open_orders).pack(side="right")
+    ttk.Label(find, text="One box for all three: the number on the dashboard "
+                         "(1042 or #1042), the customer's name, or a card's "
+                         "name. Nothing is changed by looking.",
+              style="Dim.TLabel", wraplength=760, justify="left").pack(
+                  anchor="w", pady=(4, 0))
+
+    #  -- 2. what it found ------------------------------------------------
+    found = ttk.LabelFrame(parent, text="2. The orders it found", padding=6)
+    found.pack(fill="both", expand=True, pady=(0, 6))
+    list_row = ttk.Frame(found)
+    list_row.pack(fill="both", expand=True)
+    found_list = tk.Listbox(list_row, height=7, activestyle="none",
+                            exportselection=False)
+    scroll = ttk.Scrollbar(list_row, orient="vertical",
+                           command=found_list.yview)
+    found_list.configure(yscrollcommand=scroll.set)
+    found_list.pack(side="left", fill="both", expand=True)
+    scroll.pack(side="right", fill="y")
+    result_label = ttk.Label(found, text="", style="Dim.TLabel",
+                             wraplength=760, justify="left")
+    result_label.pack(anchor="w", pady=(4, 0))
+
+    print_row = ttk.Frame(found)
+    print_row.pack(fill="x", pady=(6, 0))
+    ttk.Button(print_row, text="Save the order as a PDF...",
+               command=lambda: print_chosen()).pack(side="left")
+    ttk.Label(print_row, text="the order clicked in the list above - every "
+                              "card pictured",
+              style="Dim.TLabel").pack(side="left", padx=(6, 0))
+
+    panel_note(parent, "The sheet is the quote's own paper: your logo and "
+               "colour, the order's number, its state, the day it was paid, "
+               "and a picture of every card. It is saved beside the quotes, "
+               "in the orders folder, and opened when it is done. The cards' "
+               "pictures are downloaded once and kept, so printing the same "
+               "order again reads nothing at all.")
+
+    # ------------------------------------------------------------- drawing
+    def line_for(kind, number, when, who, cards, state_text, why):
+        """One chooser line, the same shape for a quote and an order."""
+        notes_text = ", ".join(why)
+        if len(notes_text) > 44:
+            notes_text = notes_text[:41] + "..."
+        return "%-13s %-10s %-20s %2d cards  %-16s  (%s)" % (
+            str(number or "-")[:13], str(when or "-")[:10],
+            (who or "(no name)")[:20], cards,
+            str(state_text or "-")[:16], notes_text)
+
+    def show(local, site_rows, note=""):
+        """Put what was found in the list; the reason is part of the row."""
+        state["rows"] = []
+        found_list.delete(0, "end")
+        for found_row in site_rows:
+            state["rows"].append({"source": "site",
+                                  "order": found_row["order"]})
+            found_list.insert("end", line_for(
+                "site", "#%s" % found_row["number"], found_row["date"],
+                found_row["customer"], found_row["count"],
+                found_row["status"], found_row["found_by"]))
+        for saved in local:
+            state["rows"].append({"source": "quote", "path": saved["path"],
+                                  "number": saved["number"]})
+            found_list.insert("end", line_for(
+                "quote", saved["number"], saved["issued"],
+                saved["customer"], len(saved["cards"]),
+                "%s quote" % (saved["status"] or "saved"), saved["why"]))
+        count = len(state["rows"])
+        if not count:
+            text = ("Nothing matched \"%s\". Check the number, or type fewer "
+                    "words." % term_var.get().strip())
+        elif count == 1:
+            text = ("One match - it is already selected: press \"Save the "
+                    "order as a PDF...\" to print it.")
+            found_list.selection_set(0)
+        else:
+            text = ("%d matches - click the one to print, then press \"Save "
+                    "the order as a PDF...\"." % count)
+        if note:
+            text += " " + note
+        result_label.configure(text=text)
+        say(text, "warn" if note else None)
+
+    # ------------------------------------------------------------ printing
+    def print_chosen():
+        """Print the order clicked in the list - from the shop or the quote."""
+        picked = found_list.curselection()
+        if not picked or not state["rows"]:
+            messagebox.showinfo(
+                "Which order?",
+                "Search first, then click the order in the list above.",
+                parent=app)
+            return
+        chosen = state["rows"][picked[0]]
+        if chosen["source"] == "quote":
+            try:
+                saved = quote_model.load(chosen["path"])
+            except quote_model.QuoteError as exc:
+                messagebox.showerror("That quote could not be read",
+                                     exc.message, parent=app)
+                return
+            number = str(saved.get("order_number") or "").strip()
+            say("Printing %s from the quote's own record%s - its cards, "
+                "prices and pictures." % (
+                    saved.get("number"),
+                    " of order #%s" % number if number else ""), "warn")
+            write_order_sheet(app, app, quote=saved, say=say)
+            return
+        order = chosen["order"]
+        say("Printing order #%s..." % (order.get("number") or order.get("id")))
+        write_order_sheet(app, app, order=order, say=say)
+
+    # -------------------------------------------------------------- search
+    def search(event=None):
+        """Look in the quotes folder, and at the website when keys are saved."""
+        if state["busy"]:
+            return "break"
+        term = term_var.get().strip()
+        if not term:
+            messagebox.showinfo(
+                "Search first",
+                "Type an order number, a customer's name, or a card's name.",
+                parent=app)
+            return "break"
+        state["busy"] = True
+        try:
+            find_button.configure(state="disabled")
+        except Exception:
+            pass
+        try:
+            local = quote_model.find_saved(quote_folder(app), term)
+        except quote_model.QuoteError as exc:
+            local = []
+            say(exc.message, "err")
+        site, key, secret = read_woo_credentials()
+        site = site or app.settings.get("woo_site_url", "")
+        if not (site and key and secret):
+            #  The quotes folder alone is a real answer, not a failure: every
+            #  quote holds the customer's name and its cards' names.
+            show(local, [], "The website was not searched: no WooCommerce "
+                            "keys are saved, so only the quotes folder was "
+                            "read.")
+            state["busy"] = False
+            try:
+                find_button.configure(state="normal")
+            except Exception:
+                pass
+            return "break"
+        say("Searching the website for %r..." % term)
+        app.console_line("Order sheet: searching the website for %r." % term,
+                         "dim")
+
+        def work():
+            return woo_orders.search_orders(site, key, secret, term)
+
+        def done(rows, error):
+            state["busy"] = False
+            try:
+                find_button.configure(state="normal")
+            except Exception:
+                pass
+            if error is not None:
+                message = getattr(error, "message", None) or str(error)
+                show(local, [], "The website could not be searched (%s), so "
+                                "only the quotes folder is listed." % message)
+                app.console_line("Order sheet: %s" % message, "err")
+                return
+            show(local, rows or [])
+
+        in_background(app, work, done)
+        return "break"
+
+    entry.bind("<Return>", search)
+    found_list.bind("<Double-Button-1>", lambda event: print_chosen())
+    attach_tooltips(parent)
 
 
 def confirm_long_text(parent, app, title, text, ok_text="Continue"):
@@ -7109,16 +7503,25 @@ def build_quote(parent, app):
     finish = ttk.LabelFrame(parent, text="5. Save it, print it, or order it",
                             padding=6)
     finish.pack(fill="x", pady=(0, 6))
+    #  Two rows on purpose: five long buttons on one line is wider than the
+    #  window at 800x600, and a button that has been clipped is a button
+    #  nobody presses. The documents come first, the two that change the shop
+    #  second, with the one that only looks at a folder after them.
     finish_row = ttk.Frame(finish)
     finish_row.pack(fill="x")
     for text, command in (("Save the quote", lambda: save_quote()),
                           ("Print the PDF...", lambda: print_pdf()),
-                          ("Turn into an order...", lambda: turn_into_order()),
-                          ("Copy it as text", lambda: copy_text()),
+                          ("Copy it as text", lambda: copy_text())):
+        ttk.Button(finish_row, text=text, command=command).pack(
+            side="left", padx=(0, 6))
+    order_row = ttk.Frame(finish)
+    order_row.pack(fill="x", pady=(6, 0))
+    for text, command in (("Turn into an order...",
+                           lambda: turn_into_order()),
                           ("Open the quotes folder",
                            lambda: open_path(quote_model.ensure_folder(
                                quote_folder(app))))):
-        ttk.Button(finish_row, text=text, command=command).pack(
+        ttk.Button(order_row, text=text, command=command).pack(
             side="left", padx=(0, 6))
     folder_label = ttk.Label(finish, text="", style="Dim.TLabel",
                              wraplength=760, justify="left")
@@ -7564,27 +7967,64 @@ def build_quote(parent, app):
             return
         folder = quote_model.ensure_folder(quote_folder(app))
         target = folder / ("%s.pdf" % (current.get("number") or "quote"))
-        say("Drawing the PDF...")
-        try:
-            info = quote_pdf.render(current, target)
-        except quote_model.QuoteError as exc:
-            messagebox.showerror("The PDF was not written",
-                                 "%s %s" % (exc.message, exc.hint), parent=app)
-            say("The PDF was not written.", "err")
-            return
-        missing_logo = bool((current.get("look") or {}).get("logo")) and \
-            not info["logo"]
-        say("PDF written: %s (%d page%s)%s." % (
-            info["path"], info["pages"], "" if info["pages"] == 1 else "s",
-            " - the logo file could not be read, so it printed without it"
-            if missing_logo else ""), "warn" if missing_logo else "ok")
-        if missing_logo:
-            messagebox.showwarning(
-                "The logo could not be used",
-                "The quote was printed without the logo: the file in "
-                "\"Logo file\" could not be read as an image.\n\n%s"
-                % info["path"], parent=app)
-        open_path(info["path"])
+        #  Every card prints with its front picture, so the photographs have
+        #  to be downloaded first - the one slow part of printing a quote.
+        urls = doc_images.picture_urls(quote_model.items_of(current))
+        if urls:
+            say("Fetching the cards' pictures (%d)... this is the slow part."
+                % len(urls))
+        else:
+            say("Drawing the PDF...")
+
+        def count_picture(done_count, total):
+            """Where the pictures have got to, posted back to the window."""
+            try:
+                app.after(0, lambda: say("Fetching the cards' pictures "
+                                         "(%d of %d)..." % (done_count,
+                                                            total)))
+            except Exception:
+                pass
+
+        def work():
+            images = (doc_images.fetch_images(urls, folder,
+                                              progress=count_picture)
+                      if urls else {})
+            return quote_pdf.render(current, target, images=images)
+
+        def done(info, error):
+            if error is not None:
+                message = getattr(error, "message", None) or str(error)
+                hint = getattr(error, "hint", "") or ""
+                messagebox.showerror("The PDF was not written",
+                                     ("%s %s" % (message, hint)).strip(),
+                                     parent=app)
+                say("The PDF was not written: %s" % message, "err")
+                return
+            missing_logo = bool((current.get("look") or {}).get("logo")) and \
+                not info["logo"]
+            missing_pictures = info.get("missing") or 0
+            notes = []
+            if missing_logo:
+                notes.append("the logo file could not be read, so it printed "
+                             "without it")
+            if missing_pictures:
+                notes.append("%d card%s without a picture" % (
+                    missing_pictures,
+                    "" if missing_pictures == 1 else "s"))
+            say("PDF written: %s (%d page%s)%s." % (
+                info["path"], info["pages"],
+                "" if info["pages"] == 1 else "s",
+                " - " + "; ".join(notes) if notes else ""),
+                "warn" if notes else "ok")
+            if missing_logo:
+                messagebox.showwarning(
+                    "The logo could not be used",
+                    "The quote was printed without the logo: the file in "
+                    "\"Logo file\" could not be read as an image.\n\n%s"
+                    % info["path"], parent=app)
+            open_path(info["path"])
+
+        in_background(app, work, done)
 
     # ------------------------------------------------------------- ordering
     def turn_into_order():
@@ -9036,6 +9476,7 @@ PANEL_BUILDERS = {
     "checklist": build_checklist,
     "stock": build_stock,
     "zerostock": build_zerostock,
+    "ordersheet": build_ordersheet,
     "square": build_square,
     "newphotos": build_newphotos,
     "ordertext": build_ordertext,
@@ -9806,10 +10247,19 @@ class TabsFrame(ttk.Frame):
         self.pack(fill="both", expand=True)
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True)
-        for group, ids in groups_for(app.cs_addon):
+        groups = groups_for(app.cs_addon)
+        for group, ids in groups:
+            #  A panel whose home is another tab is drawn there instead, at
+            #  the end of it; a group left with nothing in it makes no tab.
+            shown = [pid for pid in ids if TAB_HOME.get(pid, group) == group]
+            shown += [pid for other, other_ids in groups
+                      for pid in other_ids
+                      if TAB_HOME.get(pid) == group]
+            if not shown:
+                continue
             tab = ttk.Frame(nb, padding=(6, 5))
             nb.add(tab, text=group)
-            for pid in ids:
+            for pid in shown:
                 panel_section(tab, app, pid, expand=False)
 
 

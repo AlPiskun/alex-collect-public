@@ -1317,10 +1317,17 @@ def test_tabs_are_sections():
     gui.TabsFrame(parent, app)
     notebook = next((w for w in parent.walk()
                      if isinstance(w, gui.ttk.Notebook)), None)
+    #  Printing an order has its own box on the task menu, right after the
+    #  after-a-sale jobs, but it is an after-the-sale job itself - so in the
+    #  tabs view it is the last section of that tab rather than a tab holding
+    #  one button.
+    moved = {"After a sale": ["ordersheet"]}
+    hidden = ["Print an order"]
     check("the tabs view builds a notebook of the groups",
           notebook is not None and
           [name for _tab, name in getattr(notebook, "tabs", [])] ==
-          [group for group, _ids in gui.groups_for(app.cs_addon)],
+          [group for group, _ids in gui.groups_for(app.cs_addon)
+           if group not in hidden],
           str([name for _tab, name in getattr(notebook, "tabs", [])]))
     #  A panel may group its own controls in bordered boxes (the quote panel
     #  numbers five of them). Those are the panel's business, not the tabs
@@ -1333,7 +1340,8 @@ def test_tabs_are_sections():
 
     sections, problems, repeated = [], [], []
     for tab, group in getattr(notebook, "tabs", []):
-        ids = dict(gui.groups_for(app.cs_addon))[group]
+        ids = list(dict(gui.groups_for(app.cs_addon)).get(group, []))
+        ids += moved.get(group, [])
         frames = [w for w in tab.walk() if is_section(w)]
         sections.extend(frames)
         if [f.cget("text") for f in frames] != [gui.TITLES[pid] for pid in ids]:

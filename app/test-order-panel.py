@@ -11,7 +11,7 @@ No network, no real order, no Tk.
 import importlib.util
 import json
 import sys
-import types
+import tempfile
 import urllib.request
 from pathlib import Path
 from unittest.mock import patch
@@ -123,7 +123,11 @@ def search(site, path, params, key, secret, **kwargs):
 
 class FakeApp:
     def __init__(self):
+        #  Quotes and order sheets are written under a temp folder: a test
+        #  must never leave documents in the app's own folder.
+        self.folder = Path(tempfile.mkdtemp(prefix="alex-order-panel-"))
         self.settings = {"woo_site_url": "https://shop.example",
+                         "quotes_dir": str(self.folder / "quotes"),
                          "scan_dir": "/tmp", "pipeline_dir": "/tmp",
                          "browser_name": "system",
                          "canadianshopper_store_url": "",
@@ -173,6 +177,8 @@ def build(app):
     discount = next(w._kw["textvariable"] for w in widgets
                     if w._kw.get("textvariable") is not None)
     return box, build_button, orders_button, discount
+
+
 
 
 def run_panel(app, text, keys=(("https://shop.example", "ck_live", "cs_live")),
@@ -563,6 +569,31 @@ def test_open_button():
           str(app.opened))
 
 
+def test_order_sheet_moved():
+    """The sheet is printed from its own panel now, not from this one.
+
+    Printing a packed order is an after-the-sale job that finds an order by
+    number, customer or card - not something the panel that writes an order
+    from a pasted list should also be doing. What matters here is that this
+    panel let go of it: a button left behind would print the wrong record
+    without the person knowing which.
+    """
+    print()
+    print("== 15. the order sheet belongs to its own panel ==")
+    app = FakeApp()
+    parent = FakeWidget()
+    gui.build_ordertext(parent, app)
+    texts = [str(w.cget("text") or "") for w in parent.walk()]
+    check("the order-from-a-list panel no longer prints sheets",
+          "Save the order as a PDF..." not in texts,
+          [text for text in texts if "PDF" in text])
+    check("and nothing else on it claims to", 
+          not any("PDF" in text for text in texts),
+          [text for text in texts if "PDF" in text])
+    check("the order it writes is opened instead",
+          any(text == "Open the order list" for text in texts), texts)
+
+
 def test_empty_paste():
     print()
     print("== 14. an empty box asks for a list ==")
@@ -592,6 +623,7 @@ def main():
     test_hash_lines_reach_the_order()
     test_open_button()
     test_empty_paste()
+    test_order_sheet_moved()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))

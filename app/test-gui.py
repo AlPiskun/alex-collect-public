@@ -169,6 +169,12 @@ class Capture:
 
 def main():
     ensure_display()
+    #  Which tree is being tested, said out loud before anything else.
+    #  A clone left on an older commit runs an older gui.py, and its failures
+    #  read exactly like the current work's - so the first line names the
+    #  version and the folder that version came from.
+    print("== 0. Alex Collect %s, from %s ==" % (
+        gui.VERSION, Path(gui.__file__).resolve().parent))
     import tkinter.messagebox as mb
     answers = {"askyesno": True, "shown": [],
                "ai_url": "https://ai.example/chat", "opened_urls": [],
@@ -274,10 +280,11 @@ def main():
           18 <= int(gui.ttk.Style(app).lookup("TaskMenu.TButton", "width")) <= 30)
     task_sections = [w.cget("text") for w in walk(tasks_frame(app))
                      if isinstance(w, gui.ttk.LabelFrame)]
-    check("tasks are separated into customer, batch, After, Photos, and "
-          "Re-run sections",
+    check("tasks are separated into customer, batch, After, order, Photos, "
+          "and Re-run sections",
           task_sections == ["Sell to a customer", "Sell a new batch",
-                            "After a sale", "Photos", "Re-run a marketplace"],
+                            "After a sale", "Print an order", "Photos",
+                            "Re-run a marketplace"],
           str(task_sections))
 
     print("== 3. every panel builds from the task menu ==")

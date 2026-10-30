@@ -505,6 +505,128 @@ def test_merge_line_items():
           [{"id": 1, "quantity": 1, "variation_id": 44}])
 
 
+def test_find_order():
+    print()
+    print("== 10. finding an order from the number a person typed ==")
+    #  A shop that numbers orders by their id: one read, straight to the order.
+    opener = FakeOpener(order_reply(77, [], "1234"))
+    order = woo_orders.find_order(SITE, KEY, SECRET, "#1234", opener=opener)
+    check("a plain number is read by its id",
+          order["id"] == 77 and len(opener.requests) == 1,
+          [r["url"] for r in opener.requests])
+    check("and the hash people type is not part of it",
+          opener.requests[0]["url"].endswith("/orders/1234?consumer_key="
+                                             "ck_live&consumer_secret=cs_live"),
+          opener.requests[0]["url"])
+
+    #  A shop with its own numbering: not a number, so the list is searched.
+    opener = FakeOpener((200, json.dumps([{"id": 91, "number": "WC-1042"},
+                                          {"id": 92, "number": "WC-10420"},
+                                          {"id": 93,
+                                           "number": "WC-1042-A"}]).encode()))
+    order = woo_orders.find_order(SITE, KEY, SECRET, "WC-1042", opener=opener)
+    check("a shop's own number is found by searching the order list",
+          order["id"] == 91, order)
+    check("and only an exact number is taken, never a near one",
+          order["number"] == "WC-1042", order["number"])
+
+    opener = FakeOpener((200, json.dumps([{"id": 92,
+                                          "number": "WC-10420"}]).encode()))
+    try:
+        woo_orders.find_order(SITE, KEY, SECRET, "WC-1042", opener=opener)
+        check("an order that is not there is refused, not guessed at", False,
+              "no error")
+    except woo_orders.OrderError as exc:
+        check("an order that is not there is refused, not guessed at",
+              "WC-1042" in exc.message, exc.message)
+    try:
+        woo_orders.find_order(SITE, KEY, SECRET, "   ", opener=opener)
+        check("an empty number is refused before any request", False, "no error")
+    except woo_orders.OrderError as exc:
+        check("an empty number is refused before any request",
+              "number" in exc.message, exc.message)
+
+
+def test_search_orders():
+    print()
+    print("== 11. the one search box: a number, a customer, or a card ==")
+
+    def order(order_id, number, first="Dana", last="Whitfield", items=()):
+        return {"id": order_id, "number": number, "status": "processing",
+                "billing": {"first_name": first, "last_name": last},
+                "line_items": list(items)}
+
+    #  A number that is also an id: read straight, then the shop's search and
+    #  the card search are still offered - and the same order must not appear
+    #  twice in the list.
+    same = order(77, "1234")
+    opener = FakeOpener(
+        order_reply(77, [], "1234"),                  # /orders/1234
+        (200, json.dumps([same]).encode()),           # /orders?search=1234
+        (200, b"[]"),                                 # /products?search=1234
+    )
+    rows = woo_orders.search_orders(SITE, KEY, SECRET, "#1234", opener=opener)
+    check("an order found twice is listed once",
+          len(rows) == 1, [row["number"] for row in rows])
+    check("and it says the number is what found it",
+          rows[0]["found_by"] == ["its number"], rows[0]["found_by"])
+
+    #  The same order, found by its number and again because it holds the
+    #  card that was typed: one row, and both reasons are kept.
+    opener = FakeOpener(
+        order_reply(77, [], "1234"),
+        (200, b"[]"),
+        (200, json.dumps([{"id": 501, "name": "Batman #1"}]).encode()),
+        (200, json.dumps([same]).encode()),
+    )
+    rows = woo_orders.search_orders(SITE, KEY, SECRET, "1234", opener=opener)
+    check("an order found two ways keeps both reasons",
+          len(rows) == 1 and rows[0]["found_by"] ==
+          ["its number", "a card: Batman #1"], rows[0]["found_by"])
+
+    #  A customer: the shop's own order search, no product lookup.
+    opener = FakeOpener((200, json.dumps([order(88, "1042")]).encode()),
+                        (200, b"[]"))
+    rows = woo_orders.search_orders(SITE, KEY, SECRET, "whitfield",
+                                    opener=opener)
+    check("a customer's name is answered by the order search",
+          rows and rows[0]["number"] == "1042"
+          and rows[0]["customer"] == "Dana Whitfield", rows)
+    check("and the row carries what the sheet will show",
+          rows[0]["status"] == "processing" and rows[0]["count"] == 0
+          and rows[0]["found_by"] == ["the shop's search"], rows[0])
+
+    #  A card: products first, then the orders holding each product.
+    opener = FakeOpener(
+        (200, b"[]"),
+        (200, json.dumps([{"id": 501, "name": "Batman #1"},
+                          {"id": 502, "name": "Batman #2"}]).encode()),
+        (200, json.dumps([order(99, "2001", items=[
+            {"name": "Batman #1", "quantity": 2}])]).encode()),
+        (200, b"[]"),
+    )
+    rows = woo_orders.search_orders(SITE, KEY, SECRET, "batman",
+                                    opener=opener)
+    check("each matching card is asked which orders hold it",
+          sum(1 for r in opener.requests if "product=" in r["url"]) == 2,
+          [r["url"] for r in opener.requests])
+    check("and an order that holds one is listed, with the card named",
+          rows and rows[0]["number"] == "2001"
+          and rows[0]["found_by"] == ["a card: Batman #1"], rows)
+    check("the cards on it are readable at a glance",
+          rows[0]["cards"] == ["Batman #1 x2"], rows[0]["cards"])
+
+    #  A blank search never reaches the shop.
+    opener = FakeOpener()
+    try:
+        woo_orders.search_orders(SITE, KEY, SECRET, "  ", opener=opener)
+        check("a blank search is refused before any request", False,
+              "no error")
+    except woo_orders.OrderError as exc:
+        check("a blank search is refused before any request",
+              not opener.requests and "card" in exc.message, exc.message)
+
+
 def main():
     test_parsing()
     test_card_number_lines()
@@ -514,6 +636,8 @@ def main():
     test_add_to_existing()
     test_links()
     test_merge_line_items()
+    test_find_order()
+    test_search_orders()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))
