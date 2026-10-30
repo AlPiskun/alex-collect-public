@@ -4,7 +4,7 @@
 ; checked into Git. Package installation needs internet on the target PC.
 
 #define MyAppName "Alex Collect Control Panel"
-#define MyAppVersion "2.85"
+#define MyAppVersion "2.86"
 #define MyAppPublisher "Alex Collect"
 #define MyAppExe "START Alex Collect.bat"
 #define PythonInstaller "python-3.13.16-amd64.exe"
@@ -32,7 +32,7 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [Files]
 Source: "{#PythonInstaller}"; DestDir: "{tmp}"; Flags: ignoreversion
-Source: "..\app\*"; DestDir: "{app}\app"; Flags: recursesubdirs createallsubdirs ignoreversion; Excludes: "__pycache__\*,*.pyc,test-*.py,cookie.txt,woo-keys.txt,gui-settings.json,gui-log.txt,sold-cards-checklist.csv,sold-cards-ledger.json,facebook_history.xlsx,quotes\*,addons\canadianshopper\*"
+Source: "..\app\*"; DestDir: "{app}\app"; Flags: recursesubdirs createallsubdirs ignoreversion; Excludes: "__pycache__\*,*.pyc,test-*.py,cookie.txt,woo-keys.txt,gui-settings.json,gui-log.txt,sold-cards-checklist.csv,sold-cards-ledger.json,facebook_history.xlsx,quotes\*,quotes\*\*,addons\canadianshopper\*"
 Source: "..\docs\*"; DestDir: "{app}\docs"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion

@@ -357,6 +357,30 @@ class FakeOrderApi:
             raise woo_orders.OrderError(self.fail)
         self.sent.append({"site": site, "path": path, "method": method,
                           "payload": payload})
+        if method == "GET":
+            #  Reading an order back for its sheet: the website's own facts,
+            #  which is what the sheet prints instead of the quote's guesses.
+            return 200, {"id": 4321, "number": "4321", "status": "pending",
+                         "currency": "CAD", "total": "29.97",
+                         "date_created": "2026-10-30T12:00:00",
+                         "date_paid": None, "discount_total": "3.33",
+                         "shipping_total": "0.00", "prices_include_tax": True,
+                         "fee_lines": [{"name": "Discount 10%",
+                                        "total": "-3.33"}],
+                         "billing": {"first_name": "Dana",
+                                     "last_name": "Whitfield",
+                                     "email": "dana@example.com",
+                                     "phone": "(519) 555-0142",
+                                     "address_1": "18 Maple Row",
+                                     "city": "Orangeville", "state": "ON",
+                                     "postcode": "L9W 2C3", "country": "CA"},
+                         "line_items": [{"name": "1989 O-Pee-Chee Batman #1 "
+                                                 "NM 7", "product_id": 501,
+                                         "quantity": 1, "price": 4.0,
+                                         "total": "4.00", "sku": "BAT-01",
+                                         "image": {"src":
+                                                   "https://shop.example/"
+                                                   "card-501.jpg"}}]}
         line_items = payload.get("line_items") or []
         total = self.total
         if total is None:
@@ -532,6 +556,32 @@ def test_pdf(root):
     check("a page is A4", quote_pdf.build_pages(sample(), dpi=100)[0].size
           == (827, 1169), quote_pdf.build_pages(sample(), dpi=100)[0].size)
 
+    #  A letterhead longer than the band holds used to print its last line
+    #  half on the white page under the colour.
+    check("a long letterhead is cut down to the lines that fit",
+          quote_pdf.contact_lines("18 Maple Row\nOrangeville, ON\n"
+                                  "L9W 2C3\npiskuncards.ca", 2) ==
+          ["18 Maple Row",
+           "Orangeville, ON \u00b7 L9W 2C3 \u00b7 piskuncards.ca"],
+          quote_pdf.contact_lines("18 Maple Row\nOrangeville, ON\n"
+                                  "L9W 2C3\npiskuncards.ca", 2))
+    check("and a letterhead that fits is left exactly as it was typed",
+          quote_pdf.contact_lines("18 Maple Row\npiskuncards.ca", 3) ==
+          ["18 Maple Row", "piskuncards.ca"])
+    check("with no room at all, nothing is drawn",
+          quote_pdf.contact_lines("anything", 0) == [])
+    tall = sample()
+    tall["look"]["contact"] = ("18 Maple Row\nOrangeville, ON L9W 2C3\n"
+                               "piskuncards.ca")
+    tall_page = quote_pdf.build_pages(tall, dpi=100)[0]
+    edge = int(round(quote_pdf.BAND * 100))
+    #  Row ``edge`` is the band's own last row; the ink that used to spill was
+    #  in the white rows under it, before the parties block starts.
+    below = {tall_page.getpixel((x, y)) for y in range(edge + 1, edge + 6)
+             for x in range(30, 700)}
+    check("no line of it is drawn on the white page under the band",
+          below == {quote_pdf.WHITE}, sorted(below)[:4])
+
 
 # --------------------------------------------------------------- 7. panel
 class FakeApp:
@@ -612,11 +662,14 @@ class FakeApp:
 
 CATALOG = [
     {"id": 501, "name": "1989 O-Pee-Chee Batman #1 NM 7", "sku": "BAT-01",
-     "price": "4.00", "stock_status": "instock", "stock_quantity": 1},
+     "price": "4.00", "stock_status": "instock", "stock_quantity": 1,
+     "images": [{"src": "https://shop.example/card-501.jpg"}]},
     {"id": 502, "name": "1989 O-Pee-Chee Batman #2 EX-MT 6", "sku": "BAT-02",
-     "price": "5.50", "stock_status": "instock", "stock_quantity": 1},
+     "price": "5.50", "stock_status": "instock", "stock_quantity": 1,
+     "images": [{"src": "https://shop.example/card-502.jpg"}]},
     {"id": 503, "name": "1989 O-Pee-Chee Batman #3 EX 5", "sku": "BAT-03",
-     "price": "7.00", "stock_status": "outofstock", "stock_quantity": 0},
+     "price": "7.00", "stock_status": "outofstock", "stock_quantity": 0,
+     "images": [{"src": "https://shop.example/card-503.jpg"}]},
     #  A card the "Batman" search does not return by name, so it stands for
     #  something the user only knows how to describe when they type it in.
     {"id": 504, "name": "1988 O-Pee-Chee Mario Lemieux #40 NM", "sku": "MAR-40",
@@ -783,6 +836,7 @@ def test_panel(root):
         check("the panel offers the buttons a quote needs",
               {"Search the stock", "Add all the matches", "Save the quote",
                "Print the PDF...", "Turn into an order...",
+               "Save the order as a PDF...",
                "Type a card in by hand", "Start a new quote",
                "Open this quote", "Copy it as text",
                "Re-price from the website..."} <= set(buttons),
@@ -908,6 +962,17 @@ def test_panel(root):
         check("and takes the website's price when it is told to",
               any("9.99" in item for item in rows.items), rows.items)
 
+        #  -- the order sheet, before there is an order
+        BOX.shown.clear()
+        buttons["Save the order as a PDF..."].invoke()
+        check("the order sheet says a quote is not an order yet",
+              BOX.shown and "not an order yet" in str(BOX.shown[-1]),
+              BOX.shown[-1:])
+        check("and writes no file pretending it is one",
+              not (quotes / "orders").exists(), sorted(
+                  str(p) for p in (quotes / "orders").glob("*")
+                  if p.exists()))
+
         #  -- the order
         asks.clear()
         confirmed.clear()
@@ -939,6 +1004,66 @@ def test_panel(root):
         check("a total that did not match the quote is called out",
               BOX.shown and "different total" in str(BOX.shown[-1])
               or any("price changed" in text for _tag, text in app.lines),
+              app.lines[-3:])
+
+        #  -- the order sheet, once the order exists
+        orders = quotes / "orders"
+        sheet_seen = {}
+        real_document = gui.order_pdf.document
+
+        def capture_document(*args, **kwargs):
+            document = real_document(*args, **kwargs)
+            sheet_seen.update(document)
+            return document
+
+        opened.clear()
+        BOX.shown.clear()
+        with patch_object(gui.order_pdf, "document", capture_document), \
+                patch_object(gui.order_pdf, "fetch_images",
+                             lambda urls, folder, **k: {}), \
+                patch_object(gui, "open_path",
+                             lambda path: opened.append(str(path)) or True):
+            buttons["Save the order as a PDF..."].invoke()
+        sheet = orders / "order-4321.pdf"
+        check("the order sheet is written beside the quote files",
+              sheet.is_file(), sorted(str(p) for p in orders.glob("*")))
+        check("and opened, so it can be checked before it goes in the box",
+              str(sheet) in opened, opened)
+        check("the sheet carries the order's number, not the quote's",
+              sheet_seen.get("number") == "4321"
+              and sheet_seen.get("quote_number") == data["number"],
+              (sheet_seen.get("number"), sheet_seen.get("quote_number")))
+        check("its cards are the order's cards, read from the website",
+              [item["name"] for item in sheet_seen.get("items", [])] ==
+              ["1989 O-Pee-Chee Batman #1 NM 7"], sheet_seen.get("items"))
+        check("with the picture and price the order holds",
+              sheet_seen["items"][0]["price"] == 4.0
+              and sheet_seen["items"][0]["image"].endswith("card-501.jpg"),
+              sheet_seen["items"][0])
+        check("paying for the sheet is a read: the order is fetched, not "
+              "written",
+              any(row["method"] == "GET" and row["path"].endswith("/4321")
+                  for row in api.sent), api.sent[-3:])
+        check("the console says it was written, and warns about a missing "
+              "photo",
+              any("Order sheet written" in text and "without a photo" in text
+                  for _tag, text in app.lines), app.lines[-2:])
+
+        #  What the order's own record cannot supply, the quote does.
+        with patch_object(gui.order_pdf, "document", capture_document), \
+                patch_object(gui.order_pdf, "fetch_images",
+                             lambda urls, folder, **k: {}), \
+                patch_object(gui, "open_path", lambda path: True), \
+                patch_object(gui, "read_woo_credentials",
+                             lambda path=None: ("", "", "")):
+            sheet_seen.clear()
+            buttons["Save the order as a PDF..."].invoke()
+        check("with no keys the sheet is printed from the quote's own record",
+              sheet_seen.get("number") == "4321"
+              and len(sheet_seen.get("items") or []) == 3,
+              (sheet_seen.get("number"), len(sheet_seen.get("items") or [])))
+        check("and says so instead of pretending the site was read",
+              any("own record" in text for _tag, text in app.lines),
               app.lines[-3:])
 
         #  A shop that refuses the search has to say so in the panel. Tk runs

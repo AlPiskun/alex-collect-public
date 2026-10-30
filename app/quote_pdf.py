@@ -97,6 +97,10 @@ def _search_system_font(name):
 
 
 # ------------------------------------------------------------------ colours
+#  Three pieces of this page are used by the order sheet as well (the logo
+#  loader, the type sizes, and the strip no row may be drawn into). They are
+#  named without the underscore for that reason; the quote's own code below
+#  keeps the shorter names it has always had.
 def parse_colour(value, fallback=quote_model.DEFAULT_COLOR):
     """``#1f4e79``, ``1F4E79`` or ``#1a4`` as RGB; the fallback if it is none.
 
@@ -239,8 +243,33 @@ def _table_rows(page, quote, fonts):
     return rows
 
 
-def _draw_band(page, quote, fonts, first_page=True):
-    """The coloured block across the top: logo, company, and the number."""
+def contact_lines(contact, room):
+    """The shop's contact block, cut down to what the band can hold.
+
+    A shop that lists its name, its street, its town and its website gave four
+    lines; a band one inch tall holds two under the shop's name. The lines
+    past the last that fits are joined onto it with a dot rather than dropped,
+    because the website is usually the one that would fall off the edge.
+    """
+    lines = [line.strip() for line in str(contact or "").splitlines()
+             if line.strip()]
+    room = int(room)
+    if room <= 0 or not lines:
+        return []
+    if len(lines) <= room:
+        return lines
+    return lines[:room - 1] + [" \u00b7 ".join(lines[room - 1:])]
+
+
+def draw_band(page, look, title, number, fonts, first_page=True):
+    """The coloured block across the top: logo, company, and the number.
+
+    Shared by the quote and the order sheet on purpose. "The same settings"
+    is not a promise to keep two drawings in step - it is one drawing, called
+    with a different word on the right ("QUOTE", "ORDER") and a different
+    number under it.
+    """
+    look = look or {}
     colour = page.colour
     on_colour = page.on_colour
     band_height = page.pt(BAND * 72) if first_page else page.pt(52)
@@ -269,26 +298,47 @@ def _draw_band(page, quote, fonts, first_page=True):
                          logo if logo.mode == "RGBA" else None)
         x += size[0] + pad * 2 + page.pt(12)
         drawn_logo = True
-    look = quote.get("look") or {}
     company = str(look.get("company") or "").strip() or "Alex Collect"
     page.draw.text((x, top + (page.pt(6) if drawn_logo or not first_page else 0)),
                    company, font=fonts["company"], fill=on_colour)
     if first_page:
         contact = str(look.get("contact") or "").strip()
         if contact:
-            page.draw.multiline_text(
-                (x, top + page.pt(26)), contact, font=fonts["small"],
-                fill=tint(colour, 0.35), spacing=page.pt(2))
-        title = "QUOTE"
+            #  Only the lines that fit inside the band. A shop that lists its
+            #  address, its town and its website gave three lines, and a band
+            #  one inch tall holds two under the name - the third used to be
+            #  drawn past the colour and hung, cut in half, on the white page
+            #  below it.
+            #  Pillow lays a line out from its top edge, so the room is
+            #  counted downwards from the same top the text is drawn at - and
+            #  the last line has to end before the band's lower edge, which is
+            #  what keeps an address from being cut in half on the white page.
+            #  Anything past the last line that fits goes onto it separated by
+            #  a dot, so a website is not simply dropped from the letterhead.
+            space = page.pt(2)
+            line_height = page.pt(10.5) + space
+            contact_top = top + page.pt(20)
+            left = band_height - page.pt(6) - contact_top
+            room = max(0, int(left // line_height))
+            lines = contact_lines(contact, room)
+            if lines:
+                limit = page.right - page.text_width(title, fonts["title"]) \
+                    - page.pt(16)
+                wrapped = page.wrap("\n".join(lines), fonts["small"],
+                                    max(page.pt(120), limit - x))
+                page.draw.multiline_text(
+                    (x, contact_top), "\n".join(wrapped[:room]),
+                    font=fonts["small"], fill=tint(colour, 0.35),
+                    spacing=space)
         width = page.text_width(title, fonts["title"])
         page.draw.text((page.right - width, top), title, font=fonts["title"],
                        fill=on_colour)
-        number = "#%s" % (quote.get("number") or "-")
+        number = "#%s" % (number or "-")
         width = page.text_width(number, fonts["small_bold"])
         page.draw.text((page.right - width, top + page.pt(24)), number,
                        font=fonts["small_bold"], fill=tint(colour, 0.35))
     else:
-        number = "#%s" % (quote.get("number") or "-")
+        number = "#%s" % (number or "-")
         width = page.text_width(number, fonts["small_bold"])
         page.draw.text((page.right - width, page.pt(19)), number,
                        font=fonts["small_bold"], fill=tint(colour, 0.35))
@@ -519,8 +569,8 @@ def _reserve_footer(page):
     return page.height - page.margin - page.pt(FOOTER * 72)
 
 
-def _draw_footers(pages, quote, dpi):
-    """``Page N of M`` and the validity line, once the count is known."""
+def draw_footers(pages, left_text, dpi):
+    """``Page N of M`` and one line of the document's own, once M is known."""
     total = len(pages)
     for number, image in enumerate(pages, 1):
         page = Page(dpi)
@@ -530,14 +580,18 @@ def _draw_footers(pages, quote, dpi):
         y = page.height - page.margin + page.pt(2)
         page.draw.rectangle([0, y - 2, page.width, page.height], fill=WHITE)
         page.line(page.margin, y, page.right, RULE)
-        left = ("This quote is held until %s." % quote["valid_until"]
-                if quote.get("valid_until") else "Thank you for your interest.")
-        page.draw.text((page.margin, y + page.pt(6)), left,
+        page.draw.text((page.margin, y + page.pt(6)), left_text,
                        font=fonts["small"], fill=SOFT)
         right = "Page %d of %d" % (number, total)
         page.draw.text((page.right - page.text_width(right, fonts["small"]),
                         y + page.pt(6)), right, font=fonts["small"], fill=SOFT)
     return pages
+
+
+#  The shared pieces, under names a second document may call.
+load_logo = _load_logo
+fonts_for = _fonts
+reserve_footer = _reserve_footer
 
 
 def build_pages(quote, dpi=PRINT_DPI):
@@ -559,10 +613,12 @@ def build_pages(quote, dpi=PRINT_DPI):
         page.logo = _load_logo((quote.get("look") or {}).get("logo"))
         fonts = _fonts(page)
         if not pages:
-            y = _draw_band(page, quote, fonts, first_page=True)
+            y = draw_band(page, quote.get("look"), "QUOTE",
+                          quote.get("number"), fonts, first_page=True)
             y = _draw_parties(page, quote, fonts, y + page.pt(16))
         else:
-            y = _draw_band(page, quote, fonts, first_page=False)
+            y = draw_band(page, quote.get("look"), "QUOTE",
+                          quote.get("number"), fonts, first_page=False)
             y += page.pt(12)
         if rows is None:
             rows = _table_rows(page, quote, fonts)
@@ -606,7 +662,9 @@ def build_pages(quote, dpi=PRINT_DPI):
         pages.append(page.image)
         if index >= len(rows):
             break
-    return _draw_footers(pages, quote, dpi)
+    left = ("This quote is held until %s." % quote["valid_until"]
+            if quote.get("valid_until") else "Thank you for your interest.")
+    return draw_footers(pages, left, dpi)
 
 
 def render(quote, path, dpi=PRINT_DPI):

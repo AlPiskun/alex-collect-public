@@ -505,6 +505,48 @@ def test_merge_line_items():
           [{"id": 1, "quantity": 1, "variation_id": 44}])
 
 
+def test_find_order():
+    print()
+    print("== 10. finding an order from the number a person typed ==")
+    #  A shop that numbers orders by their id: one read, straight to the order.
+    opener = FakeOpener(order_reply(77, [], "1234"))
+    order = woo_orders.find_order(SITE, KEY, SECRET, "#1234", opener=opener)
+    check("a plain number is read by its id",
+          order["id"] == 77 and len(opener.requests) == 1,
+          [r["url"] for r in opener.requests])
+    check("and the hash people type is not part of it",
+          opener.requests[0]["url"].endswith("/orders/1234?consumer_key="
+                                             "ck_live&consumer_secret=cs_live"),
+          opener.requests[0]["url"])
+
+    #  A shop with its own numbering: not a number, so the list is searched.
+    opener = FakeOpener((200, json.dumps([{"id": 91, "number": "WC-1042"},
+                                          {"id": 92, "number": "WC-10420"},
+                                          {"id": 93,
+                                           "number": "WC-1042-A"}]).encode()))
+    order = woo_orders.find_order(SITE, KEY, SECRET, "WC-1042", opener=opener)
+    check("a shop's own number is found by searching the order list",
+          order["id"] == 91, order)
+    check("and only an exact number is taken, never a near one",
+          order["number"] == "WC-1042", order["number"])
+
+    opener = FakeOpener((200, json.dumps([{"id": 92,
+                                          "number": "WC-10420"}]).encode()))
+    try:
+        woo_orders.find_order(SITE, KEY, SECRET, "WC-1042", opener=opener)
+        check("an order that is not there is refused, not guessed at", False,
+              "no error")
+    except woo_orders.OrderError as exc:
+        check("an order that is not there is refused, not guessed at",
+              "WC-1042" in exc.message, exc.message)
+    try:
+        woo_orders.find_order(SITE, KEY, SECRET, "   ", opener=opener)
+        check("an empty number is refused before any request", False, "no error")
+    except woo_orders.OrderError as exc:
+        check("an empty number is refused before any request",
+              "number" in exc.message, exc.message)
+
+
 def main():
     test_parsing()
     test_card_number_lines()
@@ -514,6 +556,7 @@ def main():
     test_add_to_existing()
     test_links()
     test_merge_line_items()
+    test_find_order()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))

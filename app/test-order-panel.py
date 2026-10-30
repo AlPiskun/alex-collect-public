@@ -11,7 +11,7 @@ No network, no real order, no Tk.
 import importlib.util
 import json
 import sys
-import types
+import tempfile
 import urllib.request
 from pathlib import Path
 from unittest.mock import patch
@@ -123,7 +123,11 @@ def search(site, path, params, key, secret, **kwargs):
 
 class FakeApp:
     def __init__(self):
+        #  Quotes and order sheets are written under a temp folder: a test
+        #  must never leave documents in the app's own folder.
+        self.folder = Path(tempfile.mkdtemp(prefix="alex-order-panel-"))
         self.settings = {"woo_site_url": "https://shop.example",
+                         "quotes_dir": str(self.folder / "quotes"),
                          "scan_dir": "/tmp", "pipeline_dir": "/tmp",
                          "browser_name": "system",
                          "canadianshopper_store_url": "",
@@ -173,6 +177,15 @@ def build(app):
     discount = next(w._kw["textvariable"] for w in widgets
                     if w._kw.get("textvariable") is not None)
     return box, build_button, orders_button, discount
+
+
+def build_with_sheet(app):
+    """The panel, plus the button that prints an order as a PDF."""
+    parent = FakeWidget()
+    gui.build_ordertext(parent, app)
+    widgets = list(parent.walk())
+    return next(w for w in widgets
+                if w.cget("text") == "Save the order as a PDF...")
 
 
 def run_panel(app, text, keys=(("https://shop.example", "ck_live", "cs_live")),
@@ -563,6 +576,122 @@ def test_open_button():
           str(app.opened))
 
 
+def test_order_sheet():
+    print()
+    print("== 15. an order printed as a PDF, on the quote's own paper ==")
+    app = FakeApp()
+    BOX.shown.clear()
+    sheet_button = build_with_sheet(app)
+    check("the panel offers the order sheet, and it explains itself",
+          sheet_button.cget("text") == "Save the order as a PDF..."
+          and bool(gui.tip_for("Save the order as a PDF...")),
+          gui.tip_for("Save the order as a PDF..."))
+
+    #  Without keys there is no order to read, and the keys file is opened.
+    opened_keys = []
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("", "", "")), \
+            patch.object(gui, "open_woo_keys_file",
+                         lambda *a, **k: opened_keys.append("woo-keys.txt")):
+        BOX.shown.clear()
+        sheet_button.invoke()
+    check("without keys it says which file is needed",
+          opened_keys and BOX.shown and "woo-keys.txt" in str(BOX.shown[-1]),
+          (opened_keys, BOX.shown[-1:]))
+
+    #  With keys: the number is asked for, the order is read, the sheet written.
+    asked = []
+    seen = {}
+    written = []
+
+    real_document = gui.order_pdf.document
+
+    def capture_document(*args, **kwargs):
+        #  The real one, kept before the patch: calling through the module
+        #  would find this wrapper and recurse forever.
+        document = real_document(*args, **kwargs)
+        seen.update(document)
+        return document
+
+    def fake_render(document, path, folder=None, **kwargs):
+        written.append((document, path))
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_bytes(b"%PDF-1.4\n%%EOF\n")
+        return {"path": Path(path), "pages": 1, "pictures": 2, "missing": 0}
+
+    real_urlopen = urllib.request.urlopen
+    urllib.request.urlopen = FakeNet((
+        200, json.dumps({
+            "id": 77, "number": "1234", "status": "processing",
+            "currency": "CAD", "date_created": "2026-10-30T09:00:00",
+            "date_paid": "2026-10-30T09:05:00", "total": "52.50",
+            "discount_total": "0.00", "shipping_total": "0.00",
+            "prices_include_tax": True,
+            "billing": {"first_name": "Dana", "last_name": "Whitfield",
+                        "address_1": "18 Maple Row", "city": "Orangeville",
+                        "state": "ON", "postcode": "L9W 2C3", "country": "CA"},
+            "line_items": [{"name": "1989 O-Pee-Chee Wayne Gretzky #1 "
+                                    "EX-MT 6", "product_id": 1, "quantity": 1,
+                            "price": 40.0, "total": "40.00",
+                            "image": {"src": "https://shop.example/g.jpg"}},
+                           {"name": "1990 Score Mario Lemieux #2 NM",
+                            "product_id": 2, "quantity": 1, "price": 12.5,
+                            "total": "12.50", "sku": "ML-2",
+                            "image": {"src": "https://shop.example/l.jpg"}}],
+        }).encode("utf-8")))
+    opened = []
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck", "cs")), \
+            patch.object(gui, "read_woo_credentials", create=True,
+                         new=lambda path=None: ("https://shop.example", "ck",
+                                                "cs")), \
+            patch.object(gui.threading, "Thread", SyncThread), \
+            patch.object(gui.simpledialog, "askstring",
+                         lambda *a, **k: asked.append(a) or "1234"), \
+            patch.object(gui.order_pdf, "document", capture_document), \
+            patch.object(gui.order_pdf, "render_with_pictures", fake_render), \
+            patch.object(gui, "open_path",
+                         lambda path: opened.append(str(path)) or True):
+        try:
+            sheet_button.invoke()
+        finally:
+            urllib.request.urlopen = real_urlopen
+    check("it asks which order to print",
+          asked and "Which order" in str(asked[0]), asked)
+    check("the order is read from the website, by its number",
+          seen.get("number") == "1234", seen.get("number"))
+    check("the sheet is the order's own, cards and pictures included",
+          [item["name"] for item in seen.get("items", [])] ==
+          ["1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6",
+           "1990 Score Mario Lemieux #2 NM"], seen.get("items"))
+    check("it says what state the order is in, in words",
+          seen.get("status") == "Processing - paid"
+          and seen.get("paid") == "2026-10-30",
+          (seen.get("status"), seen.get("paid")))
+    check("the file is written and opened",
+          written and Path(written[0][1]).name == "order-1234.pdf"
+          and str(written[0][1]) in opened, (written, opened))
+    check("and the console says where it went",
+          any("Order sheet written" in text for _tag, text in app.lines),
+          app.lines[-2:])
+
+    #  An order the shop does not have is refused, not guessed at.
+    BOX.shown.clear()
+    urllib.request.urlopen = FakeNet((200, b"[]"))
+    try:
+        with patch.object(gui, "read_woo_credentials",
+                          lambda path=None: ("https://shop.example", "ck",
+                                             "cs")), \
+                patch.object(gui.threading, "Thread", SyncThread), \
+                patch.object(gui.simpledialog, "askstring",
+                             lambda *a, **k: "9999"):
+            sheet_button.invoke()
+    finally:
+        urllib.request.urlopen = real_urlopen
+    check("an order that is not there is reported, not printed",
+          BOX.shown and "9999" in str(BOX.shown[-1]), BOX.shown[-1:])
+
+
 def test_empty_paste():
     print()
     print("== 14. an empty box asks for a list ==")
@@ -592,6 +721,7 @@ def main():
     test_hash_lines_reach_the_order()
     test_open_button()
     test_empty_paste()
+    test_order_sheet()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))

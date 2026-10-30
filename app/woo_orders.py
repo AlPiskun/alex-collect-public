@@ -501,6 +501,38 @@ def read_order(site, key, secret, order_id, timeout=60, opener=None):
     return order
 
 
+def find_order(site, key, secret, number, timeout=60, opener=None):
+    """One order from what a person typed: an id, or a shop's own number.
+
+    Most shops number orders by their id, and those are read straight. A shop
+    that numbers them its own way ("WC-1042") cannot be read by id at all, so
+    the order list is searched and the order whose number matches exactly is
+    taken - never a near miss, because printing the wrong order's sheet is
+    worse than printing none.
+    """
+    text = str(number or "").strip().lstrip("#").strip()
+    if not text:
+        raise OrderError("Type the order number first.")
+    if text.isdigit():
+        try:
+            return read_order(site, key, secret, text, timeout=timeout,
+                              opener=opener)
+        except OrderError:
+            pass          # a custom number that happens to be digits
+    _status, data = api_request(site, key, secret, ORDERS_PATH,
+                                params={"search": text, "per_page": 20},
+                                timeout=timeout, opener=opener)
+    rows = data if isinstance(data, list) else []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("number") or "").strip() == text:
+            return row
+    raise OrderError(
+        "No order on the website is numbered %s - check the number in the "
+        "dashboard." % text)
+
+
 def add_to_order(site, key, secret, order_id, plan, discount_percent=0,
                  note=None, timeout=60, opener=None):
     """Add the matched cards to an order that already exists.

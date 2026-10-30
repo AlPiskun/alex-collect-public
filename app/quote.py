@@ -209,7 +209,8 @@ def normalise(quote):
                  "sku": str(item.get("sku") or "").strip(),
                  "name": " ".join(str(item.get("name")).split()),
                  "price": str(item.get("price") or "").strip(),
-                 "quantity": item_quantity(item)}
+                 "quantity": item_quantity(item),
+                 "image": item_image(item)}
         clean.append(entry)
     quote["items"] = clean
     quote["number"] = str(quote.get("number") or "").strip()
@@ -248,10 +249,15 @@ def add_item(quote, product, quantity=1, replace_price=False):
             item["quantity"] = item_quantity(item) + max(1, int(quantity or 1))
             if replace_price and price is not None:
                 item["price"] = "%.2f" % price
+            if not item.get("image"):
+                #  A row saved before pictures were kept gains one now, so an
+                #  old quote can print its cards' photographs.
+                item["image"] = first_image(product)
             return index
     items.append({"product_id": product_id, "sku": sku, "name": name,
                   "price": "" if price is None else "%.2f" % price,
-                  "quantity": max(1, int(quantity or 1))})
+                  "quantity": max(1, int(quantity or 1)),
+                  "image": first_image(product)})
     return len(items) - 1
 
 
@@ -377,6 +383,33 @@ def apply_prices(quote, products):
     return quote
 
 
+def first_image(product):
+    """The shop's first picture of a card, as a URL, or ``""``.
+
+    Kept on the quote row so an order sheet can show the card weeks later -
+    without asking the website again, and without the row being a picture
+    itself. The URL is what gets stored; the sheet downloads it when it is
+    printed, and a card whose picture cannot be fetched still prints.
+    """
+    product = product or {}
+    images = product.get("images")
+    if isinstance(images, list):
+        for image in images:
+            if isinstance(image, dict) and str(image.get("src") or "").strip():
+                return str(image["src"]).strip()
+    image = product.get("image")
+    if isinstance(image, dict):
+        return str(image.get("src") or "").strip()
+    if isinstance(image, str):
+        return image.strip()
+    return ""
+
+
+def item_image(item):
+    """The picture a quote row carries, if it kept one."""
+    return str((item or {}).get("image") or "").strip()
+
+
 def search(woo_get, site, key, secret, term, per_page=100):
     """The products whose name matches what was typed, as quote rows."""
     term = str(term or "").strip()
@@ -406,7 +439,8 @@ def search(woo_get, site, key, secret, term, per_page=100):
                          "sku": str(product.get("sku") or "").strip(),
                          "price": str(product.get("price") or "").strip(),
                          "stock_status": str(product.get("stock_status") or ""),
-                         "stock_quantity": product.get("stock_quantity")})
+                         "stock_quantity": product.get("stock_quantity"),
+                         "image": first_image(product)})
     return products
 
 

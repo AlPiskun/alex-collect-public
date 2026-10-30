@@ -53,6 +53,7 @@ import sale_preview
 import cs_listing
 import stock_compare
 import stock_write
+import order_pdf
 import quote as quote_model
 import quote_pdf
 import woo_media
@@ -66,7 +67,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.85"
+VERSION = "2.86"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1177,6 +1178,14 @@ instead of being hidden. Without WooCommerce keys in woo-keys.txt the quote
 still saves and prints; only reading the stock and creating the order need
 them, and the report says so.
 
+**Save the order as a PDF...** is the same paper with a picture of every card
+on it: the sheet that gets packed against. It carries the order's own number,
+state and paid date, which is why the order is read back from the website
+first - and when the keys are missing, or the site will not answer, it is
+printed from the quote's own record and says so. The pictures are downloaded
+once and kept beside the documents, so printing the same order again reads
+nothing at all.
+
 Nothing here changes a price, a listing or a stock count on any site. A
 quote is a document; only the last button writes, and only when confirmed."""
 
@@ -1510,6 +1519,7 @@ TOOLTIPS = {
     "Print the PDF...": "Draw the quote as a PDF with the logo and colour, save it, and open it",
     "Turn into an order...": "Create a pending order on the website from this quote, after showing every card and the total",
     "Copy it as text": "Put the whole quote on the clipboard, to paste into an email or a message",
+    "Save the order as a PDF...": "Print an order as a PDF on the quote's own paper - same logo and colour - with a picture of every card; the order is read from the website, so its number, state and paid date are current, and nothing is changed",
     "Open the quotes folder": "Open the folder every quote and its PDF is saved in",
     "Open this quote": "Load the quote selected in the list so it can be edited or printed",
     "Start a new quote": "Begin a fresh quote with the next number, keeping the logo, colour and business name",
@@ -6473,13 +6483,27 @@ def build_ordertext(parent, app):
                        justify="left")
     status.pack(anchor="w", pady=(3, 0))
 
-    def say(message):
+    def say(message, tag=None):
+        """The status line, and the console when the message is worth keeping.
+
+        The tag was added with the order sheet: which record a sheet was
+        printed from, and whether a card arrived without its picture, is the
+        sort of thing someone looks up afterwards rather than reads once.
+        """
         try:
             status.configure(text=message)
         except Exception:
             pass
+        if tag:
+            try:
+                app.console_line("Order: %s" % message, tag)
+            except Exception:
+                pass
 
     discount = tk.StringVar(value="")
+    #  The order this sitting last wrote, so its sheet prints without retyping
+    #  the number - and stays empty until an order exists.
+    last_order = {"number": ""}
     ttk.Label(row, text="Discount %:").pack(side="left")
     ttk.Entry(row, textvariable=discount, width=5).pack(side="left",
                                                        padx=(3, 14))
@@ -6795,11 +6819,13 @@ def build_ordertext(parent, app):
                 say("The order was not written.")
                 return
             number = result.get("number") or result.get("id")
+            last_order["number"] = str(number or "")
             app.console_line("Order #%s written on the website (%d cards%s)."
                              % (number, len(result.get("line_items") or []),
                                 ", %d skipped" % len(skipped) if skipped
                                 else ""), "ok")
-            say("Order #%s is ready - opening it now." % number)
+            say("Order #%s is ready - opening it now. \"Save the order as a "
+                "PDF...\" prints its sheet." % number)
             url = woo_orders.order_edit_url(site, result.get("id"))
             if url:
                 app.open_webpages([url])
@@ -6839,9 +6865,54 @@ def build_ordertext(parent, app):
             return
         finish(target, order, site, key, secret, percent, names)
 
+    def save_order_sheet():
+        """Print any order as a PDF, by its number - the shop's own facts.
+
+        The order is read from the website rather than remembered, so a sheet
+        can be printed days later and still say what the order says now: its
+        state, its paid date, and the cards with their pictures.
+        """
+        site, key, secret = read_woo_credentials()
+        site = site or app.settings.get("woo_site_url", "")
+        if not (site and key and secret):
+            open_woo_keys_file(app, app.settings.get("woo_site_url", ""))
+            messagebox.showinfo(
+                "Printing an order needs the keys",
+                "The order's own details are read from the website, so the "
+                "WooCommerce keys in woo-keys.txt (lines 1-3) are needed - "
+                "they are about to open.", parent=app)
+            return
+        number = simpledialog.askstring(
+            "Save an order as a PDF",
+            "Which order? Its number in the dashboard:",
+            parent=app, initialvalue=last_order["number"] or "")
+        number = str(number or "").strip()
+        if not number:
+            return
+        say("Reading order #%s from the website..." % number)
+        try:
+            order = woo_orders.find_order(site, key, secret, number)
+        except woo_orders.OrderError as exc:
+            messagebox.showerror("That order could not be read", exc.message,
+                                 parent=app)
+            say(exc.message)
+            return
+        last_order["number"] = str(order.get("number") or number)
+        write_order_sheet(app, app, order=order, say=say)
+
     ttk.Button(row, text="Build the order", command=start).pack(side="right")
     ttk.Button(row, text="Open the order list",
                command=lambda: open_orders()).pack(side="right", padx=8)
+    #  Its own row: three long buttons beside the discount box is wider than
+    #  the window at 800x600, and the explanation belongs next to the button
+    #  it explains.
+    sheet_row = ttk.Frame(box)
+    sheet_row.pack(fill="x", pady=(6, 0))
+    ttk.Button(sheet_row, text="Save the order as a PDF...",
+               command=lambda: save_order_sheet()).pack(side="left")
+    ttk.Label(sheet_row, text="the order just made, or any order by its "
+                              "number - with a picture of every card",
+              style="Dim.TLabel").pack(side="left", padx=(6, 0))
 
 
 def quote_folder(app):
@@ -6850,6 +6921,76 @@ def quote_folder(app):
     if chosen:
         return Path(chosen)
     return quote_model.folder_for(BASE)
+
+
+def order_folder(app):
+    """Where an order's sheet is saved: ``orders`` beside the quotes."""
+    return Path(str(quote_folder(app))) / "orders"
+
+
+def quote_look(app):
+    """The look the quote panel saved, for a sheet printed without a quote."""
+    return {"company": app.settings.get("quote_company", "") or "",
+            "contact": app.settings.get("quote_contact", "") or "",
+            "color": app.settings.get("quote_color", "") or DEFAULT_QUOTE_COLOR,
+            "logo": app.settings.get("quote_logo", "") or ""}
+
+
+def write_order_sheet(app, parent, quote=None, order=None, say=None,
+                      open_it=True):
+    """Draw an order as a PDF - the quote's paper, with a picture per card.
+
+    The order's own facts win when there is one; a quote fills in the rest, so
+    the same call prints the sheet for an order that was just written, an order
+    read back by its number, or a quote whose order the website will not hand
+    over. The pictures are downloaded first (cached in the documents folder, so
+    a reprint reads no shop at all), which is the slow part, so it runs off the
+    window thread and reports back on it.
+    """
+    sheet = order_pdf.document(quote=quote, order=order, look=quote_look(app),
+                               currency=app.settings.get("currency_prefix",
+                                                         "") or "")
+    if not sheet.get("items"):
+        messagebox.showinfo("Nothing to print",
+                            "There are no cards on it yet, so there is no "
+                            "order sheet to write.", parent=parent)
+        return None
+    folder = Path(str(order_folder(app)))
+    stamp = "".join(character for character in
+                    str(sheet.get("number") or "order")
+                    if character.isalnum() or character in "-_") or "order"
+    target = folder / ("order-%s.pdf" % stamp)
+    wanted = len(order_pdf.picture_urls(sheet))
+    if say:
+        say("Reading the shop's pictures for %d card%s..."
+            % (len(sheet["items"]),
+               "" if len(sheet["items"]) == 1 else "s")
+            if wanted else "Drawing the order sheet...")
+
+    def work():
+        folder.mkdir(parents=True, exist_ok=True)
+        return order_pdf.render_with_pictures(sheet, target, folder)
+
+    def done(info, error):
+        if error is not None:
+            message = getattr(error, "message", None) or str(error)
+            if say:
+                say("The order sheet was not written: %s" % message, "err")
+            messagebox.showerror("The order sheet was not written", message,
+                                 parent=parent)
+            return
+        missing = info.get("missing") or 0
+        text = "Order sheet written: %s (%d page%s, %d picture%s%s)" % (
+            info["path"], info["pages"], "" if info["pages"] == 1 else "s",
+            info["pictures"], "" if info["pictures"] == 1 else "s",
+            ", %d without a photo" % missing if missing else "")
+        if say:
+            say(text, "warn" if missing else "ok")
+        if open_it:
+            open_path(info["path"])
+
+    in_background(app, work, done)
+    return target
 
 
 def confirm_long_text(parent, app, title, text, ok_text="Continue"):
@@ -7109,16 +7250,27 @@ def build_quote(parent, app):
     finish = ttk.LabelFrame(parent, text="5. Save it, print it, or order it",
                             padding=6)
     finish.pack(fill="x", pady=(0, 6))
+    #  Two rows on purpose: six long buttons on one line is wider than the
+    #  window at 800x600, and a button that has been clipped is a button
+    #  nobody presses. The documents come first, the two that change the shop
+    #  second, with the one that only looks at a folder after them.
     finish_row = ttk.Frame(finish)
     finish_row.pack(fill="x")
     for text, command in (("Save the quote", lambda: save_quote()),
                           ("Print the PDF...", lambda: print_pdf()),
-                          ("Turn into an order...", lambda: turn_into_order()),
-                          ("Copy it as text", lambda: copy_text()),
+                          ("Copy it as text", lambda: copy_text())):
+        ttk.Button(finish_row, text=text, command=command).pack(
+            side="left", padx=(0, 6))
+    order_row = ttk.Frame(finish)
+    order_row.pack(fill="x", pady=(6, 0))
+    for text, command in (("Turn into an order...",
+                           lambda: turn_into_order()),
+                          ("Save the order as a PDF...",
+                           lambda: save_order_pdf()),
                           ("Open the quotes folder",
                            lambda: open_path(quote_model.ensure_folder(
                                quote_folder(app))))):
-        ttk.Button(finish_row, text=text, command=command).pack(
+        ttk.Button(order_row, text=text, command=command).pack(
             side="left", padx=(0, 6))
     folder_label = ttk.Label(finish, text="", style="Dim.TLabel",
                              wraplength=760, justify="left")
@@ -7585,6 +7737,50 @@ def build_quote(parent, app):
                 "\"Logo file\" could not be read as an image.\n\n%s"
                 % info["path"], parent=app)
         open_path(info["path"])
+
+    def save_order_pdf():
+        """The order's own sheet: the same paper, with a picture of each card.
+
+        The order is read back from the website first when the keys allow it,
+        because the sheet's number, state and paid date belong to the order
+        rather than to the quote. Without keys the quote's own record is used -
+        its rows hold the pictures and the prices - and the sheet names the
+        quote it came from.
+        """
+        current = collect()
+        if not quote_model.items_of(current):
+            messagebox.showinfo(
+                "No cards on it yet",
+                "Add the cards first - the order sheet is what gets packed "
+                "against.", parent=app)
+            return
+        number = str(current.get("order_number") or current.get("order_id")
+                     or "").strip()
+        if not number:
+            messagebox.showinfo(
+                "This quote is not an order yet",
+                "An order sheet carries the order's number and state, and "
+                "this quote has none.\n\nPress \"Turn into an order...\" "
+                "first - the sheet can be saved the moment the order exists.",
+                parent=app)
+            return
+        site, key, secret = read_woo_credentials()
+        site = site or app.settings.get("woo_site_url", "")
+        order = None
+        if site and key and secret:
+            say("Reading order #%s from the website..." % number)
+            try:
+                order = woo_orders.find_order(site, key, secret, number)
+            except woo_orders.OrderError as exc:
+                say("The order could not be read (%s) - printing the quote's "
+                    "own record of it." % exc.message, "warn")
+        else:
+            #  Into the console as well as the status line: which of the two
+            #  records a sheet was printed from is worth being able to look up.
+            say("No keys, so the sheet is printed from the quote's own "
+                "record of the order - its cards, prices and pictures.",
+                "warn")
+        write_order_sheet(app, app, quote=current, order=order, say=say)
 
     # ------------------------------------------------------------- ordering
     def turn_into_order():
