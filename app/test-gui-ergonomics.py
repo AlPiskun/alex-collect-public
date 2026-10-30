@@ -52,20 +52,30 @@ def main():
           not ({"cookie", "plugins", "logs"} & task_ids))
     core_ids = {pid for _group, ids in gui.groups_for(False) for pid in ids}
     check("core task menu omits plugin-only tasks",
-          not ({"stage", "wire", "zerostock"} & core_ids))
+          not ({"stage", "wire", "zerostock", "rerun"} & core_ids))
     check("task sections are Sell to a customer, Sell a new batch, After a "
-          "sale, Print an order, Photos, and Re-run",
+          "sale, and Photos",
           [name for name, _ids in gui.groups_for(True)] ==
-          ["Sell to a customer", "Sell a new batch", "After a sale",
-           "Print an order", "Photos", "Re-run a marketplace"],
+          ["Sell to a customer", "Sell a new batch", "After a sale", "Photos"],
           [name for name, _ids in gui.groups_for(True)])
-    #  The sheet prints any order, not only the one just sold - so it is its
-    #  own box after the after-a-sale jobs, and the last section of that tab.
-    check("the order sheet sits after the after-a-sale group, in both menus",
-          dict(gui.groups_for(True))["Print an order"] == ["ordersheet"] and
-          dict(gui.groups_for(False))["Print an order"] == ["ordersheet"] and
-          gui.TAB_HOME == {"ordersheet": "After a sale"} and
-          gui.PANEL_BUILDERS["ordersheet"] is gui.build_ordersheet)
+    #  The three separate marketplace steps that used to have their own box
+    #  are gone from the menu: the pipeline does that work itself, and the
+    #  re-run panel is where a step that needs repeating is repeated.
+    all_ids = {pid for _group, ids in gui.groups_for(True) for pid in ids}
+    core_all = {pid for _group, ids in gui.groups_for(False)
+                for pid in ids}
+    check("staging, importing and wiring are no longer task buttons",
+          not ({"stage", "importpanel", "wire"} & (all_ids | core_all)),
+          str(sorted(all_ids)))
+    check("their panels still exist, so old shortcuts and plugins still open "
+          "them",
+          all(pid in gui.PANEL_BUILDERS for pid in ("stage", "importpanel",
+                                                    "wire")))
+    check("the order sheet is an after-a-sale job now, in both menus",
+          dict(gui.groups_for(True))["After a sale"][-1] == "ordersheet" and
+          dict(gui.groups_for(False))["After a sale"][-1] == "ordersheet" and
+          gui.PANEL_BUILDERS["ordersheet"] is gui.build_ordersheet,
+          str(dict(gui.groups_for(True))["After a sale"]))
     #  It leads the first group rather than being the first group: since the
     #  customer quote arrived it shares "Sell to a customer" with it, and the
     #  claim worth making is that it is still the first thing offered.
@@ -75,12 +85,12 @@ def main():
           gui.groups_for(False)[0][1][0] == "ordertext" and
           gui.PANEL_BUILDERS["ordertext"] is gui.build_ordertext,
           str([(name, ids) for name, ids in gui.groups_for(True)][:1]))
-    re_run_group = [ids for name, ids in gui.groups_for(True)
-                    if name == "Re-run a marketplace"]
-    check("the re-run panel is its own task section and tab",
-          re_run_group == [["markets"]] and
+    batch_group = [list(ids) for name, ids in gui.groups_for(True)
+                   if name == "Sell a new batch"]
+    check("the re-run panel sits with the batch it re-runs",
+          batch_group == [["pipeline", "combine", "markets"]] and
           gui.TITLES["markets"] == "Re-run a marketplace step" and
-          gui.PANEL_BUILDERS["markets"] is gui.build_markets)
+          gui.PANEL_BUILDERS["markets"] is gui.build_markets, str(batch_group))
     check("every marketplace can be re-run on its own",
           list(gui.MARKET_RERUNS) == ["woocommerce", "canadianshopper",
                                       "facebook", "ebay"] and

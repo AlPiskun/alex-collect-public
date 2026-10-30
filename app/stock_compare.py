@@ -21,6 +21,7 @@ a disagreement.
 """
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import woo_orders
@@ -102,18 +103,70 @@ def woo_items(products):
     return items, skipped
 
 
-def read_woo_stock(fetch, base, key, secret, per_page=100, pages=40):
-    """Every published product, page by page, through an injected GET."""
+#: How many product pages are asked for at once. The catalogue is read a
+#: hundred cards a page, and a shop with 2,500 products used to wait for
+#: twenty-five round trips one after another; four at a time is the same
+#: request count in a quarter of the wall-clock time, and it is deliberately
+#: modest so a small shared host is not hammered.
+PAGE_WORKERS = 4
+
+
+def _answer_parts(answer):
+    """``(status, data, headers)`` from whatever the injected GET returned.
+
+    The reader was written against ``(status, data)`` and every caller and test
+    still returns that; a caller that can also give the response headers - which
+    say how many pages there are - gets a progress bar that knows where it ends.
+    """
+    if isinstance(answer, tuple) and len(answer) >= 3:
+        return answer[0], answer[1], answer[2] or {}
+    if isinstance(answer, tuple) and len(answer) == 2:
+        return answer[0], answer[1], {}
+    return 0, answer, {}
+
+
+def _total_pages(headers):
+    """The page count WooCommerce states in its own headers, or ``None``."""
+    for key, value in (headers or {}).items():
+        if str(key).strip().lower().replace("_", "-") == "x-wp-totalpages":
+            try:
+                return max(1, int(str(value).strip()))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def read_woo_stock(fetch, base, key, secret, per_page=100, pages=40,
+                   progress=None, workers=PAGE_WORKERS):
+    """Every published product, page by page, through an injected GET.
+
+    Pages are asked for a few at a time and reassembled in order, because the
+    wait is almost entirely the round trip: a catalogue of 2,500 cards is
+    twenty-five requests, and doing them one after another is what made a
+    comparison feel broken. ``progress(page_done, total_pages, cards_read)`` is
+    called after each page as it lands in order, so a caller can draw a bar;
+    ``total_pages`` is ``None`` until (or unless) the site's own
+    ``X-WP-TotalPages`` header says how many there are.
+    """
     if not base:
         raise StockError("No website address is saved yet.",
                          "Set the WooCommerce site URL in User Settings.")
     if not (key and secret):
         raise StockError("No website API keys are saved yet.",
                          "Add the read-only key and secret to woo-keys.txt.")
+    pages = max(1, int(pages))
+    workers = max(1, int(workers or 1))
     products = []
-    for page in range(1, max(1, pages) + 1):
-        params = {"per_page": per_page, "page": page, "status": "publish"}
-        status, data = fetch(base, "/wp-json/wc/v3/products", params, key, secret)
+    total = {"pages": None}
+
+    def page_rows(page):
+        #  Ordered by id so the pages are a stable window: they are read a few
+        #  at a time now, and an unordered catalogue could hand the same card
+        #  to two pages (or to none) while the reads overlap.
+        params = {"per_page": per_page, "page": page, "status": "publish",
+                  "orderby": "id", "order": "asc"}
+        status, data, headers = _answer_parts(
+            fetch(base, "/wp-json/wc/v3/products", params, key, secret))
         if status in (401, 403):
             raise StockError(
                 "Your website refused the API keys (HTTP %s)." % status,
@@ -123,9 +176,44 @@ def read_woo_stock(fetch, base, key, secret, per_page=100, pages=40):
             raise StockError(
                 "Could not read your products (HTTP %s)." % status,
                 str(data)[:200])
-        rows = data if isinstance(data, list) else []
-        products.extend(rows)
-        if len(rows) < per_page:
+        if total["pages"] is None:
+            total["pages"] = _total_pages(headers)
+        return data if isinstance(data, list) else []
+
+    def say(page, cards):
+        if progress is None:
+            return
+        try:
+            progress(page, total["pages"], cards)
+        except Exception:
+            #  A progress display must never be able to fail a read.
+            pass
+
+    page = 1
+    rows = page_rows(1)
+    products.extend(rows)
+    say(1, len(products))
+    short = len(rows) < per_page
+    while not short and page < pages:
+        batch = list(range(page + 1, min(pages, page + workers) + 1))
+        with ThreadPoolExecutor(max_workers=len(batch)) as pool:
+            futures = [(number, pool.submit(page_rows, number))
+                       for number in batch]
+            for number, future in futures:
+                rows = future.result()
+                products.extend(rows)
+                page = number
+                say(page, len(products))
+                if len(rows) < per_page:
+                    short = True
+                    break
+            if short:
+                #  The short page is the end of the catalogue; the pages asked
+                #  for beside it are not needed, and holding up the caller for
+                #  them is the delay this is here to remove.
+                for _number, future in futures:
+                    future.cancel()
+        if short:
             break
     return products
 
@@ -469,6 +557,23 @@ def difference(woo, other, by="title"):
             "other_sku": other.get("sku") or ""}
 
 
+def listed_only_woo(items):
+    """Website cards that are worth showing as *not on the other site*.
+
+    A card at zero cannot be listed anywhere - the other site would refuse it
+    as out of stock, and the website has nothing to sell - so "it is not on
+    CanadianShopper" is not a job, it is the natural state of a sold-out card.
+    Showing it made the list look like work; the count is kept so the panel can
+    still say how many were left out.
+    """
+    return [item for item in items or [] if int(item.get("qty") or 0) > 0]
+
+
+def sold_out_only_woo(items):
+    """The website cards at zero that the other site does not list either."""
+    return [item for item in items or [] if int(item.get("qty") or 0) <= 0]
+
+
 def card_key(name):
     """A card's identity for the ignore list: the words, in a fixed order.
 
@@ -527,7 +632,7 @@ def action_list(pairs, only_woo, only_other, ignored=(), other_label=""):
                      "other_name": other.get("name") or "",
                      "other_sku": other.get("sku") or ""})
     rows += differences(live)
-    for item in only_woo or []:
+    for item in listed_only_woo(only_woo):
         rows.append({"card": item.get("name") or "", "woo": int(item.get("qty") or 0),
                      "other": None, "gap": int(item.get("qty") or 0),
                      "by": "", "kind": ONLY_WOO, "woo_id": item.get("id"),
@@ -547,11 +652,81 @@ def action_list(pairs, only_woo, only_other, ignored=(), other_label=""):
     visible = [row for row in rows if card_key(row["card"]) not in hidden]
     #  Fixable first, then the cards that exist but cannot be bought, then the
     #  ones that are missing entirely: the first two have a fix, the last one
-    #  is usually a listing that needs creating.
-    order = {FIX: 0, OFF_SALE: 1, NO_COUNT: 2, ONLY_OTHER: 3, ONLY_WOO: 4}
-    visible.sort(key=lambda row: (order.get(row["kind"], 9),
-                                  -abs(row["gap"]), row["card"].lower()))
-    return visible
+    #  is usually a listing that needs creating. The panel can re-order the
+    #  list with sort_rows(); this is the order it opens in.
+    return sort_rows(visible, DEFAULT_SORT)
+
+
+#  The orders the list can be read in. ``attention`` is what the list has
+#  always used - the fixable rows first, worst gap first - so choosing nothing
+#  changes nothing; the others are for finding one card in a list of two
+#  hundred, which is the other thing a person does with it.
+SORTS = (("attention", "What needs attention first"),
+         ("name", "Card name (A-Z)"),
+         ("name-desc", "Card name (Z-A)"),
+         ("gap", "Biggest difference first"),
+         ("woo", "Most on the website first"),
+         ("other", "Most on the other site first"))
+DEFAULT_SORT = "attention"
+_SORT_ORDER = {FIX: 0, OFF_SALE: 1, NO_COUNT: 2, ONLY_OTHER: 3, ONLY_WOO: 4}
+
+
+def sort_labels():
+    """The chooser's words, in order."""
+    return [label for _key, label in SORTS]
+
+
+def sort_key(label=None):
+    """The sort a chooser's label means; anything unknown is the default."""
+    for key, text in SORTS:
+        if text == label:
+            return key
+    return DEFAULT_SORT
+
+
+def sort_label(key=None):
+    """The chooser's words for a sort key."""
+    for wanted, text in SORTS:
+        if wanted == key:
+            return text
+    return SORTS[0][1]
+
+
+def _count(value):
+    """A stock number for sorting, where "not listed at all" is below zero.
+
+    A card that is not on the other site is not a card with no stock - it is a
+    card with nothing there at all - so it belongs at the back of "most stock
+    first" rather than mixed in with the zeros.
+    """
+    if value is None:
+        return -1
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return -1
+
+
+def sort_rows(rows, how=DEFAULT_SORT):
+    """The same rows, in the order asked for. Never drops one."""
+    rows = list(rows or [])
+    if how == "name":
+        return sorted(rows, key=lambda row: (row.get("card") or "").lower())
+    if how == "name-desc":
+        return sorted(rows, key=lambda row: (row.get("card") or "").lower(),
+                      reverse=True)
+    if how == "gap":
+        return sorted(rows, key=lambda row: (-abs(int(row.get("gap") or 0)),
+                                             (row.get("card") or "").lower()))
+    if how == "woo":
+        return sorted(rows, key=lambda row: (-_count(row.get("woo")),
+                                             (row.get("card") or "").lower()))
+    if how == "other":
+        return sorted(rows, key=lambda row: (-_count(row.get("other")),
+                                             (row.get("card") or "").lower()))
+    return sorted(rows, key=lambda row: (_SORT_ORDER.get(row.get("kind"), 9),
+                                         -abs(int(row.get("gap") or 0)),
+                                         (row.get("card") or "").lower()))
 
 
 def off_sale_rows(rows):
@@ -957,13 +1132,28 @@ def summary(rows, pairs, only_woo, only_other, other_label="CanadianShopper"):
         return "All %d matched cards agree." % len(pairs)
     line = "%d of %d matched cards disagree." % (len(rows), len(pairs))
     left_out = []
-    if only_woo:
-        left_out.append("%d only on your website" % len(only_woo))
+    shown_only_woo = listed_only_woo(only_woo)
+    if shown_only_woo:
+        left_out.append("%d only on your website" % len(shown_only_woo))
     if only_other:
         left_out.append("%d only on %s" % (len(only_other), other_label))
     if left_out:
         line += " Not compared: " + ", ".join(left_out) + "."
     return line
+
+
+def sold_out_note(only_woo, other_label="CanadianShopper"):
+    """The sentence for the cards left out because there is nothing to buy.
+
+    Named rather than silently dropped: a card at zero that the other site does
+    not list either has nothing to fix, and saying so is the difference between
+    a list that was cleaned up and a card that went missing.
+    """
+    sold_out = sold_out_only_woo(only_woo)
+    if not sold_out:
+        return ""
+    return ("%d card%s at zero on your website and not on %s, so not shown." %
+            (len(sold_out), "" if len(sold_out) == 1 else "s", other_label))
 
 
 def describe(rows, limit=40, other_label="CanadianShopper", mode="count"):

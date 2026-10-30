@@ -69,7 +69,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.89"
+VERSION = "2.90"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1128,6 +1128,19 @@ stock - gets its own row, because a stock count cannot fix it and stock.set
 only touches listings that are on sale. When one of them is a draft, publishing
 is offered; anything else is a vendor-dashboard job.
 
+A card at zero on your website that the other site does not list either is not
+shown at all: there is no count to set and a listing at zero would be refused as
+out of stock, so the only thing such a row could do is make the list look like
+work. The summary says how many were left out, so a card never simply vanishes.
+
+The list can be sorted - what needs attention first, card name either way, the
+biggest difference, or the most stock on either side - and the choice is
+remembered for the next comparison. Reading says where it is: a progress bar
+over the pages of your website's catalogue (the site states the page count, so
+it is a real fraction) or a sweeping bar for a marketplace whose session has to
+be read in one go, and the pages of the catalogue are read a few at a time
+rather than one after another.
+
 A card that exists on the website and no longer on CanadianShopper is the one
 that can be put back rather than corrected: the listing buttons write the
 CanadianShopper import file from the website product itself - its title, price,
@@ -1182,9 +1195,9 @@ them, and the report says so.
 
 When the customer says yes, **Turn into an order...** makes the order; the
 sheet that gets packed against - the same paper with a picture of every card
-on it - is printed from **Print an order**, on the task menu after the
-after-a-sale jobs and in the After a sale tab, where it can also find an
-order by the customer's name or a card's name.
+on it - is printed from **Print an order**, at the end of the After a sale
+section, where it can also find an order by the customer's name or a card's
+name.
 
 Nothing here changes a price, a listing or a stock count on any site. A
 quote is a document; only the last button writes, and only when confirmed."""
@@ -1216,9 +1229,9 @@ sent. Open it in the dashboard to check it and take payment.
 Without website API keys the order list opens instead, and the pasted
 list is copied to the clipboard so you can paste it there.
 
-**Print an order**, on the task menu after the after-a-sale jobs and in the
-After a sale tab, prints any order once it exists: find it by its number, the
-customer's name, or a card's name.
+**Print an order**, the last button of the After a sale section, prints any
+order once it exists: find it by its number, the customer's name, or a card's
+name.
 """
 
 DOCS["ordersheet"] = """\
@@ -1716,6 +1729,7 @@ TOOLTIPS = {
     "Type the cards...": "Open the editor for typing what sold, one card per line",
     "Add these": "Add only the orders shown above to the checklist - the rest of the website is left alone",
     "Compare stock": "Read both catalogues and list only the cards whose counts disagree; nothing is changed",
+    "Sort by:": "Re-read the list below in this order; nothing is compared or written again",
     "Compare this card": "Open the stock panel pointed at the one card this sale is about",
     "Compare the whole catalogue instead": "Drop the one-card filter and compare everything",
     "Compare stock with eBay": "Read your eBay active listings with your session cookie and list only the cards whose numbers disagree",
@@ -2613,20 +2627,17 @@ PANEL_ORDER = ["cookie", "pipeline", "combine", "stage", "importpanel",
                "ordersheet", "square",
                "newphotos", "ordertext", "quote", "markets", "logs",
                "plugins"]
+#  Four jobs, in the order a batch goes through them: sell something, make the
+#  batch, deal with the aftermath, photograph the cards. The staging, import
+#  and wiring panels are no longer offered here - the pipeline does that work
+#  itself now, and anything it missed has its own re-run - but they are still
+#  built (PANEL_ORDER, PANEL_BUILDERS) so an old shortcut or a plugin that
+#  opens one by id keeps working.
 GROUPS_FULL = [("Sell to a customer", ["ordertext", "quote"]),
-               ("Sell a new batch", ["pipeline", "combine", "stage",
-                                     "importpanel", "wire"]),
-               ("After a sale", ["sold", "checklist", "stock", "zerostock"]),
-               ("Print an order", ["ordersheet"]),
-               ("Photos", ["square", "rerun", "newphotos"]),
-               ("Re-run a marketplace", ["markets"])]
-
-#: Where a panel's own task-menu section belongs in the tabs view, when it is
-#: not the section it is named after. Printing an order is its own job in the
-#: task menu - it prints any order, not only the one just sold - but it is an
-#: after-the-sale job, so the tabs view keeps it in the "After a sale" tab
-#: instead of giving it a tab of its own with one button in it.
-TAB_HOME = {"ordersheet": "After a sale"}
+               ("Sell a new batch", ["pipeline", "combine", "markets"]),
+               ("After a sale", ["sold", "checklist", "stock", "zerostock",
+                                 "ordersheet"]),
+               ("Photos", ["square", "rerun", "newphotos"])]
 
 
 def groups_for(has_cs):
@@ -2638,11 +2649,9 @@ def groups_for(has_cs):
     if has_cs:
         return GROUPS_FULL
     return [("Sell to a customer", ["ordertext", "quote"]),
-            ("Sell a new batch", ["pipeline", "combine", "importpanel"]),
-            ("After a sale", ["sold", "checklist"]),
-            ("Print an order", ["ordersheet"]),
-            ("Photos", ["square", "newphotos"]),
-            ("Re-run a marketplace", ["markets"])]
+            ("Sell a new batch", ["pipeline", "combine", "markets"]),
+            ("After a sale", ["sold", "checklist", "ordersheet"]),
+            ("Photos", ["square", "newphotos"])]
 TITLES = {
     "cookie": "User settings",
     "pipeline": "Run the card pipeline (new batch)",
@@ -2696,7 +2705,7 @@ BLURBS = {
     "sold": "Record where the sale happened and follow up on the other listings.",
     "checklist": "See what is still outstanding and tick it off.",
     "stock": "Find the cards whose counts disagree between your website "
-             "and CanadianShopper.",
+             "and CanadianShopper, sort the list, and fix what needs it.",
     "zerostock": "Sweep: archive everything sitting at quantity 0.",
     "ordersheet": "Find an order by its number, the customer's name, or a "
                   "card's name, and print it with a picture of every card.",
@@ -4875,9 +4884,15 @@ def build_stock(parent, app):
     #  consumed here so reopening the panel from the menu compares everything.
     focus = str(getattr(app, "_stock_filter", "") or "").strip()
     app._stock_filter = ""
+    #  The order the list is read in is remembered with the other preferences:
+    #  a person who sorts the comparison by card name wants it that way next
+    #  time too, and the default is still what needs attention first.
+    saved_sort = str(app.settings.get("stock_sort") or "").strip()
+    if saved_sort not in dict(stock_compare.SORTS):
+        saved_sort = stock_compare.DEFAULT_SORT
     state = {"card": focus, "rows": [], "pairs": [], "only_woo": [],
              "only_other": [], "label": "CanadianShopper", "mode": "count",
-             "skipped": 0, "catalog": {}, "items": []}
+             "skipped": 0, "catalog": {}, "items": [], "sort": saved_sort}
     statuses = {}
 
     def credentials():
@@ -4958,11 +4973,13 @@ def build_stock(parent, app):
         return [rows[i] for i in indexes if 0 <= i < len(rows)]
 
     def redraw():
-        rows = stock_compare.action_list(state["pairs"], state["only_woo"],
-                                         state["only_other"],
-                                         stock_compare.ignored_keys(
-                                             ignored_entries()),
-                                         state["label"])
+        rows = stock_compare.sort_rows(
+            stock_compare.action_list(state["pairs"], state["only_woo"],
+                                      state["only_other"],
+                                      stock_compare.ignored_keys(
+                                          ignored_entries()),
+                                      state["label"]),
+            state["sort"])
         state["rows"] = rows
         listing.delete(0, "end")
         for row in rows:
@@ -5003,6 +5020,10 @@ def build_stock(parent, app):
         if fixable and no_count:
             text += ("  %d more card%s on %s counting no stock." %
                      (no_count, "" if no_count == 1 else "s", state["label"]))
+        sold_out_note = stock_compare.sold_out_note(state["only_woo"],
+                                                    state["label"])
+        if sold_out_note:
+            text += "  " + sold_out_note
         if hidden:
             text += "  %d ignored." % hidden
         if state["card"]:
@@ -5959,7 +5980,36 @@ def build_stock(parent, app):
         app.console_line("%s: %d listings. Reading your website's catalogue..."
                          % (label, len(items)), "cmd")
 
+        def fetch(base, path, params, key, secret):
+            #  The headers say how many pages there are, which is what turns
+            #  the bar from a sweep into a fraction. A stand-in that cannot
+            #  answer with headers still gets asked normally, so the reader
+            #  works the same way without them.
+            try:
+                return woo_get(base, path, params, key, secret,
+                               with_headers=True)
+            except TypeError:
+                return woo_get(base, path, params, key, secret)
+
+        def page_read(page_done, total_pages, cards):
+            """One page of the catalogue has landed - move the bar.
+
+            Called on the reading thread, so the drawing is handed back to the
+            window's own thread rather than done here.
+            """
+            if total_pages:
+                text = ("Reading your website: page %d of %d, %d cards..." %
+                        (page_done, total_pages, cards))
+            else:
+                text = ("Reading your website: page %d, %d cards so far..." %
+                        (page_done, cards))
+            try:
+                app.after(0, lambda: reading(text, page_done, total_pages))
+            except Exception:
+                pass
+
         def arrived(products, error):
+            read_done()
             if error is not None:
                 failed("your website", getattr(error, "message", str(error)),
                        getattr(error, "hint", ""))
@@ -5978,14 +6028,16 @@ def build_stock(parent, app):
             state["items"] = items_here
             show((pairs, only_woo, only_other), skipped)
 
+        reading("Reading your website's catalogue...")
         in_background(
             app,
-            lambda: stock_compare.read_woo_stock(woo_get, site, key, secret),
+            lambda: stock_compare.read_woo_stock(fetch, site, key, secret,
+                                                 progress=page_read),
             arrived)
 
     # ------------------------------------------------------- CanadianShopper
     def plugin_arrived(rc, out, creds, sent_cookie=False):
-        if rc == 2 and sent_cookie:
+        if rc == 2 and sent_cookie:      # still reading: the bar keeps sweeping
             #  Exit 2 from a Python tool is a usage error: this plugin's reader
             #  predates --cookie-file. Ask again without it rather than telling
             #  the person to do something about a flag.
@@ -5998,6 +6050,7 @@ def build_stock(parent, app):
                          on_done=lambda code: plugin_arrived(code, out, creds,
                                                              False))
             return False
+        read_done()
         if rc != 0:
             app.console_line("The CanadianShopper stock read failed (exit %s); "
                              "nothing was compared." % rc, "err")
@@ -6079,6 +6132,9 @@ def build_stock(parent, app):
             args += ["--cookie-file", str(cookie)]
         summary.configure(text="Reading CanadianShopper's stock...")
         app.console_line("Reading CanadianShopper's stock...", "cmd")
+        #  The plugin is its own program and says nothing this panel can count,
+        #  so its bar sweeps: it is still an answer to "is anything happening".
+        reading("Reading CanadianShopper's stock...")
         if cookie is None:
             app.console_line(
                 "No %s yet: paste a CanadianShopper cookie in User Settings "
@@ -6107,6 +6163,7 @@ def build_stock(parent, app):
                 "text": text}
 
     def market_done(site_id, info, result, error, creds):
+        read_done()
         if error is not None:
             message = getattr(error, "message", str(error))
             hint = getattr(error, "hint", "")
@@ -6212,6 +6269,7 @@ def build_stock(parent, app):
         statuses[site_id].configure(text="reading...")
         summary.configure(text="Reading %s ..." % info["label"])
         app.console_line("Reading %s ..." % url, "cmd")
+        reading("Reading %s ..." % info["label"])
         in_background(
             app,
             lambda: market_read(site_id, info, url, cookie),
@@ -6281,6 +6339,64 @@ def build_stock(parent, app):
                command=lambda: read_saved_page("facebook")).pack(
                    side="left", padx=8)
 
+    # -- what the read is doing ---------------------------------------------
+    #  Reading a catalogue of a few thousand products takes long enough that
+    #  "nothing is happening" is a fair thing to think, so the read says where
+    #  it is: a page count taken from the site's own headers when it gives one,
+    #  and a sweeping bar when it does not. Everything here is best-effort -
+    #  a display that cannot be drawn must never fail the read it describes.
+    #  The row is always in the layout; it holds nothing until a read starts,
+    #  and an empty row takes no height, so nothing moves when it fills.
+    progress_row = ttk.Frame(box)
+    progress_row.pack(anchor="w", pady=(3, 0))
+    progress = ttk.Progressbar(progress_row, length=240, maximum=100)
+    progress_text = ttk.Label(progress_row, text="", style="Dim.TLabel",
+                              wraplength=420, justify="left")
+    progress_state = {"shown": False, "sweeping": False}
+
+    def reading(text, done=None, total=None):
+        """Put the bar on screen and say what is being read.
+
+        A known page count is drawn as a fraction; an unknown one sweeps,
+        because a bar that sits at 100% and waits says less than one still
+        moving. This runs on whichever thread asks, so it touches nothing
+        outside its own widgets and never raises.
+        """
+        try:
+            if not progress_state["shown"]:
+                progress.pack(side="left", padx=(0, 8))
+                progress_text.pack(side="left")
+                progress_state["shown"] = True
+            if total:
+                if progress_state["sweeping"]:
+                    progress.stop()
+                    progress_state["sweeping"] = False
+                progress.configure(mode="determinate",
+                                   maximum=max(1, int(total)),
+                                   value=min(int(done or 0), int(total)))
+            else:
+                progress.configure(mode="indeterminate", value=0)
+                if not progress_state["sweeping"]:
+                    progress.start(12)   # sweeps until the read says otherwise
+                    progress_state["sweeping"] = True
+            progress_text.configure(text=text)
+        except Exception:
+            pass
+
+    def read_done():
+        """Take the bar down: whatever it said, the list underneath says next."""
+        try:
+            if progress_state["sweeping"]:
+                progress.stop()
+            progress_state["sweeping"] = False
+            if progress_state["shown"]:
+                progress.pack_forget()
+                progress_text.pack_forget()
+                progress_state["shown"] = False
+            progress_text.configure(text="")
+        except Exception:
+            pass
+
     if focus:
         focus_label = ttk.Label(box, text="Only this card: " + focus,
                                 style="H2.TLabel", wraplength=680,
@@ -6301,10 +6417,38 @@ def build_stock(parent, app):
                         wraplength=680, justify="left")
     summary.pack(anchor="w", pady=(2, 0))
 
+    #  The sort chooser lives in the same frame as the list, so hiding the
+    #  list hides it too and a fresh panel is not a chooser over nothing.
     list_frame = ttk.Frame(box)
-    listing = tk.Listbox(list_frame, height=9, exportselection=False,
+    sort_row = ttk.Frame(list_frame)
+    sort_row.pack(anchor="w", fill="x", pady=(0, 3))
+    sort_caption = ttk.Label(sort_row, text="Sort by:")
+    sort_caption.pack(side="left", padx=(0, 6))
+    sort_var = tk.StringVar(master=sort_row,
+                            value=stock_compare.sort_label(state["sort"]))
+    sort_box = ttk.Combobox(sort_row, textvariable=sort_var, state="readonly",
+                            width=30, values=stock_compare.sort_labels())
+    sort_box.pack(side="left")
+    add_tooltip(sort_box, TOOLTIPS["Sort by:"])
+
+    def resort(_event=None):
+        """Re-read the list in the order asked for; nothing is compared again."""
+        key = stock_compare.sort_key(str(sort_var.get() or ""))
+        state["sort"] = key
+        app.settings["stock_sort"] = key
+        try:
+            save_settings(app.settings)
+        except Exception as exc:           # a read-only settings file
+            log("could not remember the stock sort: %s" % exc)
+        redraw()
+
+    sort_box.bind("<<ComboboxSelected>>", resort)
+
+    list_body = ttk.Frame(list_frame)
+    list_body.pack(fill="both", expand=True)
+    listing = tk.Listbox(list_body, height=9, exportselection=False,
                          selectmode="extended")
-    scroll = ttk.Scrollbar(list_frame, orient="vertical",
+    scroll = ttk.Scrollbar(list_body, orient="vertical",
                            command=listing.yview)
     listing.configure(yscrollcommand=scroll.set)
     listing.pack(side="left", fill="both", expand=True)
@@ -6352,7 +6496,11 @@ def build_stock(parent, app):
     ttk.Label(box,
               text="The list is what needs attention: a card whose two counts "
                    "differ, a card whose listing on the other site is not on "
-                   "sale, or a card that exists on one side only. The "
+                   "sale, or a card that exists on one side only. A card at "
+                   "zero on your website that is not on the other site is not "
+                   "listed: there is nothing to set and nothing to sell. The "
+                   "list can be sorted from the chooser above it, and the "
+                   "read shows a progress bar while it runs. The "
                    "website is usually the right one, so the first button sets "
                    "every differing count to the website's - after showing "
                    "exactly what would change and asking. Select rows to fix "
@@ -10616,19 +10764,13 @@ class TabsFrame(ttk.Frame):
         self.pack(fill="both", expand=True)
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True)
-        groups = groups_for(app.cs_addon)
-        for group, ids in groups:
-            #  A panel whose home is another tab is drawn there instead, at
-            #  the end of it; a group left with nothing in it makes no tab.
-            shown = [pid for pid in ids if TAB_HOME.get(pid, group) == group]
-            shown += [pid for other, other_ids in groups
-                      for pid in other_ids
-                      if TAB_HOME.get(pid) == group]
-            if not shown:
+        for group, ids in groups_for(app.cs_addon):
+            #  A group with nothing in it makes no tab.
+            if not ids:
                 continue
             tab = ttk.Frame(nb, padding=(6, 5))
             nb.add(tab, text=group)
-            for pid in shown:
+            for pid in ids:
                 panel_section(tab, app, pid, expand=False)
 
 
