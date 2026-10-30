@@ -122,6 +122,7 @@ class FakeSite:
         self.refuse = dict(refuse or {})             # (method, keyword) -> code
         self.publish_status = publish_status
         self.uploads = []
+        self.attach_calls = []                       # (attachment, product)
         #  A site that hiccups once and then works, and a site that writes the
         #  product before its own error page - the two shapes of a real HTTP
         #  500 that the app has to tell apart.
@@ -139,7 +140,7 @@ class FakeSite:
                 body = {"_binary": True}      # an image upload, not JSON
         self.calls.append({"method": method, "url": url, "body": body})
 
-        if "wp/v2/media" in url:
+        if "wp/v2/media" in url and method == "POST":
             self.uploads.append(url)
             self.next_id += 1
             return 201, json.dumps({"id": self.next_id,
@@ -173,6 +174,16 @@ class FakeSite:
             pid = self.by_sku.get(sku)
             rows = ([self.products[pid]] if pid in self.products else [])
             return 200, json.dumps(rows).encode("utf-8")
+
+        if "wp/v2/media" in url and method == "PUT":
+            #  The attachment is given its product as its parent, which is
+            #  what stops the media library filing the photo as unattached.
+            attachment_id = int(url.rstrip("/").rsplit("/", 1)[-1])
+            self.attach_calls.append({"id": attachment_id,
+                                      "post": (body or {}).get("post")})
+            return 200, json.dumps({"id": attachment_id,
+                                    "post": (body or {}).get("post")}
+                                   ).encode("utf-8")
 
         if "/products" in url and method == "POST":
             self.next_id += 1
@@ -328,8 +339,16 @@ def test_creation():
           site.calls[0]["method"] == "GET" and "sku=" in site.calls[0]["url"],
           str(site.calls[:1]))
     check("nothing was published, because publishing was not asked for",
-          not any(call["method"] == "PUT" for call in site.calls),
-          str(site.calls))
+          not any(call["method"] == "PUT" and "/products/" in call["url"]
+                  for call in site.calls), str(site.calls))
+    pairs = [(call["id"], call["post"]) for call in site.attach_calls]
+    check("each uploaded photo is filed under the product it was made for",
+          [post for _attachment, post in pairs] ==
+          [entry["id"] for entry in report["created"]], str(pairs))
+    check("and the photo it names is the one the product carries",
+          [attachment for attachment, _post in pairs] ==
+          [call["body"]["images"][0]["id"] for call in created_calls],
+          str(pairs))
     lines = woo_create.report_text(report, "https://shop.example")
     check("the report says how many were created",
           "2 products created on https://shop.example." in lines, str(lines))
@@ -354,6 +373,61 @@ def test_creation():
               woo_create.report_text(report)), str(report))
 
 
+def test_attaching():
+    print()
+    print("== 3c. the media library is told which product owns each photo ==")
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1)])
+    site = FakeSite(categories={"Sports Card": 11, "Hockey Card": 12})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw",
+                            publish=False, opener=site)
+    entry = report["created"][0]
+    check("the upload is given the product as its parent",
+          site.attach_calls == [{"id": 901, "post": 902}],
+          str(site.attach_calls))
+    check("and the run counts it attached", entry.get("attached") == 1 and
+          not entry.get("unattached"), str(entry))
+    check("nothing is said about unattached photos when there are none",
+          not any("unattached" in line
+                  for line in woo_create.report_text(report)),
+          str(woo_create.report_text(report)))
+
+    #  A site that will not file the photo has still made a finished product.
+    #  Saying otherwise would send someone chasing a card that is already on
+    #  the website.
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1)])
+    site = FakeSite(categories={"Sports Card": 11, "Hockey Card": 12},
+                    refuse={("PUT", "wp/v2/media"): 403})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw",
+                            publish=False, opener=site)
+    entry = report["created"][0]
+    check("a refused attachment does not fail the product",
+          len(report["created"]) == 1 and report["failed"] == [],
+          str(report))
+    check("it is counted instead", entry.get("unattached") == 1, str(entry))
+    lines = woo_create.report_text(report)
+    check("the report says they are still marked unattached",
+          any("marked unattached" in line for line in lines), str(lines))
+    check("and that the product shows them anyway",
+          any("show them anyway" in line for line in lines), str(lines))
+    check("with the site's own reason, not a guess",
+          "HTTP 403" in str(entry.get("attach_why")), str(entry))
+
+    #  No Application Password means no upload at all, so there is no
+    #  attachment to file and no attachment request to make.
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1)])
+    site = FakeSite(categories={"Sports Card": 11, "Hockey Card": 12})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            publish=False, opener=site)
+    check("with no password nothing is uploaded, so nothing is attached",
+          site.attach_calls == [] and not site.uploads,
+          str(site.attach_calls))
+
+
 def test_publishing():
     print()
     print("== 4. publishing is a second step, and only for complete products ==")
@@ -365,7 +439,8 @@ def test_publishing():
                             publish=True, opener=site)
     check("both are published after they are created",
           len(report["published"]) == 2, str(report))
-    puts = [call for call in site.calls if call["method"] == "PUT"]
+    puts = [call for call in site.calls
+            if call["method"] == "PUT" and "/products/" in call["url"]]
     check("publishing is one PUT per product, with only the status",
           len(puts) == 2 and all(call["body"] == {"status": "publish"}
                                  for call in puts), str(puts))
@@ -881,6 +956,7 @@ def main():
     test_reading()
     test_payload()
     test_creation()
+    test_attaching()
     test_publishing()
     test_existing_products()
     test_refusals()

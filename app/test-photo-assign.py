@@ -2,8 +2,11 @@
 
     python test-photo-assign.py
 
-No tkinter and no store: the pool is built from real sheets on disk, and
-``search`` is a stub that matches word-wise the way a real product search does.
+No tkinter and no store: the pool is built from real sheets on disk, and the
+products are the plain dictionaries a website search returns. The cards arrive
+in an order - the nine the photo queue picked out of an order, or the names
+pasted into the panel - and the worksheet has to keep that order, put a product
+on every row it can, and keep the words of the ones it cannot.
 """
 
 import shutil
@@ -51,153 +54,338 @@ def make_sheet(path, blanks=()):
     return path
 
 
-STORE = [
-    {"id": 1, "name": "1972-73 O-Pee-Chee Dave Burrows #133 Rookie Card"},
-    {"id": 2, "name": "1979-80 O-Pee-Chee Wayne Gretzky #18"},
-    {"id": 3, "name": "1985-86 O-Pee-Chee Mario Lemieux #9"},
-    {"id": 4, "name": "1986-87 O-Pee-Chee Patrick Roy #53"},
-    {"id": 5, "name": "1958-59 Topps Bobby Hull #8"},
-    #  A second card number 18, so a title that gives only the set and the
-    #  number genuinely fits two cards and must not be picked for the user.
-    {"id": 6, "name": "1990-91 O-Pee-Chee Jaromir Jagr #18"},
-]
+def product(pid, name, sku=""):
+    return {"id": pid, "name": name, "sku": sku, "images": []}
 
 
-def words(text):
-    return set(str(text).lower().replace("-", " ").split())
+_LOADED = {}
 
 
-def search(term):
-    """A shop search that matches words, like WooCommerce does."""
-    wanted = words(term)
-    if not wanted:
-        return []
-    found = [p for p in STORE if wanted <= words(p["name"])]
-    return found or [p for p in STORE if len(wanted & words(p["name"])) >= 2]
+def loaded(root):
+    """A pool holding one front sheet with seven cards and one back sheet.
+
+    Split once and shared: reading two sheets per check would make this file
+    take a minute to run, and nothing here changes the pool.
+    """
+    if "pool" not in _LOADED:
+        front = make_sheet(Path(root) / "front-1.jpg", blanks=(2, 9))
+        back = make_sheet(Path(root) / "back-1.jpg", blanks=(2, 9))
+        pool = photo_pool.PhotoPool(tiles_dir=Path(root) / "tiles")
+        pool.add_sheet(front, side="front")
+        pool.add_sheet(back, side="back")
+        _LOADED["pool"] = pool
+    return _LOADED["pool"]
 
 
-def test_titles():
+# ------------------------------------------------------------------ the tiles
+def test_front_tiles(root):
     print()
-    print("== 1. reading the AI's titles off a pasted answer ==")
-    text = ("1. 1972-73 O-Pee-Chee Dave Burrows #133 Rookie Card\n"
-            "2) 1979-80 O-Pee-Chee Wayne Gretzky #18\n"
-            "\n"
-            "- 1985-86 O-Pee-Chee Mario Lemieux #9\n"
-            "   \n"
-            "1986-87 O-Pee-Chee Patrick Roy #53\n")
-    titles = photo_assign.parse_titles(text)
-    check("one title per line, numbering dropped", titles[0] ==
-          "1972-73 O-Pee-Chee Dave Burrows #133 Rookie Card", str(titles))
-    check("a bracket number is dropped too", titles[1].startswith("1979-80"),
-          str(titles))
-    check("a bullet is dropped", titles[2].startswith("1985-86"), str(titles))
-    check("blank lines are ignored", len(titles) == 4, str(titles))
-    check("an unnumbered title is kept whole", titles[3].startswith("1986-87"),
-          str(titles))
-    check("a leading card number without a dot survives",
-          photo_assign.parse_titles("#133 Dave Burrows")[0] == "#133 Dave Burrows",
-          photo_assign.parse_titles("#133 Dave Burrows"))
-    check("nothing pasted means no titles",
-          photo_assign.parse_titles("") == [] and
-          photo_assign.parse_titles(None) == [])
-
-
-def test_worksheet(root):
-    print()
-    print("== 2. the images become one row each, in slot order ==")
-    front = make_sheet(root / "Scan-front.jpg", blanks=(2, 9))
-    back = make_sheet(root / "Scan-back.jpg", blanks=(2, 9))
-    pool = photo_pool.PhotoPool(tiles_dir=root / "tiles")
-    pool.add_sheet(front, index=0)
-    pool.add_sheet(back, index=1)
+    print("== 1. a card is named once, from the front images ==")
+    pool = loaded(root)
     tiles = photo_assign.front_tiles(pool)
-    check("only the front sheet's images are paired with titles",
-          len(tiles) == 7 and all(t["side"] == "front" for t in tiles),
-          str([(t["sheet"], t["position"]) for t in tiles]))
-    check("they are in reading order",
-          [t["position"] for t in tiles] == [1, 3, 4, 5, 6, 7, 8],
-          str([t["position"] for t in tiles]))
+    check("only the front sheet's cards are lined up", len(tiles) == 7,
+          str(len(tiles)))
+    check("no back is offered as a card of its own",
+          all(tile["side"] == "front" for tile in tiles),
+          str([tile["side"] for tile in tiles]))
+    check("the blank slots are not cards",
+          [tile["position"] for tile in tiles] == [1, 3, 4, 5, 6, 7, 8],
+          str([tile["position"] for tile in tiles]))
+    check("they come in the order the sheet was read",
+          [tile["position"] for tile in tiles] ==
+          sorted(tile["position"] for tile in tiles),
+          str([tile["position"] for tile in tiles]))
 
-    titles = ["1972-73 O-Pee-Chee Dave Burrows #133 Rookie Card",
-              "1979-80 O-Pee-Chee Wayne Gretzky #18",
-              "1985-86 O-Pee-Chee Mario Lemieux #9"]
-    rows = photo_assign.rows_from_titles(pool, titles, search)
-    check("every image gets a row, not just the titled ones", len(rows) == 7,
+
+def test_front_tiles_with_unmarked_sheets(root):
+    print()
+    print("== 2. a sheet nobody marked still holds cards ==")
+    pool = photo_pool.PhotoPool()
+    #  A pool whose split returns a known set: the sheet is not read here.
+    pool._tiles = [
+        {"position": 3, "path": Path("c"), "sheet": "s2", "side": "",
+         "used_by": ""},
+        {"position": 1, "path": Path("a"), "sheet": "s1", "side": "front",
+         "used_by": ""},
+        {"position": 2, "path": Path("b"), "sheet": "s1", "side": "",
+         "used_by": ""},
+        {"position": 1, "path": Path("d"), "sheet": "s1", "side": "back",
+         "used_by": ""},
+    ]
+    tiles = photo_assign.front_tiles(pool)
+    check("a marked front comes before an unmarked image",
+          [str(tile["path"]) for tile in tiles][0] == "a",
+          str([str(tile["path"]) for tile in tiles]))
+    check("the back is left out",
+          all(str(tile["path"]) != "d" for tile in tiles),
+          str([str(tile["path"]) for tile in tiles]))
+    check("unmarked images follow, sheet by sheet",
+          [str(tile["path"]) for tile in tiles] == ["a", "b", "c"],
+          str([str(tile["path"]) for tile in tiles]))
+    check("an empty pool holds no cards",
+          photo_assign.front_tiles(photo_pool.PhotoPool()) == [])
+
+
+# --------------------------------------------------------------- the worksheet
+def test_cards_line_up_with_images(root):
+    print()
+    print("== 3. the Nth card goes on the Nth image ==")
+    pool = loaded(root)
+    cards = [product(11, "1972-73 O-Pee-Chee Dave Burrows #133", "BUR-133"),
+             product(12, "1979-80 O-Pee-Chee Wayne Gretzky #18"),
+             product(13, "1985-86 O-Pee-Chee Mario Lemieux #9")]
+    rows = photo_assign.rows_from_products(pool, cards)
+    check("one row per image", len(rows) == 7, str(len(rows)))
+    check("the first three rows hold the three cards",
+          [row["status"] for row in rows[:3]] == [photo_assign.MATCHED] * 3,
+          str([row["status"] for row in rows[:3]]))
+    check("the row carries the product",
+          [row["product"]["id"] for row in rows[:3]] == [11, 12, 13],
+          str([row["product"] for row in rows[:3]]))
+    check("the row says which card it is",
+          rows[0]["title"] == "1972-73 O-Pee-Chee Dave Burrows #133",
+          rows[0]["title"])
+    check("in the order the cards were given",
+          [row["title"].split()[-1] for row in rows[:3]] ==
+          ["#133", "#18", "#9"], str([row["title"] for row in rows[:3]]))
+    check("the images left over have no card on them",
+          [row["status"] for row in rows[3:]] == [photo_assign.EMPTY] * 4,
+          str([row["status"] for row in rows[3:]]))
+    check("and say so in the row's own words",
+          rows[3]["title"] == "" and rows[3]["product"] is None,
+          str(rows[3]))
+    check("every row keeps the tile it belongs to",
+          [row["tile"]["position"] for row in rows] ==
+          [1, 3, 4, 5, 6, 7, 8], str([row["tile"]["position"] for row in rows]))
+
+
+def test_a_card_that_matched_nothing_keeps_its_words(root):
+    print()
+    print("== 4. a card the search could not find is still on the page ==")
+    pool = loaded(root)
+    cards = [product(11, "1972-73 O-Pee-Chee Dave Burrows #133"), None, None]
+    names = ["", "1990 Score Mario Lemieux #2"]
+    rows = photo_assign.rows_from_products(pool, cards, names)
+    check("the row is kept rather than dropped", len(rows) == 7,
           str(len(rows)))
-    check("the first row is the first slot", rows[0]["tile"]["position"] == 1)
-    check("a clear title is matched to its card",
-          rows[0]["product"]["id"] == 1, str(rows[0]["product"]))
-    check("matched rows are ready to apply",
-          rows[0]["status"] == photo_assign.MATCHED, rows[0]["status"])
-    check("the second card is matched too",
-          rows[1]["product"]["id"] == 2, str(rows[1]["product"]))
-    check("an image with no title is left waiting, not guessed",
-          rows[3]["status"] == photo_assign.EMPTY and
-          rows[3]["product"] is None, str(rows[3]["status"]))
-
-    line = photo_assign.headline(rows)
-    check("the headline counts what is ready", "3 ready" in line, line)
-    check("and what is still waiting", "4 with no title" in line, line)
-    check("only matched rows are applied",
-          [r["product"]["id"] for r in photo_assign.ready(rows)] == [1, 2, 3],
-          str([r["product"]["id"] for r in photo_assign.ready(rows)]))
+    check("it says the search found nothing",
+          rows[1]["status"] == photo_assign.MISSING, rows[1]["status"])
+    check("and keeps the words that were typed",
+          rows[1]["title"] == "1990 Score Mario Lemieux #2", rows[1]["title"])
+    check("with no product attached", rows[1]["product"] is None,
+          str(rows[1]["product"]))
+    check("the matched card still has its product",
+          rows[0]["product"]["id"] == 11, str(rows[0]["product"]))
+    check("the card with no words and no match is \"no card\"",
+          rows[2]["status"] == photo_assign.EMPTY, rows[2]["status"])
 
 
-def test_uncertain(root):
+def test_the_products_name_wins(root):
     print()
-    print("== 3. an unsure match is offered, never applied by itself ==")
-    pool = photo_pool.PhotoPool(tiles_dir=root / "t2")
-    pool.add_sheet(make_sheet(root / "Scan-02.jpg"), index=0)
-    rows = photo_assign.rows_from_titles(
-        pool, ["O-Pee-Chee #18"], search)
-    check("a title that fits two cards is not applied",
-          rows[0]["status"] == photo_assign.CHOOSE, rows[0]["status"])
-    check("both cards are offered as candidates",
-          len(rows[0]["candidates"]) == 2, str(rows[0]["candidates"]))
-    check("an unsure row is never applied in a batch",
-          photo_assign.ready(rows) == [], str(photo_assign.ready(rows)))
-    check("its candidates are kept for the user to choose from",
-          rows[0]["candidates"], str(rows[0]["candidates"]))
+    print("== 5. the website's own name is the one shown ==")
+    pool = loaded(root)
+    cards = [product(11, "1979-80 O-Pee-Chee Wayne Gretzky #18")]
+    rows = photo_assign.rows_from_products(
+        pool, cards, ["gretzky 1979 opc 18"])
+    check("the product's name is used",
+          rows[0]["title"] == "1979-80 O-Pee-Chee Wayne Gretzky #18",
+          rows[0]["title"])
 
-    rows = photo_assign.rows_from_titles(pool, ["Totally Unknown Card"], search)
-    check("a title that matches nothing says so",
+
+def test_more_images_than_cards(root):
+    print()
+    print("== 6. seven images, two cards ==")
+    pool = loaded(root)
+    rows = photo_assign.rows_from_products(
+        pool, [product(11, "Card one"), product(12, "Card two")],
+        ["Card one", "Card two"])
+    check("two matched and five waiting for a card",
+          photo_assign.summary(rows) == {photo_assign.MATCHED: 2,
+                                         photo_assign.MISSING: 0,
+                                         photo_assign.EMPTY: 5},
+          str(photo_assign.summary(rows)))
+
+
+def test_more_cards_than_images(root):
+    print()
+    print("== 7. more cards than images leaves the extra cards off ==")
+    pool = loaded(root)
+    cards = [product(11, "Card one"), product(12, "Card two")]
+    rows = photo_assign.rows_from_products(
+        pool, cards, ["Card one", "Card two"])
+    check("one row per image, not per card", len(rows) == 7, str(len(rows)))
+    check("the first two are the two cards",
+          [row["status"] for row in rows[:2]] == [photo_assign.MATCHED] * 2,
+          str([row["status"] for row in rows[:2]]))
+
+
+def test_no_cards_at_all(root):
+    print()
+    print("== 8. a sitting with nothing named yet ==")
+    pool = loaded(root)
+    rows = photo_assign.rows_from_products(pool, None, None)
+    check("every image is a row", len(rows) == 7, str(len(rows)))
+    check("none of them has a card",
+          photo_assign.summary(rows)[photo_assign.EMPTY] == 7,
+          str(photo_assign.summary(rows)))
+    check("and the window says so", photo_assign.headline(rows) ==
+          "7 with no card", photo_assign.headline(rows))
+
+
+def test_a_product_with_no_id_is_not_a_card(root):
+    print()
+    print("== 9. a half-read product is not applied ==")
+    pool = loaded(root)
+    rows = photo_assign.rows_from_products(
+        pool, [{"name": "no id here"}], ["typed words"])
+    check("the row is a miss, not a match",
           rows[0]["status"] == photo_assign.MISSING, rows[0]["status"])
-    check("and carries no product", rows[0]["product"] is None)
-
-    check("choosing by hand makes a row ready",
-          photo_assign.replace_title(rows, 0, STORE[1]) and
-          rows[0]["status"] == photo_assign.MATCHED and
-          rows[0]["product"]["id"] == 2)
-    check("an out-of-range row is refused",
-          photo_assign.replace_title(rows, 99, STORE[0]) is False)
+    check("with the typed words kept", rows[0]["title"] == "typed words",
+          rows[0]["title"])
+    check("and nothing to apply",
+          photo_assign.ready(rows) == [], str(photo_assign.ready(rows)))
 
 
-def test_cards_first(root):
+# --------------------------------------------------------------- the decisions
+def test_summary(root):
     print()
-    print("== 4. cards first: a product list fills the same worksheet ==")
-    pool = photo_pool.PhotoPool(tiles_dir=root / "t3")
-    pool.add_sheet(make_sheet(root / "Scan-03.jpg"), index=0)
-    products = [STORE[1], STORE[2], STORE[3]]
-    rows = photo_assign.rows_from_products(pool, products)
-    check("the Nth product goes with the Nth image",
-          [r["product"]["id"] for r in rows[:3]] == [2, 3, 4],
-          str([(r["product"] or {}).get("id") for r in rows[:3]]))
-    check("every product row is ready",
-          all(r["status"] == photo_assign.MATCHED for r in rows[:3]),
-          str([r["status"] for r in rows[:3]]))
-    check("the images left over wait for something to be said",
-          rows[3]["status"] == photo_assign.EMPTY, rows[3]["status"])
-    check("a shorter list than images is not padded",
-          photo_assign.rows_from_products(pool, [])[0]["product"] is None)
+    print("== 10. the counts under the list ==")
+    rows = [{"status": photo_assign.MATCHED}, {"status": photo_assign.MATCHED},
+            {"status": photo_assign.MISSING}, {"status": photo_assign.EMPTY}]
+    check("every status is counted",
+          photo_assign.summary(rows) == {photo_assign.MATCHED: 2,
+                                         photo_assign.MISSING: 1,
+                                         photo_assign.EMPTY: 1},
+          str(photo_assign.summary(rows)))
+    check("an empty worksheet counts nothing",
+          photo_assign.summary([]) == {photo_assign.MATCHED: 0,
+                                       photo_assign.MISSING: 0,
+                                       photo_assign.EMPTY: 0},
+          str(photo_assign.summary([])))
+    check("a row with no status counts as a miss rather than crashing",
+          photo_assign.summary([{}])[photo_assign.MISSING] == 1,
+          str(photo_assign.summary([{}])))
+
+
+def test_ready(root):
+    print()
+    print("== 11. only a matched card is applied without asking ==")
+    pool = loaded(root)
+    cards = [product(11, "Card one"), None]
+    rows = photo_assign.rows_from_products(pool, cards, ["", "Card two"])
+    ready = photo_assign.ready(rows)
+    check("one row is ready", len(ready) == 1, str(len(ready)))
+    check("and it is the matched one", ready[0]["product"]["id"] == 11,
+          str(ready[0]["product"]))
+    check("a matched row with no image is not ready",
+          photo_assign.ready([{"status": photo_assign.MATCHED,
+                               "product": {"id": 1}, "tile": None},
+                              {"status": photo_assign.MATCHED,
+                               "product": {"id": 2}, "tile": {"position": 1}}])
+          == [{"status": photo_assign.MATCHED, "product": {"id": 2},
+               "tile": {"position": 1}}],
+          str(photo_assign.ready([{"status": photo_assign.MATCHED,
+                                   "product": {"id": 1}, "tile": None}])))
+    check("nothing ready is an empty list", photo_assign.ready([]) == [])
+
+
+def test_headline(root):
+    print()
+    print("== 12. the one line the window shows ==")
+    rows = [{"status": photo_assign.MATCHED}, {"status": photo_assign.MATCHED},
+            {"status": photo_assign.MISSING}, {"status": photo_assign.EMPTY}]
+    said = photo_assign.headline(rows)
+    check("it says how many are ready", "2 ready" in said, said)
+    check("how many matched nothing", "1 matched nothing" in said, said)
+    check("and how many have no card", "1 with no card" in said, said)
+    check("in that order",
+          said.index("ready") < said.index("matched nothing") <
+          said.index("no card"), said)
+    check("a worksheet with nothing on it says so",
+          photo_assign.headline([]) == "nothing to assign",
+          photo_assign.headline([]))
+    check("only the counts that are there are mentioned",
+          photo_assign.headline([{"status": photo_assign.MATCHED}]) ==
+          "1 ready", photo_assign.headline([{"status": photo_assign.MATCHED}]))
+
+
+def test_replace_title(root):
+    print()
+    print("== 13. a row can be pointed at a card by hand ==")
+    pool = loaded(root)
+    rows = photo_assign.rows_from_products(pool, [None], ["Card one"])
+    check("the row starts as a miss",
+          rows[0]["status"] == photo_assign.MISSING, rows[0]["status"])
+    picked = product(31, "1986-87 O-Pee-Chee Patrick Roy #53", "ROY-53")
+    check("picking a card returns True",
+          photo_assign.replace_title(rows, 0, picked) is True)
+    check("the row is now matched",
+          rows[0]["status"] == photo_assign.MATCHED, rows[0]["status"])
+    check("and the product is the one picked",
+          rows[0]["product"]["id"] == 31, str(rows[0]["product"]))
+    check("so the row can be applied",
+          len(photo_assign.ready(rows)) == 1,
+          str(photo_assign.ready(rows)))
+    check("a product with no id un-matches the row",
+          photo_assign.replace_title(rows, 0, {"name": "nothing"}) is True and
+          rows[0]["status"] == photo_assign.MISSING, rows[0]["status"])
+    check("a row that is not there is refused",
+          photo_assign.replace_title(rows, 99, picked) is False)
+    check("and the rows are untouched by that", len(rows) == 7, str(len(rows)))
+
+
+def test_a_second_sitting(root):
+    print()
+    print("== 14. the next nine images re-use the same worksheet ==")
+    pool = loaded(root)
+    cards = [product(11, "Card one"), product(12, "Card two")]
+    first = photo_assign.rows_from_products(pool, cards, ["", ""])
+    check("the sitting names two cards",
+          photo_assign.summary(first)[photo_assign.MATCHED] == 2,
+          str(photo_assign.summary(first)))
+    second = photo_assign.rows_from_products(
+        pool, [product(13, "Card three")], ["Card three"])
+    check("a new worksheet starts from the same images",
+          len(second) == 7, str(len(second)))
+    check("and does not inherit the first one's matches",
+          photo_assign.summary(second)[photo_assign.MATCHED] == 1,
+          str(photo_assign.summary(second)))
+
+
+def test_nothing_reads_the_sheet(root):
+    print()
+    print("== 15. the sheet's titles are not read here any more ==")
+    gone = [name for name in ("propose", "parse_titles", "rows_from_titles",
+                              "clear_winner", "CHOOSE", "CLOSE_CALL",
+                              "_strip_bullet")
+            if hasattr(photo_assign, name)]
+    check("nothing in the module reads the sheet's titles", gone == [],
+          str(gone))
+    check("a row is matched by a product, or left for a person",
+          photo_assign.MATCHED != photo_assign.MISSING and
+          photo_assign.MISSING != photo_assign.EMPTY,
+          "%s %s %s" % (photo_assign.MATCHED, photo_assign.MISSING,
+                        photo_assign.EMPTY))
 
 
 def main():
     root = Path(tempfile.mkdtemp(prefix="photo-assign-"))
     try:
-        test_titles()
-        test_worksheet(root)
-        test_uncertain(root)
-        test_cards_first(root)
+        test_front_tiles(root)
+        test_front_tiles_with_unmarked_sheets(root)
+        test_cards_line_up_with_images(root)
+        test_a_card_that_matched_nothing_keeps_its_words(root)
+        test_the_products_name_wins(root)
+        test_more_images_than_cards(root)
+        test_more_cards_than_images(root)
+        test_no_cards_at_all(root)
+        test_a_product_with_no_id_is_not_a_card(root)
+        test_summary(root)
+        test_ready(root)
+        test_headline(root)
+        test_replace_title(root)
+        test_a_second_sitting(root)
+        test_nothing_reads_the_sheet(root)
     finally:
         shutil.rmtree(root, ignore_errors=True)
     print()

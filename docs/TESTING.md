@@ -66,7 +66,7 @@ The top commit must match the PR page on GitHub.
 ## 4. Run the suite
 
 `test-gui.py` prints the version and the folder it is testing on its first
-line — for example `== 0. Alex Collect 2.87, from
+line — for example `== 0. Alex Collect 2.89, from
 C:\...\alex-collect-public\app ==`. Check that against the PR before reading
 any failure: a clone left on an older commit has an older `gui.py` beside an
 older test file, and its failures look exactly like the current work's.
@@ -95,6 +95,8 @@ python test-pipeline-listing.py
 python test-ai-prompts.py
 python test-process-utils.py
 python test-photo-replace.py
+python test-photo-queue.py
+python test-photo-assign.py
 python test-photo-panel.py
 python test-woo-orders.py
 python test-sale-preview.py
@@ -125,9 +127,11 @@ Notes:
 | `test-ai-prompts.py` | nothing | The shipped AI prompt files, read without Tk. |
 | `test-process-utils.py` | nothing | No stray console windows; checks flags only. |
 | `test-photo-replace.py` | Pillow | Sheet split, empty-slot detection, replacement naming. |
+| `test-photo-queue.py` | nothing | An order's cards, nine at a time: which cards a sale leaves needing a photograph (a card that went to zero is sold out, a card with no stock count has no number that says it is for sale, and both are named with the reason instead of vanishing), one photograph for a card the order carries twice, the first nine and the nine after them, what is remembered between two sittings, the order rearranged to match the sheet, and the sentence that says which nine this run is. |
+| `test-photo-assign.py` | Pillow | The worksheet that names the cards: the front images in reading order with the backs left to their tile, the Nth card on the Nth image, a card the search could not find keeping its words as *no match*, an image with no card left as *no card*, the counts under the list, and only a matched row applied without asking. |
 | `test-woo-media.py` | none - no network | The upload request, its refusals, and that a half-finished replacement is reported as one. |
 | `test-woo-create.py` | none - no network | Creating the batch's products on the website: the CSV read back, the product body carrying only what is known, drafts first with the photos uploaded before the product exists, SKU lookup so a re-run skips instead of duplicating, publishing as a separate step only after the photos land, a 200 that kept the old status reported as the site's answer, one card's failure not stopping the rest, a refused key pair aborting at the first card, categories made parent-first, the exact key help, the pipeline's own offer (no keys never falling back to the CSV silently, the app's answer obeyed through its flags), and what a second run finds - a live product left alone, a draft named as a draft, a draft with no photos never published, and a batch asked to publish finishing the draft it left behind. Plus the website's own error page: a read repeated before a card is given up on, a card whose existence could not be read called *unconfirmed* rather than missing, a product written before the error page found again by SKU and never sent twice, a card whose SKU really is absent called not created, a card the site would not publish called *not on sale* rather than not created, three error pages in a row stopping the run with the rest *not attempted*, the failed step's line for NOT EVERY STEP FINISHED, and the advice that finishes the batch with one re-run instead of a second CSV import. |
-| `test-photo-panel.py` | Pillow | Drives the real Photos panel against a stubbed Tk: which image goes where, the arguments the plugin receives, and what each plugin version is allowed to be sent. |
+| `test-photo-panel.py` | Pillow | Drives the real Photos panel against a stubbed Tk: which image goes where, the arguments the plugin receives, and what each plugin version is allowed to be sent. Also the order queue as the panel draws it - the nine on the table, the cards left out named in the console, Move up and Move down, marking a sitting as photographed so the next one starts at the tenth card, starting an order again, and the nine already filled in when the assignment window opens - and that the sheet-reading choice is gone. |
 | `test-woo-orders.py` | none - no network | Reading a pasted card list, which card a line means, when the app refuses to guess, and the exact order body that would be sent. |
 | `test-order-panel.py` | Pillow | Drives the real order panel against a stubbed Tk: the pasted list, the picker, new vs existing orders, the discount, the no-keys fallback - and that this panel no longer prints order sheets, which have their own panel. |
 | `test-order-sheet.py` | Pillow | Drives the **Print an order** panel against a stubbed Tk and a fake shop: one search box for an order number, a customer's name and a card's name; the number read straight from the shop, the customer answered by the shop's own order search, the card looked up as a product and then asked which orders hold it; every match listed with the reason it is there and a repeated order listed once with every reason kept; the single match pre-selected; the chosen order printed and opened with the order's own number, state and cards; a search that matches nothing; an empty box asked for something to look for; the quotes folder answering when no keys are saved and when the shop will not answer (the sheet then printed from the quote's own record and saying so); pressing the sheet button with nothing chosen; and the dashboard's order list one click away. |

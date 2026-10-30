@@ -38,7 +38,7 @@ import woo_media
 
 PRODUCTS_PATH = "/wp-json/wc/v3/products"
 CATEGORIES_PATH = "/wp-json/wc/v3/products/categories"
-USER_AGENT = "AlexCollect/2.84"
+USER_AGENT = "AlexCollect/2.89"
 
 #  A read is safe to repeat, so a site answering with its own error page gets
 #  asked again before a card is called missing: two of the three failures in
@@ -687,6 +687,21 @@ def run(plan_result, site, key, secret, username="", app_password="",
                           "status": answer.get("status") or "draft",
                           "images": len(image_ids),
                           "link": answer.get("permalink") or ""})
+            if image_ids and entry.get("id"):
+                #  A photo uploaded on its own has no parent, and WordPress
+                #  files every parentless image under "Unattached" in the
+                #  media library - which reads as "the pictures were lost"
+                #  even when the product shows them. The parent is set once
+                #  the product exists, and a refusal here changes nothing
+                #  about the product that was just made.
+                attached = woo_media.attach_media(
+                    site, username, app_password, image_ids, entry["id"],
+                    timeout=timeout, opener=opener)
+                entry["attached"] = len(attached["attached"])
+                if attached["failed"]:
+                    entry["unattached"] = len(attached["failed"])
+                    entry["attach_why"] = (attached["failed"][0].get("why")
+                                           or "")
             if answer.get("_recovered"):
                 entry["recovered"] = True
             created.append(entry)
@@ -785,6 +800,17 @@ def report_text(report, site=""):
                      % (len(recovered), "" if len(recovered) == 1 else "s",
                         "it was" if len(recovered) == 1 else "they were",
                         "it is" if len(recovered) == 1 else "they are"))
+    loose = [entry for entry in created if entry.get("unattached")]
+    if loose:
+        #  Said once, and said calmly: the product is finished and shows every
+        #  photo. What is wrong is only the label the media library puts on
+        #  the files, which is what makes a finished batch look unfinished.
+        why = next((entry.get("attach_why") for entry in loose
+                    if entry.get("attach_why")), "")
+        lines.append(
+            "The photos on %d of them are in the media library but are still "
+            "marked unattached there - the products show them anyway.%s"
+            % (len(loose), " " + why if why else ""))
     for entry in skipped:
         #  The state is the point: an existing product that is still a draft
         #  is a card nobody can buy, and it must never be listed as though it

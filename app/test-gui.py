@@ -604,10 +604,23 @@ def main():
     app.cs_addon = True          # the plugin turns the wiring offers on
     app._wp_upload_asked = True  # no offer to set up keys unless asked for
     panel("newphotos")
-    entries = [w for w in walk(tasks_frame(app))
-               if isinstance(w, gui.ttk.Entry)]
+    #  The panel holds two entries now - the order number for the photo queue
+    #  at the top, and the card name beside its Find button. Walking the whole
+    #  panel used to find the card's entry by being the only one; it is found
+    #  by the row that holds the button instead.
+    card_row = find_button(app, "Find the card...").master
+    entries = [w for w in walk(card_row) if isinstance(w, gui.ttk.Entry)]
     check("the photos panel takes a card name or SKU",
-          len(entries) >= 1, str(entries))
+          len(entries) == 1, str(entries))
+    check("the order number for the photo queue has its own entry",
+          len([w for w in walk(tasks_frame(app))
+               if isinstance(w, gui.ttk.Entry)]) == 2,
+          str(len([w for w in walk(tasks_frame(app))
+                   if isinstance(w, gui.ttk.Entry)])))
+    check("the queue can be built from this panel",
+          find_button(app, "Build the queue from this order...") is not None)
+    check("the queue offers to start the order again",
+          find_button(app, "Start this order again") is not None)
     check("the old one-title-per-line reminder is gone",
           find_button(app, "Type the cards...") is None)
     entry = entries[0]

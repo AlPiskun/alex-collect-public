@@ -23,6 +23,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import woo_orders
+from user_settings import restrict_file_permissions
 
 QUOTES_DIRNAME = "quotes"
 ORDERS_PATH = "/wp-json/wc/v3/orders"
@@ -596,6 +597,10 @@ def save(quote, folder):
     except OSError as exc:
         raise QuoteError("The quote could not be saved to %s (%s)."
                          % (path, exc))
+    #  A quote carries the customer's name, address, email and phone. It is
+    #  the same private thing the keys file is, and it gets the same treatment:
+    #  this Windows account only, not every account on the PC.
+    restrict_file_permissions(path)
     if isinstance(quote, dict) and quote is not written:
         quote.clear()
         quote.update(written)

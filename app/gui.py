@@ -46,6 +46,7 @@ from plugin_manager import (PluginError, PluginManager,
 from process_utils import no_window_kwargs
 import photo_assign
 import photo_pool
+import photo_queue
 import photo_replace
 import market_stock
 import photo_thumbs
@@ -68,7 +69,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.87"
+VERSION = "2.89"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1251,8 +1252,23 @@ order list on the website can be opened from the same row.
 """
 
 DOCS["newphotos"] = """\
-One card needs better photos (a rescan, a condition change, a cracked
-slab). Type its name or SKU and press Find.
+Better photos for one card (a rescan, a condition change, a cracked slab),
+or for every card on an order that still needs them nine at a time.
+
+* After a sale, type the order's number and press "Build the queue from
+  this order...". Every card on it that can still be bought goes in a
+  queue: a card that went to zero is sold out, and a card whose stock is
+  not tracked has no count that says it is for sale, so both are named
+  in the console rather than silently left out.
+* The queue shows nine cards at a time, because a card sheet holds nine.
+  The order can be rearranged with Move up and Move down when the scans
+  come off the sheet in a different order.
+* "Mark these photographed", and applying them from "Assign photos to
+  cards...", both remember what is done, so the next sitting starts at
+  the tenth card instead of the first. "Start this order again" forgets
+  that and offers every card again; nothing on the website changes.
+
+One card on its own: type its name or SKU and press Find.
 
 * With your website API keys saved, the card is looked up and its
   product edit page opens straight away. Without them you get the
@@ -1263,6 +1279,11 @@ slab). Type its name or SKU and press Find.
   the nine front (and optional back) images.
 * The CanadianShopper store, eBay active listings, and Facebook selling
   pages open too, so every marketplace is one tab away.
+* With the WordPress username and Application Password saved (lines 4-5
+  of woo-keys.txt) the new photos are uploaded and set on the product
+  here, and each one is also filed under that product in the media
+  library - so the library shows them attached instead of listing them
+  under Unattached.
 
 With the CanadianShopper plugin installed you can also re-wire the
 gallery photos. Two separate offers: "Wire this card's photos?" touches
@@ -1373,6 +1394,11 @@ class ScrollFrame(ttk.Frame):
     """A vertically scrollable container: tall content scrolls, the console
     below never gets squeezed out of view."""
 
+    #  How often the page is asked whether it has grown. Tk fires Configure
+    #  when a widget's *actual* size changes and says nothing at all when only
+    #  its content does, which is exactly the case here.
+    WATCH_MS = 400
+
     def __init__(self, parent):
         super().__init__(parent)
         #  A Tk canvas is white unless told otherwise, and this one fills the
@@ -1382,45 +1408,142 @@ class ScrollFrame(ttk.Frame):
         #  the page end where its content ends.
         self.canvas = tk.Canvas(self, highlightthickness=0, bd=0,
                                 background=theme_background(self))
-        vsb = ttk.Scrollbar(self, orient="vertical",
-                            command=self.canvas.yview)
+        self.vsb = ttk.Scrollbar(self, orient="vertical",
+                                 command=self.canvas.yview)
         self.inner = ttk.Frame(self.canvas, padding=(2, 2))
         self._last_size = (0, 0)
+        self._last_view = None
+        self._natural = -1
+        self._watch_job = None
         self.inner.bind("<Configure>", self._resize)
         self.canvas.create_window((0, 0), window=self.inner, anchor="nw",
                                   tags="inner")
-        self.canvas.configure(yscrollcommand=vsb.set)
+        self.canvas.configure(yscrollcommand=self._on_scroll)
         self.canvas.pack(fill="both", expand=True, side="left")
-        vsb.pack(fill="y", side="right")
+        self.vsb.pack(fill="y", side="right")
         #  The page is stretched to at least the height of the window, not
         #  only to its own content. Without that a page shorter than the
         #  window left a dead band above the console, and a panel that itself
         #  expands - the settings form did - only claimed the height its
         #  widgets asked for, leaving most of the window unused.
         self.canvas.bind("<Configure>", self._resize)
+        self.bind("<Map>", self._on_map)
         self.bind("<Enter>", lambda e: self._wheel(True))
         self.bind("<Leave>", lambda e: self._wheel(False))
+        #  The page is built after this frame is, so the measurement taken
+        #  while the window is still being mapped is taken before there is
+        #  anything on it. Measure again once Tk's idle work is done - and
+        #  keep watching, because a page can grow later too.
+        try:
+            self.after_idle(self._resize)
+        except Exception:
+            pass
+        self._watch()
+
+    # ---------------------------------------------------------------- drawing
+    def _on_scroll(self, first, last):
+        """Tk's own view report, passed straight on to the scroll bar.
+
+        Keeping the bar named and fed here means the two can never be left
+        disagreeing - a bar whose thumb was never set looks like no bar at
+        all, which is what a freshly opened window used to show.
+        """
+        try:
+            self.vsb.set(first, last)
+        except Exception:
+            pass
+
+    def _on_map(self, _event=None):
+        """Measure once the page is actually on screen, not while it maps."""
+        try:
+            self.after_idle(self._resize)
+        except Exception:
+            pass
 
     def _resize(self, _event=None):
         """Stretch the page to fill the window, then say how tall it is."""
         try:
-            width = self.canvas.winfo_width()
-            height = self.canvas.winfo_height()
-            natural = self.inner.winfo_reqheight()
+            width = int(self.canvas.winfo_width() or 0)
+            height = int(self.canvas.winfo_height() or 0)
+            natural = int(self.inner.winfo_reqheight() or 0)
         except Exception:
             return
-        wanted = (width, max(natural or 0, height or 0))
-        if wanted != self._last_size:
-            self._last_size = wanted
+        if width <= 1 or height <= 1:
+            #  A window that has not been given its size yet measures as one
+            #  pixel; sizing the page to that would make every later
+            #  measurement wrong in the same direction.
+            return
+        self._natural = natural
+        content = max(natural, height)
+        if (width, content) != self._last_size:
+            self._last_size = (width, content)
             try:
-                self.canvas.itemconfigure("inner", width=wanted[0],
-                                          height=wanted[1])
+                self.canvas.itemconfigure("inner", width=width,
+                                          height=content)
             except Exception:
                 pass
+        #  The region is stated in numbers rather than read back from the
+        #  canvas: bbox("all") only knows about work Tk has already done, and
+        #  this is the moment it may not have done it yet.
         try:
-            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+            self.canvas.configure(scrollregion=(0, 0, width, content))
         except Exception:
             pass
+        self._show_thumb(content, height)
+
+    def _show_thumb(self, content, view):
+        """Point the scroll bar at the part of the page that is on screen."""
+        if not content:
+            return
+        try:
+            top = max(0.0, float(self.canvas.canvasy(0)))
+        except Exception:
+            top = 0.0
+        first = min(1.0, max(0.0, top / content))
+        last = min(1.0, max(first, (top + max(view, 0)) / content))
+        if (first, last) != self._last_view:
+            self._last_view = (first, last)
+            try:
+                self.vsb.set(first, last)
+            except Exception:
+                pass
+
+    def _watch(self):
+        """Measure again whenever the page's own content changes size.
+
+        Tk fires Configure when a widget's actual size changes. This frame
+        pins the page to the height of the window, so a page that grows - a
+        panel built a moment after the page, photos that arrive later - never
+        makes the frame any bigger, and nothing is fired. The scroll bar then
+        sat at (0.0, 1.0) with no thumb in it until the window itself was
+        resized, which is the missing scroll bar that opening the window
+        non-maximised used to show. Asking the page how tall it wants to be
+        costs one question every few hundred milliseconds and closes that.
+        """
+        self._watch_job = None
+        try:
+            if not self.winfo_exists():
+                return
+            natural = int(self.inner.winfo_reqheight() or 0)
+        except Exception:
+            return
+        if natural != self._natural:
+            self._resize()
+        try:
+            self._watch_job = self.after(self.WATCH_MS, self._watch)
+        except Exception:
+            self._watch_job = None
+
+    def destroy(self):
+        """Stop watching before the widgets being watched are gone."""
+        job = self._watch_job
+        self._watch_job = None
+        if job:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+        super().destroy()
 
     def _wheel(self, on):
         def scroll(e):
@@ -1624,6 +1747,11 @@ TOOLTIPS = {
     "Replace card photos": "Open the photo panel: find the card and replace its pictures",
     "Find the card...": "Look the card up on the store and start the replacement",
     "Add sheets...": "Load the scan sheets for this sitting; they stay loaded for the next card too",
+    "Build the queue from this order...": "Read an order and list the cards that sold but can still be bought, nine at a time",
+    "Move up": "Move the selected card up in this sitting, to match the order the scan holds them",
+    "Move down": "Move the selected card down in this sitting, to match the order the scan holds them",
+    "Mark these photographed": "Remember these cards as done and show the next nine; nothing on the website changes",
+    "Start this order again": "Forget which of this order's cards have been photographed and offer them from the first again",
     "Assign photos to cards...": "Line a whole sheet up with cards and replace them in a batch",
     "Read these": "Read the pasted titles or cards and fill one row per image",
     "Choose a card for this row": "Search the store for the card this image belongs to",
@@ -2574,7 +2702,7 @@ BLURBS = {
                   "card's name, and print it with a picture of every card.",
     "square": "Pad a photo onto a white square for a manual dashboard upload.",
     "plugins": "Install and manage optional plugins.",
-    "newphotos": "Find a card, open its replacement images, and refresh its pages.",
+    "newphotos": "Photograph a card - or an order's cards, nine at a time - and refresh its pages.",
     "ordertext": "Paste the list a customer texted you and turn it into a website order.",
     "quote": "Price cards for a customer, print the quote as a PDF, and make it an order when they say yes.",
     "markets": "Redo just one marketplace (Woo, CanadianShopper, Facebook, eBay) without repeating the AI or image steps.",
@@ -8293,6 +8421,194 @@ def build_newphotos(parent, app):
     def status(text):
         hint.configure(text=text)
 
+    # -- an order's cards, nine at a time ----------------------------------
+    #  A sheet holds nine cards, so the replacements are done in nines. The
+    #  sitting is kept on the app, like the photo pool: the tabs view rebuilds
+    #  this panel every time its tab is opened, and looking at another tab
+    #  must not throw away which nine are on the table.
+    sitting = getattr(app, "photo_sitting", None)
+    if not isinstance(sitting, dict):
+        sitting = {"order": None, "batch": [], "waiting": [], "products": {}}
+        app.photo_sitting = sitting
+    queue_state = {"data": photo_queue.load_state(BASE /
+                                                  photo_queue.STATE_NAME)}
+    queue_widgets = {}
+
+    def queue_number():
+        return str((sitting.get("order") or {}).get("number") or "")
+
+    def queue_done():
+        """The cards of this order already photographed, as remembered."""
+        number = queue_number()
+        return (photo_queue.done_for(queue_state["data"], number)
+                if number else [])
+
+    def queue_remember(rows):
+        """Remember that these cards have been photographed."""
+        number = queue_number()
+        rows = [row for row in (rows or []) if isinstance(row, dict)]
+        if not number or not rows:
+            return
+        photo_queue.remember(queue_state["data"], number,
+                             [row.get("id") for row in rows])
+        try:
+            photo_queue.save_state(BASE / photo_queue.STATE_NAME,
+                                   queue_state["data"])
+        except photo_queue.QueueError as exc:
+            app.console_line(exc, "err")
+
+    def sitting_products(rows=None):
+        """The website's own records for the cards in this sitting."""
+        rows = sitting.get("batch") if rows is None else rows
+        return [sitting["products"].get(row.get("id")) for row in rows or []]
+
+    def queue_next_sitting():
+        sitting["batch"], sitting["waiting"] = photo_queue.next_batch(
+            sitting.get("order") or {}, queue_done())
+
+    def queue_sentence():
+        return photo_queue.headline(sitting.get("order"),
+                                    sitting.get("batch") or [],
+                                    sitting.get("waiting") or [],
+                                    len(queue_done()))
+
+    def refresh_queue():
+        """Draw the nine on the table and the sentence under them."""
+        batch = list(sitting.get("batch") or [])
+        listing_widget = queue_widgets.get("list")
+        if listing_widget is not None:
+            listing_widget.delete(0, "end")
+            for line in photo_queue.describe_batch(batch):
+                listing_widget.insert("end", line)
+        text_widget = queue_widgets.get("text")
+        if text_widget is not None:
+            text_widget.configure(text=queue_sentence())
+
+    def build_queue():
+        """Read an order and queue its cards that can still be bought."""
+        #  A variable that has never been typed in reads as nothing at all.
+        number = str(order_term.get() or "").strip()
+        if not number:
+            messagebox.showinfo(
+                "Which order?",
+                "Type the order's number - the one on the dashboard - and "
+                "press Build again.", parent=app)
+            return
+        site, key, secret = read_woo_credentials(keys_file)
+        if not (site and key and secret):
+            if ask_for_keys():
+                return
+            return
+        status("Reading order %s and its cards' stock from your website..."
+               % number)
+
+        def work():
+            order = woo_orders.find_order(site, key, secret, number)
+            products = {}
+            for line in order.get("line_items") or []:
+                if not isinstance(line, dict):
+                    continue
+                try:
+                    product_id = int(line.get("product_id") or
+                                     line.get("variation_id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if not product_id or product_id in products:
+                    continue
+                code, data = woo_get(site,
+                                     "/wp-json/wc/v3/products/%d" % product_id,
+                                     {}, key, secret)
+                products[product_id] = (data if code == 200 and
+                                        isinstance(data, dict) else {})
+            return order, products
+
+        def arrived(result, error):
+            if error is not None:
+                messagebox.showwarning(
+                    "The order could not be read",
+                    "%s\n\nCheck the number in the dashboard, and that the "
+                    "keys in woo-keys.txt are this shop's." % error,
+                    parent=app)
+                status("The order could not be read: %s" % error)
+                return
+            order, products = result
+            built = photo_queue.from_order(order, products)
+            sitting.update({"order": built, "products": products})
+            queue_next_sitting()
+            order_term.set(built["number"] or number)
+            refresh_queue()
+            app.console_line(
+                "Order %s%s: %d card%s need a photograph here, %d in this "
+                "sitting." % (
+                    built["number"] or number,
+                    (" for %s" % built["customer"]) if built["customer"] else "",
+                    len(built["rows"]),
+                    "" if len(built["rows"]) == 1 else "s",
+                    len(sitting["batch"])), "ok")
+            for entry in built["skipped"]:
+                #  Named rather than dropped: a card that quietly leaves the
+                #  queue is a card nobody photographs.
+                app.console_line("Not in the queue: %s - %s." %
+                                 (entry["name"], entry["why"]), "dim")
+            status(queue_sentence())
+
+        in_background(app, work, arrived)
+
+    def move_sitting(delta):
+        listing_widget = queue_widgets.get("list")
+        picked = listing_widget.curselection() if listing_widget else ()
+        if not picked:
+            messagebox.showinfo(
+                "Pick a card first",
+                "Select the card in the nine that you want to move.",
+                parent=app)
+            return
+        rows = list(sitting.get("batch") or [])
+        landed = photo_queue.move(rows, picked[0], delta)
+        sitting["batch"] = rows
+        refresh_queue()
+        if listing_widget is not None and rows:
+            listing_widget.selection_set(min(landed, len(rows) - 1))
+
+    def mark_sitting():
+        batch = list(sitting.get("batch") or [])
+        if not batch:
+            messagebox.showinfo(
+                "Nothing to mark",
+                "Build the queue from an order first - there are no cards in "
+                "this sitting.", parent=app)
+            return
+        queue_remember(batch)
+        queue_next_sitting()
+        refresh_queue()
+        status(queue_sentence())
+        app.console_line("%d card%s marked as photographed for order %s." % (
+            len(batch), "" if len(batch) == 1 else "s", queue_number()), "ok")
+
+    def start_again():
+        number = queue_number()
+        if not number:
+            messagebox.showinfo(
+                "No order yet",
+                "Build the queue from an order first.", parent=app)
+            return
+        if not messagebox.askyesno(
+                "Forget what has been photographed?",
+                "Order %s keeps a note of which cards already have new "
+                "photos.\n\nForgetting it offers every card again, from the "
+                "first. Nothing on the website is changed." % number,
+                parent=app):
+            return
+        photo_queue.forget(queue_state["data"], number)
+        try:
+            photo_queue.save_state(BASE / photo_queue.STATE_NAME,
+                                   queue_state["data"])
+        except photo_queue.QueueError as exc:
+            app.console_line(exc, "err")
+        queue_next_sitting()
+        refresh_queue()
+        status(queue_sentence())
+
     # -- finding the product ------------------------------------------------
     def ask_for_keys():
         """Offer the API-key setup; True when the user wants it right now."""
@@ -8633,6 +8949,21 @@ def build_newphotos(parent, app):
                 " and ".join(row["name"] or str(row["id"]) for row in leaving),
                 "dim")
         status("The website now shows %s." % photos)
+        #  The product shows the new pair either way. What the media library
+        #  calls the files is a separate fact, and the one that made a
+        #  finished upload look unattached - so it is said, not assumed.
+        attached = result.get("attached") or {}
+        loose = attached.get("failed") or []
+        if loose:
+            app.console_line(
+                "The new photos are on the product, but the media library "
+                "still marks them unattached: %s"
+                % (loose[0].get("why") or "the website did not say why."),
+                "warn")
+        elif attached.get("attached"):
+            app.console_line(
+                "The media library shows the new photos attached to this "
+                "product.", "dim")
         for attachment in (front, result.get("back")):
             if attachment and attachment.get("source_url"):
                 app.console_line(attachment["source_url"], "dim")
@@ -9153,10 +9484,11 @@ def build_newphotos(parent, app):
                 app.console_line("Opened %s for the saved images." %
                                  saved.parent, "dim")
 
-    # -- the assignment window: cards first, three ways ---------------------
+    # -- the assignment window: cards first, two ways -----------------------
     def apply_ready(rows):
         """Save, upload and wire every row that is ready. Returns the count."""
         done = 0
+        applied = []
         for row in photo_assign.ready(rows):
             product, tile = row["product"], row["tile"]
             label = product.get("name") or ""
@@ -9185,22 +9517,37 @@ def build_newphotos(parent, app):
                 pool.take(partner, label)
             row["status"] = photo_assign.EMPTY
             row["product"] = None
+            applied.append(product)
             done += 1
             app.console_line("Assigned %s." % (saved.name,), "ok")
+        if applied:
+            #  A card that has just been given new photographs is done for
+            #  this order, so the next sitting starts after it instead of
+            #  offering it again.
+            queue_remember(applied)
+            queue_next_sitting()
+            refresh_queue()
         refresh_sheets()
         return done
 
     def open_assign_window():
-        """Line the loaded images up with products, then apply them in a batch.
+        """Line the loaded images up with cards, then apply them in a batch.
 
-        Three ways to fill the same worksheet, because which one suits depends
-        on the pile of scans: read the sheet's titles with an AI and paste
-        them, paste the cards in the order they were scanned, or point at one
-        image and search for its card.
+        The sitting from an order's queue is already in the list when there is
+        one - the nine cards, in the order they will be scanned - and a list
+        pasted in the order the sheet holds them fills it the same way. A line
+        that matches nothing keeps its words, so one card can be looked up
+        again without pasting the whole list.
         """
         if not ensure_images():
             return
         rows = []
+        sitting_cards = list(sitting.get("batch") or [])
+        if sitting_cards and all(sitting["products"].get(row.get("id"))
+                                 for row in sitting_cards):
+            rows.extend(photo_assign.rows_from_products(
+                pool, sitting_products(sitting_cards),
+                [row.get("name") for row in sitting_cards]))
         top = tk.Toplevel(app)
         app.photo_assign_window = top      # kept so a test can drive it
         top.title("Assign the images to cards")
@@ -9210,7 +9557,6 @@ def build_newphotos(parent, app):
         width = min(880, max(560, app.winfo_screenwidth() - 60))
         height = min(600, max(420, app.winfo_screenheight() - 90))
         top.geometry("%dx%d" % (width, height))
-        method = tk.StringVar(master=top, value="titles")
         text = tk.Text(top, height=7, wrap="word")
         listing = tk.Listbox(top, height=10, exportselection=False)
         said = ttk.Label(top, text="", style="Dim.TLabel")
@@ -9245,32 +9591,21 @@ def build_newphotos(parent, app):
                     for p in data if isinstance(p, dict) and p.get("id")]
 
         def read_list():
+            """Match the pasted cards to the images, one per line, in order."""
             del rows[:]
             pasted = text.get("1.0", "end")
-            if method.get() == "titles":
-                titles = photo_assign.parse_titles(pasted)
-                if not titles:
-                    messagebox.showinfo("Paste the titles first",
-                                        "Paste the AI's answer, one title per "
-                                        "line, then press Read these.",
-                                        parent=top)
-                    return
-                rows.extend(photo_assign.rows_from_titles(
-                    pool, titles, do_search))
-            else:
-                names = woo_orders.parse_card_list(pasted)
-                if not names:
-                    messagebox.showinfo("Paste the cards first",
-                                        "Paste the cards in the order they "
-                                        "were scanned, one per line.",
-                                        parent=top)
-                    return
-                products = []
-                for name in names:
-                    found = do_search(name)
-                    picked = woo_orders.auto_pick(name, found) if found else None
-                    products.append(picked)
-                rows.extend(photo_assign.rows_from_products(pool, products))
+            names = woo_orders.parse_card_list(pasted)
+            if not names:
+                messagebox.showinfo("Paste the cards first",
+                                    "Paste the cards in the order they were "
+                                    "scanned, one per line.", parent=top)
+                return
+            products = []
+            for name in names:
+                found = do_search(name)
+                products.append(woo_orders.auto_pick(name, found) if found
+                                else None)
+            rows.extend(photo_assign.rows_from_products(pool, products, names))
             render()
             status(photo_assign.headline(rows))
 
@@ -9306,22 +9641,16 @@ def build_newphotos(parent, app):
             render()
             status("%d of %d replaced." % (done, len(ready_rows)))
 
-        ttk.Label(top, text="How should the images find their cards?",
+        ttk.Label(top, text="The cards, in the order the scan holds them",
                   font=("TkDefaultFont", 10, "bold")).pack(anchor="w", padx=10,
                                                           pady=(10, 2))
-        choices = ttk.Frame(top)
-        choices.pack(anchor="w", padx=10)
-        ttk.Radiobutton(choices, text="Read the sheet's titles (AI answer)",
-                        variable=method, value="titles").pack(side="left")
-        ttk.Radiobutton(choices, text="Paste the cards in scan order",
-                        variable=method, value="products").pack(side="left",
-                                                                padx=12)
-        ttk.Radiobutton(choices, text="One at a time (the card search below)",
-                        variable=method, value="one").pack(side="left")
-        ttk.Label(top, text="The AI's answer, or your cards in the order they "
-                  "were scanned:", style="Dim.TLabel",
-                  wraplength=width - 40).pack(anchor="w", padx=10, pady=(6, 2))
-        text.pack(fill="x", padx=10)
+        ttk.Label(top, text="The nine cards from the order's queue are "
+                  "already in the list below. To use a different list, paste "
+                  "one card per line, in the same order as the images, and "
+                  "press Read these.",
+                  style="Dim.TLabel", wraplength=width - 40,
+                  justify="left").pack(anchor="w", padx=10)
+        text.pack(fill="x", padx=10, pady=(4, 0))
         buttons = ttk.Frame(top)
         buttons.pack(fill="x", padx=10, pady=6)
         ttk.Button(buttons, text="Read these", command=read_list).pack(
@@ -9355,7 +9684,46 @@ def build_newphotos(parent, app):
                 return
         replace(query, product)
 
-    #  Sheets first: this is where the sitting starts, the way the pipeline
+    #  Which cards are being photographed: an order's queue, nine at a time.
+    #  This is the first question of a sitting - the cards come before the
+    #  scans - so it sits above the sheets.
+    queued = ttk.LabelFrame(box, text="An order's cards, nine at a time",
+                            padding=(6, 3))
+    queued.pack(fill="x", pady=(2, 6))
+    order_row = ttk.Frame(queued)
+    order_row.pack(fill="x")
+    ttk.Label(order_row, text="Order number:").pack(side="left")
+    order_term = tk.StringVar(master=queued)
+    order_entry = ttk.Entry(order_row, textvariable=order_term, width=12)
+    order_entry.pack(side="left", padx=6)
+    order_entry.bind("<Return>", lambda _event: build_queue())
+    queue_widgets["build"] = ttk.Button(
+        order_row, text="Build the queue from this order...",
+        command=build_queue)
+    queue_widgets["build"].pack(side="left")
+    queue_widgets["again"] = ttk.Button(
+        order_row, text="Start this order again", command=start_again)
+    queue_widgets["again"].pack(side="right", padx=(6, 0))
+    queue_widgets["mark"] = ttk.Button(
+        order_row, text="Mark these photographed", command=mark_sitting)
+    queue_widgets["mark"].pack(side="right")
+
+    queue_widgets["list"] = tk.Listbox(queued, height=photo_queue.SHEET,
+                                       exportselection=False, activestyle="none")
+    queue_widgets["list"].pack(fill="x", pady=(4, 2))
+    move_row = ttk.Frame(queued)
+    move_row.pack(fill="x")
+    queue_widgets["up"] = ttk.Button(move_row, text="Move up",
+                                     command=lambda: move_sitting(-1))
+    queue_widgets["up"].pack(side="left")
+    queue_widgets["down"] = ttk.Button(move_row, text="Move down",
+                                       command=lambda: move_sitting(1))
+    queue_widgets["down"].pack(side="left", padx=6)
+    queue_widgets["text"] = ttk.Label(move_row, text="", style="Dim.TLabel",
+                                      wraplength=520, justify="left")
+    queue_widgets["text"].pack(side="left", padx=(10, 0))
+
+    #  Sheets next: this is where the images come from, the way the pipeline
     #  starts from the scans rather than from a card name.
     sheets_row = ttk.Frame(box)
     sheets_row.pack(anchor="w", pady=(4, 0))
@@ -9386,6 +9754,7 @@ def build_newphotos(parent, app):
                                      wraplength=780, justify="left")
     sheets_text["label"].pack(anchor="w", pady=(2, 0))
     hint.pack(anchor="w", pady=(2, 0))
+    refresh_queue()
     refresh_sheets()
 
 

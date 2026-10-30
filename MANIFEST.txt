@@ -1,4 +1,4 @@
-Alex Collect 2.87 — public core package
+Alex Collect 2.89 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -25,7 +25,9 @@ app/:
   browser_utils.py                installed-browser detection and page launching
   process_utils.py                hides child console windows on Windows
   photo_replace.py                sheet split, blank-slot and replacement naming
-  woo_media.py                    upload a photo and set it on the product
+  woo_media.py                    upload a photo, set it on the product,
+                                   and file it under that product in the
+                                   media library
   woo_create.py                   create the batch's products on the website:
                                    drafts first, photos first, read back,
                                    never twice (the CSV stays the record)

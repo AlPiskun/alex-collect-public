@@ -13,10 +13,12 @@ imported.
 """
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 APP = Path(__file__).resolve().parent
 sys.path[:0] = [str(APP), str(APP / "pipeline")]
@@ -891,6 +893,42 @@ def build(app):
     return parts
 
 
+def test_private_files(root):
+    print()
+    print("== 12. a quote's file belongs to this account, not the whole PC ==")
+    #  A quote carries a name, a street address, an email and a phone number.
+    #  The keys file gets the "this Windows account only" treatment; these
+    #  documents are the same kind of private and used to be readable by every
+    #  account on the machine.
+    saved, rendered = [], []
+    with patch.object(quote_model, "restrict_file_permissions",
+                      lambda path: saved.append(Path(path)) or True), \
+            patch.object(quote_pdf, "restrict_file_permissions",
+                         lambda path: rendered.append(Path(path)) or True):
+        path = quote_model.save(sample(), root / "private-quotes")
+        info = quote_pdf.render(sample(), root / "private.pdf", dpi=90)
+    check("saving a quote restricts the file it writes", saved == [path],
+          str(saved))
+    check("printing it restricts the PDF too", rendered == [info["path"]],
+          str(rendered))
+    check("and the restriction is applied after the file exists",
+          path.is_file() and info["path"].is_file(), str(path))
+
+    #  The same call for real, so this is not only a promise about a patch.
+    real = quote_model.save(sample(), root / "private-quotes-2")
+    real_pdf = quote_pdf.render(sample(), root / "private-2.pdf", dpi=90)
+    if os.name == "posix":
+        check("the quote file is readable by this account only",
+              (real.stat().st_mode & 0o777) == 0o600, oct(real.stat().st_mode))
+        check("and so is its PDF",
+              (Path(real_pdf["path"]).stat().st_mode & 0o777) == 0o600,
+              oct(Path(real_pdf["path"]).stat().st_mode))
+    else:
+        #  Windows has no mode bits; the ACL itself is checked in
+        #  test-user-settings.py, and asserting 0o600 here fails on a real run.
+        check("the quote file is on disk", real.is_file(), str(real))
+
+
 def test_panel(root):
     print()
     print("== 7. the panel a person actually presses ==")
@@ -1211,6 +1249,7 @@ def main():
         test_order()
         test_pdf(root)
         test_pictures_and_links(root)
+        test_private_files(root)
         test_panel(root)
     print()
     if FAIL:
