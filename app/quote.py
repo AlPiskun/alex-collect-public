@@ -410,6 +410,80 @@ def search(woo_get, site, key, secret, term, per_page=100):
     return products
 
 
+#: The shop's own word for "you can sell this today". Everything else - either
+#: out-of-stock state, or a product that did not say - is not quoted.
+IN_STOCK = "instock"
+
+#: The orders the search results can be put in, as (key, label).
+SORTS = (("name", "Name (A to Z)"),
+         ("price", "Price (low to high)"),
+         ("price_desc", "Price (high to low)"),
+         ("newest", "Newest first"))
+
+
+def in_stock(products):
+    """Only the rows the shop says are on the shelf right now.
+
+    A quote is an offer to sell, so a card that cannot be bought is not a
+    result to add: the shop's own word for it is ``instock``, and a product
+    that says anything else - out of stock, on backorder, or nothing at all -
+    is left out. The panel says how many were left out, so a card missing from
+    the list is explained rather than a mystery.
+    """
+    return [product for product in products or []
+            if str(product.get("stock_status") or "").strip().lower()
+            == IN_STOCK]
+
+
+def _name_key(product):
+    return " ".join(str(product.get("name") or "").split()).casefold()
+
+
+def sort_products(products, how="name"):
+    """The same rows, in the order the chooser names.
+
+    A row whose price cannot be read goes last whichever way the prices run: a
+    card with no price is not the cheapest one on the sheet. Ties fall back to
+    the name, so two cards at the same price always come back in one order.
+    """
+    rows = list(products or [])
+
+    def number(product):
+        try:
+            return int(product.get("id") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    if how in ("price", "price_desc"):
+        def key(product):
+            price = parse_money(product.get("price"))
+            if price is None:
+                return (1, 0.0, _name_key(product))
+            return (0, -price if how == "price_desc" else price,
+                    _name_key(product))
+        return sorted(rows, key=key)
+    if how == "newest":
+        return sorted(rows, key=lambda product: (-number(product),
+                                                 _name_key(product)))
+    return sorted(rows, key=_name_key)
+
+
+def sort_key_for(label):
+    """The sort key a chooser label stands for, or ``name`` if it is odd."""
+    for key, text in SORTS:
+        if text == str(label or ""):
+            return key
+    return "name"
+
+
+def sort_label_for(how):
+    """The chooser label a stored sort key stands for."""
+    for key, text in SORTS:
+        if key == str(how or ""):
+            return text
+    return SORTS[0][1]
+
+
 # ------------------------------------------------------------------ saving
 def folder_for(base):
     """``<base>/quotes`` - the folder a machine keeps its quotes in."""

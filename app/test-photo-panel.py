@@ -48,6 +48,7 @@ class FakeWidget:
         self.value = kwargs.get("text", "")
         self.items = []
         self.selection = ()
+        self._binds = {}
         self.parent = args[0] if args else None
         if self.parent is not None and hasattr(self.parent, "children"):
             self.parent.children.append(self)
@@ -62,7 +63,20 @@ class FakeWidget:
 
     def grid(self, *a, **k): return self
     def place(self, *a, **k): return self
-    def bind(self, *a, **k): return self
+    def bind(self, sequence=None, func=None, add=None):
+        """Remember the handler, so a test can fire the event it waits for.
+
+        A panel that re-sorts on <<ComboboxSelected>> is unusable if the fake
+        drops the binding: the chooser would change and nothing would happen,
+        which is exactly the bug worth catching.
+        """
+        if sequence and func is not None:
+            self._binds.setdefault(str(sequence), []).append(func)
+        return self
+
+    def event_generate(self, sequence, **kwargs):
+        for func in self._binds.get(str(sequence), []):
+            func(None)
     def configure(self, **k): self._kw.update(k)
     def config(self, **k): self._kw.update(k)
     def cget(self, key):

@@ -1150,9 +1150,13 @@ Price a batch of cards for a customer without creating an order yet.
 
 Search your stock for a player, a year or a set - \"Batman\" - and
 **Add all the matches** puts one of each card on the quote in a single
-press. A single card can be added on its own, and a card that is not in your
-stock can be typed in with its own price; nothing here guesses which card
-was meant.
+press. Only cards the shop says are **in stock** are listed, because a quote
+is an offer to sell; the line above the list says how many were left out
+because they are out of stock. **Sort the matches** puts the list in name
+order, cheapest first, dearest first, or newest first - it only re-orders
+what is already on screen and reads nothing from the shop. A single card can
+be added on its own, and a card that is not in your stock can be typed in
+with its own price; nothing here guesses which card was meant.
 
 The quote is a file. It carries a number (Q-2026-0001), the customer's name,
 address, email and phone, a discount as a percentage or a flat amount, and
@@ -6936,6 +6940,11 @@ def build_quote(parent, app):
     discount_value = tk.StringVar(value="")
     search_var = tk.StringVar(value="")
     saved_var = tk.StringVar(value="")
+    #  The order the matches are shown in, remembered between quotes: someone
+    #  who sorts by price once is not made to sort by price every time.
+    state["sort"] = quote_model.sort_key_for(
+        quote_model.sort_label_for(app.settings.get("quote_sort")))
+    sort_var = tk.StringVar(value=quote_model.sort_label_for(state["sort"]))
 
     def read_box(widget):
         try:
@@ -6994,9 +7003,19 @@ def build_quote(parent, app):
                                command=lambda: add_manual())
     manual_button.pack(side="left", padx=(6, 0))
     result_label = ttk.Label(pick, text="Search for a player, a year or a "
-                                        "set - then add every match at once.",
-                             style="Dim.TLabel")
+                                        "set - then add every match at once. "
+                                        "Only cards in stock are listed.",
+                             style="Dim.TLabel", wraplength=760, justify="left")
     result_label.pack(anchor="w", pady=(4, 0))
+    sort_row = ttk.Frame(pick)
+    sort_row.pack(fill="x", pady=(4, 0))
+    ttk.Label(sort_row, text="Sort the matches:").pack(side="left")
+    sort_box = ttk.Combobox(sort_row, textvariable=sort_var, width=20,
+                            state="readonly",
+                            values=[label for _key, label
+                                    in quote_model.SORTS])
+    sort_box.pack(side="left", padx=(4, 6))
+    sort_box.bind("<<ComboboxSelected>>", lambda *_: choose_sort())
     results_list = tk.Listbox(pick, height=6, exportselection=False,
                               font=("Consolas", 9))
     results_list.pack(fill="x", pady=(2, 0))
@@ -7252,29 +7271,70 @@ def build_quote(parent, app):
         result_label.configure(text=message)
         say(message, "err")
 
-    def show_results(found):
-        state["results"] = list(found)
+    def draw_results():
+        """The matches, in the order the chooser names them."""
         results_list.delete(0, "end")
         currency = state["quote"].get("currency") or ""
         for product in state["results"]:
             price = quote_model.parse_money(product.get("price"))
-            stock = product.get("stock_status") or ""
-            results_list.insert("end", "%-52s %10s%s" % (
+            results_list.insert("end", "%-52s %10s" % (
                 product["name"][:52],
                 quote_model.money(price, currency) if price is not None
-                else "no price",
-                "   OUT OF STOCK" if stock == "outofstock" else ""))
+                else "no price"))
+
+    def sort_results():
+        """Re-order the matches already on screen - this reads nothing."""
         if not state["results"]:
-            result_label.configure(text="No card on the website matched %r."
-                                        % search_var.get().strip())
-            say("Nothing matched.")
             return
-        result_label.configure(
-            text="%d card%s matched - \"Add all the matches\" puts one of "
-                 "each on the quote." % (len(state["results"]),
-                                         "" if len(state["results"]) == 1
-                                         else "s"))
-        say("Found %d card(s)." % len(state["results"]))
+        picked = results_list.curselection()
+        chosen = state["results"][picked[0]] if picked else None
+        state["results"] = quote_model.sort_products(state["results"],
+                                                     state["sort"])
+        draw_results()
+        if chosen is not None:
+            for index, product in enumerate(state["results"]):
+                if product.get("id") == chosen.get("id"):
+                    results_list.selection_set(index)
+                    break
+
+    def choose_sort():
+        state["sort"] = quote_model.sort_key_for(sort_var.get())
+        sort_results()
+
+    def show_results(found):
+        """What the shop answered, in stock only, in the chosen order.
+
+        The count that was left out is part of the answer: a card that is on
+        the website but cannot be bought is why a search comes back short, and
+        saying so stops the panel looking like it lost it.
+        """
+        term = search_var.get().strip()
+        matches = list(found or [])
+        state["results"] = quote_model.sort_products(
+            quote_model.in_stock(matches), state["sort"])
+        draw_results()
+        hidden = len(matches) - len(state["results"])
+        if not state["results"]:
+            if hidden:
+                text = ("Nothing in stock matched %r - %d card%s match on "
+                        "the website but %s out of stock."
+                        % (term, hidden, "" if hidden == 1 else "s",
+                           "is" if hidden == 1 else "are"))
+            else:
+                text = "No card on the website matched %r." % term
+            result_label.configure(text=text)
+            say(text)
+            return
+        text = ("%d card%s in stock matched - \"Add all the matches\" puts "
+                "one of each on the quote."
+                % (len(state["results"]),
+                   "" if len(state["results"]) == 1 else "s"))
+        if hidden:
+            text += (" %d more %s out of stock, so %s left out."
+                     % (hidden, "is" if hidden == 1 else "are",
+                        "it was" if hidden == 1 else "they were"))
+        result_label.configure(text=text)
+        say(text)
 
     def add_results(all_of):
         if all_of:
@@ -7477,7 +7537,8 @@ def build_quote(parent, app):
         for key, value in (("quote_company", look.get("company", "")),
                            ("quote_contact", look.get("contact", "")),
                            ("quote_color", look.get("color", "")),
-                           ("quote_logo", look.get("logo", ""))):
+                           ("quote_logo", look.get("logo", "")),
+                           ("quote_sort", state["sort"])):
             if str(app.settings.get(key, "")) != str(value):
                 app.settings[key] = value
                 changed[key] = value

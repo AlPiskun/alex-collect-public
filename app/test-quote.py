@@ -172,6 +172,51 @@ def test_cards():
     except quote_model.QuoteError:
         check("a card with no name is refused", True)
 
+    #  The search only ever offers what can be sold, and the list can be put
+    #  in the order the person asked for.
+    shelf = [{"id": 1, "name": "Batman #1", "price": "4.00",
+              "stock_status": "instock"},
+             {"id": 2, "name": "Batman #2", "price": "5.50",
+              "stock_status": "instock"},
+             {"id": 3, "name": "Batman #3", "price": "7.00",
+              "stock_status": "outofstock"},
+             {"id": 4, "name": "Batman #4", "price": "9.00",
+              "stock_status": "onbackorder"},
+             {"id": 5, "name": "Batman #5", "price": ""}]
+    on_shelf = quote_model.in_stock(shelf)
+    check("only the cards the shop says are in stock are offered",
+          [row["id"] for row in on_shelf] == [1, 2], on_shelf)
+    check("a card that does not say whether it is in stock is not guessed at",
+          5 not in [row["id"] for row in on_shelf], on_shelf)
+    check("sorting by name orders the same cards A to Z",
+          [row["name"] for row in
+           quote_model.sort_products(shelf, "name")] ==
+          ["Batman #1", "Batman #2", "Batman #3", "Batman #4", "Batman #5"],
+          [row["name"] for row in quote_model.sort_products(shelf, "name")])
+    cheapest = quote_model.sort_products(shelf, "price")
+    check("cheapest first puts the prices in order and the unpriced card last",
+          [row["id"] for row in cheapest] == [1, 2, 3, 4, 5],
+          [(row["id"], row["price"]) for row in cheapest])
+    dearest = quote_model.sort_products(shelf, "price_desc")
+    check("dearest first is the same list the other way round",
+          [row["id"] for row in dearest] == [4, 3, 2, 1, 5],
+          [(row["id"], row["price"]) for row in dearest])
+    newest = quote_model.sort_products(shelf, "newest")
+    check("newest first is the last card the site made",
+          [row["id"] for row in newest] == [5, 4, 3, 2, 1], newest)
+    check("two cards at the same price fall back to their names",
+          [row["name"] for row in quote_model.sort_products(
+              [{"name": "B", "price": "5"}, {"name": "A", "price": "5"}],
+              "price")] == ["A", "B"])
+    check("a stored sort the chooser does not know falls back to the name",
+          quote_model.sort_key_for("Cheapest, somehow") == "name"
+          and quote_model.sort_label_for("nonsense") == "Name (A to Z)",
+          (quote_model.sort_key_for("Cheapest, somehow"),
+           quote_model.sort_label_for("nonsense")))
+    check("and every sort the chooser offers has a label",
+          [key for key, _text in quote_model.SORTS] ==
+          ["name", "price", "price_desc", "newest"], quote_model.SORTS)
+
     removed = quote_model.remove_item(q, 0)
     check("a row can be taken off", removed["name"] == "Typed in by hand"
           and len(q["items"]) == 1, q)
@@ -513,6 +558,10 @@ class FakeApp:
     def console_line(self, text, tag=""):
         self.lines.append((tag, str(text)))
 
+    def _save_user_settings_callback(self):
+        """The window's own save; here it keeps the dict and writes no file."""
+        return None
+
     def after(self, delay, callback=None):
         if callback is not None:
             callback()
@@ -647,6 +696,13 @@ def build(app):
     parts["logo"] = next(w for w in look.walk()
                          if w._kw.get("width") == 44)._kw["textvariable"]
     parts["contact"] = [w for w in look.walk() if isinstance(w, TextBox)][0]
+    parts["result_label"] = next(
+        w for w in widgets if isinstance(w, gui.ttk.Label)
+        and str(w._kw.get("text") or "").startswith("Search for a player"))
+    sort_labels = [label for _key, label in quote_model.SORTS]
+    parts["sort_box"] = next(w for w in widgets
+                             if w._kw.get("values") == sort_labels)
+    parts["sort"] = parts["sort_box"]._kw["textvariable"]
     parts["totals"] = next(w for w in widgets
                            if "TOTAL" in str(w._kw.get("text") or "")) \
         if any("TOTAL" in str(w._kw.get("text") or "") for w in widgets) else None
@@ -744,20 +800,39 @@ def test_panel(root):
             check("the button %r explains itself on hover" % text,
                   bool(gui.tip_for(text)), gui.tip_for(text))
 
-        #  -- the search and the one-press add
+        #  -- the search, its sort, and the one-press add
         parts["search"].set("Batman")
         buttons["Search the stock"].invoke()
-        check("searching lists every match", len(results.items) == 3,
-              results.items)
+        check("searching lists every match that is in stock",
+              len(results.items) == 2, results.items)
+        check("and the out-of-stock card is named as left out, not lost",
+              "out of stock" in str(parts["result_label"].cget("text")),
+              parts["result_label"].cget("text"))
+        check("the matches come back in name order to start with",
+              [row.split("  ")[0].strip() for row in results.items] ==
+              ["1989 O-Pee-Chee Batman #1 NM 7",
+               "1989 O-Pee-Chee Batman #2 EX-MT 6"], results.items)
+        parts["sort"].set("Price (high to low)")
+        parts["sort_box"].event_generate("<<ComboboxSelected>>")
+        check("choosing a sort re-orders the matches already on screen",
+              [row.split("  ")[0].strip() for row in results.items] ==
+              ["1989 O-Pee-Chee Batman #2 EX-MT 6",
+               "1989 O-Pee-Chee Batman #1 NM 7"], results.items)
+        check("and sorting does not search the shop again",
+              len(results.items) == 2, results.items)
+        parts["sort"].set("Name (A to Z)")
+        parts["sort_box"].event_generate("<<ComboboxSelected>>")
+        check("the list goes back to name order",
+              "Batman #1" in str(results.items[0]), results.items)
         buttons["Add all the matches"].invoke()
-        check("one press puts one of each match on the quote",
-              len(rows.items) == 3, rows.items)
+        check("one press puts one of each in-stock match on the quote",
+              len(rows.items) == 2, rows.items)
         buttons["Add all the matches"].invoke()
-        check("a second press does not double the quote", len(rows.items) == 3,
+        check("a second press does not double the quote", len(rows.items) == 2,
               rows.items)
         check("the totals line adds them up",
-              "TOTAL C$16.50" in (parts["totals"].cget("text")
-                                  if parts["totals"] else ""),
+              "TOTAL C$9.50" in (parts["totals"].cget("text")
+                                 if parts["totals"] else ""),
               parts["totals"].cget("text") if parts["totals"] else "")
 
         #  -- a card typed in by hand
@@ -766,8 +841,8 @@ def test_panel(root):
               any("Lemieux #40" in item for item in rows.items), rows.items)
         check("and carries the price that was typed",
               any("9.00" in item for item in rows.items), rows.items)
-        check("the quote now says four cards",
-              "4 cards on the quote" in (parts["totals"].cget("text") or ""),
+        check("the quote now says three cards",
+              "3 cards on the quote" in (parts["totals"].cget("text") or ""),
               parts["totals"].cget("text"))
 
         #  -- the customer, the discount, the look
@@ -784,6 +859,9 @@ def test_panel(root):
         parts["logo"].set(str(root / "logo.png"))
         parts["company"].set("Piskun Cards")
 
+        #  The order the matches were shown in is kept for the next quote.
+        parts["sort"].set("Newest first")
+        parts["sort_box"].event_generate("<<ComboboxSelected>>")
         buttons["Save the quote"].invoke()
         quotes = folder / "quotes"
         saved = quotes / ("Q-%d-0001.json" % date.today().year)
@@ -802,8 +880,11 @@ def test_panel(root):
               data["look"]["color"] == "#C62828"
               and data["look"]["logo"].endswith("logo.png"), data["look"])
         check("the total on the screen is the discounted one",
-              "TOTAL C$22.95" in (parts["totals"].cget("text") or ""),
+              "TOTAL C$16.65" in (parts["totals"].cget("text") or ""),
               parts["totals"].cget("text"))
+        check("the sort that was chosen is remembered for the next quote",
+              app.settings.get("quote_sort") == "newest",
+              app.settings.get("quote_sort"))
 
         opened = []
         with patch_object(gui, "open_path",
@@ -840,7 +921,11 @@ def test_panel(root):
                   api.sent[0]["payload"]["line_items"]), api.sent)
         check("every card on the quote is on the order",
               [row["product_id"] for row in
-               api.sent[0]["payload"]["line_items"]] == [501, 502, 503, 504],
+               api.sent[0]["payload"]["line_items"]] == [501, 502, 504],
+              api.sent[0]["payload"]["line_items"])
+        check("and the out-of-stock card is not on it",
+              503 not in [row["product_id"] for row in
+                          api.sent[0]["payload"]["line_items"]],
               api.sent[0]["payload"]["line_items"])
         check("the order is opened so it can be checked",
               any("post.php" in url for url in app.opened), app.opened)

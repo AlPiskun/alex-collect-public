@@ -145,6 +145,7 @@ def load_user_settings(path: Path = SETTINGS_FILE) -> dict:
         "quote_contact": "",
         "quote_color": "#1F4E79",
         "quote_logo": "",
+        "quote_sort": "name",
         "quotes_dir": "",
         **saved,
     }
