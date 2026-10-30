@@ -280,12 +280,25 @@ def main():
           18 <= int(gui.ttk.Style(app).lookup("TaskMenu.TButton", "width")) <= 30)
     task_sections = [w.cget("text") for w in walk(tasks_frame(app))
                      if isinstance(w, gui.ttk.LabelFrame)]
-    check("tasks are separated into customer, batch, After, order, Photos, "
-          "and Re-run sections",
+    check("tasks are separated into customer, batch, After, and Photos "
+          "sections",
           task_sections == ["Sell to a customer", "Sell a new batch",
-                            "After a sale", "Print an order", "Photos",
-                            "Re-run a marketplace"],
+                            "After a sale", "Photos"],
           str(task_sections))
+    task_labels = [w.cget("text") for w in walk(tasks_frame(app))
+                   if w.cget("style") == "TaskMenu.TButton"]
+    check("the print-an-order button is in the after-a-sale section",
+          task_labels.index("Print an order") > task_labels.index("A card sold")
+          and task_labels.index("Print an order") > task_labels.index(
+              "The checklist"),
+          str(task_labels))
+    check("the re-run panel is offered with the batch it re-runs",
+          task_labels.index("Re-run a marketplace") > task_labels.index(
+              "Run the card pipeline"),
+          str(task_labels))
+    check("staging, importing and wiring are no longer task buttons",
+          not ({"Stage the photos", "Import / publish drafts",
+                "Wire the photos"} & set(task_labels)), str(task_labels))
 
     print("== 3. every panel builds from the task menu ==")
     for pid in gui.PANEL_ORDER:

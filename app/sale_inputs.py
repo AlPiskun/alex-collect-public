@@ -13,8 +13,15 @@ from pathlib import Path
 
 NOT_SOLD_STATUSES = ("cancelled", "refunded", "failed", "pending", "trash", "checkout-draft")
 
-def woo_get(base, path, params, key, secret, timeout=60, retries=3):
-    """GET the WooCommerce REST API. Returns (status, parsed-or-text)."""
+def woo_get(base, path, params, key, secret, timeout=60, retries=3,
+            with_headers=False):
+    """GET the WooCommerce REST API. Returns (status, parsed-or-text).
+
+    ``with_headers`` adds the response headers as a third item. They are how a
+    paginated read knows how many pages there are (``X-WP-TotalPages``), which
+    is what a progress bar needs; every existing caller keeps the pair it has
+    always had.
+    """
     q = dict(params or {})
     q["consumer_key"] = key
     q["consumer_secret"] = secret
@@ -27,13 +34,19 @@ def woo_get(base, path, params, key, secret, timeout=60, retries=3):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 body = r.read().decode("utf-8", "replace")
-                return r.status, json.loads(body)
+                answer = (r.status, json.loads(body))
+                if with_headers:
+                    return answer + (dict(r.headers.items()),)
+                return answer
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", "replace")
             try:
-                return exc.code, json.loads(body)
+                answer = (exc.code, json.loads(body))
             except Exception:
-                return exc.code, body[:300]
+                answer = (exc.code, body[:300])
+            if with_headers:
+                return answer + (dict(getattr(exc, "headers", {}) or {}),)
+            return answer
         except Exception as exc:
             last = str(exc)
     return 0, last

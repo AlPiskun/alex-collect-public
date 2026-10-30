@@ -2269,9 +2269,11 @@ def test_a_duplicate_on_the_website():
 
     # ---- and the panel says exactly that, in words that name the duplicate
     folder, app, parent = build_panel()
+    #  Both copies hold stock: a card at zero that is nowhere else is not shown
+    #  at all any more, and the duplicate worth naming is one that could sell.
     products = PRODUCTS + [
         {"id": 11, "name": title, "sku": "", "manage_stock": True,
-         "stock_quantity": 0, "type": "simple"},
+         "stock_quantity": 1, "type": "simple"},
         {"id": 12, "name": title, "sku": "", "manage_stock": True,
          "stock_quantity": 2, "type": "simple"}]
 
@@ -2302,9 +2304,12 @@ def test_a_duplicate_on_the_website():
     check("and calls the identical one a duplicate, not a card to list",
           any("a duplicate on your website, not a card to list" in text
               for _tag, text in app.lines), str(app.lines[-6:]))
+    #  The sold-out copy and the sold-out Orr are both out of the list now, so
+    #  two one-sided cards remain and the duplicate is not one of the really
+    #  missing ones.
     check("and the duplicate is not counted among the cards that are really "
           "missing",
-          any("nothing similar" in text and "2 of those 3" in text
+          any("nothing similar" in text and "1 of those 2" in text
               for _tag, text in app.lines), str(len(app.lines)))
 
 
@@ -2391,7 +2396,7 @@ def test_held_under_another_product():
          "sku": "", "manage_stock": True, "stock_quantity": 6,
          "type": "simple"},
         {"id": 11, "name": "#25 Pete Stemkowski (EX) 1970-71 O-Pee-Chee",
-         "sku": "", "manage_stock": True, "stock_quantity": 0,
+         "sku": "", "manage_stock": True, "stock_quantity": 1,
          "type": "simple"},
         {"id": 13, "name": "#24 1st Series Checklist (VG) 1970-71 O-Pee-Chee",
          "sku": "", "manage_stock": True, "stock_quantity": 1,
@@ -2507,11 +2512,461 @@ def test_a_reader_that_cannot_ask_for_a_fresh_page():
           str(lines[-3:]))
 
 
+def test_reading_pages_side_by_side():
+    print()
+    print("== 4b. the catalogue is read a few pages at a time, in order ==")
+    import threading
+    import time
+
+    #  Two pages that will not answer until the other one has been asked for:
+    #  a reader that asks one page after another waits for the timeout twice,
+    #  a reader that asks them together never waits at all.
+    in_flight = set()
+    together = []
+    lock = threading.Lock()
+    gate = threading.Event()
+
+    def slow_fetch(base, path, params, key, secret):
+        page = params["page"]
+        if page == 1:
+            return 200, [{"id": 1, "name": "card 1"}]
+        with lock:
+            in_flight.add(page)
+            if len(in_flight) >= 2:
+                together.append(set(in_flight))
+                gate.set()
+        gate.wait(2.0)
+        return 200, [{"id": page, "name": "card %d" % page}]
+
+    began = time.time()
+    products = stock_compare.read_woo_stock(slow_fetch, "https://shop.example",
+                                            "ck_a", "cs_b", per_page=1,
+                                            pages=3)
+    took = time.time() - began
+    check("pages beyond the first are asked for together",
+          together and together[0] == {2, 3}, str(together))
+    check("and the wait was not one page after another", took < 1.0,
+          "%.2fs" % took)
+    check("the products come back in catalogue order",
+          [p["id"] for p in products] == [1, 2, 3],
+          str([p["id"] for p in products]))
+
+    calls = []
+
+    def fetch(base, path, params, key, secret):
+        calls.append((params["page"], dict(params)))
+        page = params["page"]
+        cards = 10 if page < 5 else 3        # the fifth page is the last one
+        return 200, [{"id": i, "name": "card"} for i in range(cards)]
+
+    stock_compare.read_woo_stock(fetch, "https://shop.example", "ck_a", "cs_b",
+                                 per_page=10, pages=40)
+    check("a page order is asked for, so pages cannot overlap or skip",
+          all(params.get("orderby") == "id" and params.get("order") == "asc"
+              for _page, params in calls), str(calls[:1]))
+    check("reading stops after the last page, short or not",
+          sorted(params["page"] for _p, params in calls) == [1, 2, 3, 4, 5],
+          str([params["page"] for _p, params in calls]))
+    check("the pages beside the short one are not asked for", len(calls) == 5,
+          str(len(calls)))
+
+    #  A site that states its own page count is what turns the bar into a
+    #  fraction; one that does not is still read the same way.
+    seen = []
+
+    def with_headers(base, path, params, key, secret):
+        return (200,
+                [{"id": 1, "name": "card"}],
+                {"X-WP-TotalPages": "3", "X-WP-Total": "3"})
+
+    stock_compare.read_woo_stock(with_headers, "https://shop.example", "ck_a",
+                                 "cs_b", per_page=1, pages=3,
+                                 progress=lambda done, total, cards:
+                                 seen.append((done, total, cards)))
+    check("the site's own page count is used, not guessed",
+          seen and all(total == 3 for _done, total, _cards in seen), str(seen))
+    check("and the bar is told where every page ended",
+          [done for done, _total, _cards in seen] == [1, 2, 3], str(seen))
+
+    seen = []
+    stock_compare.read_woo_stock(fetch, "https://shop.example", "ck_a", "cs_b",
+                                 per_page=10, pages=3,
+                                 progress=lambda done, total, cards:
+                                 seen.append((done, total, cards)))
+    check("a site that says nothing leaves the total unknown",
+          seen and all(total is None for _d, total, _c in seen), str(seen))
+    check("the count of cards read grows with every page",
+          [cards for _d, _t, cards in seen] == [10, 20, 30], str(seen))
+
+    def broken_progress(*_args):
+        raise RuntimeError("no bar here")
+
+    try:
+        stock_compare.read_woo_stock(fetch, "https://shop.example", "ck_a",
+                                     "cs_b", per_page=10, pages=2,
+                                     progress=broken_progress)
+        check("a progress display that fails cannot fail the read", True, "")
+    except Exception as exc:
+        check("a progress display that fails cannot fail the read", False,
+              str(exc))
+
+
+def test_the_get_can_bring_its_headers():
+    print()
+    print("== 4b2. the plain GET can bring the page count back with it ==")
+    import urllib.request
+    from sale_inputs import woo_get
+
+    asked = []
+
+    class Answer:
+        """What urlopen hands back: a body, a status and some headers."""
+
+        def __init__(self, body, status=200, headers=None):
+            self.body = body.encode("utf-8")
+            self.status = status
+            self.headers = headers or {}
+
+        def read(self):
+            return self.body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    def net(request, timeout=None):
+        asked.append(request.full_url)
+        return Answer(json.dumps([{"id": 1}]), 200,
+                      {"X-WP-TotalPages": "7"})
+
+    real = urllib.request.urlopen
+    urllib.request.urlopen = net
+    try:
+        code, data = woo_get("https://shop.example", "/wp-json/wc/v3/products",
+                             {"page": 1}, "ck_a", "cs_b")
+        check("the GET still answers with a pair when nobody asks for headers",
+              code == 200 and data == [{"id": 1}], "%r %r" % (code, data))
+        answer = woo_get("https://shop.example", "/wp-json/wc/v3/products",
+                         {"page": 1}, "ck_a", "cs_b", with_headers=True)
+        check("asking for them makes it a triple",
+              isinstance(answer, tuple) and len(answer) == 3, str(answer))
+        check("and the page count is in there",
+              answer[2].get("X-WP-TotalPages") == "7", str(answer[2]))
+        check("the keys are still sent as the API wants them",
+              "consumer_key=ck_a" in asked[0] and
+              "consumer_secret=cs_b" in asked[0], asked[0])
+    finally:
+        urllib.request.urlopen = real
+
+
+def test_a_sold_out_card_is_not_a_job():
+    print()
+    print("== 4c. a card at zero that is nowhere else is not shown ==")
+    woo, _ = stock_compare.woo_items(PRODUCTS)
+    gone = {"id": 30, "name": "1971-72 O-Pee-Chee Eddie Shack #60",
+            "sku": "SH-60", "qty": 0}
+    kept = {"id": 31, "name": "1971-72 O-Pee-Chee Jean Beliveau #20",
+            "sku": "BE-20", "qty": 3}
+    pairs, _only_woo, _only_other = stock_compare.pair([], [])
+    rows = stock_compare.action_list([], [gone, kept], [])
+    check("only the card with stock is on the list",
+          [row["card"] for row in rows] == [kept["name"]],
+          str([row["card"] for row in rows]))
+    check("the one at zero is not there at all",
+          all(row["card"] != gone["name"] for row in rows), str(rows))
+    check("and it is named rather than silently dropped",
+          stock_compare.sold_out_note([gone, kept], "CanadianShopper") ==
+          "1 card at zero on your website and not on CanadianShopper, "
+          "so not shown.",
+          stock_compare.sold_out_note([gone, kept]))
+    check("with no such card there is no sentence",
+          stock_compare.sold_out_note([kept]) == "",
+          stock_compare.sold_out_note([kept]))
+    check("the lists are told apart",
+          stock_compare.listed_only_woo([gone, kept]) == [kept] and
+          stock_compare.sold_out_only_woo([gone, kept]) == [gone], "")
+    check("a negative count is not offered either",
+          stock_compare.listed_only_woo([{"name": "backorder", "qty": -2}]) ==
+          [], "")
+    line = stock_compare.summary(rows, [{"card": "matched"}], [gone, kept], [])
+    check("a card with stock still reads as only on your website",
+          "1 only on your website" in line, line)
+    check("and a card at zero does not", "2 only" not in line, line)
+
+    #  The list the panel shows is the same list every button works from, so a
+    #  card that is not on it cannot be listed by accident.
+    folder, app, parent = build_panel()
+    products = PRODUCTS + [
+        {"id": 30, "name": gone["name"], "sku": "SH-60", "manage_stock": True,
+         "stock_quantity": 0, "type": "simple"},
+        {"id": 31, "name": kept["name"], "sku": "BE-20", "manage_stock": True,
+         "stock_quantity": 3, "type": "simple"}]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_all), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+        (folder / "cs-stock.json").write_text(json.dumps({"items": []}),
+                                              encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+    listing = next((w for w in parent.walk()
+                    if isinstance(w, gui.tk.Listbox)), None)
+    check("the panel does not list the sold-out card",
+          listing is not None and
+          all(gone["name"] not in str(item) for item in listing.items),
+          str(listing and listing.items))
+    said = [str(w.cget("text")) for w in parent.walk()
+            if isinstance(w, gui.ttk.Label)]
+    check("the panel says how many it left out",
+          any("at zero on your website" in text and "not shown" in text
+              for text in said) or
+          any("at zero on your website" in str(text) for _tag, text in
+              app.lines), str(said[-3:]))
+
+
+def test_the_list_can_be_sorted():
+    print()
+    print("== 4d. the result can be read in a different order ==")
+    rows = [
+        {"card": "Bravo card", "kind": stock_compare.FIX, "gap": 1, "woo": 4,
+         "other": 3},
+        {"card": "alpha card", "kind": stock_compare.ONLY_WOO, "gap": 9,
+         "woo": 9, "other": None},
+        {"card": "Charlie card", "kind": stock_compare.FIX, "gap": -6, "woo": 1,
+         "other": 7},
+        {"card": "Delta card", "kind": stock_compare.OFF_SALE, "gap": 0,
+         "woo": 2, "other": 0},
+    ]
+    check("the chooser offers six ways to read the list",
+          len(stock_compare.SORTS) == 6 and
+          stock_compare.DEFAULT_SORT == "attention", str(stock_compare.SORTS))
+    check("the labels are the ones the chooser shows",
+          stock_compare.sort_labels()[0] == "What needs attention first" and
+          "Card name (A-Z)" in stock_compare.sort_labels(),
+          str(stock_compare.sort_labels()))
+    check("a label and its key agree both ways",
+          all(stock_compare.sort_key(stock_compare.sort_label(key)) == key
+              for key, _label in stock_compare.SORTS), "")
+    check("nothing chosen is what needs attention first",
+          [row["card"] for row in stock_compare.sort_rows(rows)] ==
+          ["Charlie card", "Bravo card", "Delta card", "alpha card"],
+          str([row["card"] for row in stock_compare.sort_rows(rows)]))
+    check("by name, capital letters do not come first",
+          [row["card"] for row in stock_compare.sort_rows(rows, "name")] ==
+          ["alpha card", "Bravo card", "Charlie card", "Delta card"],
+          str([row["card"] for row in stock_compare.sort_rows(rows, "name")]))
+    check("and back again",
+          [row["card"] for row in stock_compare.sort_rows(rows, "name-desc")] ==
+          ["Delta card", "Charlie card", "Bravo card", "alpha card"], "")
+    check("the biggest difference first, whichever side it is on",
+          [row["card"] for row in stock_compare.sort_rows(rows, "gap")] ==
+          ["alpha card", "Charlie card", "Bravo card", "Delta card"],
+          str([row["card"] for row in stock_compare.sort_rows(rows, "gap")]))
+    check("the most stock on the website first",
+          [row["card"] for row in stock_compare.sort_rows(rows, "woo")] ==
+          ["alpha card", "Bravo card", "Delta card", "Charlie card"], "")
+    check("the most stock elsewhere first",
+          [row["card"] for row in stock_compare.sort_rows(rows, "other")] ==
+          ["Charlie card", "Bravo card", "Delta card", "alpha card"], "")
+    check("no order ever loses a row",
+          all(len(stock_compare.sort_rows(rows, key)) == len(rows)
+              for key, _label in stock_compare.SORTS), "")
+    check("a sort nobody knows is the default rather than an error",
+          stock_compare.sort_key("sort by magic") == stock_compare.DEFAULT_SORT
+          and stock_compare.sort_label("magic") ==
+          "What needs attention first", "")
+    check("sorting does not touch the list it was given",
+          [row["card"] for row in rows] ==
+          ["Bravo card", "alpha card", "Charlie card", "Delta card"],
+          str([row["card"] for row in rows]))
+
+    # ---- and the panel: the chooser re-reads the list, nothing is compared
+    folder, app, parent = build_panel()
+    products = PRODUCTS + [
+        {"id": 30, "name": "Zulu card", "sku": "ZU-1", "manage_stock": True,
+         "stock_quantity": 1, "type": "simple"},
+        {"id": 31, "name": "Alpha card", "sku": "AL-1", "manage_stock": True,
+         "stock_quantity": 5, "type": "simple"}]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    saved = []
+
+    def fake_save(settings):
+        saved.append(dict(settings))
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_all), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "save_settings", fake_save), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+        (folder / "cs-stock.json").write_text(json.dumps({"items": []}),
+                                              encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+        listing = next(w for w in parent.walk()
+                       if isinstance(w, gui.tk.Listbox))
+        first = list(listing.items)
+        check("the list opens in the order that needs attention first",
+              len(first) == 3 and first[0].startswith("Alpha card"),
+              str(first))
+        chooser = next((w for w in parent.walk()
+                        if isinstance(w, gui.ttk.Combobox)), None)
+        check("the panel has a sort chooser beside the list",
+              chooser is not None and
+              list(chooser._kw.get("values") or []) ==
+              stock_compare.sort_labels(), str(chooser and chooser._kw))
+        check("it opens on what needs attention first",
+              chooser._kw["textvariable"].get() ==
+              "What needs attention first",
+              chooser._kw["textvariable"].get())
+        runs_before = len(app.runs)
+        chooser._kw["textvariable"].set("Card name (A-Z)")
+        chooser.event_generate("<<ComboboxSelected>>")
+        second = list(listing.items)
+        check("choosing a sort re-reads the same list, not the sites",
+              second != first and len(second) == len(first) and
+              len(app.runs) == runs_before, str(second[:2]))
+        names = [item.split("  -  ")[0] for item in second]
+        check("and it really is by card name",
+              names == sorted(names, key=str.lower), str(names))
+        check("the choice is remembered for the next comparison",
+              saved and saved[-1].get("stock_sort") == "name", str(saved[-1:]))
+        chooser._kw["textvariable"].set("Biggest difference first")
+        chooser.event_generate("<<ComboboxSelected>>")
+        check("a second sort works from the same list",
+              list(listing.items) == first and
+              saved[-1].get("stock_sort") == "gap", str(saved[-1:]))
+
+    #  A saved choice is used again next time the panel is built.
+    folder2 = Path(tempfile.mkdtemp())
+    harness.install_plugin("1.0.19", folder2 / "plugin")
+    app2 = harness.FakeApp(folder2)
+    app2.settings["stock_sort"] = "name"
+    parent2 = harness.FakeWidget()
+    gui.build_stock(parent2, app2)
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_all), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder2):
+        find(parent2, gui.ttk.Button, "Compare stock", exact=False).invoke()
+        (folder2 / "cs-stock.json").write_text(json.dumps({"items": []}),
+                                               encoding="utf-8")
+        app2.runs[-1]["on_done"](0)
+        listing = next(w for w in parent2.walk()
+                       if isinstance(w, gui.tk.Listbox))
+        chooser = next(w for w in parent2.walk()
+                       if isinstance(w, gui.ttk.Combobox))
+        names = [item.split("  -  ")[0] for item in listing.items]
+        check("the panel reopens on the sort it was left on",
+              chooser._kw["textvariable"].get() == "Card name (A-Z)" and
+              names == sorted(names, key=str.lower),
+              "%r %r" % (chooser._kw["textvariable"].get(), names))
+
+
+def test_the_read_shows_where_it_is():
+    print()
+    print("== 4e. a read that takes a while says so, on a bar ==")
+    folder, app, parent = build_panel()
+    bars = [w for w in parent.walk() if isinstance(w, gui.ttk.Progressbar)]
+    check("the panel has a progress bar", len(bars) == 1, str(bars))
+    bar = bars[0]
+    check("it is not on screen before anything is read", not bar.packed,
+          str(bar.packed))
+
+    def fetch_two_pages(base, path, params, key, secret):
+        rows = [{"id": i, "name": "Card %d" % i, "sku": "",
+                 "manage_stock": True, "stock_quantity": 1, "type": "simple"}
+                for i in range(100)]
+        if params["page"] == 1:
+            return (200, rows, {"X-WP-TotalPages": "2"})
+        return (200, rows[:2], {"X-WP-TotalPages": "2"})
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_two_pages), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+        check("the bar is drawn while CanadianShopper is read", bar.packed,
+              str(bar.packed))
+        said = " ".join(str(w.cget("text")) for w in parent.walk())
+        check("and it says what is being read",
+              "Reading CanadianShopper's stock..." in said, said[:160])
+        moved = []
+        original = bar.configure
+
+        def record(**kwargs):
+            moved.append(dict(kwargs))
+            return original(**kwargs)
+
+        bar.configure = record
+        (folder / "cs-stock.json").write_text(json.dumps({"items": []}),
+                                              encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+        check("it counts the pages of the website's catalogue",
+              any(step.get("value") == 1 and step.get("maximum") == 2
+                  for step in moved), str(moved))
+        check("and it is out of the way when the read is done",
+              not bar.packed, str(bar.packed))
+
+    #  A read that fails takes the bar down too, rather than leaving it
+    #  sweeping under an error message.
+    folder2, app2, parent2 = build_panel()
+    bar2 = next(w for w in parent2.walk()
+                if isinstance(w, gui.ttk.Progressbar))
+
+    def fetch_fails(base, path, params, key, secret):
+        return 403, {"message": "no"}
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_fails), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder2):
+        find(parent2, gui.ttk.Button, "Compare stock", exact=False).invoke()
+        (folder2 / "cs-stock.json").write_text(json.dumps({"items": []}),
+                                               encoding="utf-8")
+        app2.runs[-1]["on_done"](0)
+    check("a failed read does not leave a bar running", not bar2.packed,
+          str(bar2.packed))
+
+
 def main():
     test_woo_items()
     test_plugin_items()
     test_stock_file()
     test_reading_woo()
+    test_reading_pages_side_by_side()
+    test_the_get_can_bring_its_headers()
+    test_a_sold_out_card_is_not_a_job()
+    test_the_list_can_be_sorted()
+    test_the_read_shows_where_it_is()
     test_pairing()
     test_spellings()
     test_card_numbers()
