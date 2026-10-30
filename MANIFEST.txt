@@ -1,4 +1,4 @@
-Alex Collect 2.86 — public core package
+Alex Collect 2.87 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -37,6 +37,10 @@ app/:
                                    totals, and a second page when it overruns
   order_pdf.py                    draw an order on the same paper, with a
                                    picture of every card on it
+  doc_images.py                    the cards' pictures: fetch each once, keep
+                                   it, draw it in its box (both documents)
+  pdf_writer.py                    write the drawn pages as a PDF, with a
+                                   link on every card's title
   facebook-feed-settings.example.json
                                   starter values for the Facebook workbook fields
   plugin_manager.py               local ZIP plugin manager

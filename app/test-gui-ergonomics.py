@@ -47,10 +47,18 @@ def main():
     check("core task menu omits plugin-only tasks",
           not ({"stage", "wire", "zerostock"} & core_ids))
     check("task sections are Sell to a customer, Sell a new batch, After a "
-          "sale, Photos, and Re-run",
+          "sale, Print an order, Photos, and Re-run",
           [name for name, _ids in gui.groups_for(True)] ==
-          ["Sell to a customer", "Sell a new batch", "After a sale", "Photos",
-           "Re-run a marketplace"])
+          ["Sell to a customer", "Sell a new batch", "After a sale",
+           "Print an order", "Photos", "Re-run a marketplace"],
+          [name for name, _ids in gui.groups_for(True)])
+    #  The sheet prints any order, not only the one just sold - so it is its
+    #  own box after the after-a-sale jobs, and the last section of that tab.
+    check("the order sheet sits after the after-a-sale group, in both menus",
+          dict(gui.groups_for(True))["Print an order"] == ["ordersheet"] and
+          dict(gui.groups_for(False))["Print an order"] == ["ordersheet"] and
+          gui.TAB_HOME == {"ordersheet": "After a sale"} and
+          gui.PANEL_BUILDERS["ordersheet"] is gui.build_ordersheet)
     check("the order-from-a-list panel leads the tasks",
           gui.groups_for(True)[0][1] == ["ordertext"] and
           gui.groups_for(False)[0][1] == ["ordertext"] and

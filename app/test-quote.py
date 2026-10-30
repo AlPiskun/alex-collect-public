@@ -298,10 +298,139 @@ def test_files(root):
           quote_model.next_number(root / "empty") == "Q-%d-0001"
           % date.today().year, quote_model.next_number(root / "empty"))
 
+    #  The search box on the Print an order panel reads this folder when no
+    #  website can be asked: a quote carries the customer and every card name.
+    #  Both saved quotes are the same sample, so both answer - which is the
+    #  point of a search: it lists the matches, it does not pick one.
+    found = quote_model.find_saved(folder, "whitfield")
+    check("a saved quote is found by the customer's name",
+          [row["number"] for row in found] == ["Q-2026-0002", "Q-2026-0001"],
+          [row["number"] for row in found])
+    check("and by a card's name, in any order the words are typed",
+          [row["number"] for row in
+           quote_model.find_saved(folder, "batman 1")] ==
+          ["Q-2026-0002", "Q-2026-0001"],
+          quote_model.find_saved(folder, "batman 1"))
+    check("and by its number, with or without the Q-",
+          [row["number"] for row in
+           quote_model.find_saved(folder, "2026 0002")] == ["Q-2026-0002"],
+          quote_model.find_saved(folder, "2026 0002"))
+    check("every match says why it is there",
+          found[0]["why"] == ["the customer"], found[0]["why"])
+    check("a card match names the card on the quote",
+          any(why.startswith("a card: 1989 O-Pee-Chee Batman")
+              for why in quote_model.find_saved(folder, "batman")[0]["why"]),
+          quote_model.find_saved(folder, "batman")[0]["why"])
+    check("a search that matches nothing answers with nothing",
+          quote_model.find_saved(folder, "zzz") == [])
+    try:
+        quote_model.find_saved(folder, "  ")
+        blank_error = ""
+    except quote_model.QuoteError as error:
+        blank_error = error.message
+    check("and a blank search is asked for again, not answered",
+          "Type a quote number" in blank_error, blank_error or "no error")
+
     check("the quote as text holds every card and the total",
           all(word in quote_model.as_text(loaded)
               for word in ("Dana Whitfield", "Batman #1", "TOTAL",
                            "C$9.50")), quote_model.as_text(loaded))
+
+
+# --------------------------------------- 7. pictures and links on the page
+def test_pictures_and_links(root):
+    print()
+    print("== 7. the cards' pictures, and a name that opens the card ==")
+    picture = root / "card.png"
+    Image.new("RGB", (250, 350), (12, 200, 12)).save(picture)
+
+    quote = quote_model.new_quote()
+    quote_model.add_item(quote, {
+        "id": 501, "name": "Batman #1", "price": "4.00",
+        "images": [{"src": "https://shop.example/b.jpg"}],
+        "permalink": "https://shop.example/product/batman-1/"})
+    quote_model.add_item(quote, {"id": 502, "name": "Batman #2",
+                                 "price": "5.00"})
+    kept = quote_model.normalise(quote)
+    check("a card on a quote keeps its picture",
+          kept["items"][0]["image"] == "https://shop.example/b.jpg",
+          kept["items"][0])
+    check("and its page on the website, so the printed name can be a link",
+          kept["items"][0]["url"] ==
+          "https://shop.example/product/batman-1/", kept["items"][0])
+    check("a card with no picture or page keeps neither",
+          kept["items"][1]["image"] == "" and kept["items"][1]["url"] == "",
+          kept["items"][1])
+
+    folder = root / "linked-quotes"
+    written = quote_model.save(quote, folder)
+    back = quote_model.load(written)
+    check("and both survive being saved and opened next week",
+          back["items"][0]["image"] == "https://shop.example/b.jpg"
+          and back["items"][0]["url"] ==
+          "https://shop.example/product/batman-1/", back["items"][0])
+
+    def fake_get(site, path, params=None, key=None, secret=None, **kwargs):
+        return 200, [{"id": 7, "name": "Batman #1", "price": "4.00",
+                      "stock_status": "instock",
+                      "images": [{"src": "https://shop.example/b.jpg"}],
+                      "permalink": "https://shop.example/?p=7"}]
+
+    found = quote_model.search(fake_get, "s", "k", "s", "batman")
+    check("a card found on the shop carries its page as well as its picture",
+          found and found[0]["image"] == "https://shop.example/b.jpg"
+          and found[0]["url"] == "https://shop.example/?p=7", found)
+
+    counts = {}
+    links = {}
+    images = {"https://shop.example/b.jpg": picture}
+    pages = quote_pdf.build_pages(quote, dpi=100, images=images,
+                                  links=links, counts=counts)
+    check("every card with a picture is drawn, and the rest are counted",
+          counts.get("pictures") == 1 and counts.get("missing") == 1, counts)
+
+    #  The picture column, scanned for the colour of the test card.
+    margin = quote_pdf.Page(100).margin
+    width, _height = quote_pdf.picture_box(quote_pdf.Page(100))
+    drawn = any(
+        pages[0].getpixel((x, y)) == (12, 200, 12)
+        for x in range(margin, margin + width + 1, 2)
+        for y in range(0, pages[0].height, 4))
+    check("the picture is printed in the card's own column", drawn, "")
+
+    info = quote_pdf.render(quote, root / "linked.pdf", dpi=100, images=images)
+    printed = quote_pdf.pdf_writer.read_links(info["path"])
+    check("the PDF is written with a link, not only a picture",
+          info["path"].is_file() and printed ==
+          ["https://shop.example/product/batman-1/"], printed)
+    check("a card without a page prints without a link, not a dead one",
+          len(printed) == 1 and len(links.get(0) or []) == 1, links)
+    check("a picture that could not be fetched is counted, not fatal",
+          info.get("missing") == 1 and info["pages"] == 1, info)
+
+    #  The link sits over the card's name: right of the picture, left of the
+    #  quantity, so clicking a price never opens a product page.
+    page_size = quote_pdf.Page(100)
+    x0, y0, x1, y1, url = (links.get(0) or [(0, 0, 0, 0, "")])[0]
+    check("the link is over the name and nothing else",
+          x0 >= quote_pdf.card_column(page_size)
+          and x1 <= quote_pdf._columns(page_size)["quantity"]
+          and y1 > y0, (x0, y0, x1, y1))
+
+    #  A long quote: the links have to follow their cards onto every page.
+    many = sample()
+    for index in range(1, 41):
+        quote_model.add_item(many, {
+            "id": 900 + index, "name": "Linked Card #%d" % index,
+            "price": "1.00", "permalink":
+            "https://shop.example/p/%d/" % index})
+    many_info = quote_pdf.render(many, root / "linked-long.pdf", dpi=100)
+    many_links = quote_pdf.pdf_writer.read_links(many_info["path"])
+    check("every card's name is a link, across pages",
+          many_info["pages"] >= 2 and len(many_links) == 40
+          and many_links[0].endswith("/p/1/")
+          and many_links[-1].endswith("/p/40/"),
+          (many_info["pages"], len(many_links), many_links[-1:]))
 
 
 # ------------------------------------------------------------- 4. address
@@ -836,11 +965,14 @@ def test_panel(root):
         check("the panel offers the buttons a quote needs",
               {"Search the stock", "Add all the matches", "Save the quote",
                "Print the PDF...", "Turn into an order...",
-               "Save the order as a PDF...",
                "Type a card in by hand", "Start a new quote",
                "Open this quote", "Copy it as text",
                "Re-price from the website..."} <= set(buttons),
               sorted(buttons))
+        #  The order sheet moved to its own panel: printing a packed order is
+        #  an after-the-sale job, and a quote is not an order.
+        check("the order sheet is not offered from a quote any more",
+              "Save the order as a PDF..." not in buttons, sorted(buttons))
         bare = sorted(text for text, widget in buttons.items()
                       if not getattr(widget, "_alex_tooltip", None))
         check("every button on the panel explains itself on hover",
@@ -962,17 +1094,6 @@ def test_panel(root):
         check("and takes the website's price when it is told to",
               any("9.99" in item for item in rows.items), rows.items)
 
-        #  -- the order sheet, before there is an order
-        BOX.shown.clear()
-        buttons["Save the order as a PDF..."].invoke()
-        check("the order sheet says a quote is not an order yet",
-              BOX.shown and "not an order yet" in str(BOX.shown[-1]),
-              BOX.shown[-1:])
-        check("and writes no file pretending it is one",
-              not (quotes / "orders").exists(), sorted(
-                  str(p) for p in (quotes / "orders").glob("*")
-                  if p.exists()))
-
         #  -- the order
         asks.clear()
         confirmed.clear()
@@ -1004,66 +1125,6 @@ def test_panel(root):
         check("a total that did not match the quote is called out",
               BOX.shown and "different total" in str(BOX.shown[-1])
               or any("price changed" in text for _tag, text in app.lines),
-              app.lines[-3:])
-
-        #  -- the order sheet, once the order exists
-        orders = quotes / "orders"
-        sheet_seen = {}
-        real_document = gui.order_pdf.document
-
-        def capture_document(*args, **kwargs):
-            document = real_document(*args, **kwargs)
-            sheet_seen.update(document)
-            return document
-
-        opened.clear()
-        BOX.shown.clear()
-        with patch_object(gui.order_pdf, "document", capture_document), \
-                patch_object(gui.order_pdf, "fetch_images",
-                             lambda urls, folder, **k: {}), \
-                patch_object(gui, "open_path",
-                             lambda path: opened.append(str(path)) or True):
-            buttons["Save the order as a PDF..."].invoke()
-        sheet = orders / "order-4321.pdf"
-        check("the order sheet is written beside the quote files",
-              sheet.is_file(), sorted(str(p) for p in orders.glob("*")))
-        check("and opened, so it can be checked before it goes in the box",
-              str(sheet) in opened, opened)
-        check("the sheet carries the order's number, not the quote's",
-              sheet_seen.get("number") == "4321"
-              and sheet_seen.get("quote_number") == data["number"],
-              (sheet_seen.get("number"), sheet_seen.get("quote_number")))
-        check("its cards are the order's cards, read from the website",
-              [item["name"] for item in sheet_seen.get("items", [])] ==
-              ["1989 O-Pee-Chee Batman #1 NM 7"], sheet_seen.get("items"))
-        check("with the picture and price the order holds",
-              sheet_seen["items"][0]["price"] == 4.0
-              and sheet_seen["items"][0]["image"].endswith("card-501.jpg"),
-              sheet_seen["items"][0])
-        check("paying for the sheet is a read: the order is fetched, not "
-              "written",
-              any(row["method"] == "GET" and row["path"].endswith("/4321")
-                  for row in api.sent), api.sent[-3:])
-        check("the console says it was written, and warns about a missing "
-              "photo",
-              any("Order sheet written" in text and "without a photo" in text
-                  for _tag, text in app.lines), app.lines[-2:])
-
-        #  What the order's own record cannot supply, the quote does.
-        with patch_object(gui.order_pdf, "document", capture_document), \
-                patch_object(gui.order_pdf, "fetch_images",
-                             lambda urls, folder, **k: {}), \
-                patch_object(gui, "open_path", lambda path: True), \
-                patch_object(gui, "read_woo_credentials",
-                             lambda path=None: ("", "", "")):
-            sheet_seen.clear()
-            buttons["Save the order as a PDF..."].invoke()
-        check("with no keys the sheet is printed from the quote's own record",
-              sheet_seen.get("number") == "4321"
-              and len(sheet_seen.get("items") or []) == 3,
-              (sheet_seen.get("number"), len(sheet_seen.get("items") or [])))
-        check("and says so instead of pretending the site was read",
-              any("own record" in text for _tag, text in app.lines),
               app.lines[-3:])
 
         #  A shop that refuses the search has to say so in the panel. Tk runs
@@ -1149,6 +1210,7 @@ def main():
         test_address()
         test_order()
         test_pdf(root)
+        test_pictures_and_links(root)
         test_panel(root)
     print()
     if FAIL:

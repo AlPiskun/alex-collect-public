@@ -19,22 +19,19 @@ number, or a quote that has one - with no network at all in a test.
 """
 from __future__ import annotations
 
-import hashlib
-import urllib.request
 from datetime import date
 from pathlib import Path
 
-from PIL import Image
-
+import doc_images
+import pdf_writer
 import quote as quote_model
 import quote_pdf
 
-#: What the shop asks when we fetch a picture. A browser's own string would be
-#: a lie; the shops that matter serve these to anything.
-USER_AGENT = "AlexCollect order sheet"
-
-#: Where the pictures are kept between prints, inside the documents folder.
-CACHE_DIRNAME = ".images"
+#: What the shop asks when we fetch a picture, and where the pictures are kept
+#: between prints. Both live in :mod:`doc_images` now, so a picture downloaded
+#: for a quote is found again by the order sheet.
+USER_AGENT = doc_images.USER_AGENT
+CACHE_DIRNAME = doc_images.CACHE_DIRNAME
 
 #: The shop's order states in words a packer can read. A status this file has
 #: not met is printed as it came, capitalised, rather than being hidden.
@@ -59,7 +56,7 @@ CURRENCY_SIGNS = {"CAD": "C$", "USD": "$", "EUR": "\u20ac", "GBP": "\u00a3",
 #: The picture column, in inches. A trading card is 2.5 by 3.5, so the box is
 #: drawn at that shape and the image is fitted inside it.
 PICTURE_WIDTH = 0.60
-PICTURE_RATIO = 1.4
+PICTURE_RATIO = doc_images.CARD_RATIO
 
 
 # ------------------------------------------------------------------- facts
@@ -295,22 +292,11 @@ def document(quote=None, order=None, look=None, currency="", today=None):
 # ---------------------------------------------------------------- pictures
 def picture_urls(document):
     """Every picture the sheet needs, once each and in card order."""
-    urls = []
-    for item in (document or {}).get("items") or []:
-        url = _text(item.get("image"))
-        if url and url not in urls:
-            urls.append(url)
-    return urls
+    return doc_images.picture_urls((document or {}).get("items") or [])
 
 
 def _cache_name(url):
-    return hashlib.sha1(str(url).encode("utf-8")).hexdigest()[:20] + ".img"
-
-
-def _download(url, timeout):
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return response.read()
+    return doc_images.cache_name(url)
 
 
 def fetch_images(urls, folder, timeout=20, progress=None, opener=None):
@@ -322,48 +308,13 @@ def fetch_images(urls, folder, timeout=20, progress=None, opener=None):
     the same order again - or an order holding the same card - reads the file
     instead of the shop.
     """
-    cache = Path(str(folder)) / CACHE_DIRNAME
-    opener = opener or _download
-    found = {}
-    urls = [url for url in (urls or []) if _text(url)]
-    for index, url in enumerate(urls, 1):
-        target = cache / _cache_name(url)
-        if target.is_file() and target.stat().st_size:
-            found[url] = target
-        else:
-            try:
-                cache.mkdir(parents=True, exist_ok=True)
-                data = opener(url, timeout)
-                if data:
-                    #  Written beside the name and moved into place, so a
-                    #  download cut off halfway is never read back as a
-                    #  complete picture.
-                    partial = target.with_suffix(".part")
-                    partial.write_bytes(data)
-                    partial.replace(target)
-                    found[url] = target
-            except Exception:            # noqa: BLE001 - one bad picture
-                pass
-        if progress is not None:
-            try:
-                progress(index, len(urls))
-            except Exception:            # noqa: BLE001 - a progress bar
-                pass
-    return found
+    return doc_images.fetch_images(urls, folder, timeout=timeout,
+                                   progress=progress, opener=opener)
 
 
 def _load_picture(value):
     """A picture file, or an already-open image, as an image or ``None``."""
-    if value is None:
-        return None
-    if isinstance(value, Image.Image):
-        return value.convert("RGBA")
-    try:
-        picture = Image.open(str(value))
-        picture.load()
-    except (OSError, ValueError):
-        return None
-    return picture.convert("RGBA")
+    return doc_images.load_picture(value)
 
 
 # ------------------------------------------------------------------ layout
@@ -487,23 +438,10 @@ def _table_header(page, y, fonts):
 def _draw_picture(page, x, y, picture):
     """The card's photograph in its box; ``False`` when there is none."""
     width, height = _picture_box(page)
-    box = [x, y, x + width, y + height]
-    page.draw.rectangle(box, fill=quote_pdf.tint(page.colour, 0.95),
-                        outline=quote_pdf.RULE)
-    if picture is None:
-        text = "no photo"
-        font = page.font(6.4)
-        page.draw.text((x + (width - page.text_width(text, font)) / 2,
-                        y + height / 2 - page.pt(4)), text, font=font,
-                       fill=quote_pdf.SOFT)
-        return False
-    copy = picture.copy()
-    copy.thumbnail((max(1, width - page.pt(3)), max(1, height - page.pt(3))),
-                   Image.LANCZOS)
-    page.image.paste(copy, (int(x + (width - copy.width) / 2),
-                            int(y + (height - copy.height) / 2)),
-                     copy if copy.mode == "RGBA" else None)
-    return True
+    return doc_images.draw_picture(
+        page, x, y, width, height, picture,
+        background=quote_pdf.tint(page.colour, 0.95), border=quote_pdf.RULE,
+        note_colour=quote_pdf.SOFT)
 
 
 def _draw_row(page, y, row, fonts, zebra, images):
@@ -700,9 +638,7 @@ def render(document, path, images=None, dpi=quote_pdf.PRINT_DPI):
     pages, counts = build_pages(document, images=images, dpi=dpi)
     target = Path(str(path))
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        pages[0].save(target, "PDF", resolution=float(dpi), save_all=True,
-                      append_images=pages[1:], quality=92)
+        pdf_writer.write(pages, target, dpi=dpi, title="Order sheet")
     except (OSError, ValueError) as exc:
         raise quote_model.QuoteError(
             "The PDF could not be written to %s (%s)." % (target, exc),

@@ -274,10 +274,11 @@ def main():
           18 <= int(gui.ttk.Style(app).lookup("TaskMenu.TButton", "width")) <= 30)
     task_sections = [w.cget("text") for w in walk(tasks_frame(app))
                      if isinstance(w, gui.ttk.LabelFrame)]
-    check("tasks are separated into customer, batch, After, Photos, and "
-          "Re-run sections",
+    check("tasks are separated into customer, batch, After, order, Photos, "
+          "and Re-run sections",
           task_sections == ["Sell to a customer", "Sell a new batch",
-                            "After a sale", "Photos", "Re-run a marketplace"],
+                            "After a sale", "Print an order", "Photos",
+                            "Re-run a marketplace"],
           str(task_sections))
 
     print("== 3. every panel builds from the task menu ==")

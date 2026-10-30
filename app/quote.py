@@ -210,7 +210,8 @@ def normalise(quote):
                  "name": " ".join(str(item.get("name")).split()),
                  "price": str(item.get("price") or "").strip(),
                  "quantity": item_quantity(item),
-                 "image": item_image(item)}
+                 "image": item_image(item),
+                 "url": item_url(item)}
         clean.append(entry)
     quote["items"] = clean
     quote["number"] = str(quote.get("number") or "").strip()
@@ -253,11 +254,14 @@ def add_item(quote, product, quantity=1, replace_price=False):
                 #  A row saved before pictures were kept gains one now, so an
                 #  old quote can print its cards' photographs.
                 item["image"] = first_image(product)
+            if not item.get("url"):
+                item["url"] = product_url(product)
             return index
     items.append({"product_id": product_id, "sku": sku, "name": name,
                   "price": "" if price is None else "%.2f" % price,
                   "quantity": max(1, int(quantity or 1)),
-                  "image": first_image(product)})
+                  "image": first_image(product),
+                  "url": product_url(product)})
     return len(items) - 1
 
 
@@ -410,6 +414,27 @@ def item_image(item):
     return str((item or {}).get("image") or "").strip()
 
 
+def product_url(product):
+    """The card's page on the website, as the shop gave it, or ``""``.
+
+    Kept on the quote row so the printed quote can make the card's name a
+    link - months later, without asking the website anything. WooCommerce
+    calls the field ``permalink``; ``link`` is what some plugins answer with.
+    """
+    product = product or {}
+    for key in ("permalink", "link", "url"):
+        value = str(product.get(key) or "").strip()
+        if value.startswith(("http://", "https://")):
+            return value
+    return ""
+
+
+def item_url(item):
+    """The link a quote row carries, if it kept one."""
+    value = str((item or {}).get("url") or "").strip()
+    return value if value.startswith(("http://", "https://")) else ""
+
+
 def search(woo_get, site, key, secret, term, per_page=100):
     """The products whose name matches what was typed, as quote rows."""
     term = str(term or "").strip()
@@ -440,7 +465,8 @@ def search(woo_get, site, key, secret, term, per_page=100):
                          "price": str(product.get("price") or "").strip(),
                          "stock_status": str(product.get("stock_status") or ""),
                          "stock_quantity": product.get("stock_quantity"),
-                         "image": first_image(product)})
+                         "image": first_image(product),
+                         "url": product_url(product)})
     return products
 
 
@@ -624,6 +650,73 @@ def list_quotes(folder):
                      "currency": quote.get("currency", "")})
     rows.sort(key=lambda row: (row.get("issued") or "", row["number"]),
               reverse=True)
+    return rows
+
+
+def _loose(text):
+    """Text as it is compared: lower case, punctuation gone, one space each."""
+    letters = "".join(character if character.isalnum() else " "
+                      for character in str(text or "").lower())
+    return " ".join(letters.split())
+
+
+def _matches(term, haystack):
+    """Every word typed has to be in the text - in any order, ignoring case.
+
+    Word by word rather than as one substring, because a card is written
+    "#300 Amazing Spider-Man" on the website and "spider man 300" on the
+    phone, and a customer is written "Dana Reed" and typed "reed".
+    """
+    words = str(term or "").split()
+    return bool(words) and all(word in haystack for word in words)
+
+
+def find_saved(folder, term, limit=40):
+    """Saved quotes that answer a search: a number, a customer, or a card.
+
+    The quotes folder is the only place where all three of those live
+    together without a website - a quote holds the customer's name and the
+    name of every card on it, so "reed" and "batman" both find it. Each row
+    says why it was found, because printing the wrong quote's sheet is worse
+    than printing none.
+
+    Returns ``{number, path, customer, issued, total, currency, status,
+    cards, why}`` rows, newest first, at most ``limit`` of them.
+    """
+    query = _loose(term)
+    if not query:
+        raise QuoteError("Type a quote number, a customer's name, or a card's "
+                         "name to look for.")
+    rows = []
+    for row in list_quotes(folder):
+        if row.get("broken"):
+            continue
+        try:
+            saved = load(row["path"])
+        except QuoteError:
+            continue
+        why = []
+        if _matches(query, _loose(saved["number"])):
+            why.append("its number")
+        if _matches(query, _loose((saved.get("customer") or {}).get("name"))):
+            why.append("the customer")
+        cards = [str(item.get("name") or "") for item in items_of(saved)]
+        for name in cards:
+            if _matches(query, _loose(name)):
+                why.append("a card: %s" % name)
+                break
+        if not why:
+            continue
+        rows.append({"number": saved["number"], "path": row["path"],
+                     "customer": (saved.get("customer") or {}).get("name", ""),
+                     "issued": saved.get("issued", ""),
+                     "total": row.get("total"),
+                     "currency": saved.get("currency", ""),
+                     "status": saved.get("status", ""),
+                     "order_number": saved.get("order_number", ""),
+                     "cards": cards, "why": why})
+        if len(rows) >= max(1, int(limit)):
+            break
     return rows
 
 

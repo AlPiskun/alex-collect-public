@@ -533,6 +533,127 @@ def find_order(site, key, secret, number, timeout=60, opener=None):
         "dashboard." % text)
 
 
+def order_customer(order):
+    """The name on an order, as a person would say it."""
+    billing = (order or {}).get("billing") or {}
+    name = " ".join(part for part in (str(billing.get("first_name") or "").strip(),
+                                      str(billing.get("last_name") or "").strip())
+                    if part)
+    if name:
+        return name
+    return str((order or {}).get("customer_name") or "").strip() or "Guest"
+
+
+def order_cards(order, limit=4):
+    """What was on an order, as card names - few enough to read in a list."""
+    names = []
+    for line in (order or {}).get("line_items") or []:
+        if not isinstance(line, dict):
+            continue
+        name = " ".join(str(line.get("name") or "").split())
+        if not name:
+            continue
+        quantity = int(line.get("quantity") or 0)
+        names.append("%s x%d" % (name, quantity) if quantity > 1 else name)
+    if len(names) > limit:
+        return names[:limit] + ["+%d more" % (len(names) - limit)]
+    return names
+
+
+def _order_row(order, found_by):
+    """An order as the one line a chooser shows for it."""
+    cards = order_cards(order)
+    return {"order": order,
+            "number": str(order.get("number") or order.get("id") or "").strip(),
+            "id": int(order.get("id") or 0),
+            "customer": order_customer(order),
+            "status": str(order.get("status") or ""),
+            "date": str(order.get("date_created") or "")[:10],
+            "cards": cards,
+            "count": len((order or {}).get("line_items") or []),
+            "found_by": list(found_by)}
+
+
+#: How many products a card-name search will look through, and how many orders
+#: each one may add. A search for "Batman" can match a hundred products, and a
+#: hundred order reads is a slow panel, not a better answer.
+CARD_SEARCH_LIMIT = 6
+CARD_SEARCH_ORDERS = 20
+
+
+def search_orders(site, key, secret, term, per_page=20, timeout=60,
+                  opener=None):
+    """Orders a typed search could mean: a number, a customer, or a card.
+
+    Returns a list of rows (see :func:`_order_row`), most likely first: an
+    order whose own number matches, then whatever the shop's order search
+    answers, then orders holding a card whose name matches.
+
+    The first two are one call each. The third cannot be: a shop's order
+    search looks at its orders, and is not promised to look inside the cards
+    they sold - so the cards are searched first and each match is asked which
+    orders hold it. Nothing is guessed: every row says why it is there.
+    """
+    text = " ".join(str(term or "").split())
+    if not text:
+        raise OrderError("Type an order number, a customer's name, or a "
+                         "card's name to look for.")
+    note = text.lstrip("#").strip()
+    rows = []
+    seen = {}
+
+    def keep(order, why):
+        """One order, once - with every reason it turned up."""
+        if not isinstance(order, dict) or not order.get("id"):
+            return
+        identity = int(order["id"])
+        if identity in seen:
+            if why not in seen[identity]["found_by"]:
+                seen[identity]["found_by"].append(why)
+            return
+        row = _order_row(order, [why])
+        seen[identity] = row
+        rows.append(row)
+
+    #  1. The number itself. A shop that numbers its orders by id answers this
+    #     without a search, and a shop that numbers them its own way is caught
+    #     by the order search below.
+    if note.isdigit():
+        try:
+            keep(read_order(site, key, secret, note, timeout=timeout,
+                            opener=opener), "its number")
+        except OrderError:
+            pass
+
+    #  2. The shop's own order search - order numbers, customer names and
+    #     e-mail addresses, which is what it is for.
+    _status, data = api_request(site, key, secret, ORDERS_PATH,
+                                params={"search": text, "per_page": per_page},
+                                timeout=timeout, opener=opener)
+    for order in data if isinstance(data, list) else []:
+        if not isinstance(order, dict):
+            continue
+        same = str(order.get("number") or "").strip() == note
+        keep(order, "its number" if same else "the shop's search")
+
+    #  3. The cards. Search the products, then ask which orders hold each.
+    _status, data = api_request(site, key, secret, PRODUCTS_PATH,
+                                params={"search": text,
+                                        "per_page": CARD_SEARCH_LIMIT},
+                                timeout=timeout, opener=opener)
+    products = [product for product in (data if isinstance(data, list) else [])
+                if isinstance(product, dict) and product.get("id")]
+    for product in products[:CARD_SEARCH_LIMIT]:
+        name = " ".join(str(product.get("name") or "").split())
+        _status, data = api_request(site, key, secret, ORDERS_PATH,
+                                    params={"product": product["id"],
+                                            "per_page": CARD_SEARCH_ORDERS},
+                                    timeout=timeout, opener=opener)
+        for order in data if isinstance(data, list) else []:
+            keep(order, "a card: %s" % (name or product["id"]))
+    return rows
+
+
 def add_to_order(site, key, secret, order_id, plan, discount_percent=0,
                  note=None, timeout=60, opener=None):
     """Add the matched cards to an order that already exists.

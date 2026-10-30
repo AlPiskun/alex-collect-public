@@ -20,6 +20,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+import doc_images
+import pdf_writer
 import quote as quote_model
 
 #  A4, in inches. The page is drawn at PRINT_DPI and saved at the same
@@ -213,6 +215,17 @@ class Page:
 
 
 # ------------------------------------------------------------------- layout
+#: The picture column: a card's shape, narrower than the order sheet's,
+#: because a quote is a price document with a picture beside each price.
+PICTURE_WIDTH = 0.52
+
+
+def picture_box(page):
+    """The thumbnail's size in pixels, at this page's resolution."""
+    width = page.pt(PICTURE_WIDTH * 72)
+    return width, int(round(width * doc_images.CARD_RATIO))
+
+
 def _items(quote):
     return quote_model.items_of(quote)
 
@@ -221,13 +234,17 @@ def _table_rows(page, quote, fonts):
     """Every row of the table, with its wrapped description and its numbers."""
     currency = quote.get("currency") or ""
     rows = []
-    description_width = int((page.right - page.margin) * 0.52)
+    _pic_w, pic_h = picture_box(page)
+    description_width = (_columns(page)["quantity"] - card_column(page)
+                         - page.pt(8))
     body = fonts["body"]
     for index, item in enumerate(_items(quote), 1):
         name = str(item.get("name") or "")
         lines = page.wrap(name, body, description_width)
         price = quote_model.item_price(item)
         total = quote_model.line_total(item)
+        text_height = (page.pt(7) + len(lines) * page.pt(13) +
+                       (page.pt(11) if item.get("sku") else 0))
         rows.append({
             "index": index,
             "lines": lines,
@@ -237,8 +254,9 @@ def _table_rows(page, quote, fonts):
                      else "-",
             "amount": quote_model.money(total, currency) if total is not None
                       else "-",
-            "height": page.pt(7) + len(lines) * page.pt(13) +
-                      (page.pt(11) if item.get("sku") else 0),
+            "image": doc_images.url_of(item),
+            "url": quote_model.item_url(item),
+            "height": max(pic_h + page.pt(8), text_height + page.pt(10)),
         })
     return rows
 
@@ -397,7 +415,7 @@ def _table_header(page, y, fonts):
     label = fonts["label"]
     colour = shade(page.colour, 0.35)
     columns = _columns(page)
-    page.draw.text((columns["description"], y + page.pt(7)), "CARD", font=label,
+    page.draw.text((card_column(page), y + page.pt(7)), "CARD", font=label,
                    fill=colour)
     for key, heading in (("quantity", "QTY"), ("price", "EACH"),
                          ("amount", "AMOUNT")):
@@ -407,31 +425,52 @@ def _table_header(page, y, fonts):
     return y + height
 
 
+def card_column(page):
+    """Where a card's name starts - to the right of its picture."""
+    width, _height = picture_box(page)
+    return page.margin + width + page.pt(8)
+
+
 def _columns(page):
-    """Where each column's right edge sits, in pixels."""
+    """Where each column's edge sits, in pixels."""
     right = page.right
-    return {"description": page.margin + page.pt(6),
-            "quantity": right - int((right - page.margin) * 0.36),
+    return {"quantity": right - int((right - page.margin) * 0.36),
             "price": right - int((right - page.margin) * 0.18),
             "amount": right}
 
 
-def _draw_row(page, y, row, fonts, zebra):
+def _draw_row(page, y, row, fonts, zebra, images=None, links=None):
+    """One card: its picture, its name, its numbers - and the name as a link.
+
+    Returns ``(y, was_drawn)`` so the caller can count the pictures that were
+    not there.
+    """
     columns = _columns(page)
     height = row["height"]
     if zebra:
         page.draw.rectangle([page.margin, y, page.right, y + height],
                             fill=tint(page.colour, 0.965))
+    width, box_height = picture_box(page)
+    drawn = doc_images.draw_picture(
+        page, page.margin, y + page.pt(4), width, box_height,
+        doc_images.load_picture((images or {}).get(row["image"])),
+        background=tint(page.colour, 0.95), border=RULE, note_colour=SOFT)
     body = fonts["body"]
     right = fonts["body"]
+    left = card_column(page)
     text_y = y + page.pt(7)
-    for index, line in enumerate(row["lines"]):
-        page.draw.text((columns["description"], text_y), line, font=body,
-                       fill=INK)
+    for line in row["lines"]:
+        page.draw.text((left, text_y), line, font=body, fill=INK)
         text_y += page.pt(13)
     if row["sku"]:
-        page.draw.text((columns["description"], text_y),
-                       row["sku"], font=fonts["small"], fill=SOFT)
+        page.draw.text((left, text_y), row["sku"], font=fonts["small"],
+                       fill=SOFT)
+    if links is not None and row.get("url"):
+        #  The name is the link: the box covers the card's title and nothing
+        #  beside it, so clicking the price does not open the product page.
+        hit = [left, y + page.pt(4), columns["quantity"] - page.pt(6),
+               y + page.pt(7) + max(1, len(row["lines"])) * page.pt(13)]
+        links.append((hit[0], hit[1], hit[2], hit[3], row["url"]))
     quantity = str(row["quantity"])
     page.draw.text((columns["quantity"] - page.text_width(quantity, right),
                     y + page.pt(7)), quantity, font=right, fill=INK)
@@ -440,7 +479,7 @@ def _draw_row(page, y, row, fonts, zebra):
         page.draw.text((columns[key] - page.text_width(value, right),
                         y + page.pt(7)), value, font=right, fill=INK)
     page.line(page.margin, y + height, page.right, RULE)
-    return y + height
+    return y + height, drawn
 
 
 def _draw_totals(page, quote, fonts, y):
@@ -594,12 +633,18 @@ fonts_for = _fonts
 reserve_footer = _reserve_footer
 
 
-def build_pages(quote, dpi=PRINT_DPI):
+def build_pages(quote, dpi=PRINT_DPI, images=None, links=None, counts=None):
     """Every page of the quote, as images; the PDF is these pages in order.
 
     Returned rather than saved so the tests can look at the pixels - which is
     the only way to prove the logo is on the page and the colour is the one
     that was chosen.
+
+    ``images`` maps a card's picture URL to a file or an open image. ``links``
+    is a dict that gains the clickable card names, keyed by page number, and
+    ``counts`` gains how many pictures were drawn and how many were missing -
+    filled in rather than returned, because the page list is what every caller
+    already expects back.
     """
     quote = quote_model.normalise(quote)
     colour = parse_colour((quote.get("look") or {}).get("color"))
@@ -644,10 +689,18 @@ def build_pages(quote, dpi=PRINT_DPI):
         remaining = len(rows) - index
         take = remaining if remaining <= roomy else max(1, fits_full)
         placed = 0
+        page_links = []
         while placed < take and index < len(rows):
-            y = _draw_row(page, y, rows[index], fonts, zebra=index % 2 == 1)
+            y, was_drawn = _draw_row(page, y, rows[index], fonts,
+                                     zebra=index % 2 == 1, images=images,
+                                     links=page_links)
+            if counts is not None:
+                key = "pictures" if was_drawn else "missing"
+                counts[key] = counts.get(key, 0) + 1
             index += 1
             placed += 1
+        if links is not None and page_links:
+            links[len(pages)] = page_links
         more = index < len(rows) and placed > 0
         if not more:
             if not rows:
@@ -667,22 +720,27 @@ def build_pages(quote, dpi=PRINT_DPI):
     return draw_footers(pages, left, dpi)
 
 
-def render(quote, path, dpi=PRINT_DPI):
-    """Write the quote as a PDF; returns ``{path, pages, logo}``.
+def render(quote, path, dpi=PRINT_DPI, images=None):
+    """Write the quote as a PDF; returns ``{path, pages, logo, ...}``.
 
     ``logo`` says whether the logo file was readable, so a quote printed with
-    a missing logo can say so instead of quietly arriving without it.
+    a missing logo can say so instead of quietly arriving without it;
+    ``pictures`` and ``missing`` count the card pictures the same way.
     """
-    pages = build_pages(quote, dpi)
+    links = {}
+    counts = {}
+    pages = build_pages(quote, dpi, images=images, links=links,
+                        counts=counts)
     target = Path(str(path))
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        pages[0].save(target, "PDF", resolution=float(dpi), save_all=True,
-                      append_images=pages[1:], quality=92)
+        pdf_writer.write(pages, target, links=links, dpi=dpi,
+                         title="Quote %s" % (quote.get("number") or ""))
     except (OSError, ValueError) as exc:
         raise quote_model.QuoteError(
             "The PDF could not be written to %s (%s)." % (target, exc),
             "Close the file if it is open in a viewer, then print it again.")
     logo = str((quote.get("look") or {}).get("logo") or "").strip()
     return {"path": target, "pages": len(pages),
-            "logo": bool(logo) and _load_logo(logo) is not None}
+            "logo": bool(logo) and _load_logo(logo) is not None,
+            "pictures": counts.get("pictures", 0),
+            "missing": counts.get("missing", 0)}
