@@ -112,7 +112,10 @@ class FakeWidget:
             self.items = []
     def get(self, *args, **kwargs):
         return self.value      # Text.get("1.0", "end") and Entry.get()
-    def set(self, value): self.value = value
+    def set(self, *args):
+        #  A scroll bar is told (first, last); a variable-like stand-in is
+        #  told one value. Both are kept, so the test can look at either.
+        self.value = args[0] if len(args) == 1 else args
     def curselection(self):
         return self.selection or ((0,) if self.items else ())
     def selection_set(self, index): self.selection = (index,)
@@ -141,10 +144,44 @@ class FakeWidget:
     def grid_columnconfigure(self, *a, **k): return None
     def update(self): return None
     def update_idletasks(self): return None
+    # -- scheduling and measuring, as a scrolling page uses them ------------
+    def after(self, delay, callback=None):
+        """Remember the job instead of waiting for it.
+
+        A page asks for a re-measure once Tk has finished laying it out, and
+        a test cannot wait for that; the job is kept and fired by hand with
+        run_after(). Running it immediately would make the page re-measure
+        inside its own measurement.
+        """
+        self.jobs = getattr(self, "jobs", {})
+        self._job_no = getattr(self, "_job_no", 0) + 1
+        job = "job-%d" % self._job_no
+        self.jobs[job] = (delay, callback)
+        return job
+
+    def after_idle(self, callback=None):
+        return self.after(0, callback)
+
+    def after_cancel(self, job):
+        getattr(self, "jobs", {}).pop(job, None)
+
+    def run_after(self):
+        """Fire the jobs waiting now, once each, oldest first."""
+        waiting = list(getattr(self, "jobs", {}).items())
+        self.jobs = {}
+        for _job, (_delay, callback) in waiting:
+            if callback is not None:
+                callback()
+        return len(waiting)
+
+    def winfo_exists(self): return True
+    def winfo_reqheight(self): return getattr(self, "reqheight", 0)
+    def winfo_reqwidth(self): return getattr(self, "reqwidth", 0)
+    def canvasy(self, y): return float(y)
     def winfo_rootx(self): return 0
     def winfo_rooty(self): return 0
-    def winfo_width(self): return 800
-    def winfo_height(self): return 600
+    def winfo_width(self): return getattr(self, "width", 800)
+    def winfo_height(self): return getattr(self, "height", 600)
     def walk(self):
         yield self
         for child in self.children:
@@ -1838,6 +1875,99 @@ def test_spent_sitting():
     shutil.rmtree(folder, ignore_errors=True)
 
 
+def test_the_scroll_bar_is_drawn_when_the_page_grows():
+    print()
+    print("== 30. the scroll bar is drawn on a page that grew after the "
+          "window opened ==")
+
+    class Canvas(FakeWidget):
+        """A canvas with a real size, that records what it was told.
+
+        bbox() refuses to answer on purpose: the scroll region must be
+        stated from the measurements the frame took, not read back from
+        layout work Tk may not have done yet.
+        """
+        size = (1, 1)          # as Tk reports an unmapped canvas
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.items = {"inner": {"width": 0, "height": 0}}
+            self.region = None
+        def winfo_width(self): return self.size[0]
+        def winfo_height(self): return self.size[1]
+        def itemconfigure(self, tag, **k):
+            if tag == "inner":
+                self.items["inner"].update(k)
+        def configure(self, **k):
+            if "scrollregion" in k:
+                self.region = k["scrollregion"]
+            return self
+        def bbox(self, *a, **k): raise AssertionError("bbox is not needed")
+
+    holder = FakeWidget()
+    with patch.object(gui.tk, "Canvas", Canvas):
+        scroller = gui.ScrollFrame(holder)
+    #  The bar is part of the frame rather than a local: a bar nothing holds
+    #  on to can never be told how much of the page is in view.
+    check("the frame keeps its scroll bar", isinstance(scroller.vsb, FakeWidget),
+          str(scroller.vsb))
+    check("and the bar is the one that scrolls this canvas",
+          scroller.vsb._kw.get("command") == scroller.canvas.yview,
+          str(scroller.vsb._kw.get("command")))
+
+    #  A window that has not been given its size yet measures as one pixel;
+    #  sizing the page to that would make every later measurement wrong.
+    scroller.inner.reqheight = 400
+    scroller.run_after()
+    check("a window that is not on screen yet is not measured",
+          scroller.canvas.region is None, str(scroller.canvas.region))
+
+    scroller.canvas.size = (900, 620)
+    scroller.run_after()
+    check("a page that fits is stretched to the window",
+          scroller.canvas.items["inner"]["height"] == 620,
+          str(scroller.canvas.items["inner"]))
+    check("and there is nothing to scroll, so the thumb fills the trough",
+          scroller.vsb.value == (0.0, 1.0), str(scroller.vsb.value))
+
+    #  The page is built after this frame, so the first measurement is taken
+    #  before there is anything on it. Tk then has nothing to say: the frame
+    #  is pinned to the height of the window, so it never changes size and no
+    #  Configure arrives - which is the scroll bar that was missing until the
+    #  window itself was resized.
+    scroller.inner.reqheight = 2400
+    scroller.run_after()
+    check("the page is measured again once its content arrives",
+          scroller.canvas.items["inner"]["height"] == 2400,
+          str(scroller.canvas.items["inner"]))
+    check("the scroll region covers the whole page",
+          scroller.canvas.region == (0, 0, 900, 2400),
+          str(scroller.canvas.region))
+    shown = scroller.vsb.value
+    check("the thumb is drawn, smaller than the trough",
+          isinstance(shown, tuple) and 0.0 < shown[1] < 1.0, str(shown))
+    check("and it is the fraction of the page actually in view",
+          abs(shown[1] - 620.0 / 2400.0) < 1e-6, str(shown))
+
+    #  A page that shrinks again has to give the room back, or the bar keeps
+    #  offering to scroll through content that is no longer there.
+    scroller.inner.reqheight = 200
+    scroller.run_after()
+    check("a page that shrinks is stretched to the window again",
+          scroller.canvas.items["inner"]["height"] == 620,
+          str(scroller.canvas.items["inner"]))
+    check("and the thumb fills the trough again",
+          scroller.vsb.value == (0.0, 1.0), str(scroller.vsb.value))
+
+    #  Leaving a page must stop the watching, or every closed tab leaves a
+    #  timer behind asking a destroyed widget how tall it wants to be.
+    job = scroller._watch_job
+    check("the frame is watching while it is on screen", bool(job), str(job))
+    scroller.destroy()
+    check("closing the page stops the watching",
+          not job or job not in getattr(scroller, "jobs", {}),
+          str(getattr(scroller, "jobs", {})))
+
+
 def main():
     test_version_gates()
     test_pair_saved_and_sent()
@@ -1863,6 +1993,7 @@ def main():
     test_settings_have_their_own_sections()
     test_pinned_help_still_opens()
     test_the_page_fills_the_window()
+    test_the_scroll_bar_is_drawn_when_the_page_grows()
     test_grid_fits_a_small_screen()
     test_loading_is_visible()
     test_spent_sitting()

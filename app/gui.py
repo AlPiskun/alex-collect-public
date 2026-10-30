@@ -68,7 +68,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.87"
+VERSION = "2.88"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1263,6 +1263,11 @@ slab). Type its name or SKU and press Find.
   the nine front (and optional back) images.
 * The CanadianShopper store, eBay active listings, and Facebook selling
   pages open too, so every marketplace is one tab away.
+* With the WordPress username and Application Password saved (lines 4-5
+  of woo-keys.txt) the new photos are uploaded and set on the product
+  here, and each one is also filed under that product in the media
+  library - so the library shows them attached instead of listing them
+  under Unattached.
 
 With the CanadianShopper plugin installed you can also re-wire the
 gallery photos. Two separate offers: "Wire this card's photos?" touches
@@ -1373,6 +1378,11 @@ class ScrollFrame(ttk.Frame):
     """A vertically scrollable container: tall content scrolls, the console
     below never gets squeezed out of view."""
 
+    #  How often the page is asked whether it has grown. Tk fires Configure
+    #  when a widget's *actual* size changes and says nothing at all when only
+    #  its content does, which is exactly the case here.
+    WATCH_MS = 400
+
     def __init__(self, parent):
         super().__init__(parent)
         #  A Tk canvas is white unless told otherwise, and this one fills the
@@ -1382,45 +1392,142 @@ class ScrollFrame(ttk.Frame):
         #  the page end where its content ends.
         self.canvas = tk.Canvas(self, highlightthickness=0, bd=0,
                                 background=theme_background(self))
-        vsb = ttk.Scrollbar(self, orient="vertical",
-                            command=self.canvas.yview)
+        self.vsb = ttk.Scrollbar(self, orient="vertical",
+                                 command=self.canvas.yview)
         self.inner = ttk.Frame(self.canvas, padding=(2, 2))
         self._last_size = (0, 0)
+        self._last_view = None
+        self._natural = -1
+        self._watch_job = None
         self.inner.bind("<Configure>", self._resize)
         self.canvas.create_window((0, 0), window=self.inner, anchor="nw",
                                   tags="inner")
-        self.canvas.configure(yscrollcommand=vsb.set)
+        self.canvas.configure(yscrollcommand=self._on_scroll)
         self.canvas.pack(fill="both", expand=True, side="left")
-        vsb.pack(fill="y", side="right")
+        self.vsb.pack(fill="y", side="right")
         #  The page is stretched to at least the height of the window, not
         #  only to its own content. Without that a page shorter than the
         #  window left a dead band above the console, and a panel that itself
         #  expands - the settings form did - only claimed the height its
         #  widgets asked for, leaving most of the window unused.
         self.canvas.bind("<Configure>", self._resize)
+        self.bind("<Map>", self._on_map)
         self.bind("<Enter>", lambda e: self._wheel(True))
         self.bind("<Leave>", lambda e: self._wheel(False))
+        #  The page is built after this frame is, so the measurement taken
+        #  while the window is still being mapped is taken before there is
+        #  anything on it. Measure again once Tk's idle work is done - and
+        #  keep watching, because a page can grow later too.
+        try:
+            self.after_idle(self._resize)
+        except Exception:
+            pass
+        self._watch()
+
+    # ---------------------------------------------------------------- drawing
+    def _on_scroll(self, first, last):
+        """Tk's own view report, passed straight on to the scroll bar.
+
+        Keeping the bar named and fed here means the two can never be left
+        disagreeing - a bar whose thumb was never set looks like no bar at
+        all, which is what a freshly opened window used to show.
+        """
+        try:
+            self.vsb.set(first, last)
+        except Exception:
+            pass
+
+    def _on_map(self, _event=None):
+        """Measure once the page is actually on screen, not while it maps."""
+        try:
+            self.after_idle(self._resize)
+        except Exception:
+            pass
 
     def _resize(self, _event=None):
         """Stretch the page to fill the window, then say how tall it is."""
         try:
-            width = self.canvas.winfo_width()
-            height = self.canvas.winfo_height()
-            natural = self.inner.winfo_reqheight()
+            width = int(self.canvas.winfo_width() or 0)
+            height = int(self.canvas.winfo_height() or 0)
+            natural = int(self.inner.winfo_reqheight() or 0)
         except Exception:
             return
-        wanted = (width, max(natural or 0, height or 0))
-        if wanted != self._last_size:
-            self._last_size = wanted
+        if width <= 1 or height <= 1:
+            #  A window that has not been given its size yet measures as one
+            #  pixel; sizing the page to that would make every later
+            #  measurement wrong in the same direction.
+            return
+        self._natural = natural
+        content = max(natural, height)
+        if (width, content) != self._last_size:
+            self._last_size = (width, content)
             try:
-                self.canvas.itemconfigure("inner", width=wanted[0],
-                                          height=wanted[1])
+                self.canvas.itemconfigure("inner", width=width,
+                                          height=content)
             except Exception:
                 pass
+        #  The region is stated in numbers rather than read back from the
+        #  canvas: bbox("all") only knows about work Tk has already done, and
+        #  this is the moment it may not have done it yet.
         try:
-            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+            self.canvas.configure(scrollregion=(0, 0, width, content))
         except Exception:
             pass
+        self._show_thumb(content, height)
+
+    def _show_thumb(self, content, view):
+        """Point the scroll bar at the part of the page that is on screen."""
+        if not content:
+            return
+        try:
+            top = max(0.0, float(self.canvas.canvasy(0)))
+        except Exception:
+            top = 0.0
+        first = min(1.0, max(0.0, top / content))
+        last = min(1.0, max(first, (top + max(view, 0)) / content))
+        if (first, last) != self._last_view:
+            self._last_view = (first, last)
+            try:
+                self.vsb.set(first, last)
+            except Exception:
+                pass
+
+    def _watch(self):
+        """Measure again whenever the page's own content changes size.
+
+        Tk fires Configure when a widget's actual size changes. This frame
+        pins the page to the height of the window, so a page that grows - a
+        panel built a moment after the page, photos that arrive later - never
+        makes the frame any bigger, and nothing is fired. The scroll bar then
+        sat at (0.0, 1.0) with no thumb in it until the window itself was
+        resized, which is the missing scroll bar that opening the window
+        non-maximised used to show. Asking the page how tall it wants to be
+        costs one question every few hundred milliseconds and closes that.
+        """
+        self._watch_job = None
+        try:
+            if not self.winfo_exists():
+                return
+            natural = int(self.inner.winfo_reqheight() or 0)
+        except Exception:
+            return
+        if natural != self._natural:
+            self._resize()
+        try:
+            self._watch_job = self.after(self.WATCH_MS, self._watch)
+        except Exception:
+            self._watch_job = None
+
+    def destroy(self):
+        """Stop watching before the widgets being watched are gone."""
+        job = self._watch_job
+        self._watch_job = None
+        if job:
+            try:
+                self.after_cancel(job)
+            except Exception:
+                pass
+        super().destroy()
 
     def _wheel(self, on):
         def scroll(e):
@@ -8633,6 +8740,21 @@ def build_newphotos(parent, app):
                 " and ".join(row["name"] or str(row["id"]) for row in leaving),
                 "dim")
         status("The website now shows %s." % photos)
+        #  The product shows the new pair either way. What the media library
+        #  calls the files is a separate fact, and the one that made a
+        #  finished upload look unattached - so it is said, not assumed.
+        attached = result.get("attached") or {}
+        loose = attached.get("failed") or []
+        if loose:
+            app.console_line(
+                "The new photos are on the product, but the media library "
+                "still marks them unattached: %s"
+                % (loose[0].get("why") or "the website did not say why."),
+                "warn")
+        elif attached.get("attached"):
+            app.console_line(
+                "The media library shows the new photos attached to this "
+                "product.", "dim")
         for attachment in (front, result.get("back")):
             if attachment and attachment.get("source_url"):
                 app.console_line(attachment["source_url"], "dim")

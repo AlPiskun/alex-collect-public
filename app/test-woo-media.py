@@ -230,21 +230,37 @@ def test_product_update():
         opener=opener)
     posts = [r for r in opener.requests if r["method"] == "POST"]
     puts = [r for r in opener.requests if r["method"] == "PUT"]
+    product_puts = [r for r in puts if "/wc/v3/products/" in r["url"]]
     check("both photos are uploaded before the product is touched",
-          len(posts) == 2 and len(puts) == 1 and
-          opener.requests.index(puts[0]) == 2, str(len(opener.requests)))
+          len(posts) == 2 and len(product_puts) == 1 and
+          opener.requests.index(product_puts[0]) == 2,
+          str([r["method"] + " " + r["url"] for r in opener.requests]))
     check("the front is uploaded first",
           posts[0]["body"] == b"FRONT" and posts[1]["body"] == b"BACK")
     check("each carries its own filename",
           "gretzky-front-1.webp" in header(posts[0], "Content-Disposition") and
           "gretzky-back-1.webp" in header(posts[1], "Content-Disposition"),
           str([header(p, "Content-Disposition") for p in posts]))
-    ids = [i["id"] for i in json.loads(puts[0]["body"].decode())["images"]]
+    ids = [i["id"] for i in json.loads(product_puts[0]["body"].decode())
+           ["images"]]
     check("the pair leads the gallery, the old photos follow",
           ids == [901, 902, 5, 6], str(ids))
     check("both attachments come back",
           result["front"]["id"] == 901 and result["back"]["id"] == 902,
           str(result))
+    check("and both are filed under the product once the gallery is set",
+          (result.get("attached") or {}).get("attached") == [901, 902],
+          str(result.get("attached")))
+    attaches = [r for r in puts if "/wp/v2/media/" in r["url"]]
+    check("the attach calls come after the product update",
+          len(attaches) == 2 and
+          opener.requests.index(attaches[0]) > opener.requests.index(
+              product_puts[0]),
+          str([r["url"] for r in puts]))
+    check("each names the product as the parent",
+          [json.loads(r["body"].decode()) for r in attaches] ==
+          [{"post": 42}, {"post": 42}],
+          str([r["body"] for r in attaches]))
 
     print()
     print("== 8. which old photos are dropped ==")
@@ -346,6 +362,75 @@ def test_product_update():
     check("a trailing slash does not confuse it",
           woo_media.image_name_from_url("https://x.example/a.webp/") == "a.webp")
 
+def test_attaching():
+    print()
+    print("== 12. an upload is filed under the product it was made for ==")
+    opener = FakeOpener((200, json.dumps({"id": 901, "post": 42}).encode()))
+    result = woo_media.attach_media(SITE, USER, PASSWORD, [901], 42,
+                                    opener=opener)
+    sent = opener.requests[0]
+    check("a PUT goes to that attachment's own endpoint",
+          sent["method"] == "PUT" and
+          sent["url"] == "https://shop.example/wp-json/wp/v2/media/901",
+          sent["url"])
+    check("it names the product as the parent",
+          json.loads(sent["body"].decode()) == {"post": 42},
+          str(sent["body"]))
+    check("it authenticates with the Application Password, not the keys",
+          header(sent, "Authorization").startswith("Basic ") and
+          KEY not in sent["url"] and SECRET not in sent["url"], sent["url"])
+    check("and the photo is reported attached",
+          result == {"attached": [901], "failed": []}, str(result))
+
+    #  A library that will not file the photo is a label, not a lost upload:
+    #  the picture is already on the product by the time this runs.
+    opener = FakeOpener((403, b'{"message":"not allowed"}'))
+    result = woo_media.attach_media(SITE, USER, PASSWORD, [901], 42,
+                                    opener=opener)
+    check("a refusal is reported instead of raised",
+          result["attached"] == [] and len(result["failed"]) == 1, str(result))
+    check("with the site's own status and its own words",
+          "HTTP 403" in result["failed"][0]["why"] and
+          "not allowed" in result["failed"][0]["why"], str(result["failed"]))
+
+    opener = FakeOpener(urllib.error.URLError("no route"))
+    result = woo_media.attach_media(SITE, USER, PASSWORD, [901], 42,
+                                    opener=opener)
+    check("a site that cannot be reached is reported too",
+          result["attached"] == [] and
+          "Could not reach" in result["failed"][0]["why"],
+          str(result["failed"]))
+    check("and never with the password in the message",
+          PASSWORD not in str(result) and "MNOP" not in str(result),
+          str(result["failed"]))
+
+    idle = FakeOpener()
+    result = woo_media.attach_media(SITE, "", "", [901], 42, opener=idle)
+    check("without an Application Password nothing is sent",
+          not idle.requests, str(idle.requests))
+    check("and the reason says where the password goes",
+          "woo-keys.txt" in result["failed"][0]["why"], str(result["failed"]))
+
+    result = woo_media.attach_media("shop.example", USER, PASSWORD, [901], 42,
+                                    opener=FakeOpener())
+    check("a bare host is refused rather than guessed at",
+          not result["attached"] and result["failed"], str(result))
+
+    idle = FakeOpener()
+    result = woo_media.attach_media(SITE, USER, PASSWORD, [], 42, opener=idle)
+    check("no photos means no requests and nothing to report",
+          result == {"attached": [], "failed": []} and not idle.requests,
+          str(result))
+
+    idle = FakeOpener()
+    result = woo_media.attach_media(SITE, USER, PASSWORD, [901], 0,
+                                    opener=idle)
+    check("no product is said plainly instead of attaching to nothing",
+          not result["attached"] and "no product" in
+          result["failed"][0]["why"] and not idle.requests,
+          str(result["failed"]))
+
+
 def test_parsing_helpers():
     print()
     print("== 11. small helpers ==")
@@ -375,6 +460,7 @@ def main():
     test_headers_and_names()
     test_refusals()
     test_product_update()
+    test_attaching()
     test_parsing_helpers()
     print()
     if FAIL:

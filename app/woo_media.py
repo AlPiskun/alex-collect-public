@@ -8,6 +8,9 @@ credentials are used, each for the thing it can actually do:
   1. the Application Password uploads the image to ``/wp-json/wp/v2/media``
   2. the consumer key pair sets the product's ``images`` array through
      ``/wp-json/wc/v3/products/<id>``, which needs Read/Write keys
+  3. the Application Password gives each upload the product as its parent,
+     so the media library files it under the product instead of under
+     "Unattached"
 
 Keeping this in its own module means the panel can be exercised without a
 network and without Tk, and the HTTP can be handed a fake opener in tests.
@@ -160,6 +163,23 @@ def _explain_upload(status, payload):
     return base + (" WordPress said: %s" % wp if wp else "")
 
 
+def _explain_attach(status, payload):
+    wp = _wp_message(payload)
+    if status == 401:
+        base = ("Rejected the Application Password (HTTP 401), so the media "
+                "library still calls the image unattached.")
+    elif status == 403:
+        base = ("That WordPress user is not allowed to edit this image "
+                "(HTTP 403), so it stays unattached in the media library.")
+    elif status == 404:
+        base = ("WordPress no longer has that image (HTTP 404), so it cannot "
+                "be attached.")
+    else:
+        base = ("WordPress would not link the image to the product "
+                "(HTTP %s)." % status)
+    return base + (" WordPress said: %s" % wp if wp else "")
+
+
 def _explain_product(status, payload):
     wp = _wp_message(payload)
     if status == 401:
@@ -219,6 +239,60 @@ def upload_media(site, username, app_password, image_path, title=None,
     if title:
         attachment["title"] = str(title)
     return attachment
+
+
+def attach_media(site, username, app_password, attachment_ids, post_id,
+                 timeout=60, opener=None):
+    """Say which product each uploaded image belongs to.
+
+    An upload arrives with no parent post, and WordPress shows every
+    parentless attachment as "Unattached" in the media library - even while a
+    product's gallery already points at it. The parent belongs to the
+    attachment, not to the product, so it is set with one small PUT per file
+    once the product exists.
+
+    Nothing here raises. The photos are on the product by the time this runs,
+    so a library that keeps calling them unattached is a tidiness problem,
+    never a reason to report the upload as failed. The answer says which files
+    were attached and, for the rest, why not.
+    """
+    ids = [int(i) for i in (attachment_ids or [])
+           if str(i).strip().isdigit()]
+    if not ids:
+        return {"attached": [], "failed": []}
+    parent = int(post_id or 0)
+    if not parent:
+        why = "no product was named, so there is nothing to attach them to."
+        return {"attached": [], "failed": [{"id": i, "why": why} for i in ids]}
+    root = site_root(site)
+    if not (root and username and app_password):
+        why = ("the WordPress username and Application Password are needed to "
+               "attach an image (lines 4 and 5 of woo-keys.txt)."
+               if root else "no website address is saved.")
+        return {"attached": [], "failed": [{"id": i, "why": why} for i in ids]}
+
+    attached, failed = [], []
+    for attachment_id in ids:
+        request = urllib.request.Request(
+            "%s%s/%d" % (root, WP_MEDIA_PATH, attachment_id),
+            data=json.dumps({"post": parent}).encode("utf-8"), method="PUT",
+            headers={
+                "Authorization": basic_auth(username, app_password),
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": USER_AGENT,
+            })
+        try:
+            status, raw = _http(request, timeout, opener)
+        except MediaError as exc:
+            failed.append({"id": attachment_id, "why": exc.message})
+            continue
+        if status in (200, 201):
+            attached.append(attachment_id)
+        else:
+            failed.append({"id": attachment_id,
+                           "why": _explain_attach(status, _json_or_text(raw))})
+    return {"attached": attached, "failed": failed}
 
 
 def set_product_images(site, key, secret, product_id, image_ids, timeout=60,
@@ -351,6 +425,15 @@ def replace_product_photos(site, key, secret, username, app_password, product,
             "updated. %s" % exc.message,
             status=exc.status,
             attachment_id=attachments["front"]["id"], partial=True)
+    #  The product now shows the new pair, and this is what stops the media
+    #  library from filing those same files under "Unattached". Only the new
+    #  uploads are re-parented: the photos that were already there keep the
+    #  product they were attached to.
+    attached = attach_media(site, username, app_password,
+                            [attachments["front"]["id"]] +
+                            ([attachments["back"]["id"]]
+                             if "back" in attachments else []),
+                            product_id, timeout=timeout, opener=opener)
     return {"front": attachments["front"],
             "back": attachments.get("back"),
-            "product": updated, "image_ids": ids}
+            "product": updated, "image_ids": ids, "attached": attached}
