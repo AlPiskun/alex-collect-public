@@ -1,4 +1,4 @@
-Alex Collect 2.84 — public core package
+Alex Collect 2.85 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -30,6 +30,11 @@ app/:
                                    drafts first, photos first, read back,
                                    never twice (the CSV stays the record)
   woo_orders.py                   turn a pasted card list into an order
+  quote.py                        price a batch for a customer: the cards, the
+                                   customer, the discount, the sums, the saved
+                                   file, and the order it becomes
+  quote_pdf.py                    draw the quote as an A4 PDF - logo, colour,
+                                   totals, and a second page when it overruns
   facebook-feed-settings.example.json
                                   starter values for the Facebook workbook fields
   plugin_manager.py               local ZIP plugin manager

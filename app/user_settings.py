@@ -138,6 +138,15 @@ def load_user_settings(path: Path = SETTINGS_FILE) -> dict:
         "ebay_default_autographed": "No",
         "ebay_default_description": "Vintage trading card from the original manufacturer.",
         "facebook_selling_url": "https://www.facebook.com/marketplace/you/selling",
+        #  Quotes: the look is remembered so the second quote is one press,
+        #  and quotes_dir is empty until the user picks a folder of their own
+        #  (the app's own quotes/ folder is used then).
+        "quote_company": "",
+        "quote_contact": "",
+        "quote_color": "#1F4E79",
+        "quote_logo": "",
+        "quote_sort": "name",
+        "quotes_dir": "",
         **saved,
     }
 
