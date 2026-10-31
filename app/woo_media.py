@@ -241,6 +241,67 @@ def upload_media(site, username, app_password, image_path, title=None,
     return attachment
 
 
+def _media_matches(entry, filename):
+    """Whether a media record is the file that was just uploaded."""
+    name = Path(str(filename or "")).name.lower()
+    if not name:
+        return False
+    source = str(entry.get("source_url") or "").replace("\\", "/")
+    if source and Path(source).name.lower() == name:
+        return True
+    #  WordPress may re-slug a name (spaces, accents), so the extension-less
+    #  stem is also compared - but only when it is long enough to mean
+    #  something.
+    stem = Path(name).stem
+    if len(stem) >= 8:
+        title = str(entry.get("slug") or "")
+        if title.lower() == stem:
+            return True
+        rendered = str(((entry.get("title") or {}) if isinstance(
+            entry.get("title"), dict) else {}).get("rendered") or "").lower()
+        if rendered == stem:
+            return True
+    return False
+
+
+def find_media(site, username, app_password, filename, timeout=60,
+               opener=None):
+    """The media library's copy of ``filename``, or ``None``.
+
+    Only used after an upload failed in a way that might have landed: a slow
+    site can create the attachment, spend seconds on thumbnails, and lose the
+    answer on the way back. Asking first is what stops the retry leaving a
+    duplicate in the library. Never raises - a library that cannot be read is
+    simply a library with nothing found, and the caller retries the upload.
+    """
+    root = site_root(site)
+    filename = Path(str(filename or "")).name
+    if not (root and filename and username and app_password):
+        return None
+    stem = Path(filename).stem
+    query = urllib.parse.urlencode({"search": stem, "per_page": 50,
+                                    "orderby": "date", "order": "desc"})
+    request = urllib.request.Request(
+        "%s%s?%s" % (root, WP_MEDIA_PATH, query),
+        headers={"Authorization": basic_auth(username, app_password),
+                 "Accept": "application/json", "User-Agent": USER_AGENT})
+    try:
+        status, raw = _http(request, timeout, opener)
+    except MediaError:
+        return None
+    if status != 200:
+        return None
+    payload = _json_or_text(raw)
+    for entry in payload if isinstance(payload, list) else []:
+        if isinstance(entry, dict) and entry.get("id") and \
+                _media_matches(entry, filename):
+            return {"id": int(entry["id"]),
+                    "source_url": entry.get("source_url") or "",
+                    "filename": filename,
+                    "found": True}
+    return None
+
+
 def attach_media(site, username, app_password, attachment_ids, post_id,
                  timeout=60, opener=None):
     """Say which product each uploaded image belongs to.

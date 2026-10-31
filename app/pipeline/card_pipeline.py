@@ -1991,6 +1991,10 @@ def create_products_from_csv(csv_path, args, ask=True):
         name = (step.get("item") or {}).get("name") or ""
         if stage == "start":
             print("  [%d/%d] %s" % (step["index"], step["total"], name))
+        elif stage in ("retry", "pace"):
+            #  Said in the terminal too: a batch that has gone quiet for
+            #  twenty seconds because the site is slow must say so.
+            print("     %s - %s" % (step.get("note") or stage, name))
         emit_progress(step)
 
     try:
