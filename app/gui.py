@@ -73,7 +73,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.08"
+VERSION = "3.09"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -7681,14 +7681,24 @@ def build_csledit(parent, app):
         if cs_edit.nothing_editable(items):
             #  Nothing in the whole list can be written, which is not 2,541
             #  listings to edit by hand - it is a reading that does not carry
-            #  product ids. Say it once, plainly, where it can be read.
-            say("No listing in that read carried a product id, so the edit "
-                "buttons cannot send anything: the plugin's reader is not "
-                "reporting one. Reading again will not change it - the "
-                "plugin's stock reader needs to report each listing's "
-                "product_id (marketplace.listing_update patches "
-                "/api/products/<product_id>/). Searching, opening a listing "
-                "and editing in the vendor dashboard all still work.", "err")
+            #  product ids. Say it once, plainly, where it can be read, and
+            #  say which of the two things the reader did: a key that is
+            #  missing, or a key holding 0 for every listing.
+            zeros, counted = cs_edit.zero_product_id_counts(items)
+            said = cs_edit.zero_product_id_note(zeros, counted) if zeros else ""
+            if said:
+                say(said[:1].upper() + said[1:] + ". Searching, opening a "
+                    "listing and editing in the vendor dashboard all still "
+                    "work.", "err")
+            else:
+                say("No listing in that read carried a product id, so the "
+                    "edit buttons cannot send anything: the plugin's reader "
+                    "is not reporting one. Reading again will not change it - "
+                    "the plugin's stock reader needs to report each listing's "
+                    "product_id (marketplace.listing_update patches "
+                    "/api/products/<product_id>/). Searching, opening a "
+                    "listing and editing in the vendor dashboard all still "
+                    "work.", "err")
         pending, state["then"] = state["then"], None
         if pending is not None:
             pending(items)
@@ -7889,17 +7899,27 @@ def build_csledit(parent, app):
             #  Not one listing's problem: nothing in the whole read carries a
             #  product id, so another 2,541-listing read would return the same
             #  nothing. Do not offer it - offer the thing that does work.
-            say("%s cannot be changed from here: no listing in that read "
-                "carried a product id, so there is nothing for the writer to "
-                "address. Nothing was sent." % named, "err")
+            zeros, counted = cs_edit.zero_product_id_counts(state["items"])
+            if zeros:
+                say("%s cannot be changed from here: the plugin reported "
+                    "product_id 0 for %s listing%s, and 0 is not an id, so "
+                    "there is nothing for the writer to address. Nothing was "
+                    "sent." % (named, "all %d" % counted if zeros == counted
+                               else "%d of %d" % (zeros, counted),
+                               "" if counted == 1 else "s"), "err")
+            else:
+                say("%s cannot be changed from here: no listing in that read "
+                    "carried a product id, so there is nothing for the writer "
+                    "to address. Nothing was sent." % named, "err")
             summary.configure(text="No listing in this read has a product "
                                    "id, so nothing can be sent.")
             if messagebox.askyesno(
                     "That listing has to be changed on the site",
-                    "%s\n\nNo listing in this read carried a product id, so "
-                    "this app has nothing safe to address - and reading them "
-                    "again would return the same list. The reader has to "
-                    "report each listing's product id (the plugin's job; "
+                    "%s\n\nNo listing in this read carried a usable product "
+                    "id, so this app has nothing safe to address - and "
+                    "reading them again would return the same list. The "
+                    "reader has to report each listing's real product id, and "
+                    "0 is not one (the plugin's job; "
                     "marketplace.listing_update patches "
                     "/api/products/<product_id>/).\n\nNothing was changed. "
                     "Open the listing on CanadianShopper so it can be edited "

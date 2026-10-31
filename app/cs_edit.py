@@ -346,7 +346,10 @@ def plan(item, **changes):
     #  being changed; they are how the writer finds the listing at all, and a
     #  writer left holding the wrong one answers 404 and changes nothing.
     for key, value in (item.get("ids") or {}).items():
-        if key not in entry and value not in (None, ""):
+        #  A zero is not an id (see is_id): sending it would give the writer a
+        #  resource that cannot exist, and the answer would be another
+        #  failure instead of the one read that actually helps.
+        if key not in entry and is_id(value):
             entry[key] = value
     page = link(item)
     if page:
@@ -380,20 +383,93 @@ def plan(item, **changes):
 PRODUCT_KEYS = ("product_id", "productId", "productid")
 
 
-def product_id(entry):
-    """The product id a mapping carries, as text, or "" when it carries none."""
-    entry = entry or {}
-    for key in PRODUCT_KEYS:
-        value = entry.get(key) if isinstance(entry, dict) else None
-        if value not in (None, ""):
-            return str(value)
-    ids = entry.get("ids") if isinstance(entry, dict) else None
-    if isinstance(ids, dict):
+def is_id(value):
+    """Whether a reader's value is an identifier at all.
+
+    ``0`` is not an id. No product on any of these sites has one, so a reader
+    that emits ``"product_id": 0`` for every listing is saying it does not have
+    the id, not that the product is zero. The difference matters: counting a
+    zero as an id makes the panel promise an edit it cannot make and sends a
+    write to ``/api/products/0/`` that can only fail. A missing key and a zero
+    take the same path here - the row cannot be written from this panel, and
+    the console says which of the two the reader did.
+
+    Anything else travels exactly as it was given. The core never renumbers an
+    id and never learns what shape a vendor's id is, so a twelve-character
+    catalogue key is as good an identifier as ``4321``.
+    """
+    if value is None or isinstance(value, (dict, list, tuple, bool)):
+        return False
+    text = str(value).strip()
+    if not text:
+        return False
+    try:
+        return float(text) != 0.0
+    except ValueError:
+        return True
+
+
+def _id_values(entry):
+    """Every value the entry carries under a product-id name, in order."""
+    entry = entry if isinstance(entry, dict) else {}
+    found = []
+    for source in (entry, entry.get("ids") or {}):
+        if not isinstance(source, dict):
+            continue
         for key in PRODUCT_KEYS:
-            value = ids.get(key)
+            value = source.get(key)
             if value not in (None, ""):
-                return str(value)
+                found.append(value)
+    return found
+
+
+def product_id(entry):
+    """The product id a mapping carries, as text, or "" when it carries none.
+
+    A zero is "carries none": see :func:`is_id`.
+    """
+    for value in _id_values(entry):
+        if is_id(value):
+            return str(value).strip()
     return ""
+
+
+def zero_product_id(entry):
+    """Whether the reader said ``0`` rather than saying nothing at all.
+
+    Not a failure of the listing and not a missing key: a reader emitting
+    zeros is a reader that is not reporting product ids, which is the plugin's
+    job, not the person's. The two are told apart so the console can name the
+    one that is happening.
+    """
+    values = _id_values(entry)
+    return bool(values) and not any(is_id(value) for value in values)
+
+
+def zero_product_id_counts(items):
+    """How many rows a reader reported as ``0``, and how many rows there are."""
+    rows = list(items or [])
+    return len([row for row in rows if zero_product_id(row)]), len(rows)
+
+
+def zero_product_id_note(count, total):
+    """The sentence for a read whose product ids are all zeros.
+
+    Says what the plugin did, that reading again changes nothing, and what
+    still works from here - because "0" is a bug report about the reader, and
+    the person cannot fix a plugin from this panel.
+    """
+    count, total = int(count or 0), int(total or 0)
+    if not count:
+        return ""
+    return ("the plugin reported product_id 0 for %s listing%s, and 0 is not "
+            "an id: no product has one, so nothing from this read can be "
+            "written. Reading again will return the same zeros - the plugin's "
+            "stock reader has to report each listing's real product id. Stock "
+            "counts can still be written from the comparison panel, whose "
+            "writer (%s) addresses the listing itself rather than a product"
+            % ("all %d" % total if count == total else "%d of %d" % (count, total),
+               "" if total == 1 else "s", "stock.set"))
 
 
 def product_id_counts(items):
@@ -487,7 +563,7 @@ def identified_by(entry):
     for key in ("id", "product_id", "productId", "listing_id", "listingId",
                 "post_id"):
         value = (entry or {}).get(key)
-        if value not in (None, ""):
+        if value not in (None, "") and (key == "id" or is_id(value)):
             parts.append("%s %s" % (key.replace("_", " "), value))
     sku = str((entry or {}).get("sku") or "").strip()
     if sku:

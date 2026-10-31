@@ -649,6 +649,102 @@ def test_a_read_with_no_product_ids_at_all():
               for _tag, text in app.lines), str(app.lines[-3:]))
 
 
+def test_a_reader_that_says_zero():
+    """The other shape of "no product ids": every row says 0.
+
+    Plugin 1.0.31 emitted ``"product_id": 0`` for all 2,541 listings. A zero
+    is not an id - no product has one - so the panel must not count it as
+    editable, must not put it in a write, and must not explain a failure by it.
+    """
+    print()
+    print("== 5d1. a reader that reports 0 for every listing ==")
+    zeroed = [dict(row, product_id=0) for row in LISTINGS]
+    check("a zero is not an id",
+          cs_edit.product_id({"product_id": 0}) == "" and
+          cs_edit.product_id({"product_id": "0"}) == "" and
+          cs_edit.product_id({"product_id": " 0.0 "}) == "" and
+          cs_edit.product_id({"ids": {"productId": 0}}) == "", "")
+    check("a real id still is one, whatever shape the vendor uses",
+          cs_edit.product_id({"product_id": " 4321 "}) == "4321" and
+          cs_edit.product_id({"product_id": 4321}) == "4321" and
+          cs_edit.product_id({"ids": {"product_id": "14effcaceb8a4b66"}}) ==
+          "14effcaceb8a4b66", "")
+    check("a zero beside a real id loses to the real one",
+          cs_edit.product_id({"product_id": 0, "productId": 4321}) == "4321"
+          and cs_edit.product_id({"product_id": 4321,
+                                  "ids": {"productId": 0}}) == "4321", "")
+    check("every row of that read counts as having no product id",
+          cs_edit.product_id_counts(zeroed) == (0, len(zeroed)) and
+          cs_edit.nothing_editable(zeroed), "")
+
+    zeros, total = cs_edit.zero_product_id_counts(zeroed)
+    check("and the reader's zeros are counted as zeros, not as missing keys",
+          (zeros, total) == (len(zeroed), len(zeroed)) and
+          cs_edit.zero_product_id_counts(items()) == (0, len(LISTINGS)), "")
+    note = cs_edit.zero_product_id_note(zeros, total)
+    check("the note says what the plugin did, and that 0 is not an id",
+          "product_id 0" in note and "0 is not an id" in note, note)
+    check("it does not send anyone to the dashboard for 2,541 listings",
+          "vendor dashboard" not in note, note)
+    check("and it names what still works",
+          "stock.set" in note and "comparison panel" in note, note)
+    check("a read with no zeros has nothing to say",
+          cs_edit.zero_product_id_note(0, 5) == "", "")
+
+    #  A write must never carry a zero: it addresses a product that cannot
+    #  exist, so the answer could only be another failure.
+    entry = cs_edit.plan(stock_compare.plugin_items(
+        {"items": [dict(LISTINGS[0], product_id=0)]})[0], inventory=9)
+    check("the plan carries the listing id and no product id at all",
+          entry.get("id") == 101 and "product_id" not in entry,
+          str(entry))
+    entry = cs_edit.plan(items()[0], inventory=9)
+    check("a real product id still travels with the change",
+          entry.get("product_id") == 1101, str(entry))
+    check("and a failure is not explained by 'product id 0'",
+          "product id" not in cs_edit.identified_by(
+              {"id": 101, "product_id": 0, "sku": "OPC73-25"}),
+          cs_edit.identified_by({"id": 101, "product_id": 0,
+                                 "sku": "OPC73-25"}))
+
+    #  ---- the panel, with a plugin that reports zeros
+    folder, app, parent = build_panel()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app, folder, parent, zeroed)
+    check("the read still lists every listing",
+          len(listing_box(parent).items) == len(LISTINGS), "")
+    check("the console names the plugin's zeros, not a missing key",
+          any("product_id 0" in text and "0 is not an id" in text
+              for _tag, text in app.lines), str(app.lines[-3:]))
+    check("and it does not promise the edits can be made",
+          not any("every one with a product id" in text
+                  for _tag, text in app.lines), str(app.lines[-4:]))
+
+    find(parent, gui.ttk.Button, "Search").invoke()
+    select(parent, "Watson")
+    harness._BOX.shown.clear()
+    answers = []
+    runs_before = len(app.runs)
+    harness._BOX.askyesno = lambda title, *a, **k: (answers.append(title),
+                                                   True)[1]
+    app.opened[:] = []
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/edit.py"):
+        find(parent, gui.ttk.Button,
+             "Put the selected listing on sale").invoke()
+    check("an edit is never sent to /api/products/0/",
+          len(app.runs) == runs_before, str(app.runs[-1:]))
+    check("the panel does not offer to read the same zeros again",
+          answers == ["That listing has to be changed on the site"],
+          str(answers))
+    check("it opens the listing so it can be changed there",
+          app.opened == ["https://cs.example/l/102"], str(app.opened))
+    check("and says the zero out loud",
+          any("product_id 0" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+
+
 def test_the_list_says_which_plugin_read_it():
     print()
     print("== 5d. the list on screen says which plugin read it ==")
@@ -1191,6 +1287,7 @@ def main():
     test_the_12030_reproduction()
     test_a_list_read_before_product_ids()
     test_a_read_with_no_product_ids_at_all()
+    test_a_reader_that_says_zero()
     test_the_list_says_which_plugin_read_it()
     test_the_panel_reads_and_lists()
     test_the_edit_form()

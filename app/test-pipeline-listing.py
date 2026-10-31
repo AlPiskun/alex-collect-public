@@ -27,6 +27,7 @@ APP = Path(__file__).resolve().parent
 PIPELINE = APP / "pipeline"
 sys.path[:0] = [str(APP), str(PIPELINE)]
 import card_pipeline  # noqa: E402
+import woo_create  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -257,18 +258,38 @@ def test_printing_is_part_of_the_sku(root):
     per SKU - took the dark back and reported the light back as "already
     there". The light back was never created and nothing said so.
     """
+    def tokens(title):
+        return card_pipeline.variety_tokens(title)
+
     check("a title that says dark back is the DB printing",
-          card_pipeline.back_variety(
-              "1973-74 O-Pee-Chee Neil Komadoski #16 Dark Back") == "DB", "")
+          tokens("1973-74 O-Pee-Chee Neil Komadoski #16 Dark Back") == ["DB"],
+          str(tokens("1973-74 O-Pee-Chee Neil Komadoski #16 Dark Back")))
     check("the words are enough, however they are written",
-          card_pipeline.back_variety("1973-74 O-Pee-Chee x Dark-Back") == "DB" and
-          card_pipeline.back_variety("1973-74 O-Pee-Chee x light  back") == "LB",
-          "")
-    check("a title naming neither is no printing at all",
-          card_pipeline.back_variety(
-              "1973-74 O-Pee-Chee Terry Harper #80") == "", "")
+          tokens("1973-74 O-Pee-Chee x Dark-Back") == ["DB"] and
+          tokens("1973-74 O-Pee-Chee x light  back") == ["LB"], "")
+    check("a title naming no printing keeps the SKU it always had",
+          tokens("1973-74 O-Pee-Chee Terry Harper #80") == [], "")
     check("and 'back' on its own is not a printing",
-          card_pipeline.back_variety("Card with a dark background") == "", "")
+          tokens("Card with a dark background") == [], "")
+
+    #  The rule is not only about backs: a corrected bio is a different card
+    #  from an uncorrected one, and the two were sharing one SKU as surely as
+    #  a dark back and a light back did.
+    check("a corrected bio is the CORR printing",
+          tokens("Dennis Hextall #115 Corrected Bio") == ["CORR"], "")
+    check("and an uncorrected one is not the corrected one",
+          tokens("Dennis Hextall #115 Uncorrected Bio") == ["UNCORR"],
+          str(tokens("Dennis Hextall #115 Uncorrected Bio")))
+    check("a title naming both gets both, in a stable order",
+          tokens("Dennis Hextall #115 Corrected Bio Light Back") ==
+          ["LB", "CORR"],
+          str(tokens("Dennis Hextall #115 Corrected Bio Light Back")))
+    check("white and grey backs have their own tokens",
+          tokens("Team Card White Back") == ["WB"] and
+          tokens("Team Card Grey Back") == ["GB"] and
+          tokens("Team Card Gray Back") == ["GB"], "")
+    check("the same title always earns the same tokens",
+          tokens("Team Card Gray Back") == tokens("team card gray-back"), "")
 
     def card(title, num="16", grade="EX 5", last="Komadoski"):
         return {"seo_title": title, "brand": "O-Pee-Chee", "year": "1973-74",
@@ -287,6 +308,13 @@ def test_printing_is_part_of_the_sku(root):
     check("the dark back's SKU ends in its printing",
           rows[0]["SKU"] == "OPC1973-74-16-Komadoski-EX-5-DB",
           rows[0]["SKU"])
+    check("and the tokens agree with the ones the create step knows",
+          tuple(phrase for phrase, _token in card_pipeline.VARIETY_TOKENS) ==
+          woo_create.PRINTING_WORDS and
+          {token for _phrase, token in card_pipeline.VARIETY_TOKENS} ==
+          set(woo_create.VARIETY_TOKENS),
+          "%r %r" % (card_pipeline.VARIETY_TOKENS,
+                     woo_create.PRINTING_WORDS))
     check("and the light back gets an SKU of its own",
           rows[1]["SKU"] == "OPC1973-74-16-Komadoski-EX-5-LB",
           rows[1]["SKU"])
@@ -301,6 +329,33 @@ def test_printing_is_part_of_the_sku(root):
         grade="VG-EX 4")])[0]["SKU"]
     check("a card with no printing in its title keeps the SKU it always had",
           plain_sku == "OPC1973-74-80-Harper-VG-EX-4", plain_sku)
+
+    #  Two printings of one card, neither of which the old SKU told apart.
+    corrected = card("1973-74 O-Pee-Chee Dennis Hextall #115 Corrected Bio",
+                     num="115", last="Hextall")
+    uncorrected = card("1973-74 O-Pee-Chee Dennis Hextall #115 "
+                       "Uncorrected Bio", num="115", last="Hextall")
+    both = card_pipeline.build_rows([corrected, uncorrected])
+    check("a corrected and an uncorrected card are two SKUs",
+          [r["SKU"] for r in both] ==
+          ["OPC1973-74-115-Hextall-EX-5-CORR",
+           "OPC1973-74-115-Hextall-EX-5-UNCORR"],
+          str([r["SKU"] for r in both]))
+
+    #  A SKU is not prose: it goes through a CSV, a spreadsheet and a URL.
+    check("a SKU is plain letters, digits and dashes",
+          card_pipeline.sku_component("Jérôme") == "Jerome" and
+          card_pipeline.sku_component("16/17") == "16-17" and
+          card_pipeline.sku_component("#16a") == "16a" and
+          card_pipeline.sku_component("EX 5") == "EX-5" and
+          card_pipeline.sku_component("  ") == "", "")
+    accented = card(
+        "1973-74 O-Pee-Chee Jérôme O'Neil #16 Dark Back", last="O'Neil")
+    accented_sku = card_pipeline.build_rows([accented])[0]["SKU"]
+    check("an accented name is folded, not dropped",
+          accented_sku == "OPC1973-74-16-O-Neil-EX-5-DB", accented_sku)
+    check("and every SKU in a batch is plain ASCII",
+          all(ord(char) < 128 for char in accented_sku), accented_sku)
 
     #  Two rows on one SKU can still happen - a batch that lists one card
     #  twice, or two printings whose titles do not name them. The website

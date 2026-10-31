@@ -505,7 +505,7 @@ SKU**, and links to the listing's own page. A row already has `title`/`name`, `s
 | --- | --- |
 | `price` | the listing's price, as the vendor shows it (`"CA$8.50"` and `"8.50"` are both read) |
 | `url` | the listing's own page address |
-| `product_id` | the id the update action patches, when the vendor supplies one and it differs from `id` |
+| `product_id` | the id the update action patches, when the vendor supplies one and it differs from `id`. Never `0` - a listing whose vendor data carries none has no key at all |
 | `images` | since 1.0.32: the listing's pictures, absolute `http(s)` addresses, the primary picture first and then the gallery in the vendor's own order |
 
 Reported since plugin **1.0.33**, when the vendor's product response already
@@ -547,6 +547,30 @@ advice that costs them an evening. Nothing on either site is changed by any of
 this, and the panel still searches, opens and links each listing. The fix
 belongs in the reader: emit `product_id` for each row the vendor's data gives
 one for.
+
+**`0` is not an id, and since core 3.09 it is not treated as one.** A row that
+says `"product_id": 0` is a row without a product id: no product has id 0 on
+any of these sites. So the core counts it as missing rather than as editable,
+never puts it in a plan, never sends `PATCH /api/products/0/`, and never
+explains a failure with "product id 0" - the sentence would send someone
+looking for a product that cannot exist. It also tells the two apart on the
+console: *no listing in that read carried a product id* is a reader with the
+key missing, while *the plugin reported product_id 0 for all 2,541 listings* is
+a reader emitting a placeholder, and the second one is a defect in the reader
+even if the first is not.
+
+Two rules follow for a reader:
+
+- **Never emit `0`, `"0"`, `"0.0"` or any other empty stand-in for a missing
+  product id.** Omit the key. The core's whole handling of "this listing cannot
+  be written from here" is built on the key being absent, and a placeholder
+  breaks the count it prints and the promise it makes about the rows it can
+  edit.
+- **Emit the real id the write endpoint patches**, exactly as the vendor gives
+  it, as a number or a string - the core never renumbers it. If the vendor's
+  listing data has no product id at all, the listing has no product id: leave
+  the key out and let the core say so once, rather than filling the gap with a
+  zero that reads as if every listing were editable.
 
 Both are display-only and are used by the **Find and edit a CanadianShopper
 listing** panel, which shows the price in its row and opens the address behind

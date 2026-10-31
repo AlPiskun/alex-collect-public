@@ -39,7 +39,7 @@ import woo_media
 
 PRODUCTS_PATH = "/wp-json/wc/v3/products"
 CATEGORIES_PATH = "/wp-json/wc/v3/products/categories"
-USER_AGENT = "AlexCollect/3.08"
+USER_AGENT = "AlexCollect/3.09"
 
 #  A read is safe to repeat, so a site answering with its own error page gets
 #  asked again before a card is called missing: two of the three failures in
@@ -487,20 +487,51 @@ def _send(url, method, payload=None, timeout=60, opener=None):
 
 # ---------------------------------------------------------------- the site
 
-#  The back printing joined the SKU in 3.08: a card used to be written as
+#  The printing joined the SKU in 3.08: a card used to be written as
 #  "...-EX-5" and is now "...-EX-5-DB". A product made before that is found
 #  under the shorter SKU, and finding it is what stops a re-run from making a
 #  second copy of a card that is already on the website.
-LEGACY_SKU_SUFFIXES = ("-DB", "-LB")
+#
+#  These are the tokens ``card_pipeline.VARIETY_TOKENS`` writes, in the same
+#  words; a check in the suite fails if the two lists drift apart.
+VARIETY_TOKENS = ("DB", "LB", "WB", "GB", "UNCORR", "CORR")
+
+#: The words a title uses for a printing. Two titles that name *different*
+#: printings are two cards, however alike everything else is - a card found by
+#: SKU is only this card if it agrees about what it was printed as.
+PRINTING_WORDS = ("dark back", "light back", "white back", "grey back",
+                  "gray back", "uncorrected", "corrected")
 
 
 def older_skus(sku):
-    """The SKUs an older version of this app would have written for a card."""
+    """The SKUs an older version of this app would have written for a card.
+
+    Every printing token is stripped, not just one: a card may name two
+    ("Corrected Bio Light Back"), and before the printing joined the SKU none
+    of them was written at all.
+    """
     sku = str(sku or "").strip()
-    for suffix in LEGACY_SKU_SUFFIXES:
-        if sku.upper().endswith(suffix):
-            return [sku[:-len(suffix)]]
-    return []
+    parts = sku.split("-")
+    stripped = list(parts)
+    while stripped and stripped[-1].upper() in VARIETY_TOKENS:
+        stripped.pop()
+    if len(stripped) == len(parts) or not stripped:
+        return []
+    return ["-".join(stripped)]
+
+
+def printing_words(title):
+    """The printings a title names, as whole phrases.
+
+    Matched on words, so "Dark-Back" and "dark back" agree and "uncorrected"
+    never counts as "corrected". A title naming none returns an empty set,
+    which compares equal to another title naming none - the rule a card that
+    says nothing about its printing has always followed.
+    """
+    text = " %s " % re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", str(
+        title or "").lower())).strip()
+    return frozenset(phrase for phrase in PRINTING_WORDS
+                     if " %s " % phrase in text)
 
 
 def title_key(text):
@@ -513,10 +544,64 @@ def title_key(text):
     return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", text)).strip()
 
 
+_YEAR_RE = re.compile(r"\b((?:19|20)\d{2})(?:\s*[-/]\s*(\d{2}))?\b")
+_NUMBER_RE = re.compile(r"#\s*([0-9]+[A-Za-z]?)|\b(?:no\.?|number)\s*"
+                        r"([0-9]+[A-Za-z]?)\b", re.IGNORECASE)
+#: Words that say nothing about *which* card a title is, so a shared one is
+#: not evidence of anything.
+_STOPWORDS = frozenset(("card", "cards", "rookie", "vintage", "the", "and",
+                        "with", "from", "team", "error", "back", "front",
+                        "light", "dark", "white", "grey", "gray", "series"))
+
+
+def card_facts(title):
+    """The parts of a title that name one card among its neighbours.
+
+    A year (``1973-74`` is one fact, not two), the card's number, and the
+    words long enough to be a name. Two titles that share these and name the
+    same printing are the same card, however differently the rest is worded -
+    the site's title may carry the team where the CSV's does not.
+    """
+    text = str(title or "")
+    years = set()
+    for match in _YEAR_RE.finditer(text):
+        years.add(match.group(1) if not match.group(2) else
+                  "%s-%s" % (match.group(1), match.group(2)))
+    numbers = set()
+    for match in _NUMBER_RE.finditer(text):
+        numbers.add((match.group(1) or match.group(2) or "").upper())
+    numbers.discard("")
+    words = {word for word in re.findall(r"[a-z0-9]+", text.lower())
+             if len(word) >= 5 and word not in _STOPWORDS}
+    return {"years": years, "numbers": numbers, "words": words}
+
+
 def same_card(title_a, title_b):
-    """Whether two titles name the same card."""
+    """Whether two titles name the same card.
+
+    Read generously on purpose. The same card is written by an AI reply, by a
+    CSV and by whoever typed it into the shop, so the team, an adjective and
+    the spelling of "&" all vary; what does not vary is the year, the card's
+    number, the name and the printing. Two titles that differ in the printing
+    are never the same card, because a dark back and a light back of one card
+    are two products at two prices.
+
+    A product whose title says none of these things is treated as a different
+    card, not as this one: the cost of being wrong that way is one card created
+    that a person has to look at, and the cost of the other is a card silently
+    never created at all.
+    """
     first, second = title_key(title_a), title_key(title_b)
-    return bool(first) and first == second
+    if not first or not second:
+        return False
+    if first == second:
+        return True
+    if printing_words(title_a) != printing_words(title_b):
+        return False
+    one, two = card_facts(title_a), card_facts(title_b)
+    return bool(one["years"] & two["years"]
+                and one["numbers"] & two["numbers"]
+                and one["words"] & two["words"])
 
 
 def find_by_sku(site, key, secret, sku, timeout=60, opener=None):
@@ -538,8 +623,12 @@ def find_by_sku(site, key, secret, sku, timeout=60, opener=None):
     if status != 200:
         raise _explain(status, payload, "read the product list")
     rows = payload if isinstance(payload, list) else []
+    #  Compared without case: a shop that stores SKUs upper- or lower-cased
+    #  would otherwise hand back nothing, and "nothing" is how a re-run makes
+    #  a second copy of a card that is already there.
+    wanted = sku.casefold()
     for row in rows:
-        if str(row.get("sku") or "").strip() == sku:
+        if str(row.get("sku") or "").strip().casefold() == wanted:
             return row
     return None
 
