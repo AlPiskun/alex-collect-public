@@ -145,6 +145,27 @@ def split_sheet(scan_path, output_dir, skip_blank=True,
     return results
 
 
+def save_card_image(image, output_path, target_width=TARGET_WIDTH):
+    """Save one card photo the way every other card photo in the shop is saved.
+
+    Cropped to the card's own shape, sized to the same width, written as the
+    same WebP at the same sort of file size - so a picture taken off another
+    site sits beside a picture out of a batch without looking like it came
+    from somewhere else.
+    """
+    if Image is None:
+        raise PhotoReplaceError("Pillow is required to save a card image.")
+    width, height = image.size
+    if target_width and width != target_width:
+        image = image.resize(
+            (target_width, max(1, int(target_width * height / float(width)))),
+            Image.LANCZOS)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _save_target_size(image, output_path)
+    return output_path
+
+
 def woo_image_name(product):
     """The filename of the card's current website image, or "".
 

@@ -506,6 +506,29 @@ SKU**, and links to the listing's own page. A row already has `title`/`name`, `s
 | `price` | the listing's price, as the vendor shows it (`"CA$8.50"` and `"8.50"` are both read) |
 | `url` | the listing's own page address |
 | `product_id` | the id the update action patches, when the vendor supplies one and it differs from `id` |
+| `images` | since 1.0.32: the listing's pictures, absolute `http(s)` addresses, the primary picture first and then the gallery in the vendor's own order |
+
+Reported since plugin **1.0.33**, when the vendor's product response already
+holds them, and worth reporting because they save the core a page read:
+`description` (the listing's own words, HTML is fine), `short_description`,
+`keywords` or `tags`, and the card's own facts - `condition`, `grade`, `year`,
+`set`, `set_name`, `card_number`, `player`, `brand`, `language`, `sport`.
+Anything empty is left out rather than sent as an empty string, and nothing is
+inferred from other fields: a row without them reads exactly as it did before.
+The core ignores capitalisation, underscores and spaces on those keys, so
+`cardNumber`, `Card Number` and `card_number` are one key.
+
+"Create website products from CanadianShopper-only listings" copies all of
+them onto the new draft: `description` becomes the product's description (its
+tags stripped, its paragraphs kept), the keywords and the facts become
+WooCommerce tags and attributes, and the pictures are uploaded with the first
+one as the product's main image and the rest in its gallery. A reader that
+reports none of them costs one read of the listing's own page, where the core
+looks for structured data, the page's description meta tags and a block named
+like a description. A row that reports the description **and** keywords costs
+no page read for them at all; a row with only one picture still costs one,
+because the card's back is on its page. Nothing is invented: with no description anywhere the
+product's description is left empty and the console says so.
 
 `product_id` is the only key with a write behind it: everything else on a row
 is for display. A row without one still lists, searches, prices and opens -

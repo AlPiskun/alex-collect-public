@@ -327,6 +327,45 @@ def extra_ids(row):
     return found
 
 
+#: What a reader might call a listing's picture, in the order worth trying.
+_PICTURE_KEYS = ("images", "photos", "pictures", "image", "photo", "picture",
+                 "image_url", "imageUrl", "imageurl", "photo_url", "photoUrl",
+                 "thumbnail", "thumbnail_url", "main_image", "mainImage",
+                 "cover", "cover_url", "primary_image", "featured_image")
+
+
+def listing_pictures(row):
+    """The picture addresses a reader put on a listing, in a stable order.
+
+    A reader is free to report nothing - the stock list has never needed
+    pictures - so this is best-effort by design and never raises. Anything
+    that is not a web address is dropped rather than carried into a download.
+    """
+    found = []
+    for key in _PICTURE_KEYS:
+        if key not in row:
+            continue
+        value = row.get(key)
+        values = value if isinstance(value, (list, tuple)) else [value]
+        for item in values:
+            if isinstance(item, dict):
+                item = (item.get("src") or item.get("url")
+                        or item.get("href") or "")
+            url = str(item or "").strip()
+            if url.startswith(("http://", "https://")) and url not in found:
+                found.append(url)
+    return found
+
+
+#: What a reader may report about a listing beyond its title, count and state.
+#: They travel with the row because the creation step copies them onto the
+#: product, and reading them here is what saves that step a page read.
+_CARRIED_KEYS = ("price", "url", "description", "short_description",
+                 "keywords", "tags", "condition", "grade", "year", "set",
+                 "set_name", "card_number", "player", "brand", "manufacturer",
+                 "language", "sport")
+
+
 def plugin_items(payload):
     """The listings a plugin reported, in this module's one shape.
 
@@ -358,11 +397,25 @@ def plugin_items(payload):
                  "status": str(row.get("status") or "").strip()}
         #  Anything else the reader reported travels with the row rather than
         #  being thrown away: the listing panel edits a price and opens a
-        #  listing's page, and both need what only the vendor knows.
-        for extra in ("price", "url"):
-            value = row.get(extra)
-            if value not in (None, ""):
-                entry[extra] = value
+        #  listing's page, and both need what only the vendor knows. A reader
+        #  that reports the listing's own description and card details saves
+        #  the creation step a page read, so those travel too.
+        carried = {extra: row[extra] for extra in _CARRIED_KEYS
+                   if row.get(extra) not in (None, "")}
+        for key, value in row.items():
+            #  A reader spells its keys its own way: ``cardNumber``,
+            #  ``Card Number`` and ``card_number`` are one key, the same rule
+            #  the listing ids already follow.
+            shape = _bare_name(key)
+            for extra in _CARRIED_KEYS:
+                if extra in carried:
+                    continue
+                if _bare_name(extra) == shape and value not in (None, ""):
+                    carried[extra] = value
+        entry.update(carried)
+        pictures = listing_pictures(row)
+        if pictures:
+            entry["images"] = pictures
         ids = extra_ids(row)
         if ids:
             entry["ids"] = ids

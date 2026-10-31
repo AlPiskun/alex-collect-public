@@ -385,9 +385,8 @@ def test_where_they_go(root):
     store = root / "two" / "store"
     store.mkdir()
     plan = image_store.plan(folder, store, now=datetime(2026, 10, 31, 9, 37))
-    check("a dated folder per batch, named after the folder it came from",
-          plan["target"] == store / "output" / "2026-10-31 09-37",
-          str(plan["target"]))
+    check("a dated folder per batch, straight in the chosen folder",
+          plan["target"] == store / "2026-10-31 09-37", str(plan["target"]))
     check("the plan lists what would move", len(plan["files"]) == 3)
     check("the plan says so in a sentence",
           image_store.describe(plan) ==
@@ -405,23 +404,25 @@ def test_where_they_go(root):
           "inside" in image_store.check_store(folder / "keep", folder))
     check("a folder beside it is fine", image_store.check_store(store, folder)
           == "")
-    check("the batch folder itself is refused - its dated folders would land "
-          "inside the folder being emptied",
-          "inside" in image_store.check_store(folder.parent, folder),
+    #  The batch folder is beside the working folder, not inside it - the
+    #  images land beside output/ rather than under it, which is somewhere a
+    #  person can see.
+    check("the batch folder itself is fine", 
+          image_store.check_store(folder.parent, folder) == "",
           image_store.check_store(folder.parent, folder))
-    check("a folder above the batch folder is fine",
-          image_store.check_store(root / "two" / "elsewhere", folder) == "",
-          image_store.check_store(root / "two" / "elsewhere", folder))
     check("no folder at all is refused",
           "no folder" in image_store.check_store("", folder))
 
     #  Two batches filed in the same minute must not be mixed together.
-    (store / "output" / "2026-10-31 09-37").mkdir(parents=True)
-    (store / "output" / "2026-10-31 09-37" / "old.webp").write_bytes(b"x")
+    (store / "2026-10-31 09-37").mkdir(parents=True)
+    (store / "2026-10-31 09-37" / "old.webp").write_bytes(b"x")
     second = image_store.plan(folder, store, now=datetime(2026, 10, 31, 9, 37))
     check("a second batch in the same minute gets its own folder",
-          second["target"].name == "2026-10-31 09-37 (2)",
-          second["target"].name)
+          second["target"] == store / "2026-10-31 09-37 (2)",
+          str(second["target"]))
+    check("and nothing is filed under the source folder's name",
+          "output" not in second["target"].parts,
+          str(second["target"]))
 
 
 def test_the_move(root):
@@ -951,7 +952,7 @@ def test_the_window_deletes_what_is_ticked(root):
           all(path.exists() is False for path in pictures), 
           "(they are moved, so they are no longer in the folder either)")
     moved = sorted(path.name for path in
-                   (store / "output").rglob("*.webp"))
+                   (store).rglob("*.webp"))
     check("only the cards were moved to the store",
           moved == ["card_0.webp", "card_1.webp"], str(moved))
     check("the console says what was deleted and what was moved",
@@ -972,7 +973,7 @@ def test_the_window_deletes_what_is_ticked(root):
     check("a folder of cards opens no window", app.windows == [],
           str(len(app.windows)))
     check("and both cards are moved",
-          sorted(path.name for path in (store / "output").rglob("*.webp")).
+          sorted(path.name for path in (store).rglob("*.webp")).
           count("a.webp") == 1, "")
 
 
@@ -990,11 +991,11 @@ def test_untick_keeps_one(root):
     app.prepare_image_folder(folder)
     check("the unticked one was not deleted",
           any(path.name == "blank_1.webp"
-              for path in (store / "output").rglob("*.webp")),
-          str(sorted(path.name for path in (store / "output").rglob("*"))))
+              for path in (store).rglob("*.webp")),
+          str(sorted(path.name for path in (store).rglob("*"))))
     check("the ticked ones went",
           not empties[0].exists() and not empties[2].exists())
-    moved = sorted(path.name for path in (store / "output").rglob("*.webp"))
+    moved = sorted(path.name for path in (store).rglob("*.webp"))
     check("and the kept one was moved with the rest",
           moved == ["blank_1.webp", "card_0.webp"], str(moved))
     check("the count said two of three before it went",
@@ -1013,7 +1014,7 @@ def test_keeping_them_all(root):
     app.window_driver = driver_press("Keep them all")
     answers(yes_no_cancel=True)
     app.prepare_image_folder(folder)
-    moved = sorted(path.name for path in (store / "output").rglob("*.webp"))
+    moved = sorted(path.name for path in (store).rglob("*.webp"))
     check("every image is in the store, empty ones included - so none of "
           "them was deleted",
           moved == ["blank_0.webp", "blank_1.webp",
@@ -1031,7 +1032,7 @@ def test_keeping_them_all(root):
     app.window_driver = None                     # nothing is pressed at all
     answers(yes_no_cancel=True)
     app.prepare_image_folder(folder)
-    moved = sorted(path.name for path in (store / "output").rglob("*.webp"))
+    moved = sorted(path.name for path in (store).rglob("*.webp"))
     check("closing the window deletes nothing",
           moved == ["blank_0.webp", "blank_1.webp",
                     "card_0.webp", "card_1.webp"], str(moved))
@@ -1055,7 +1056,7 @@ def test_keeping_them_all(root):
     check("'untick everything' then delete deletes nothing",
           any("nothing was ticked, so nothing was deleted" in line
               for _tag, line in app.lines), str(app.lines))
-    moved = sorted(path.name for path in (store / "output").rglob("*.webp"))
+    moved = sorted(path.name for path in (store).rglob("*.webp"))
     check("and everything is moved as usual",
           len(moved) == 4, str(moved))
 
@@ -1099,7 +1100,7 @@ def test_the_window_comes_after_the_yes(root):
     app.prepare_image_folder(folder)
     check("answering yes opens the window before the move",
           seen == [1] and app.windows, str(seen))
-    kept = sorted(path.name for path in (store / "output").rglob("*.webp"))
+    kept = sorted(path.name for path in (store).rglob("*.webp"))
     check("then the empty ones are gone and only the cards are in the store",
           not any(path.exists() for path in empties) and
           kept == ["card_0.webp", "card_1.webp"], str(kept))

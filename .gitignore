@@ -12,6 +12,7 @@ app/fb-cookie.txt
 app/ebay-active.html
 app/fb-selling.html
 app/gui-settings.json
+app/gui-log.txt
 app/woo-keys.txt.local
 app/*history.xlsx
 app/pipeline/**/facebook_history.xlsx

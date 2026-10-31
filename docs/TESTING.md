@@ -66,7 +66,7 @@ The top commit must match the PR page on GitHub.
 ## 4. Run the suite
 
 `test-gui.py` prints the version and the folder it is testing on its first
-line — for example `== 0. Alex Collect 3.01, from
+line — for example `== 0. Alex Collect 3.05, from
 C:\...\alex-collect-public\app ==`. Check that against the PR before reading
 any failure: a clone left on an older commit has an older `gui.py` beside an
 older test file, and its failures look exactly like the current work's.
