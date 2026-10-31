@@ -38,7 +38,7 @@ import woo_media
 
 PRODUCTS_PATH = "/wp-json/wc/v3/products"
 CATEGORIES_PATH = "/wp-json/wc/v3/products/categories"
-USER_AGENT = "AlexCollect/2.97"
+USER_AGENT = "AlexCollect/2.98"
 
 #  A read is safe to repeat, so a site answering with its own error page gets
 #  asked again before a card is called missing: two of the three failures in
@@ -625,14 +625,19 @@ def run(plan_result, site, key, secret, username="", app_password="",
                            "step": "create", "why": why, "hint": "",
                            "state": "not-attempted"})
 
+    def tell(index, stage, item):
+        """Report where this card is, so a bar can say more than a count."""
+        if not callable(on_item):
+            return
+        try:
+            on_item({"index": index, "total": len(items), "item": item,
+                     "stage": stage})
+        except Exception:
+            pass
+
     for index, item in enumerate(items, start=1):
         entry = {"name": item["name"], "sku": item["sku"], "step": "create"}
-        if callable(on_item):
-            try:
-                on_item({"index": index, "total": len(items), "item": item,
-                         "stage": "start"})
-            except Exception:
-                pass
+        tell(index, "start", item)
         try:
             existing = find_by_sku(site, key, secret, item["sku"],
                                    timeout=timeout, opener=opener)
@@ -673,6 +678,7 @@ def run(plan_result, site, key, secret, username="", app_password="",
                 continue
             image_ids = []
             if item["images"] and username and app_password:
+                tell(index, "photos", item)
                 image_ids = upload_photos(site, username, app_password, item,
                                           folder, timeout=timeout,
                                           opener=opener)
@@ -681,6 +687,7 @@ def run(plan_result, site, key, secret, username="", app_password="",
             category_ids_ = category_ids(site, key, secret, item["categories"],
                                          timeout=timeout, opener=opener)
             payload = build_payload(item, image_ids, category_ids_)
+            tell(index, "create", item)
             answer = create_product(site, key, secret, payload,
                                     timeout=timeout, opener=opener)
             entry.update({"id": answer.get("id"),
@@ -688,6 +695,7 @@ def run(plan_result, site, key, secret, username="", app_password="",
                           "images": len(image_ids),
                           "link": answer.get("permalink") or ""})
             if image_ids and entry.get("id"):
+                tell(index, "attach", item)
                 #  A photo uploaded on its own has no parent, and WordPress
                 #  files every parentless image under "Unattached" in the
                 #  media library - which reads as "the pictures were lost"
@@ -738,6 +746,7 @@ def run(plan_result, site, key, secret, username="", app_password="",
         #  Publishing is the second step, and only after everything landed.
         if publish and not entry.get("no_photos"):
             try:
+                tell(index, "publish", item)
                 publish_product(site, key, secret, entry["id"],
                                 timeout=timeout, opener=opener)
                 entry["status"] = "publish"

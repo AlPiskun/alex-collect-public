@@ -329,6 +329,105 @@ def test_unknown_type():
           isinstance(answer, dict), str(type(answer)))
 
 
+class FakeBar:
+    def __init__(self):
+        self.kw = {"maximum": 100, "value": 0}
+
+    def configure(self, **changes):
+        self.kw.update(changes)
+
+    def cget(self, key):
+        return self.kw.get(key)
+
+
+class FakeLabel:
+    def __init__(self):
+        self.text = ""
+
+    def config(self, **changes):
+        self.text = changes.get("text", self.text)
+
+
+class FakeRow:
+    def __init__(self):
+        self.shown = False
+
+    def grid(self, *a, **k):
+        self.shown = True
+
+    def grid_remove(self):
+        self.shown = False
+
+
+def make_progress_app():
+    """An app carrying only what the progress bar needs, unbound from Tk."""
+    app = types.SimpleNamespace(
+        progress_bar=FakeBar(), progress_label=FakeLabel(),
+        progress_row=FakeRow(), status=FakeLabel(),
+        after=lambda *a, **k: None)
+    for name in ("on_progress", "progress_show", "progress_hide"):
+        setattr(app, name, types.MethodType(getattr(CLS, name), app))
+    app.progress_hide()
+    return app
+
+
+def test_progress_markers():
+    print()
+    print("== 9. a long step moves a bar instead of printing gibberish ==")
+    app = make_progress_app()
+    runner = gui.Runner(app)
+    runner.send = lambda text: None
+    marker = gui._TOOL_PROGRESS_START
+    event = json.dumps({"index": 3, "total": 9, "stage": "create",
+                        "item": {"name": "16-Foo-dark-back-front"}})
+
+    before = runner._consume_dialog_protocol("card 2 of 9\n" + marker[:12])
+    after = runner._consume_dialog_protocol(
+        marker[12:] + event + gui._TOOL_DIALOG_END + "card 3 of 9\n")
+    check("the marker never reaches the console",
+          before + after == "card 2 of 9\ncard 3 of 9\n",
+          repr(before + after))
+    check("a marker split across chunks still moves the bar",
+          app.progress_bar.cget("maximum") == 9 and
+          app.progress_bar.cget("value") == 2,
+          str(app.progress_bar.kw))
+    check("the bar says which card and which part of the work",
+          app.progress_label.text ==
+          "[3/9] creating the draft and reading it back - "
+          "16-Foo-dark-back-front", repr(app.progress_label.text))
+    check("the bar is on screen while the step runs", app.progress_row.shown)
+
+    #  "done" for a card is what fills its slot.
+    runner._consume_dialog_protocol(
+        marker + json.dumps({"index": 3, "total": 9, "stage": "done",
+                             "item": {"name": "Card"}}) + gui._TOOL_DIALOG_END)
+    check("finishing a card fills its slot",
+          app.progress_bar.cget("value") == 3, str(app.progress_bar.kw))
+
+    #  A stage the app has no words for is shown as the tool wrote it, and a
+    #  broken event changes nothing at all.
+    runner._consume_dialog_protocol(
+        marker + json.dumps({"index": 4, "total": 9, "stage": "resize",
+                             "item": {"name": "Card"}}) + gui._TOOL_DIALOG_END)
+    check("an unknown stage is shown as it arrives",
+          "resize" in app.progress_label.text, app.progress_label.text)
+    runner._consume_dialog_protocol(marker + "{not json" + gui._TOOL_DIALOG_END)
+    check("a broken event is dropped, not fatal",
+          app.progress_bar.cget("value") == 3 and
+          app.progress_label.text.startswith("[4/9]"),
+          str(app.progress_bar.kw))
+    runner._consume_dialog_protocol(
+        marker + json.dumps({"index": 0, "total": 0, "stage": "start"}) +
+        gui._TOOL_DIALOG_END)
+    check("an event with no total leaves the bar alone",
+          app.progress_bar.cget("value") == 3, str(app.progress_bar.kw))
+
+    app.progress_hide()
+    check("a finished run puts the bar away",
+          not app.progress_row.shown and
+          app.progress_bar.cget("value") == 0 and app.progress_label.text == "")
+
+
 def main():
     test_pick_a_row()
     test_add_instead()
@@ -338,6 +437,7 @@ def main():
     test_one_row()
     test_row_without_id()
     test_unknown_type()
+    test_progress_markers()
     print()
     print("=" * 60)
     if FAIL:

@@ -2051,6 +2051,45 @@ def main():
           first + second == "before\n\nafter" and
           requests == [{"type": "confirm_cs", "rows": []}] and
           json.loads(answers_sent[0]) == {"answer": "yes"})
+    #  The same stream carries how far a long step has got. It moves the bar
+    #  above the reply box, and it must never appear in the console: a marker
+    #  is for the app, a line like "[4/9] uploading the photos" is for the
+    #  person.
+    progress_marker = gui._TOOL_PROGRESS_START
+    progress = json.dumps({"index": 4, "total": 9, "stage": "photos",
+                           "item": {"name": "Test card"}})
+    app.progress_hide()
+    first = runner._consume_dialog_protocol("line\n" + progress_marker[:11])
+    second = runner._consume_dialog_protocol(
+        progress_marker[11:] + progress + gui._TOOL_DIALOG_END + "\nnext\n")
+    shown = first + second
+    check("progress markers never reach the console",
+          shown == "line\n\nnext\n" and "ALEX_COLLECT" not in shown,
+          repr(shown))
+    check("progress survives split chunks and fills the bar",
+          int(float(app.progress_bar["value"])) == 3 and
+          int(float(app.progress_bar["maximum"])) == 9,
+          "value=%r max=%r" % (app.progress_bar["value"],
+                               app.progress_bar["maximum"]))
+    check("the bar says which card and which part of the work",
+          "[4/9] uploading the photos - Test card" ==
+          app.progress_label["text"], repr(app.progress_label["text"]))
+    check("a moving bar takes the status line with it",
+          "[4/9]" in str(app.status.cget("text")),
+          repr(app.status.cget("text")))
+    #  A finished run must not leave a bar sitting at 100% under the console:
+    #  a full bar beside "Ready" reads as work still going on.
+    old_input_enable = app._input_enable
+    app._input_enable = lambda *a, **k: None
+    try:
+        app.on_run_end("Test run", 0)
+    finally:
+        app._input_enable = old_input_enable
+    check("the bar is put away when the run ends",
+          int(float(app.progress_bar["value"])) == 0 and
+          app.progress_label["text"] == "",
+          "value=%r label=%r" % (app.progress_bar["value"],
+                                 app.progress_label["text"]))
     confirm_prompts = []
     old_askyesno = gui.messagebox.askyesno
     gui.messagebox.askyesno = lambda title, prompt, parent=None: (

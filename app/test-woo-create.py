@@ -9,6 +9,7 @@ happens when one card goes wrong.
 """
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -371,6 +372,37 @@ def test_creation():
     check("the report says it was already there",
           any("Already there" in line for line in
               woo_create.report_text(report)), str(report))
+
+
+def test_progress_stages():
+    """Every part of the work says where it is, not just the card count.
+
+    Creating a batch is four different jobs per card - upload the photos,
+    make the draft, read it back, file the photos under it - plus putting it
+    on sale afterwards. A bar that only hears "card 3 of 9" cannot say which
+    of those is running, which is what the person watching wants to know.
+    """
+    print()
+    print("== 3b. the progress reports name each part of the work ==")
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1)])
+    site = FakeSite(categories={"Sports Card": 11, "Hockey Card": 12})
+    events = []
+    woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                   username="owner", app_password="abcd efgh", publish=True,
+                   opener=site, on_item=events.append)
+    stages = [event["stage"] for event in events]
+    check("the photos, the draft, the filing and the sale are each reported",
+          all(stage in stages for stage in
+              ("start", "photos", "create", "attach", "done", "publish")),
+          str(stages))
+    check("every event carries the card, its place, and the total",
+          all(event["index"] == 1 and event["total"] == 1 and
+              event["item"]["name"] for event in events), str(events[:1]))
+    check("the stages arrive in the order they happen",
+          stages.index("photos") < stages.index("create") <
+          stages.index("attach") < stages.index("done") <
+          stages.index("publish"), str(stages))
 
 
 def test_attaching():
@@ -838,6 +870,14 @@ def test_pipeline_glue(tmp):
             calls.append({"publish": publish, "username": username,
                           "app_password": app_password, "items":
                           len(plan_result["items"])})
+            #  The real run reports every part of every card. Two events are
+            #  enough: the start (which is also the console line a person
+            #  reads) and a stage after it.
+            if callable(on_item):
+                for stage in ("start", "photos"):
+                    on_item({"index": 1, "total": len(plan_result["items"]),
+                             "item": plan_result["items"][0],
+                             "stage": stage})
             entry = {"name": plan_result["items"][0]["name"],
                      "sku": plan_result["items"][0]["sku"], "step": "create",
                      "id": 900, "status": "draft", "images": 1}
@@ -941,6 +981,36 @@ def test_pipeline_glue(tmp):
           created is True and calls and calls[0]["publish"] is True,
           str(calls))
 
+    #  The bar above the app's console is fed by a marker the pipeline writes
+    #  only when the app started the run. A person running card_pipeline.py in
+    #  a terminal reads the plain "[1/1] Card" line and never sees a marker.
+    with patch.dict(os.environ, {"ALEX_COLLECT_NESTED": "1"}):
+        created, output, calls, prompts = glue(
+            args(create_products=True, publish_products=True, confirmed=True),
+            keys=(site, "ck_a", "cs_b"))
+    marker = "\x1eALEX_COLLECT_PROGRESS:"
+    events = []
+    for piece in output.split(marker)[1:]:
+        body = piece.split("\x1f", 1)[0]
+        events.append(json.loads(body))
+    check("the app is told how far the creation has got",
+          [event["stage"] for event in events] == ["start", "photos"] and
+          all(event["index"] == 1 and event["total"] == 1
+              for event in events), str(events))
+    check("a marker carries the card's name, not its whole plan",
+          events and events[-1]["item"] == {"name": planned["items"][0]["name"]},
+          str(events[:1]))
+    check("and the console still reads as sentences and counts",
+          "  [1/1] " in output, output[:200])
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("ALEX_COLLECT_NESTED", None)
+        created, plain_output, calls, prompts = glue(
+            args(create_products=True, publish_products=True, confirmed=True),
+            keys=(site, "ck_a", "cs_b"))
+    check("a run started by hand gets no markers at all",
+          marker not in plain_output and "[1/1]" in plain_output,
+          plain_output[-300:])
+
     created, output, calls, prompts = glue(
         args(create_products=True, publish_products=True, confirmed=True),
         keys=(site, "ck_a", "cs_b"), failure=True)
@@ -956,6 +1026,7 @@ def main():
     test_reading()
     test_payload()
     test_creation()
+    test_progress_stages()
     test_attaching()
     test_publishing()
     test_existing_products()

@@ -179,6 +179,32 @@ when the plugin is older, and after 20 s of silence at
 `ALEX_COLLECT_NESTED` is a hint, not a gate: the core makes no decision on it
 and no action changes shape.
 
+## Progress channel
+
+A tool that is about to work through many items can put a bar above the app's
+console instead of only printing lines. It writes to stdout, once per event:
+
+```
+\x1eALEX_COLLECT_PROGRESS:{"index":3,"total":9,"stage":"photos","item":{"name":"Card name"}}\x1f
+```
+
+- `index` is the item being worked on (1-based) and `total` is how many there
+  are. The bar fills as `index` grows.
+- `stage` is free text. The app has clear words for `start`, `photos`,
+  `create`, `attach`, `publish` and `done`; any other value is shown as it
+  arrives rather than ignored.
+- `item.name` is what the person recognises. Keep it short: the bar shows one
+  line, and the tool's own printed lines still say everything else.
+- The marker is hidden from the console, so a tool must keep printing its
+  plain lines too - the marker is for the bar, not for the reader. A run that
+  prints markers and nothing else looks like a run that says nothing.
+- Progress is optional in both directions: no marker means no bar, and a
+  malformed marker is dropped. Nothing a marker does can fail the work.
+
+The card pipeline writes these only when `ALEX_COLLECT_NESTED=1` (the app
+sets it), so the same script run in a terminal prints plain lines and never
+shows a marker.
+
 ## Dialog channel
 
 A tool can ask the app a question and get a structured answer, instead of

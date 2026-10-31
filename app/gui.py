@@ -70,7 +70,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.97"
+VERSION = "2.98"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -244,6 +244,21 @@ SOLD_ORDERS_SEEN = BASE / sale_preview.SEEN_FILE
 CS_HOME = "https://canadianshopper.ca"
 _TOOL_DIALOG_START = "\x1eALEX_COLLECT_DIALOG:"
 _TOOL_DIALOG_END = "\x1f"
+#  A tool that creates many things says how far along it is the same way: one
+#  JSON object per event, wrapped in markers so it never reaches the console.
+#  The markers are stripped here and turned into a bar, because "[3/9] Some
+#  Card" is the line a person reads and the bar is what says "still moving".
+_TOOL_PROGRESS_START = "\x1eALEX_COLLECT_PROGRESS:"
+#  What a tool's stage names mean in plain words. A bar that says "photos"
+#  is the tool's vocabulary; "uploading the photos" is the person's.
+PROGRESS_WORDS = {
+    "start": "creating the product",
+    "photos": "uploading the photos",
+    "create": "creating the draft and reading it back",
+    "attach": "wiring the photos to the product",
+    "publish": "putting it on sale",
+    "done": "created and read back",
+}
 
 
 def is_sale_comment(line):
@@ -850,20 +865,32 @@ class Runner:
                 pass
 
     def _consume_dialog_protocol(self, chunk):
-        """Hide structured tool requests and answer them with real Tk dialogs."""
+        """Hide structured tool requests and answer them with real Tk dialogs.
+
+        Also hides the progress markers a long step prints. Both travel the
+        same way - a marker, one JSON object, then the end marker - so one
+        function keeps one buffer, and a chunk broken in the middle of either
+        marker is put back together instead of leaking half a marker into the
+        console.
+        """
         text = self._dialog_buffer + chunk
         self._dialog_buffer = ""
         shown = []
-        start = _TOOL_DIALOG_START
         end = _TOOL_DIALOG_END
+        markers = ((_TOOL_DIALOG_START, "dialog"),
+                   (_TOOL_PROGRESS_START, "progress"))
         while text:
-            pos = text.find(start)
-            if pos < 0:
+            found = [(text.find(marker), marker, kind)
+                     for marker, kind in markers]
+            found = [hit for hit in found if hit[0] >= 0]
+            if not found:
                 # Hold only a possible partial marker; stream all other text,
                 # including tools' bare prompts, immediately.
                 keep = 0
-                for n in range(1, min(len(start), len(text) + 1)):
-                    if text.endswith(start[:n]):
+                longest = max(len(marker) for marker, _ in markers)
+                for n in range(1, min(longest, len(text)) + 1):
+                    if any(marker.startswith(text[-n:])
+                           for marker, _ in markers):
                         keep = n
                 if keep:
                     shown.append(text[:-keep])
@@ -871,20 +898,28 @@ class Runner:
                 else:
                     shown.append(text)
                 break
+            pos, start, kind = min(found)
             shown.append(text[:pos])
             end_pos = text.find(end, pos + len(start))
             if end_pos < 0:
                 self._dialog_buffer = text[pos:]
                 break
             body = text[pos + len(start):end_pos]
-            try:
-                request = json.loads(body)
-                answer = self.app.handle_tool_dialog(request)
-                self.send(json.dumps(answer, ensure_ascii=False,
-                                     separators=(",", ":")))
-            except Exception as exc:
-                log("tool dialog protocol failed: %s" % exc)
-                self.send("{}")
+            if kind == "dialog":
+                try:
+                    request = json.loads(body)
+                    answer = self.app.handle_tool_dialog(request)
+                    self.send(json.dumps(answer, ensure_ascii=False,
+                                         separators=(",", ":")))
+                except Exception as exc:
+                    log("tool dialog protocol failed: %s" % exc)
+                    self.send("{}")
+            else:
+                try:
+                    self.app.on_progress(json.loads(body))
+                except Exception as exc:
+                    #  A bar that cannot be drawn must never stop the work.
+                    log("tool progress protocol failed: %s" % exc)
             text = text[end_pos + len(end):]
         return "".join(shown)
 
@@ -2167,8 +2202,26 @@ class App(tk.Tk):
         self.console.tag_configure("warn", foreground="#ffd08a")
         self.console.tag_configure("dim", foreground="#8a8a8a")
 
+        #  Where a long step says how far along it is. Hidden until a tool
+        #  actually reports progress, so nothing changes for the steps that
+        #  finish in a second.
+        self.progress_row = ttk.Frame(box)
+        self.progress_row.grid(row=1, column=0, columnspan=2, sticky="ew",
+                               pady=(2, 0))
+        self.progress_bar = ttk.Progressbar(self.progress_row, length=260,
+                                            mode="determinate", maximum=100,
+                                            value=0)
+        self.progress_bar.pack(side="left", fill="x", expand=True)
+        self.progress_label = ttk.Label(self.progress_row, text="",
+                                        style="Dim.TLabel")
+        self.progress_label.pack(side="left", padx=(6, 0))
+        add_tooltip(self.progress_bar,
+                    "How many of this run's items are done; the words beside "
+                    "it say which part is running.")
+        self.progress_row.grid_remove()
+
         row = ttk.Frame(box)
-        row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+        row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(2, 0))
         ttk.Label(row, text="Reply:").pack(side="left")
         self.inp = ttk.Entry(row)
         self.inp.pack(side="left", fill="x", expand=True, padx=4)
@@ -2260,9 +2313,59 @@ class App(tk.Tk):
         except tk.TclError:
             self._poll_job = None
 
+    def progress_show(self, done, total, words):
+        """Draw the console bar: how many of how many, and what is running."""
+        try:
+            self.progress_bar.configure(maximum=max(1, int(total)),
+                                        value=max(0, int(done)))
+            self.progress_label.config(text=words)
+            self.progress_row.grid()
+        except (AttributeError, tk.TclError):
+            pass          # a headless run, or the window has gone
+
+    def progress_hide(self):
+        try:
+            self.progress_row.grid_remove()
+            self.progress_bar.configure(value=0)
+            self.progress_label.config(text="")
+        except (AttributeError, tk.TclError):
+            pass
+
+    def on_progress(self, event):
+        """A running tool's report: move the bar and name the stage.
+
+        Every field is treated as optional and unknown stages are shown as
+        they arrive: a progress display must never be able to stop the work
+        it is describing, and a new stage name added to a tool should appear
+        on screen even before this dictionary learns the words for it.
+        """
+        event = event if isinstance(event, dict) else {}
+        try:
+            total = int(event.get("total") or 0)
+            index = int(event.get("index") or 0)
+        except (TypeError, ValueError):
+            return
+        if total <= 0 or index <= 0:
+            return
+        stage = str(event.get("stage") or "")
+        item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        name = str(item.get("name") or "")
+        phrase = PROGRESS_WORDS.get(stage, stage or "working")
+        #  "done"/"publish" finish an item; anything else is that item being
+        #  worked on, so the bar sits one short of it.
+        done = index if stage in ("done", "publish") else index - 1
+        words = "[%d/%d] %s%s" % (index, total, phrase,
+                                  (" - " + name) if name else "")
+        self.progress_show(done, total, words)
+        try:
+            self.status.config(text=words)
+        except (AttributeError, tk.TclError):
+            pass
+
     def on_run_start(self, title, cmd):
         self._saw_dangling_prompt = False
         self._hinted = set()
+        self.progress_hide()
         self.console_line("")
         self.console_line("---- " + title + " " + "-" * max(0, 60 - len(title)),
                           "cmd")
@@ -2276,6 +2379,7 @@ class App(tk.Tk):
             "---- finished (%s, exit code %s) " %
             ("OK" if ok else "PROBLEM", rc) + "-" * 30,
             "ok" if ok else "err")
+        self.progress_hide()
         self.status.config(
             text=("Finished: " if ok else "Stopped with a problem: ") + title +
             ("  -  the log keeps everything: " + LOG_FILE.name))
@@ -3419,6 +3523,10 @@ def build_cookie(parent, app):
               "facebook_selling_url")
     field_row(market, 2, "CanadianShopper vendor page URL:",
               "canadianshopper_store_url")
+    #  The page the exported CSVs are uploaded through. Kept apart from the
+    #  selling page above: one is read for stock, the other is written to.
+    field_row(market, 3, "Facebook bulk-create page URL:",
+              "facebook_bulk_create_url")
 
     group("ebay", "eBay Quick List handoff")
     ebay_box = ttk.Frame(box)
@@ -3572,7 +3680,8 @@ def build_cookie(parent, app):
                     "ebay_template_football_url", "ebay_template_baseball_url",
                     "ebay_template_hockey_url", "ebay_template_basketball_url",
                     "ebay_template_default_url", "ebay_image_base_url",
-                    "facebook_selling_url", "canadianshopper_store_url")
+                    "facebook_selling_url", "canadianshopper_store_url",
+                    "facebook_bulk_create_url")
         normalized = {}
         for key in url_keys:
             value = fields[key].get().strip()

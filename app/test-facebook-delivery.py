@@ -32,8 +32,13 @@ def main():
                 path.write_bytes(b"test")
                 os.utime(path, (index, index))
             pipeline.SCRIPT_DIR = root
+            #  Both pages are set on purpose: the handoff must open the
+            #  bulk-create page the CSVs are uploaded through, never the
+            #  selling list the stock comparison reads.
             pipeline.USER_SETTINGS = {
-                "facebook_selling_url": "https://www.facebook.com/marketplace/you/selling"
+                "facebook_selling_url": "https://www.facebook.com/marketplace/you/selling",
+                "facebook_bulk_create_url":
+                    "https://www.facebook.com/marketplace/create/bulk",
             }
             pipeline.open_path = lambda path: calls.append(("file", Path(path))) or True
             pipeline.open_folder = lambda path: calls.append(("folder", Path(path))) or True
@@ -42,8 +47,21 @@ def main():
                 pipeline.open_facebook_delivery()
             assert ("file", latest) in calls
             assert ("folder", export_dir) in calls
-            assert ("browser", "https://www.facebook.com/marketplace/you/selling") in calls
-            print("PASS Facebook handoff opens latest workbook, export folder, configured page, and waits for review")
+            assert ("browser", "https://www.facebook.com/marketplace/create/bulk") in calls
+            assert ("browser", "https://www.facebook.com/marketplace/you/selling") not in calls
+            print("PASS Facebook handoff opens latest workbook, export folder, the bulk-create page, and waits for review")
+            #  A settings file saved before this page was its own setting has
+            #  no key for it. The handoff must still open the bulk-create page
+            #  rather than falling back to the selling list.
+            calls.clear()
+            pipeline.USER_SETTINGS = {
+                "facebook_selling_url": "https://www.facebook.com/marketplace/you/selling"
+            }
+            with patch.object(builtins, "input", return_value=""):
+                pipeline.open_facebook_delivery()
+            assert ("browser", pipeline.FACEBOOK_BULK_CREATE_URL) in calls, calls
+            assert ("browser", "https://www.facebook.com/marketplace/you/selling") not in calls
+            print("PASS an older settings file still opens the bulk-create page")
     finally:
         pipeline.SCRIPT_DIR = old_script_dir
         pipeline.USER_SETTINGS = old_settings
