@@ -63,6 +63,7 @@ screens. The current core recognizes the following action IDs:
 - `batch.pipeline_stage`
 - `marketplace.publish_drafts`
 - `marketplace.import_csv`
+- `marketplace.listing_update`
 - `stock.set`
 
 The three photo actions are separate jobs even though one script usually
@@ -122,6 +123,8 @@ version as well as the action:
 | the publisher's `PUBLISH` question reaching the console | plugin **1.0.27** or newer |
 | writing a stock count on the other site (`stock.set`) | plugin **1.0.21** or newer |
 | importing a written CSV into the vendor dashboard (`marketplace.import_csv`) | plugin **1.0.23** or newer |
+| editing one listing from the app (`marketplace.listing_update`) | plugin **1.0.28** or newer |
+| an address, price and state on every `stock.list` row | plugin **1.0.28** or newer |
 
 `--back` was additive before 1.0.16 - it added the new back beside the old one
 - so sending it to 1.0.15 would leave the previous back photo on the listing.
@@ -363,6 +366,144 @@ cs-import.py --csv "<file>" [--csv "<file>" ...] [--cookie-file "<cookie.txt>"] 
   that the reader could not see, and the core says exactly that.
 - Exit non-zero when the import did not finish. The CSV is still in its
   folder and can be imported by hand.
+
+### `marketplace.listing_update` - changing one listing (since plugin 1.0.28)
+
+The core's **Find and edit a CanadianShopper listing** panel searches the
+catalogue `stock.list` returns and can change one listing's title, price, stock
+or state from the app. Without this action the panel still reads and searches -
+it just says it cannot write, and names the version that can.
+
+```
+cs-listing-update.py --set-file "<plan.json>" --set-out "<result.json>" [--cookie-file "<cookie.txt>"]
+```
+
+The plan is one entry per listing: the fields that identify it (`id`, `sku`,
+any other id `stock.list` reported, `url`, and `title` as it stands), plus
+**only the fields that change**. A field that is absent must be left exactly as
+it is on the site:
+
+```json
+{"items": [{"id": 13820,
+            "sku": "OPC1973-25",
+            "title": "1973-74 O-Pee-Chee Walt Tkaczuk #25 EX-MT Rangers",
+            "card": "1973-74 O-Pee-Chee Walt Tkaczuk #25 EX-MT",
+            "price": "9.50",
+            "inventory": 2,
+            "status": "active"}]}
+```
+
+- `id`, `sku` and the old `title` identify the listing, in that order of
+  confidence - the same rule `stock.set` uses, so one listing is never mistaken
+  for its neighbour in the set.
+- **Any other id `stock.list` reported travels with the plan**, under the name
+  the reader gave it: `product_id`, `productId`, `listing_id`, `post_id`,
+  `wp_id` and the like. A catalogue's listing and the product its API patches
+  are not always the same key, and the writer must get both - with only the
+  listing id it can address a resource the site does not know, which is a 404
+  and no change at all. `url` (the row's own address) is passed for the same
+  reason. **The ids in the plan are exactly what `stock.list` emitted**: the
+  core never invents, derives or rewrites one, so a writer that needs the
+  product key must emit it.
+
+  A listing's `id` is its catalogue id and is **not** a product id. When the
+  vendor supplies a product id, `stock.list` must report it as `product_id`
+  (or `productId`) and the update action must build its
+  `/api/products/<product_id>/` path from that key alone. A listing with no
+  product id is a listing this action cannot patch: report it in `failed` with
+  a sentence saying so, before any request is made. It must never be guessed
+  from the listing id, a slug or a title - a guess that hits another listing
+  edits the wrong card and reports success.
+- `title`, when present, is the **new** title. `card` is always the old one, so
+  a log line can say what the listing was.
+- `price` is a decimal string; `inventory` is an integer (`0` is a real count);
+  `status` is `active` or `archived` and means exactly that - nothing else is
+  republished or unpublished by it.
+- Nothing is ever added, deleted or duplicated by this action, and no other
+  field (description, photos, categories, shipping) is sent at all. The
+  description and the photos are the vendor dashboard's job, which is what the
+  panel's **Open the selected listing** button is for.
+
+The result file is the same shape as `stock.set`, read the same way:
+
+```json
+{"updated": [{"id": 13820}],
+ "failed":  [{"id": 13821, "why": "that listing is protected"}]}
+```
+
+- An entry may be named by `id` (also `product_id`, `productId`, `listing_id`,
+  `post_id`), `sku`, `title`, `card` or `name`; the id wins when both sides
+  have one, and **any** of the ids the plan was given counts - a writer that
+  resolves the page id to the product id and answers with the product id is
+  confirming the same listing.
+- `why`, `reason`, `error` and `message` are all accepted as the failure's
+  sentence, and it is shown unedited.
+- A listing the result does not mention is **unknown** - the panel says it
+  cannot confirm the change and leaves the row as it was. Exit non-zero to mean
+  *nothing was written*: the panel takes that at its word.
+
+A writer that refuses a listing because it has no explicit product id is
+answered by the app, not by the person. The panel asks **before** it spends a
+write that could only fail: a row with no product id in the list on screen gets
+"read the listings again?" rather than a doomed request, because the difference
+between an old list and a listing the site gives no product id for is exactly
+one read. After the read it **re-plans the same change** from the fresh row -
+matched by the id that was being edited - and asks for it once more before
+writing. If the fresh row still has no product id, it says so and leaves the
+listing for the vendor dashboard. The plugin's own sentence is still printed,
+unedited, in the console, and a refusal that arrives anyway is read the same
+way.
+
+When any of this fails, the panel prints the failure in the plugin's own words
+and then **how the plan named the listing** - `The plan named it: id
+14effcaceb8a4b66b6f14e7aded86e2d, product id 4321, SKU OPC70-81` - because
+"not found" is a question about which listing was addressed. A 404 is called
+what it is: the reader and the endpoint the plugin writes to are naming the
+listing by different keys, nothing on the site was changed, and the fix is in
+the plugin, not in the app.
+
+### What a `stock.list` row carries (since plugin 1.0.28)
+
+The listing panel shows a numbered row as **card - state - stock - price -
+SKU**, and links to the listing's own page. A row already has `title`/`name`, `sku`,
+`inventory` and (since 1.0.25) `status`; from 1.0.28 it also carries:
+
+| key | meaning |
+| --- | --- |
+| `price` | the listing's price, as the vendor shows it (`"CA$8.50"` and `"8.50"` are both read) |
+| `url` | the listing's own page address |
+| `product_id` | the id the update action patches, when the vendor supplies one and it differs from `id` |
+
+`product_id` is the only key with a write behind it: everything else on a row
+is for display. A row without one still lists, searches, prices and opens -
+the edit form still opens on it - and the plugin answers the write with the
+reason it could not be made. The core counts them after every read and says
+so ("`12 listings read; 10 with a product id, so 10 can be edited here`"), and
+a plugin that summarises `listings: N, with product id: M` in its own console
+line is saying the same thing in its own words - the two numbers agree because
+both count the rows the reader emitted.
+
+Both are display-only and are used by the **Find and edit a CanadianShopper
+listing** panel, which shows the price in its row and opens the address behind
+its **Open the selected listing** button. An older reader that omits them still
+lists, searches and edits; the row simply has no price in it.
+
+Since plugin **1.0.29** every row's `url` is an absolute `http(s)` address
+taken from the vendor's own data, which is what the core opens directly. The
+core also accepts a path from the site (`/listing/12345`) and joins it onto
+`https://canadianshopper.ca`, and it reads the same address under `link`,
+`permalink`, `href`, `product_url`, `productUrl`, `listing_url`, `web_url`,
+`view_url`, `address` and `page` - in that order, with capitals, underscores
+and spaces ignored, so `productUrl`, `product_url` and `Product URL` are one
+key. A key holding something that is not the web (`javascript:`, `mailto:`, a
+Windows path) is skipped, not opened, and a bad key never hides a good one
+beside it.
+
+A row with no usable address is not a dead end: the button opens the seller's
+own store and puts the card's title and listing id on the clipboard to search
+for. That is the fallback, though, not the plan - 1.0.29 emits the address for
+every listing whose vendor data has one, so `url` is what makes the button open
+the listing itself.
 
 ## Security
 

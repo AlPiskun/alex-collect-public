@@ -8,7 +8,6 @@ one, and whether the panel saves a copy instead of pretending to compare.
 """
 import importlib.util
 import io
-import json
 import sys
 import tempfile
 import urllib.error
@@ -488,14 +487,6 @@ def sync_background(app, work, done):
     return done(result, error)
 
 
-def sync_background(app, work, done):
-    try:
-        result, error = work(), None
-    except Exception as exc:
-        result, error = None, exc
-    return done(result, error)
-
-
 EBAY_FIRST_PAGE = EBAY_PAGE          # three rows: qty 1, 3, 0
 
 WOO_PRODUCTS = [
@@ -729,7 +720,7 @@ def test_the_walls_have_names():
           "expired" not in wall.message and "expired" not in wall.hint,
           wall.message + wall.hint)
     check("the way round it is the saved page, named with its button",
-          "Read a saved eBay page" in wall.hint, wall.hint)
+          "Read the saved eBay page" in wall.hint, wall.hint)
 
     face = market_stock.describe_refusal("Facebook", 400, FB_400)
     check("Facebook's HTTP 400 is the same wall, not a bad cookie",
@@ -832,7 +823,7 @@ def test_panel_names_the_wall():
             patch.object(stock_compare, "read_woo_stock",
                          lambda *a, **k: WOO_PRODUCTS), \
             patch.object(gui, "in_background", sync_background):
-        find(parent, gui.ttk.Button, "Read a saved Facebook page...").invoke()
+        find(parent, gui.ttk.Button, "Read the saved Facebook page").invoke()
     check("a saved page is read by the same reader",
           any("read from the saved page" in text for _tag, text in app.lines),
           str(app.lines[-3:]))
@@ -850,11 +841,217 @@ def test_panel_names_the_wall():
                          lambda path=None: ("https://shop.example", "ck_a",
                                             "cs_b")), \
             patch.object(gui, "in_background", sync_background):
-        find(parent, gui.ttk.Button, "Read a saved Facebook page...").invoke()
+        find(parent, gui.ttk.Button, "Read the saved Facebook page").invoke()
     check("a wrong saved page says so instead of comparing nothing",
           any("no listing in it could be read" in str(payload)
               for payload in warned), str(warned[-1:]))
 
+
+
+def test_where_the_saved_pages_live():
+    print()
+    print("== 4c. the page saved from a browser is found, not chosen ==")
+    folder = Path(tempfile.mkdtemp())
+    empty = folder / "nothing-here"
+    dirs = market_stock.saved_page_dirs(folder, extra=[empty, folder])
+    check("a folder that does not exist is skipped, not guessed at",
+          empty not in dirs, str(dirs))
+    check("and a folder named twice is tried once",
+          len([d for d in dirs if d == folder.resolve()]) == 1, str(dirs))
+    check("the app's own folder comes first", dirs[0] == folder.resolve(),
+          str(dirs))
+
+    import os
+    import time
+    now = time.time()
+    older = folder / "older.html"
+    older.write_text(EBAY_PAGE, encoding="utf-8")
+    os.utime(older, (now - 7200, now - 7200))
+    newer = folder / "Slugger - Seller Hub.htm"
+    newer.write_text(EBAY_PAGE, encoding="utf-8")
+    os.utime(newer, (now - 60, now - 60))
+    (folder / "notes.txt").write_text("not a page", encoding="utf-8")
+    (folder / "fb.html").write_text(FB_PAGE, encoding="utf-8")
+    os.utime(folder / "fb.html", (now - 120, now - 120))
+    pages = market_stock.saved_pages([folder])
+    check("only pages are considered, newest first",
+          [p.name for p, _m in pages][:2] == ["Slugger - Seller Hub.htm",
+                                              "fb.html"],
+          str([p.name for p, _m in pages]))
+    check("a note is never read as a page",
+          all(p.suffix != ".txt" for p, _m in pages),
+          str([p.name for p, _m in pages]))
+    check("the list is capped so a disk is never read whole",
+          len(market_stock.saved_pages([folder], limit=1)) == 1, "")
+
+    #  Which site a page belongs to comes from its contents: the browser names
+    #  the file after the page title, which says nothing reliable.
+    found = market_stock.saved_page("ebay", [folder], max_age_days=None)
+    check("the eBay page is recognised by what is in it, not its name",
+          found is not None and
+          [item["name"] for item in found["items"]][0].startswith(
+              "#75 Bert Campaneris"), str(found and found["path"]))
+    check("and the newest eBay page is the one used",
+          found["path"].name == "Slugger - Seller Hub.htm",
+          found["path"].name)
+    fb = market_stock.saved_page("facebook", [folder], max_age_days=None)
+    check("Facebook's page is recognised the same way",
+          fb is not None and len(fb["items"]) >= 3, str(fb and fb["path"]))
+    check("a page of the wrong site is never used for the other",
+          fb["path"].name == "fb.html", str(fb and fb["path"]))
+    check("an ancient page is too stale to stand in for a live read",
+          market_stock.saved_page("ebay", [folder], max_age_days=-1) is None,
+          "")
+    check("a folder with no page of that site finds nothing",
+          market_stock.saved_page("ebay", [Path(tempfile.mkdtemp())],
+                                  max_age_days=None) is None, "")
+
+    #  The contents decide the site for a picked file too.
+    detected = market_stock.detect_site(EBAY_PAGE)
+    check("a page with no name says which site it is",
+          detected is not None and detected[0] == "ebay", str(detected))
+    check("and neither page is mistaken for an unreadable one",
+          market_stock.detect_site("<html>nothing here</html>") is None, "")
+
+    #  More listings beats fewer: that is what a saved page is for.
+    live = market_stock.parse_listings("facebook", FB_PAGE)[:1]
+    better = market_stock.better_saved_page("facebook", [folder], live,
+                                            max_age_days=None)
+    check("a saved page holding more than the live read wins",
+          better is not None and len(better["items"]) > len(live),
+          str(better and len(better["items"])))
+    check("but only when it really holds more",
+          market_stock.better_saved_page("facebook", [folder],
+                                         live * 40,
+                                         max_age_days=None) is None, "")
+    check("and a stale one never wins",
+          market_stock.better_saved_page("facebook", [folder], live,
+                                         max_age_days=-1) is None, "")
+    check("the phrase naming a page says what and when",
+          "saved " in market_stock.describe_page(better) and
+          "listing" in market_stock.describe_page(better),
+          market_stock.describe_page(better))
+
+
+def test_two_hundred_and_fifty_listings():
+    print()
+    print("== 4d. eBay is read up to 250 listings, every page kept ==")
+    def page(start, count):
+        rows = "".join(
+            '<tr data-id="%d" class="grid-row"><td class="shui-dt-column__'
+            'title"><div class="column-title__text"><a href="#">#%d Card</a>'
+            '</div></td><td class="shui-dt-column__availableQuantity"><div>'
+            '<span>1</span></div></td></tr>' % (start + i, start + i)
+            for i in range(count))
+        return "<html><table><tbody>%s</tbody></table></html>" % rows
+
+    asked = []
+
+    def fetch_page(url, cookie):
+        asked.append(url)
+        page_no = len(asked) - 1
+        #  Two full pages of 200: a paid store. The cap is what stops the
+        #  third request, not the site running out of listings.
+        return 200, page(1000 + page_no * 200, 200)
+
+    items, pages, text = market_stock.read_ebay(fetch_page, "https://x/lst", "c")
+    check("the read stops at the product limit of a free store, not the disk",
+          len(items) == 250 and pages == 2, "%d items, %d pages" %
+          (len(items), pages))
+    check("no third page is asked for once the limit is reached",
+          len(asked) == 2, str(asked))
+    check("the saved copy keeps every page that was read",
+          text.count("grid-row") == 400, str(text.count("grid-row")))
+    check("the default limit is named in one place",
+          market_stock.EBAY_MAX_ITEMS == 250, str(market_stock.EBAY_MAX_ITEMS))
+    items, pages, _text = market_stock.read_ebay(fetch_page, "https://x/lst",
+                                                 "c", max_items=20)
+    check("a smaller limit is honoured", len(items) == 20 and pages == 1,
+          "%d items, %d pages" % (len(items), pages))
+    check("one page load is what Facebook's window is measured against",
+          market_stock.SITE_WINDOW["ebay"] == 200 and
+          market_stock.SITE_WINDOW["facebook"] > 0,
+          str(market_stock.SITE_WINDOW))
+
+
+def test_the_panel_finds_the_page_itself():
+    print()
+    print("== 10b. the panel finds the saved page, and writes its own ==")
+    folder, app, parent = build_panel()
+    (folder / "ebay-cookie.txt").write_text("SID=abc\n", encoding="utf-8")
+    warned = []
+    harness._BOX.showwarning = lambda *a, **k: warned.append(a)
+
+    # ---- a wall, and a page saved from the browser already sitting there
+    saved = folder / "Seller Hub.html"
+    saved.write_text(EBAY_PAGE, encoding="utf-8")
+    app.lines.clear()
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(market_stock, "fetch",
+                         lambda url, cookie: (200, EBAY_WALL)), \
+            patch.object(stock_compare, "read_woo_stock",
+                         lambda *a, **k: WOO_PRODUCTS), \
+            patch.object(gui, "in_background", sync_background):
+        find(parent, gui.ttk.Button, "Compare stock with eBay").invoke()
+    check("the wall is not a dead end: the saved page is read without a picker",
+          any("reading the saved page" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and no dialog is raised about it",
+          not warned, str(warned))
+    check("the comparison runs from that page",
+          any("matched cards against eBay" in text
+              for _tag, text in app.lines), str(app.lines[-2:]))
+    check("the save is never overwritten with a page the app did not fetch",
+          not (folder / "ebay-active.html").exists(),
+          str(sorted(p.name for p in folder.iterdir())))
+
+    # ---- the button: no file dialog, the newest page is used
+    harness._BOX.warned = []
+    asked = []
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui.filedialog, "askopenfilename",
+                         lambda **k: asked.append(k) or ""), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(stock_compare, "read_woo_stock",
+                         lambda *a, **k: WOO_PRODUCTS), \
+            patch.object(gui, "in_background", sync_background):
+        app.lines.clear()
+        find(parent, gui.ttk.Button, "Read the saved eBay page").invoke()
+    check("the saved page is read with no file dialog at all", not asked,
+          str(asked))
+    check("and it is the page that was there",
+          any("read from the saved page Seller Hub.html" in text
+              for _tag, text in app.lines), str(app.lines[-3:]))
+
+    # ---- a live read that covers less than a saved page loses
+    fb_saved = folder / "Marketplace - Selling.html"
+    fb_saved.write_text(FB_PAGE * 6, encoding="utf-8")
+    (folder / "fb-cookie.txt").write_text("c_user=1\n", encoding="utf-8")
+    app.lines.clear()
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(market_stock, "fetch",
+                         lambda url, cookie: (200, FB_PAGE)), \
+            patch.object(stock_compare, "read_woo_stock",
+                         lambda *a, **k: WOO_PRODUCTS), \
+            patch.object(gui, "in_background", sync_background):
+        find(parent, gui.ttk.Button, "Compare stock with Facebook").invoke()
+    check("a saved page that covers more than the live one is used",
+          any("the page saved on this computer holds" in text
+              for _tag, text in app.lines), str(app.lines[-3:]))
+    check("and the app's own copy is still the page the site really sent",
+          (folder / "fb-selling.html").exists(),
+          str(sorted(p.name for p in folder.iterdir())))
+    check("nothing on either site was changed",
+          any("Nothing was changed" in text for _tag, text in app.lines),
+          str(app.lines[-2:]))
 
 
 def main():
@@ -864,6 +1061,8 @@ def main():
     test_pages()
     test_parsing()
     test_pages_of_ebay()
+    test_where_the_saved_pages_live()
+    test_two_hundred_and_fifty_listings()
     test_panel_with_a_stray_character()
     test_site_rows()
     test_panel()
@@ -871,6 +1070,7 @@ def main():
     test_cookie_file()
     test_the_walls_have_names()
     test_panel_names_the_wall()
+    test_the_panel_finds_the_page_itself()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))

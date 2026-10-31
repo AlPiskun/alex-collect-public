@@ -244,6 +244,43 @@ def is_on_sale(item):
     return status_of(item) == "active"
 
 
+#  The vendor's word for a listing that has been put away rather than merely
+#  not published. Spelling variants are folded because the vendor spells it in
+#  its own way and in its own case.
+_ARCHIVED_WORDS = {"archived", "archive", "archiviert", "inactive archived"}
+_ARCHIVED_STATES = {"archived", "archive"}
+
+
+def is_archived(item):
+    """Whether this listing has been archived, as opposed to merely off sale.
+
+    Archived is the vendor's "put away" - the card is not coming back by
+    itself. A draft or a hidden listing is a different story: someone is in
+    the middle of something with it, or it is one publish away from selling.
+    """
+    raw = str((item or {}).get("status") or "").strip().lower()
+    folded = " ".join(raw.replace("_", " ").replace("-", " ").split())
+    return folded in _ARCHIVED_STATES or raw in _ARCHIVED_WORDS
+
+
+def archived_sold_out(pairs):
+    """Pairs where the other site archived the listing and the website is dry.
+
+    There is nothing to do about that pair: the website has nothing to sell,
+    the other site has put the card away on purpose, and the only way out is
+    restocking the card, which is a different job in a different place. Listed
+    with the other count disagreements, it reads as work that is not there.
+    """
+    found = []
+    for row in pairs or []:
+        other = row.get("other") or {}
+        if not is_archived(other):
+            continue
+        if int(row.get("woo", {}).get("qty") or 0) <= 0:
+            found.append(row)
+    return found
+
+
 def status_words(item):
     """The state in the words the person sees, or "" when it is on sale."""
     kind = status_of(item)
@@ -253,6 +290,41 @@ def status_words(item):
     if kind == "draft":
         return "a %s" % (raw or "draft")
     return raw or kind
+
+
+#: Names a reader may use for the id its *write* endpoint takes, beside the
+#: ``id`` it lists the row under. A catalogue's listings and its products are
+#: not always the same object - one is what the shopfront shows, the other is
+#: what an API patches - and a reader that reports both must not have the
+#: second one dropped on the way to the writer.
+_ID_NAME_SHAPES = ("productid", "listingid", "postid", "wpid", "itemid",
+                   "productidentifier")
+
+
+def _bare_name(key):
+    """A key with everything but its letters and digits removed, lowercased."""
+    return "".join(char for char in str(key).lower() if char.isalnum())
+
+
+def extra_ids(row):
+    """The listing's other identifiers, as ``{key: value}``.
+
+    Anything a reader reports that names an id and is a plain value travels
+    with the row; a title-shaped key never does, because a title is not an
+    identifier and matching a write on one is how the wrong listing gets
+    changed.
+    """
+    found = {}
+    for key, value in (row or {}).items():
+        shape = _bare_name(key)
+        #  ``listing_product_id``, ``parent_product_id``: a reader that keeps
+        #  its own spelling of the product key still means the product key.
+        if shape not in _ID_NAME_SHAPES and not shape.endswith("productid"):
+            continue
+        if value in (None, "") or isinstance(value, (dict, list, tuple)):
+            continue
+        found[str(key)] = value
+    return found
 
 
 def plugin_items(payload):
@@ -284,6 +356,16 @@ def plugin_items(payload):
                  "qty": None,
                  "id": row.get("id"),
                  "status": str(row.get("status") or "").strip()}
+        #  Anything else the reader reported travels with the row rather than
+        #  being thrown away: the listing panel edits a price and opens a
+        #  listing's page, and both need what only the vendor knows.
+        for extra in ("price", "url"):
+            value = row.get(extra)
+            if value not in (None, ""):
+                entry[extra] = value
+        ids = extra_ids(row)
+        if ids:
+            entry["ids"] = ids
         if quantity is not None and str(quantity).strip() != "":
             try:
                 entry["qty"] = int(quantity)
@@ -598,9 +680,15 @@ def action_list(pairs, only_woo, only_other, ignored=(), other_label=""):
     #  A pair whose other-site listing is not on sale is not a count
     #  disagreement: setting the count would leave the card unbuyable, and
     #  stock.set refuses it by design. It becomes its own row instead.
+    #  A pair where the other site archived the listing and the website has
+    #  nothing left is not a job: it needs a restock, not a count or a publish.
+    #  The pairs are counted instead, so the panel can say how many there are.
+    dry = {id(row) for row in archived_sold_out(pairs)}
     rows = []
     live = []
     for row in pairs or []:
+        if id(row) in dry:
+            continue
         if is_on_sale(row.get("other")) and row["other"].get("qty") is not None:
             live.append(row)
             continue
@@ -977,10 +1065,23 @@ def _matches(row, entry):
     title are the fallback only when one side has no id at all, which is what a
     plugin that does not report ids, or a plan built without them, looks like.
     """
-    entry_id = str(_first(entry, "id", "product_id", "listing_id") or "")
-    row_id = str(row.get("id") or "")
-    if entry_id and row_id:
-        return entry_id == row_id
+    entry_id = str(_first(entry, "id", "product_id", "listing_id",
+                          "productId", "listingId") or "")
+    #  Every id the row carries counts, not only the one it is listed under:
+    #  a writer that answers with the product id of a listing it knows by its
+    #  page id has still written *that* listing, and calling it unknown would
+    #  report a change that happened as a change that did not.
+    row_ids = {str(row.get("id") or "")}
+    row_ids |= {str(value) for value in (row.get("ids") or {}).values()}
+    #  A plan carries those ids at its top level (``product_id`` beside ``id``)
+    #  because that is what the writer is handed, so both shapes are read.
+    for key, value in (row or {}).items():
+        if _bare_name(key) in _ID_NAME_SHAPES and not isinstance(
+                value, (dict, list, tuple)):
+            row_ids.add(str(value or ""))
+    row_ids.discard("")
+    if entry_id and row_ids:
+        return entry_id in row_ids
     entry_sku = str(_first(entry, "sku") or "").strip().lower()
     row_sku = str(row.get("sku") or "").strip().lower()
     if entry_sku and row_sku:
@@ -1048,8 +1149,21 @@ def plan_summary(plan, other_label="CanadianShopper"):
         count, "" if count == 1 else "s", other_label)
 
 
-def label_action(row, other_label="CanadianShopper", mode="count"):
-    """One row of the action list, as it is shown."""
+def label_action(row, other_label="CanadianShopper", mode="count", number=None,
+                 width=1):
+    """One row of the action list, as it is shown - numbered, when asked.
+
+    The number is the row's place in the list the panel is showing, so the
+    same card can be pointed at after a sort or while working down the list.
+    """
+    text = _action_text(row, other_label, mode)
+    if number is None:
+        return text
+    return "%*d. %s" % (max(1, int(width)), int(number), text)
+
+
+def _action_text(row, other_label="CanadianShopper", mode="count"):
+    """The words of one row, without its number."""
     if row.get("kind") == ONLY_WOO:
         return "%s  -  website %s only, not on %s" % (
             row["card"], row["woo"], other_label)
@@ -1140,6 +1254,15 @@ def summary(rows, pairs, only_woo, only_other, other_label="CanadianShopper"):
     if left_out:
         line += " Not compared: " + ", ".join(left_out) + "."
     return line
+
+
+def archived_note(pairs, other_label="CanadianShopper"):
+    """The sentence for the archived pairs that were left off the list."""
+    dry = archived_sold_out(pairs)
+    if not dry:
+        return ""
+    return ("%d archived on %s with nothing on your website, so not shown." %
+            (len(dry), other_label))
 
 
 def sold_out_note(only_woo, other_label="CanadianShopper"):

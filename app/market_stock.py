@@ -22,8 +22,10 @@ No Tk, no writes to a site, and the request is injected so this can be tested
 without a network or an account.
 """
 
+import datetime
 import html
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -117,6 +119,31 @@ TITLE = re.compile(r"(?is)<title[^>]*>(.*?)</title>")
 #  itself, not from guesses about it.
 _EBAY_ROW = re.compile(r'<tr\s+data-id="(\d+)"[^>]*class="[^"]*grid-row', re.I)
 _EBAY_PER_PAGE = 200
+
+#  How many listings one read asks for. eBay serves 200 rows to a page, and a
+#  free store holds no more than 250 listings in total, so two pages covers a
+#  free store completely and a paid store is read in the same number of
+#  requests as before - the cap is a ceiling, not a target. It is a parameter
+#  rather than a constant at the call site so a store that grows only needs the
+#  number changed in one place.
+EBAY_MAX_ITEMS = 250
+
+#  How many listings one page load hands over. eBay hands out up to 200 rows;
+#  Facebook's selling page renders its first batch and lazy-loads the rest as
+#  the reader scrolls, which a request cannot do. Below the window, the page is
+#  a first screen rather than a catalogue - which is when a page saved from a
+#  real browser (after scrolling) is worth looking for.
+SITE_WINDOW = {"ebay": _EBAY_PER_PAGE, "facebook": 20}
+
+#  How old a page saved from a browser may be before it is too stale to stand
+#  in for a live read. A listing that sold last week is exactly the sort of
+#  thing a stock comparison must not be told is still there.
+SAVED_MAX_AGE_DAYS = 14
+
+#  A saved page is HTML from a browser: a handful of them, not a download
+#  folder's worth. The cap keeps a comparison from reading a whole disk.
+SAVED_SCAN_LIMIT = 25
+SAVED_MAX_BYTES = 25 * 1024 * 1024
 
 
 class MarketError(Exception):
@@ -269,6 +296,22 @@ def parse_listings(site_id, text):
                       "Expected one of: %s." % ", ".join(sorted(SITES)))
 
 
+def detect_site(text, order=("ebay", "facebook")):
+    """``(site_id, items)`` for a page whose site is not known, or ``None``.
+
+    A picked file has no filename worth trusting, so the page is recognised by
+    its contents: eBay's Seller Hub markup is three rows away from anything
+    else, and Facebook's is a price line with a state under it. The order is
+    fixed - eBay first - so a page that could read as both is decided the same
+    way every time rather than by whichever parser happens to be longer.
+    """
+    for site_id in order:
+        items = parse_listings(site_id, text)
+        if items:
+            return site_id, items
+    return None
+
+
 def page_url(url, offset):
     """The same address with eBay's offset set, so page two can be asked for."""
     parts = urllib.parse.urlsplit(url)
@@ -281,17 +324,25 @@ def page_url(url, offset):
                                     parts.fragment))
 
 
-def read_ebay(fetch_page, url, cookie, max_pages=10):
+def read_ebay(fetch_page, url, cookie, max_pages=10, max_items=EBAY_MAX_ITEMS):
     """Every page of active listings, through an injected page fetcher.
 
     ``fetch_page(url, cookie)`` returns ``(status, text)``. Pages are followed
     until one comes back short, empty or identical to the last - never by
-    counting to a fixed total, because the total is the site's business.
+    counting to a fixed total, because the total is the site's business - and
+    no more than ``max_items`` listings are kept, which is 250 by default: the
+    whole of a free store, and what keeps a very large store from turning one
+    comparison into twenty requests.
     """
     items, pages, text = [], 0, ""
     seen = set()
     offset = 0
-    while pages < max(1, max_pages):
+    max_items = max(1, int(max_items))
+    #  Every page read is kept, not only the last one: the copy saved beside
+    #  the app is what a later run falls back to when the site refuses, and a
+    #  copy holding one page of five would quietly compare a fifth of the shop.
+    chunks = []
+    while pages < max(1, max_pages) and len(items) < max_items:
         status, text = fetch_page(page_url(url, offset), cookie)
         #  Seller Hub answers a scripted request with its "Pardon our
         #  interruption" check page and HTTP 200, so the page itself has to be
@@ -304,6 +355,7 @@ def read_ebay(fetch_page, url, cookie, max_pages=10):
                 #  them rather than throw the work away.
                 break
             raise describe_refusal("eBay", status, text)
+        chunks.append(text)
         page_items = parse_ebay_listings(text)
         fresh = [item for item in page_items if item["id"] not in seen]
         pages += 1
@@ -314,7 +366,151 @@ def read_ebay(fetch_page, url, cookie, max_pages=10):
         if len(page_items) < _EBAY_PER_PAGE:
             break
         offset += _EBAY_PER_PAGE
-    return items, pages, text
+    return items[:max_items], pages, "\n".join(chunks) if chunks else text
+
+
+# ------------------------------------------------------- saved pages
+#  eBay and Facebook both refuse a scripted read often enough that the page
+#  saved from a signed-in browser has to be a first-class source - and the
+#  person should not have to find the file every time. So the app looks for
+#  it: the copy it writes itself on every read, and anything saved out of a
+#  browser, in the two folders a browser saves to.
+
+
+def saved_page_dirs(base, extra=()):
+    """The folders a page saved from a browser could be sitting in.
+
+    The app's own folder comes first because that copy is fresh by
+    construction; ``extra`` is for a caller that wants another place tried
+    (a folder chosen in the settings, say). Duplicates and missing folders are
+    dropped here rather than at every call site.
+    """
+    folders, seen = [], set()
+    candidates = [Path(base)] + [Path(path) for path in extra or []]
+    home = Path.home()
+    candidates += [home / "Downloads", home / "Desktop"]
+    for folder in candidates:
+        try:
+            resolved = folder.expanduser().resolve()
+        except OSError:
+            continue
+        key = str(resolved).lower()
+        if key in seen or not resolved.is_dir():
+            continue
+        seen.add(key)
+        folders.append(resolved)
+    return folders
+
+
+def saved_pages(folders, limit=SAVED_SCAN_LIMIT):
+    """``[(path, mtime)]`` of the HTML pages in those folders, newest first.
+
+    Only HTML, only files of a sane size, and only the newest ``limit`` of
+    them: a comparison must not read a whole disk to find one page. The order
+    is newest first because the newest page is the one most likely to still be
+    true.
+    """
+    found = []
+    for folder in folders or []:
+        try:
+            entries = list(Path(folder).iterdir())
+        except OSError:
+            continue
+        for path in entries:
+            try:
+                if not path.is_file() or path.suffix.lower() not in (".html", ".htm"):
+                    continue
+                stat = path.stat()
+            except OSError:
+                continue
+            if stat.st_size > SAVED_MAX_BYTES:
+                continue
+            found.append((path, stat.st_mtime))
+    #  Newest first, and by name within the same second: two files written by
+    #  one save can share a timestamp, and a list that reorders itself between
+    #  runs is a list that cannot be reasoned about.
+    found.sort(key=lambda row: (-row[1], str(row[0]).lower()))
+    return found[:max(1, int(limit))]
+
+
+def read_page(path):
+    """The text of a saved page, or "" when it cannot be read."""
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _fresh_enough(mtime, max_age_days):
+    """Whether a page is recent enough to stand in for a live read."""
+    if not max_age_days:
+        return True
+    return mtime >= (time.time() - float(max_age_days) * 86400)
+
+
+def saved_page(site_id, folders, limit=SAVED_SCAN_LIMIT,
+               max_age_days=SAVED_MAX_AGE_DAYS):
+    """The newest saved page holding this site's listings, or ``None``.
+
+    Which file belongs to which site is decided by **what is in it**, not by
+    its name: a browser saves a page under the page's title ("Seller Hub |
+    eBay" today, something else tomorrow), and guessing at filenames is how a
+    reader ends up being told a Facebook page is an eBay one. So each recent
+    HTML file is parsed with that site's own reader and the first that yields
+    listings is it.
+
+    ``max_age_days`` skips pages too old to be trusted as a stand-in for a
+    live read; ``None`` accepts any age (the person pressing a button that
+    says "read the saved page" means the one they saved).
+    """
+    for path, mtime in saved_pages(folders, limit):
+        if not _fresh_enough(mtime, max_age_days):
+            continue
+        text = read_page(path)
+        items = parse_listings(site_id, text)
+        if not items:
+            continue
+        return {"path": path, "text": text, "items": items, "mtime": mtime}
+    return None
+
+
+def better_saved_page(site_id, folders, live_items, limit=SAVED_SCAN_LIMIT,
+                      max_age_days=SAVED_MAX_AGE_DAYS):
+    """A saved page that holds more listings than the live read did.
+
+    Facebook's selling page renders its first batch and loads the rest as the
+    reader scrolls, so a request sees a window and a page saved from a real
+    browser after scrolling sees the shop. When such a page exists and is
+    recent, it is the better source - a card missing from the window looks
+    *missing from the site*, which is the one wrong answer this panel must not
+    give. It is the item count that decides, because covering more of the shop
+    is what the page is being used for at all.
+    """
+    want = len(live_items or [])
+    best = None
+    for path, mtime in saved_pages(folders, limit):
+        if not _fresh_enough(mtime, max_age_days):
+            continue
+        text = read_page(path)
+        items = parse_listings(site_id, text)
+        if len(items) <= want:
+            continue
+        if best is None or (len(items), mtime) > (len(best["items"]),
+                                                  best["mtime"]):
+            best = {"path": path, "text": text, "items": items, "mtime": mtime}
+    return best
+
+
+def describe_page(found):
+    """One phrase naming a saved page and the day it was saved."""
+    try:
+        day = datetime.datetime.fromtimestamp(found["mtime"]).strftime(
+            "%Y-%m-%d %H:%M")
+    except (OSError, OverflowError, ValueError, KeyError, TypeError):
+        day = "?"
+    return "%s (%d listing%s, saved %s)" % (
+        Path(found.get("path") or "").name, len(found.get("items") or []),
+        "" if len(found.get("items") or []) == 1 else "s", day)
 
 
 def site(name):
@@ -469,12 +665,13 @@ def describe_refusal(site_label, status, text, cookie_path=""):
             "the app's request was refused before the page was served." %
             (site_label, " (\"%s\")" % title if title else ""),
             "Nothing is wrong with your cookie. Open the page in your browser, "
-            "save it with Ctrl+S (HTML only), and use \"Read a saved %s "
-            "page\" below." % site_label, kind="blocked")
+            "save it with Ctrl+S (HTML only), and press \"Read the saved %s "
+            "page\" - the app finds the newest saved page itself, in its own "
+            "folder or in Downloads." % site_label, kind="blocked")
     return MarketError(
         "%s answered HTTP %s." % (site_label, status),
         "Nothing was read. Try again, and if it repeats, save the page from "
-        "your browser and use \"Read a saved %s page\"." % site_label,
+        "your browser and press \"Read the saved %s page\"." % site_label,
         kind="http")
 
 

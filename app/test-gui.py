@@ -299,6 +299,33 @@ def main():
     check("staging, importing and wiring are no longer task buttons",
           not ({"Stage the photos", "Import / publish drafts",
                 "Wire the photos"} & set(task_labels)), str(task_labels))
+    #  The CanadianShopper panels only exist when the add-on is installed, and
+    #  this suite runs from a bare checkout as well as from the live folder.
+    #  Turning the add-on on for the check is the only way to test the button
+    #  on a machine that has no plugin installed - which is exactly where the
+    #  check used to fail.
+    addon_order = [gui.MENU_LABELS[pid]
+                   for _group, ids in gui.groups_for(True) for pid in ids]
+    check("finding a CanadianShopper listing is an after-a-sale job",
+          addon_order.index("Find a CS listing") > addon_order.index(
+              "Compare stock") and addon_order.index("Find a CS listing") <
+          addon_order.index("Archive listings at 0"), str(addon_order))
+    addon_before = app.cs_addon
+    app.cs_addon = True
+    app.show_mode("menu")
+    app.update()
+    with_addon = [w.cget("text") for w in walk(tasks_frame(app))
+                  if w.cget("style") == "TaskMenu.TButton"]
+    check("and with the add-on installed it is a button in that section",
+          "Find a CS listing" in with_addon and
+          with_addon.index("Find a CS listing") ==
+          with_addon.index("Compare stock") + 1, str(with_addon))
+    app.cs_addon = addon_before
+    app.show_mode("menu")
+    app.update()
+    check("without the add-on the menu offers only what it can do",
+          ("Find a CS listing" in task_labels) == bool(addon_before),
+          "add-on %s: %s" % (addon_before, str(task_labels)))
 
     print("== 3. every panel builds from the task menu ==")
     for pid in gui.PANEL_ORDER:

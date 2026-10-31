@@ -1770,6 +1770,91 @@ def test_listings_that_are_not_on_sale():
           len(pairs) == 4, str(len(pairs)))
 
 
+def test_an_archived_card_with_nothing_to_sell():
+    print()
+    print("== 17b. archived there and dry here is not a job ==")
+    woo = [{"id": 1, "name": "Dryden #10", "sku": "DR-10", "qty": 0},
+           {"id": 2, "name": "Orr #4", "sku": "BO-4", "qty": 0},
+           #  Stocked here, archived there: still worth showing, because the
+           #  card can be put back on sale with a click.
+           {"id": 3, "name": "Gretzky #1", "sku": "GR-1", "qty": 2},
+           {"id": 4, "name": "Lafleur #79", "sku": "LA-79", "qty": 2}]
+    items = stock_compare.plugin_items({"items": [
+        {"id": 101, "title": "Dryden #10", "sku": "DR-10", "inventory": 0,
+         "status": "archived"},
+        #  A draft with nothing on the website is still shown: it is one
+        #  publish (or one restock) away from selling, unlike an archived one.
+        {"id": 102, "title": "Orr #4", "sku": "BO-4", "inventory": 0,
+         "status": "Draft"},
+        {"id": 103, "title": "Gretzky #1", "sku": "GR-1", "inventory": 1,
+         "status": "Archived"},
+        {"id": 104, "title": "Lafleur #79", "sku": "LA-79", "inventory": 1,
+         "status": "archived"}]})
+    pairs, only_woo, only_other = stock_compare.pair(woo, items)
+    rows = stock_compare.action_list(pairs, only_woo, only_other)
+    kinds = {row["card"]: row["kind"] for row in rows}
+    check("archived there and at zero here is not on the list",
+          "Dryden #10" not in kinds, str(kinds))
+    check("a draft there with nothing here still is",
+          kinds.get("Orr #4") == stock_compare.OFF_SALE, str(kinds))
+    check("and an archived listing the website still stocks is too",
+          kinds.get("Gretzky #1") == stock_compare.OFF_SALE, str(kinds))
+    check("an archived listing that exists on both is still counted once",
+          len([row for row in rows if row["card"] == "Lafleur #79"]) == 1,
+          str([row["card"] for row in rows]))
+    check("it is named rather than silently dropped",
+          stock_compare.archived_note(pairs) ==
+          "1 archived on CanadianShopper with nothing on your website, "
+          "so not shown.", stock_compare.archived_note(pairs))
+    check("with no such pair there is no sentence",
+          stock_compare.archived_note(
+              [pair for pair in pairs
+               if pair["woo"]["name"] != "Dryden #10"]) == "",
+          stock_compare.archived_note(pairs))
+    check("only an archived state counts, not every off-sale one",
+          stock_compare.is_archived({"status": "Archived"}) and
+          stock_compare.is_archived({"status": " ARCHIVE "}) and
+          not stock_compare.is_archived({"status": "Draft"}) and
+          not stock_compare.is_archived({"status": "hidden"}) and
+          not stock_compare.is_archived({}), "")
+    check("a pair with no other side cannot be called archived",
+          stock_compare.archived_sold_out([{"woo": {"qty": 0}}]) == [], "")
+
+    # ---- and the panel says so beside the list
+    folder, app, parent = build_panel()
+    products = [
+        {"id": 1, "name": "Dryden #10", "sku": "DR-10", "manage_stock": True,
+         "stock_quantity": 0, "type": "simple"},
+        {"id": 2, "name": "Orr #4", "sku": "BO-4", "manage_stock": True,
+         "stock_quantity": 0, "type": "simple"}]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_all), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+        (folder / "cs-stock.json").write_text(json.dumps({"items": [
+            {"id": 101, "title": "Dryden #10", "sku": "DR-10",
+             "inventory": 0, "status": "archived"}]}), encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+    listing = next((w for w in parent.walk()
+                    if isinstance(w, gui.tk.Listbox)), None)
+    check("the panel does not list it",
+          listing is not None and not listing.items, str(listing and listing.items))
+    said = [str(w.cget("text")) for w in parent.walk()
+            if isinstance(w, gui.ttk.Label)]
+    check("the panel says how many it left out",
+          any("archived on CanadianShopper" in text and "not shown" in text
+              for text in said), str(said[-3:]))
+
+
 def test_panel_explains_off_sale():
     print()
     print("== 18. the panel says a listing exists but is not on sale ==")
@@ -2823,7 +2908,11 @@ def test_the_list_can_be_sorted():
                        if isinstance(w, gui.tk.Listbox))
         first = list(listing.items)
         check("the list opens in the order that needs attention first",
-              len(first) == 3 and first[0].startswith("Alpha card"),
+              len(first) == 3 and "Alpha card" in first[0],
+              str(first))
+        check("and every row is numbered in the order it is shown",
+              [row.split(". ", 1)[0] for row in first] == ["1", "2", "3"] and
+              "Gretzky" in first[1],
               str(first))
         chooser = next((w for w in parent.walk()
                         if isinstance(w, gui.ttk.Combobox)), None)
@@ -2985,6 +3074,7 @@ def main():
     test_one_click_import()
     test_one_click_import_refusals()
     test_listings_that_are_not_on_sale()
+    test_an_archived_card_with_nothing_to_sell()
     test_panel_explains_off_sale()
     test_report_rows()
     test_old_reader_is_named()
