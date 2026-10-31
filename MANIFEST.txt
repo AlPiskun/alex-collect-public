@@ -1,4 +1,4 @@
-Alex Collect 3.01 — public core package
+Alex Collect 3.02 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -61,6 +61,11 @@ app/:
                                    website products, and the import defaults
                                    (optional to the pipeline: it has its own copy
                                    of the template for a batch folder with no app)
+  cs_products.py                   the same job the other way round: a
+                                   CanadianShopper listing that is not on the
+                                   website becomes a draft product, photos first
+  photo_unsquare.py                crop a square, padded listing photo back to
+                                   the card's own shape before uploading it
   sold-everywhere.py              sale checklist workflow
   combine-cs-csvs.py               CSV batch helper
   make-square.py                   photo utility

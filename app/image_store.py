@@ -14,6 +14,11 @@ a delete: nothing is removed, nothing is renamed, and every image keeps the
 name it was given. The move is only ever done after being asked - this module
 plans it and does it, and the caller owns the question.
 
+Each batch's images land straight in the chosen folder, in a dated folder of
+their own (``chosen/2026-10-31 09-37``) - not in a folder per source and not
+in a tree under it. The chosen folder is somewhere a person looks; one dated
+folder per batch is what makes last week's card findable by date.
+
 Only two places are looked at, deliberately: the folder itself and the
 ``_tiles`` working folder the replacement sheets are cut into. A folder a
 person chose to keep images in is not a place to go hunting through.
@@ -87,12 +92,6 @@ def images_in(folder, keep=()):
     return found
 
 
-def folder_label(folder):
-    """A short name for a working folder, for messages and the store path."""
-    name = Path(folder).name.strip()
-    return name or "images"
-
-
 def stamp(now=None):
     """The name one batch's moved images are filed under, safe on Windows.
 
@@ -123,16 +122,6 @@ def check_store(store, folder):
     if folder_r in store_r.parents:
         return ("the folder chosen for the older card images is inside %s, "
                 "so moving them there would leave them in the pile" % folder)
-    #  The dated folders are one level further in than the store
-    #  (``<store>/output/<date>``), so the store can be fine while that path
-    #  is not: choosing the batch folder itself would put this batch's
-    #  leftovers back inside output/, one folder down, where nothing would
-    #  ever look for them again.
-    target_root = store_r / folder_label(folder_r)
-    if target_root == folder_r or folder_r in target_root.parents:
-        return ("the dated folders would be created inside %s itself, which "
-                "is the folder being emptied - choose a folder outside the "
-                "batch folder" % folder)
     return ""
 
 
@@ -146,12 +135,13 @@ def plan(folder, store, keep=(), now=None):
     folder, store = Path(folder), Path(store)
     files = images_in(folder, keep=keep)
     when = stamp(now)
-    target = store / folder_label(folder) / when
-    #  The same folder twice in one minute is not impossible (two sittings
-    #  back to back); the second one gets its own place rather than mixing.
+    target = store / when
+    #  The same minute twice is not impossible (two sittings back to back, or
+    #  output/ and replacements/ cleared in one go); the second one gets its
+    #  own place rather than mixing two batches' images together.
     counter = 2
     while _has_files(target):
-        target = store / folder_label(folder) / ("%s (%d)" % (when, counter))
+        target = store / ("%s (%d)" % (when, counter))
         counter += 1
     return {"folder": folder, "store": store, "target": target,
             "files": files, "stamp": when}

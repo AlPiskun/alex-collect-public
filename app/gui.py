@@ -54,12 +54,14 @@ import photo_thumbs
 import sale_preview
 import cs_edit
 import cs_listing
+import cs_products
 import stock_compare
 import stock_write
 import doc_images
 import order_pdf
 import quote as quote_model
 import quote_pdf
+import woo_create
 import woo_media
 import woo_orders
 from sale_inputs import woo_get
@@ -71,7 +73,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.01"
+VERSION = "3.02"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1857,6 +1859,8 @@ TOOLTIPS = {
     "Set the website to the selected cards' counts...": "The reverse fix: set the website's stock count to the count the other site reports, for the selected cards - always shown and confirmed first; needs WooCommerce keys with Read/Write access",
     "Open the selected cards on the website": "Open the website's own product edit page for the selected cards - for a count a plugin owns, a variable product, or anything the stock panel should not touch",
     "List the selected cards on CanadianShopper...": "Write the CanadianShopper import file for the selected website-only cards from the website product - title, price, its own photo and stock count - then offer to import it as drafts and to publish them",
+    "Create website products for the selected cards...": "Create a draft product on your website for each selected CanadianShopper-only card, with its title, price and stock, and its photos cropped back off their square to the card's own shape",
+    "Create website products for every CanadianShopper-only card...": "The same, for every card this comparison found on CanadianShopper and not on your website",
     "List every website-only card...": "The same file for every card that is on the website and not on CanadianShopper, then the same offer to import and publish the drafts",
     "Ignore the selected cards": "Stop comparing the selected cards: a card that is no longer sold on one site disappears from the list until it is restored; nothing on either site changes",
     "Publish the ready drafts...": "Scan CanadianShopper's drafts and activate only the ones that pass every readiness check - for cards whose listing exists but was never published; PUBLISH still has to be typed",
@@ -6123,6 +6127,310 @@ def build_stock(parent, app):
                      cwd=app.settings.get("pipeline_dir", str(WORK)),
                      on_done=arrived)
 
+    # ------------------------------------- the other direction: a product
+    def create_website_products():
+        """Create the website's product for a card that only exists elsewhere.
+
+        The button above writes a CanadianShopper import file from a website
+        product; this is the same job turned around. A listing that exists
+        only on the vendor site - created there by hand, or left behind by an
+        import that half finished - becomes a *draft* product here, with the
+        listing's own title, price and stock, and its photos.
+
+        The photos need the most care and are the reason this is not a
+        one-line API call: CanadianShopper is given square pictures (its
+        storefront crops everything into a square box), so each one is cropped
+        back to the card's own shape before it is uploaded. Nothing on the
+        vendor site is touched, and nothing is published.
+        """
+        create_from([row for row in selected_rows()
+                     if row.get("kind") == stock_compare.ONLY_OTHER])
+
+    def create_products_every_listing():
+        create_from([row for row in state["rows"]
+                     if row.get("kind") == stock_compare.ONLY_OTHER])
+
+    def create_from(rows):
+        if not rows:
+            messagebox.showinfo(
+                "Nothing to create",
+                "Select one or more rows that are on %s only - the rows that "
+                "say \"not on your website\". A card that is already on the "
+                "website has a product there, and the buttons above this one "
+                "are for it." % state["label"])
+            return
+        #  The row carries what the comparison showed; the listing behind it
+        #  carries the price, the page address and any pictures the reader
+        #  reported. Both are used, so an older reader still works.
+        listings = {}
+        for item in state["items"] or []:
+            if item.get("id") not in (None, ""):
+                listings[str(item.get("id"))] = item
+        cards, unnamed = [], 0
+        for row in rows:
+            card = cs_products.card_from(
+                row, listings.get(str(row.get("other_id"))))
+            if not card["name"]:
+                unnamed += 1
+                continue
+            cards.append(card)
+        if unnamed:
+            app.console_line(
+                "%d selected listing%s has no title, so it cannot become a "
+                "product." % (unnamed, "" if unnamed == 1 else "s"), "err")
+        if not cards:
+            messagebox.showinfo(
+                "Nothing to create",
+                "Those rows have no title on %s, so there is nothing to put "
+                "on the website. Compare again to read them fresh."
+                % state["label"])
+            return
+        creds = site_creds.get("last") or credentials()
+        if not creds:
+            return
+        site, key, secret = creds
+        _wp_site, username, app_password = read_wordpress_credentials()
+
+        lines = cs_products.describe_cards(cards)
+        body = "\n".join(lines)
+        photos_note = (
+            "The photos come from each listing and are cropped back to the "
+            "card's own shape first - %s shows them square, which the website "
+            "does not want." % state["label"])
+        warning = ""
+        if not (username and app_password):
+            warning = ("\n\nNo WordPress Application Password is saved, so "
+                       "no photo can be uploaded: the products would be "
+                       "created without pictures. The two optional lines at "
+                       "the end of woo-keys.txt add that.")
+        question = (
+            "Each of these becomes a draft product on your website, with "
+            "the listing's own title, price and stock count.\n\n%s\n\n"
+            "%s\n\nNothing on %s is changed, and nothing is published - they "
+            "arrive as drafts.%s\n\nCreate them?"
+            % (body, photos_note, state["label"], warning))
+        if not messagebox.askyesno(
+                "Create website products for these cards?", question,
+                parent=box.winfo_toplevel()):
+            app.console_line("No products were created: the step was not "
+                             "confirmed.", "dim")
+            return
+
+        site_creds["last"] = creds
+        folder = (Path(app.settings.get("pipeline_dir") or WORK) / "woo-from-cs"
+                  / datetime.now().strftime("%Y-%m-%d %H-%M"))
+        cookie = cs_products.read_cookie(CS_COOKIE_FILE)
+
+        def fetch(url, _cookie="", timeout=25):
+            return cs_products.fetch_bytes(url, cookie=cookie, timeout=timeout)
+
+        def fetch_page(url):
+            return cs_products.fetch_text(url, cookie=cookie)
+
+        app.console_line(
+            "Getting the photos for %d card%s off %s - each one is cropped "
+            "back to the card's own shape..." %
+            (len(cards), "" if len(cards) == 1 else "s", state["label"]),
+            "cmd")
+        summary.configure(text="Getting the card photos...")
+        progress = ProgressWindow(box.winfo_toplevel(),
+                                  title="Getting the card photos",
+                                  text="Reading each listing...",
+                                  total=len(cards))
+
+        def work():
+            finished = []
+            for index, card in enumerate(cards, start=1):
+                try:
+                    saved = cs_products.save_pictures(
+                        card, folder, fetch=fetch, fetch_page=fetch_page)
+                except Exception as exc:          # one card, not the run
+                    saved = {"files": [], "notes": [str(exc)]}
+                card["photos"] = [entry["name"] for entry in saved["files"]]
+                card["crops"] = saved["files"]
+                card["notes"].extend(saved["notes"])
+                finished.append(card)
+                try:
+                    app.after(0, lambda i=index, n=card["name"]: progress.step(
+                        text="%s (%d of %d)" % (n[:70], i, len(cards)),
+                        done=i, total=len(cards)))
+                except Exception:
+                    pass
+            return finished
+
+        def photos_arrived(finished, error):
+            try:
+                progress.close()
+            except Exception:
+                pass
+            if error is not None:
+                messagebox.showerror(
+                    "Could not get the card photos", "%s" % error,
+                    parent=box.winfo_toplevel())
+                app.console_line("No products were created: %s" % error, "err")
+                summary.configure(text="Could not get the card photos.")
+                return
+            with_photo = [card for card in finished if card["photos"]]
+            for card in finished:
+                for line in card["notes"]:
+                    app.console_line("  " + line, "dim")
+                for line in cs_products.crop_text(card.get("crops")):
+                    app.console_line("  " + line, "dim")
+            app.console_line(
+                "%d of %d card%s had a photo to use." %
+                (len(with_photo), len(finished),
+                 "" if len(finished) == 1 else "s"),
+                "ok" if with_photo else "warn")
+            missing = [card for card in finished if not card["photos"]]
+            if missing and not messagebox.askyesno(
+                    "Create %d product%s with no photo?" %
+                    (len(missing), "" if len(missing) == 1 else "s"),
+                    "No picture could be taken off these listings:\n\n%s\n\n"
+                    "They can still be created as drafts, with their title, "
+                    "price and stock, and photographed on the website after. "
+                    "Create them without a photo?"
+                    % "\n".join("  " + card["name"][:80] for card in missing),
+                    parent=box.winfo_toplevel()):
+                app.console_line(
+                    "No products were created. The photos that were fetched "
+                    "are in %s." % folder, "dim")
+                summary.configure(text="No products were created.")
+                return
+            start_creating(finished)
+
+        def start_creating(finished):
+            built = cs_products.plan(finished, folder)
+            for problem in built["problems"]:
+                app.console_line("Not created: %s"
+                                 % problem.get("why"), "err")
+            for note in built["notes"]:
+                app.console_line("Note: %s" % note, "dim")
+            if not built["items"]:
+                messagebox.showinfo(
+                    "Nothing to create",
+                    "None of those listings could be turned into a product.")
+                return
+            for line in cs_products.describe(built):
+                app.console_line(line, "dim")
+            app.console_line(cs_products.summary(built, site), "cmd")
+            app.console_line(
+                "Creating %d draft%s on the website..." %
+                (len(built["items"]),
+                 "" if len(built["items"]) == 1 else "s"), "cmd")
+            summary.configure(text="Creating %d draft%s..." %
+                                   (len(built["items"]),
+                                    "" if len(built["items"]) == 1 else "s"))
+            running = ProgressWindow(box.winfo_toplevel(),
+                                     title="Creating the website products",
+                                     text="Photos first, then the drafts...",
+                                     total=len(built["items"]))
+
+            def on_item(event):
+                try:
+                    stage = event.get("stage") or ""
+                    where = {"photos": "uploading the photos",
+                             "create": "creating the draft",
+                             "attach": "filing the photos"}.get(stage, stage)
+                    index = event.get("index") or 0
+                    total = event.get("total") or len(built["items"])
+                    name = ((event.get("item") or {}).get("name") or "")[:70]
+                    app.after(0, lambda: running.step(
+                        text="%s - %s (%d of %d)" % (name, where, index, total),
+                        done=index, total=total))
+                except Exception:
+                    pass
+
+            def making():
+                return woo_create.run(built, site, key, secret, username,
+                                      app_password, publish=False,
+                                      on_item=on_item)
+
+            def created(report, error):
+                try:
+                    running.close()
+                except Exception:
+                    pass
+                if error is not None:
+                    message = getattr(error, "message", str(error))
+                    hint = getattr(error, "hint", "")
+                    messagebox.showerror(
+                        "Could not create the products",
+                        message + ("\n\n" + hint if hint else ""),
+                        parent=box.winfo_toplevel())
+                    app.console_line("Creating products stopped: %s %s"
+                                     % (message, hint), "err")
+                    summary.configure(text="The website could not be written.")
+                    return
+                for line in woo_create.report_text(report, site):
+                    app.console_line(line, "ok" if report.get("created")
+                                     else "warn")
+                made = [entry for entry in report.get("created") or []]
+                ready = [entry for entry in made if entry.get("images")]
+                text = "%d draft product%s created" % (
+                    len(made), "" if len(made) == 1 else "s")
+                if report.get("failed"):
+                    text += "; %d could not be created" % len(report["failed"])
+                summary.configure(text=text + ".")
+                if not made:
+                    return
+                app.console_line(
+                    "They are drafts: nothing is live and nothing is on sale "
+                    "yet. Compare again afterwards to see them paired with "
+                    "their listings.", "dim")
+                if ready and messagebox.askyesno(
+                        "Publish the new products?",
+                        "%d draft product%s can be published now - each has "
+                        "its photos on the website.\n\nPublish them, so they "
+                        "are live? (They stay drafts if you say no.)"
+                        % (len(ready), "" if len(ready) == 1 else "s"),
+                        parent=box.winfo_toplevel()):
+                    publish_them(ready, site, key, secret)
+
+            in_background(app, making, created)
+
+        def publish_them(entries, site, key, secret):
+            app.console_line("Publishing %d product%s..." %
+                             (len(entries), "" if len(entries) == 1 else "s"),
+                             "cmd")
+
+            def working():
+                done, failed = [], []
+                for entry in entries:
+                    try:
+                        woo_create.publish_product(site, key, secret,
+                                                   entry["id"])
+                    except Exception as exc:
+                        failed.append((entry, exc))
+                        continue
+                    done.append(entry)
+                return done, failed
+
+            def published(result, error):
+                if error is not None:
+                    app.console_line("Publishing stopped: %s" % error, "err")
+                    return
+                done, failed = result
+                for entry in done:
+                    app.console_line("Now live: %s" % entry.get("name"), "ok")
+                for entry, exc in failed:
+                    app.console_line(
+                        "Created but not published: %s - %s"
+                        % (entry.get("name"),
+                           getattr(exc, "message", str(exc))), "err")
+                text = "%d product%s published" % (
+                    len(done), "" if len(done) == 1 else "s")
+                if failed:
+                    text += "; %d still draft" % len(failed)
+                summary.configure(text=text + ".")
+                app.console_line(text + ".", "ok")
+
+            in_background(app, working, published)
+
+        #  Started last, once every step it can reach is defined: a background
+        #  job that finishes at once would otherwise call a name that is not
+        #  bound yet.
+        in_background(app, work, photos_arrived)
+
     def publish_drafts(count, reason=""):
         """Take the drafts live, through the publisher the app already has.
 
@@ -7188,6 +7496,14 @@ def build_stock(parent, app):
                style="Task.TButton", command=list_selected).pack(side="left")
     ttk.Button(third, text="List every website-only card...",
                command=list_every_website_only_card).pack(side="left", padx=6)
+    fifth = ttk.Frame(action_row)
+    fifth.pack(anchor="w", pady=(3, 0))
+    ttk.Button(fifth, text="Create website products for the selected cards...",
+               style="Task.TButton",
+               command=create_website_products).pack(side="left")
+    ttk.Button(fifth, text="Create website products for every "
+                           "CanadianShopper-only card...",
+               command=create_products_every_listing).pack(side="left", padx=6)
     fourth = ttk.Frame(action_row)
     fourth.pack(anchor="w", pady=(3, 0))
     ttk.Button(fourth, text="Ignore the selected cards",
