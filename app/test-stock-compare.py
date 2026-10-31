@@ -3056,7 +3056,10 @@ def test_creating_products_from_the_listings():
         {"id": 201, "title": "1971-72 O-Pee-Chee Frank Mahovlich #60",
          "sku": "FM-60", "inventory": 4, "price": "CA$12.50",
          "url": "https://cs.example/listing/201",
-         "image": "https://cs.example/media/dryden-square.jpg"},
+         #  The shape plugin 1.0.32 sends: the primary picture first, then the
+         #  gallery, already absolute and in the vendor's own order.
+         "images": ["https://cs.example/media/mahovlich-square.jpg",
+                    "https://cs.example/media/mahovlich-back-square.jpg"]},
     ]
     #  Two products that are only on the website, so both directions are on
     #  the list and the button can be shown to work in one direction only.
@@ -3141,9 +3144,14 @@ def test_creating_products_from_the_listings():
         return buffer.getvalue()
 
     photo_bytes = square_photo()
+    page_reads = []
 
     def fake_fetch(url, cookie="", timeout=25):
         return photo_bytes
+
+    def fake_page(url, cookie="", timeout=25):
+        page_reads.append(url)
+        return ""
 
     with patch.object(gui, "BASE", folder), \
             patch.object(gui, "read_woo_credentials",
@@ -3154,7 +3162,7 @@ def test_creating_products_from_the_listings():
                                             "app password")), \
             patch.object(gui, "in_background", sync_background), \
             patch.object(gui.cs_products, "fetch_bytes", fake_fetch), \
-            patch.object(gui.cs_products, "fetch_text", lambda *a, **k: ""), \
+            patch.object(gui.cs_products, "fetch_text", fake_page), \
             patch.object(gui.woo_create, "run", fake_run):
         create.invoke()
 
@@ -3176,15 +3184,22 @@ def test_creating_products_from_the_listings():
     check("its price, as a number", item.get("price") == "12.50",
           str(item.get("price")))
     check("its stock count", item.get("stock") == 4, str(item.get("stock")))
-    check("the photos it was given, not the listing's URLs",
-          len(item.get("images") or []) == 1 and
-          item["images"][0].endswith("-front.webp"), str(item.get("images")))
+    check("both of the reader's pictures, as a front and a back",
+          len(item.get("images") or []) == 2 and
+          item["images"][0].endswith("-front.webp") and
+          item["images"][1].endswith("-back.webp"), str(item.get("images")))
+    check("taken from the reader, so no listing page was read",
+          page_reads == [], str(page_reads))
     check("the photo file is really there",
           bool(item.get("images")) and
           (plan["folder"] / item["images"][0]).is_file(),
           str(plan.get("folder")))
     saved_photo = (plan["folder"] / item["images"][0]) \
         if item.get("images") else None
+    check("the back is on disk beside it",
+          bool(item.get("images")) and len(item["images"]) > 1 and
+          (plan["folder"] / item["images"][1]).is_file(),
+          str(item.get("images")))
     if saved_photo is not None and saved_photo.is_file():
         from PIL import Image as _Image
         with _Image.open(saved_photo) as picture:

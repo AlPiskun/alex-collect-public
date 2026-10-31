@@ -42,9 +42,10 @@ from PIL import Image
 
 import photo_replace
 import photo_unsquare
+import stock_compare
 
 #: What the shop is told when a listing page or a picture is fetched.
-USER_AGENT = "Mozilla/5.0 (compatible; AlexCollect/3.02; +card listing check)"
+USER_AGENT = "Mozilla/5.0 (compatible; AlexCollect/3.03; +card listing check)"
 
 #: How many of a listing's pictures are used: the front is the card, the second
 #: is what a trading card almost always has on its other side. A third picture
@@ -212,16 +213,41 @@ def fetch_text(url, cookie="", timeout=25, opener=None):
     return ""
 
 
+def readable_urls(values):
+    """The web addresses in a reader's picture list, in the order given.
+
+    A reader is free to send a dict (``{"src": ...}``), a local path or an
+    empty string; only absolute web addresses can be downloaded, and the order
+    is the vendor's own - the primary picture first - so it is never sorted.
+    """
+    if isinstance(values, (str, bytes)) or not isinstance(values, (list, tuple)):
+        values = [values] if values else []
+    urls = []
+    for value in values:
+        if isinstance(value, dict):
+            value = (value.get("src") or value.get("url")
+                     or value.get("href") or "")
+        url = str(value or "").strip()
+        if url.startswith(("http://", "https://")) and url not in urls:
+            urls.append(url)
+    return urls
+
+
 def picture_urls(listing, fetch_page=None):
     """Every picture address known for one listing, best first.
 
-    The reader's own answer is used first - it is the vendor's data. When it
-    has none, the listing's page is read once and its pictures taken from
-    there, which is what makes this work with a reader that reports no
-    pictures at all.
+    The reader's own answer is used first - it is the vendor's data, and it is
+    already in the order the vendor shows them (its primary picture first,
+    then the gallery in the vendor's own order). When it has none, the
+    listing's page is read once and its pictures taken from there, which is
+    what makes this work with a reader that reports no pictures at all - and
+    what a reader that does report them makes unnecessary.
     """
-    urls = [url for url in (listing.get("images") or [])
-            if str(url).startswith(("http://", "https://"))]
+    urls = readable_urls(listing.get("images"))
+    if not urls:
+        #  A reader that spells the picture key another way still gets read,
+        #  through the same list of spellings the comparison uses.
+        urls = stock_compare.listing_pictures(listing)
     page = ""
     if not urls and listing.get("url") and fetch_page is not None:
         page = fetch_page(listing["url"]) or ""
@@ -248,7 +274,9 @@ def card_from(row, listing=None):
         "price": price_of(listing.get("price") or row.get("price")),
         "url": str(listing.get("url") or row.get("url") or "").strip(),
         "id": row.get("other_id") or listing.get("id"),
-        "images": list(listing.get("images") or []),
+        "images": (readable_urls(listing.get("images"))
+                   or stock_compare.listing_pictures(listing)
+                   or stock_compare.listing_pictures(row)),
         "photos": [],          # file names, once the pictures are saved
         "crops": [],           # what the crop did, for the console
         "notes": [],
@@ -297,8 +325,12 @@ def save_pictures(card, folder, fetch=None, fetch_page=None, limit=PHOTO_LIMIT):
             height = int(MAX_WIDTH * image.size[1] / float(image.size[0]))
             image = image.resize((MAX_WIDTH, max(1, height)), Image.LANCZOS)
         cropped, measure = photo_unsquare.de_square(image)
-        suffix = ("-front" if index == 0 else
-                  "-back" if index == 1 else "-%d" % (index + 1))
+        #  Named by the pictures that were really saved, not by the address
+        #  that was tried: a front that will not download must not leave the
+        #  back as the product's only picture under a file called "back".
+        kept = len(result["files"])
+        suffix = ("-front" if kept == 0 else
+                  "-back" if kept == 1 else "-%d" % (kept + 1))
         name = _free_name(folder / ("%s%s.webp" % (stem, suffix)))
         try:
             photo_replace.save_card_image(cropped, name)

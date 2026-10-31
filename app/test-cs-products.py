@@ -369,6 +369,102 @@ def test_the_cookie():
           cs_products.read_cookie(folder / "nothing.txt") == "", "")
 
 
+def test_the_reader_pictures():
+    print()
+    print("== 11. plugin 1.0.32's own pictures, without reading a page ==")
+    #  What the reader sends from 1.0.32: the primary picture first, then the
+    #  gallery in the vendor's order, with anything repeated or unreadable
+    #  already removed by the plugin. The app must not sort them, must not
+    #  read the listing's page, and must keep front first.
+    listing = {"id": 201,
+               "name": "1971-72 O-Pee-Chee Ken Dryden #10",
+               "sku": "KD-10", "qty": 4, "price": "12.50",
+               "url": "https://cs.example/listing/201",
+               "images": ["https://cdn.example/primary.jpg",
+                          "https://cdn.example/gallery-2.jpg",
+                          "https://cdn.example/gallery-3.jpg"]}
+    pages = []
+
+    def fetch_page(url):
+        pages.append(url)
+        return "<html>a page that should not be read</html>"
+
+    urls, page = cs_products.picture_urls(listing, fetch_page=fetch_page)
+    check("the primary picture is first and the next one is the back",
+          urls == ["https://cdn.example/primary.jpg",
+                   "https://cdn.example/gallery-2.jpg"], str(urls))
+    check("a third picture is left to the vendor", len(urls) == 2, str(urls))
+    check("and no listing page was read at all",
+          pages == [] and page == "", "%s %r" % (pages, page))
+
+    row = {"card": listing["name"], "other_id": 201, "other": 4,
+           "other_sku": "KD-10", "kind": "only-other", "other_name": ""}
+    card = cs_products.card_from(row, listing)
+    check("a card made from that listing carries the reader's pictures",
+          card["images"] == urls or card["images"][:2] == urls[:2],
+          str(card["images"]))
+    saved = cs_products.save_pictures(
+        card, Path(tempfile.mkdtemp(prefix="cs-reader-")),
+        fetch=lambda url, _cookie="", _timeout=25: png_bytes(square_card()),
+        fetch_page=fetch_page)
+    names = [entry["name"] for entry in saved["files"]]
+    check("they are saved as a front and a back",
+          [name.endswith(("-front.webp", "-back.webp")) for name in names]
+          == [True, True] and names[0].endswith("-front.webp"), str(names))
+    check("with the primary picture named as the front",
+          saved["files"] and saved["files"][0]["url"] ==
+          "https://cdn.example/primary.jpg", str(saved["files"][:1]))
+    check("and still no page was read", pages == [], str(pages))
+
+    print()
+    print("== 12. a picture the reader spells another way is still found ==")
+    check("a picture dict is read, not stringified",
+          cs_products.readable_urls([{"src": "https://cdn.example/a.jpg"},
+                                     {"url": "https://cdn.example/b.jpg"}]) ==
+          ["https://cdn.example/a.jpg", "https://cdn.example/b.jpg"], "")
+    check("a local path is not a picture address",
+          cs_products.readable_urls(
+              ["C:\\cards\\front.jpg", "file:///tmp/front.jpg",
+               "https://cdn.example/ok.jpg"]) ==
+          ["https://cdn.example/ok.jpg"], "")
+    check("the same address twice is one picture",
+          cs_products.readable_urls(["https://cdn.example/a.jpg",
+                                     "https://cdn.example/a.jpg"]) ==
+          ["https://cdn.example/a.jpg"], "")
+    card = cs_products.card_from(
+        {"card": "A card"},
+        {"name": "A card", "photo_url": "https://cdn.example/alt.jpg"})
+    check("a reader that calls the key something else is understood",
+          card["images"] == ["https://cdn.example/alt.jpg"], str(card["images"]))
+    card = cs_products.card_from(
+        {"card": "A card", "images": ["https://cdn.example/from-row.jpg"]},
+        {"name": "A card"})
+    check("and the row's own pictures are used when the listing has none",
+          card["images"] == ["https://cdn.example/from-row.jpg"],
+          str(card["images"]))
+
+    print()
+    print("== 13. a front that will not download does not leave a back ==")
+    folder = Path(tempfile.mkdtemp(prefix="cs-front-"))
+
+    def fetch(url, _cookie="", _timeout=25):
+        if "primary" in url:
+            raise OSError("the picture host is down")
+        return png_bytes(square_card())
+
+    card = {"name": "1971-72 O-Pee-Chee Ken Dryden #10", "images":
+            ["https://cdn.example/primary.jpg", "https://cdn.example/back.jpg"],
+            "photos": [], "crops": [], "notes": []}
+    saved = cs_products.save_pictures(card, folder, fetch=fetch)
+    names = [entry["name"] for entry in saved["files"]]
+    check("the picture that did arrive is saved", len(names) == 1, str(names))
+    check("and it is named the front, because it is the only picture",
+          names and names[0].endswith("-front.webp"), str(names))
+    check("the one that failed is in the notes",
+          any("could not be fetched" in note for note in saved["notes"]),
+          str(saved["notes"]))
+
+
 def main():
     test_prices()
     test_picture_addresses()
@@ -378,6 +474,7 @@ def main():
     test_the_plan()
     test_the_names()
     test_the_cookie()
+    test_the_reader_pictures()
     print()
     print("=" * 60)
     if FAIL:

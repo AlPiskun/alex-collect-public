@@ -20,7 +20,7 @@ by-default task to install the packages in the repository's
 packages are already installed.
 
 Compile it on a Windows machine with Inno Setup 6. Output:
-`Output\AlexCollect-Setup-3.02.exe`.
+`Output\AlexCollect-Setup-3.03.exe`.
 
 ## B. `alexcollect-bundled.iss` — install a private Python runtime
 
@@ -36,7 +36,7 @@ Internet is required on the target PC for pip to download those packages.
    installer from python.org and verifies its SHA-256 before continuing.
 2. Run `python test-bundled-config.py` to check the version/filename/checksum pins.
 3. Open `alexcollect-bundled.iss` and compile it with Inno Setup 6.
-4. Output: `Output\AlexCollect-Setup-bundled-3.02.exe`.
+4. Output: `Output\AlexCollect-Setup-bundled-3.03.exe`.
 
 The downloaded Python installer is intentionally not stored in Git. It is
 ignored by `.gitignore`; rerun `build-bundled.bat` when needed. The pinned
