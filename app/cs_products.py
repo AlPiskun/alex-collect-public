@@ -47,7 +47,7 @@ import photo_unsquare
 import stock_compare
 
 #: What the shop is told when a listing page or a picture is fetched.
-USER_AGENT = "Mozilla/5.0 (compatible; AlexCollect/3.09; +card listing check)"
+USER_AGENT = "Mozilla/5.0 (compatible; AlexCollect/3.10; +card listing check)"
 
 #: How many of a listing's pictures are used: the front is the card, the second
 #: is what a trading card almost always has on its other side. A third picture

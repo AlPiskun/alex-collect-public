@@ -18,7 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-USER_AGENT = "AlexCollect/3.09"
+USER_AGENT = "AlexCollect/3.10"
 WC_PRODUCTS_PATH = "/wp-json/wc/v3/products"
 
 

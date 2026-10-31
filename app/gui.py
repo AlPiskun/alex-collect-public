@@ -73,7 +73,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.09"
+VERSION = "3.10"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -130,6 +130,13 @@ CS_LISTING_UPDATE_ACTION = "marketplace.listing_update"
 #  The plugin version that declares it, and the one that reports each
 #  listing's address and price so the panel can show and link them.
 CS_LISTING_UPDATE_VERSION = "1.0.28"
+#  1.0.34 reports each listing's real product id - as a string, exactly as the
+#  vendor gives it, and with the key left out rather than sent as 0 when there
+#  is none. Before it a whole read could come back with "product_id": 0 on
+#  every row, which is not an id, so nothing in such a list could be written.
+#  The version decides which sentence that read gets: update the plugin, or
+#  report the defect.
+CS_PRODUCT_ID_VERSION = "1.0.34"
 #  batch.photo_replace existed in 1.0.14 but only matched a staged CSV
 #  row. The CSV-free --mode replace arrived in 1.0.15, so the action ID
 #  alone cannot tell the two apart - the version has to be checked.
@@ -7681,24 +7688,14 @@ def build_csledit(parent, app):
         if cs_edit.nothing_editable(items):
             #  Nothing in the whole list can be written, which is not 2,541
             #  listings to edit by hand - it is a reading that does not carry
-            #  product ids. Say it once, plainly, where it can be read, and
-            #  say which of the two things the reader did: a key that is
-            #  missing, or a key holding 0 for every listing.
-            zeros, counted = cs_edit.zero_product_id_counts(items)
-            said = cs_edit.zero_product_id_note(zeros, counted) if zeros else ""
+            #  usable product ids. Said once, plainly, where it can be read:
+            #  what the reader did, which plugin version reports real ids, and
+            #  what still works. A read from plugin 1.0.34 or newer that has
+            #  none is called a defect, because by then it is one.
+            said = cs_edit.product_id_gap(
+                items, plugin=plugin_version(), needed=CS_PRODUCT_ID_VERSION)
             if said:
-                say(said[:1].upper() + said[1:] + ". Searching, opening a "
-                    "listing and editing in the vendor dashboard all still "
-                    "work.", "err")
-            else:
-                say("No listing in that read carried a product id, so the "
-                    "edit buttons cannot send anything: the plugin's reader "
-                    "is not reporting one. Reading again will not change it - "
-                    "the plugin's stock reader needs to report each listing's "
-                    "product_id (marketplace.listing_update patches "
-                    "/api/products/<product_id>/). Searching, opening a "
-                    "listing and editing in the vendor dashboard all still "
-                    "work.", "err")
+                say(said[:1].upper() + said[1:], "err")
         pending, state["then"] = state["then"], None
         if pending is not None:
             pending(items)
@@ -7897,30 +7894,23 @@ def build_csledit(parent, app):
         named = str(item.get("name") or "That listing")
         if cs_edit.nothing_editable(state["items"]):
             #  Not one listing's problem: nothing in the whole read carries a
-            #  product id, so another 2,541-listing read would return the same
-            #  nothing. Do not offer it - offer the thing that does work.
-            zeros, counted = cs_edit.zero_product_id_counts(state["items"])
-            if zeros:
-                say("%s cannot be changed from here: the plugin reported "
-                    "product_id 0 for %s listing%s, and 0 is not an id, so "
-                    "there is nothing for the writer to address. Nothing was "
-                    "sent." % (named, "all %d" % counted if zeros == counted
-                               else "%d of %d" % (zeros, counted),
-                               "" if counted == 1 else "s"), "err")
-            else:
-                say("%s cannot be changed from here: no listing in that read "
-                    "carried a product id, so there is nothing for the writer "
-                    "to address. Nothing was sent." % named, "err")
+            #  usable product id, so another 2,541-listing read would return
+            #  the same nothing. Do not offer it - offer the thing that does
+            #  work, and name the plugin version that fixes it.
+            said = cs_edit.product_id_gap(
+                state["items"], plugin=plugin_version(),
+                needed=CS_PRODUCT_ID_VERSION, works=False)
+            say("%s cannot be changed from here: %s Nothing was sent."
+                % (named, said), "err")
             summary.configure(text="No listing in this read has a product "
                                    "id, so nothing can be sent.")
             if messagebox.askyesno(
                     "That listing has to be changed on the site",
                     "%s\n\nNo listing in this read carried a usable product "
                     "id, so this app has nothing safe to address - and "
-                    "reading them again would return the same list. The "
-                    "reader has to report each listing's real product id, and "
-                    "0 is not one (the plugin's job; "
-                    "marketplace.listing_update patches "
+                    "reading them again would return the same list. Plugin "
+                    "1.0.34 or newer reports each listing's real product id, "
+                    "and 0 is not one (marketplace.listing_update patches "
                     "/api/products/<product_id>/).\n\nNothing was changed. "
                     "Open the listing on CanadianShopper so it can be edited "
                     "there?" % named,

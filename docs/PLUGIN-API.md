@@ -505,7 +505,7 @@ SKU**, and links to the listing's own page. A row already has `title`/`name`, `s
 | --- | --- |
 | `price` | the listing's price, as the vendor shows it (`"CA$8.50"` and `"8.50"` are both read) |
 | `url` | the listing's own page address |
-| `product_id` | the id the update action patches, when the vendor supplies one and it differs from `id`. Never `0` - a listing whose vendor data carries none has no key at all |
+| `product_id` | the id the update action patches, when the vendor supplies one and it differs from `id` - a string, exactly as the vendor gives it (since 1.0.34). Never `0` - a listing whose vendor data carries none has no key at all |
 | `images` | since 1.0.32: the listing's pictures, absolute `http(s)` addresses, the primary picture first and then the gallery in the vendor's own order |
 
 Reported since plugin **1.0.33**, when the vendor's product response already
@@ -558,6 +558,21 @@ console: *no listing in that read carried a product id* is a reader with the
 key missing, while *the plugin reported product_id 0 for all 2,541 listings* is
 a reader emitting a placeholder, and the second one is a defect in the reader
 even if the first is not.
+
+**Plugin 1.0.34 is the version that reports them properly** - it was released
+for exactly this. It emits each listing's real product id as a string
+(`4321` becomes `"4321"`, and an opaque id such as `"14effcaceb8a4b66"` is left
+alone), omits `product_id` entirely when the vendor's data has none (missing,
+null, empty and zero-like references all take that path), never substitutes the
+listing id, the slug, the title or the URL, and refuses a zero-product update
+before `/api/products/0/` is ever called. Its console reports measured totals -
+listings, real ids, absent keys - so a regression is visible in the log.
+
+The core names that version. A read with no usable product id is now told apart
+by which plugin produced it: from anything older than **1.0.34** the console
+says updating the plugin is the fix, and from **1.0.34 or newer** it says the
+read is a defect in the reader worth reporting, because by then it is one.
+Nothing about a listing is changed either way.
 
 Two rules follow for a reader:
 

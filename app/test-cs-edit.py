@@ -745,6 +745,102 @@ def test_a_reader_that_says_zero():
           str(app.lines[-3:]))
 
 
+def test_the_version_that_reports_product_ids():
+    """Which plugin version reports real ids, and what a read without them gets.
+
+    Plugin 1.0.34 emits each listing's real product id as a string and leaves
+    the key out when there is none. So a read with no usable id is two
+    different things depending on the plugin: an old one that needs updating,
+    or a current one with a defect - and the console has to say which.
+    """
+    print()
+    print("== 5d2. the plugin version that reports real product ids ==")
+    check("the core and the edit panel name the same version",
+          gui.CS_PRODUCT_ID_VERSION == cs_edit.PRODUCT_ID_VERSION and
+          cs_edit.PRODUCT_ID_VERSION == "1.0.34",
+          "%r %r" % (gui.CS_PRODUCT_ID_VERSION, cs_edit.PRODUCT_ID_VERSION))
+
+    older = cs_edit.needed_version_note("1.0.31", "1.0.34")
+    check("an older plugin is told which version fixes it",
+          "1.0.31" in older and "1.0.34" in older and
+          "updating the plugin is the fix" in older, older)
+    current = cs_edit.needed_version_note("1.0.34", "1.0.34")
+    check("the version that reports them is not told to update",
+          "updating the plugin" not in current and "defect" in current,
+          current)
+    newer = cs_edit.needed_version_note("1.0.35", "1.0.34")
+    check("and neither is a newer one",
+          "defect" in newer and "updating the plugin" not in newer, newer)
+    unknown = cs_edit.needed_version_note("", "1.0.34")
+    check("an unreadable version only names the version",
+          "1.0.34" in unknown and "defect" not in unknown and
+          "updating the plugin" not in unknown, unknown)
+    check("with nothing to compare against it says nothing",
+          cs_edit.needed_version_note("1.0.31", "") == "", "")
+    check("a version that is not a number is never treated as new enough",
+          "updating the plugin is the fix" in
+          cs_edit.needed_version_note("unknown", "1.0.34"), "")
+
+    zeroed = [dict(row, product_id=0) for row in LISTINGS]
+    said = cs_edit.product_id_gap(zeroed, plugin="1.0.31")
+    check("the whole sentence carries the zeros and the version that fixes it",
+          "product_id 0" in said and "1.0.31" in said and "1.0.34" in said and
+          "updating the plugin is the fix" in said, said)
+    check("and ends with what still works",
+          said.endswith("all still work."), said[-80:])
+    quiet = cs_edit.product_id_gap(zeroed, plugin="1.0.31", works=False)
+    check("a refusal that names the card does not repeat that tail",
+          "still work" not in quiet, quiet)
+    check("a read that can be written says nothing at all",
+          cs_edit.product_id_gap(items(), plugin="1.0.34") == "", "")
+    check("an empty read says nothing either",
+          cs_edit.product_id_gap([], plugin="1.0.34") == "", "")
+
+    #  ---- the panel, with an older plugin behind it
+    folder, app, parent = build_panel()          # installs 1.0.19
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app, folder, parent, zeroed)
+    said = " ".join(text for _tag, text in app.lines[-3:])
+    check("the console names the plugin that read it and the version needed",
+          "read by plugin 1.0.19" in said and "1.0.34" in said and
+          "updating the plugin is the fix" in said, said)
+
+    #  ---- and with the version that does report them
+    folder2 = Path(tempfile.mkdtemp())
+    harness.install_plugin("1.0.34", folder2 / "plugin")
+    gui.BASE = folder2
+    app2 = harness.FakeApp(folder2)
+    parent2 = harness.FakeWidget()
+    gui.build_csledit(parent2, app2)
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app2, folder2, parent2, zeroed)
+    said = " ".join(text for _tag, text in app2.lines[-3:])
+    check("a current plugin reporting zeros is called a defect, not an update",
+          "is a defect in the reader" in said and
+          "updating the plugin" not in said, said)
+    check("and it still lists everything that was read",
+          len(listing_box(parent2).items) == len(LISTINGS), "")
+
+    #  ---- 1.0.34's real shape: ids as strings, key omitted when absent
+    strings = [dict(row, product_id=str(row["product_id"])) for row in LISTINGS]
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app2, folder2, parent2, strings)
+    said = str(app2.lines[-1][1])
+    check("string ids from 1.0.34 are editable, with nothing said against it",
+          "every one with a product id" in said and "defect" not in said,
+          said)
+    check("and the read is listed like any other",
+          len(listing_box(parent2).items) == len(LISTINGS),
+          str(listing_box(parent2).items))
+    plan = cs_edit.plan(stock_compare.plugin_items(
+        {"items": [dict(strings[0])]})[0], inventory=9)
+    check("the id the plugin sent is the id the write carries, unchanged",
+          plan.get("product_id") == "1101", str(plan))
+
+
 def test_the_list_says_which_plugin_read_it():
     print()
     print("== 5d. the list on screen says which plugin read it ==")
@@ -1288,6 +1384,7 @@ def main():
     test_a_list_read_before_product_ids()
     test_a_read_with_no_product_ids_at_all()
     test_a_reader_that_says_zero()
+    test_the_version_that_reports_product_ids()
     test_the_list_says_which_plugin_read_it()
     test_the_panel_reads_and_lists()
     test_the_edit_form()

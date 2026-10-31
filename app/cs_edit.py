@@ -29,6 +29,7 @@ from pathlib import Path
 
 import stock_compare
 import woo_orders
+from plugin_manager import version_at_least
 
 #: The states the chooser offers. The keys are the words the core already uses
 #: for a listing's state, so the filter and the comparison agree.
@@ -464,10 +465,9 @@ def zero_product_id_note(count, total):
         return ""
     return ("the plugin reported product_id 0 for %s listing%s, and 0 is not "
             "an id: no product has one, so nothing from this read can be "
-            "written. Reading again will return the same zeros - the plugin's "
-            "stock reader has to report each listing's real product id. Stock "
+            "written, and reading again will return the same zeros. Stock "
             "counts can still be written from the comparison panel, whose "
-            "writer (%s) addresses the listing itself rather than a product"
+            "writer (%s) addresses the listing itself rather than a product."
             % ("all %d" % total if count == total else "%d of %d" % (count, total),
                "" if total == 1 else "s", "stock.set"))
 
@@ -506,6 +506,66 @@ def editable_note(editable, total):
                 "reading them again will not change that")
     return ("%d with a product id, so %d can be edited here; the rest have "
             "to be changed in the vendor dashboard" % (editable, editable))
+
+
+#: The plugin version that reports each listing's real product id, as the
+#: vendor gives it and never as 0. Before it a whole read could come back with
+#: ``"product_id": 0`` on every row, which is not an id and was why nothing in
+#: such a list could be written - so the version decides which sentence a read
+#: like that gets: *update the plugin* or *this one is a defect*.
+PRODUCT_ID_VERSION = "1.0.34"
+
+
+def needed_version_note(plugin="", needed=PRODUCT_ID_VERSION):
+    """Which plugin version reports real product ids, given what is installed.
+
+    Three different situations and they must not read alike: an installed
+    plugin older than the version that reports ids (the fix is one update), an
+    installed plugin that *does* report them (then a read with none is a
+    defect worth reporting, not an old list), and a version nobody could read
+    (name the version and leave it there - an unreadable manifest is not
+    evidence of anything).
+    """
+    needed = str(needed or "").strip()
+    plugin = str(plugin or "").strip()
+    if not needed:
+        return ""
+    if not plugin:
+        return ("Plugin %s or newer reports each listing's real product id."
+                % needed)
+    if version_at_least(plugin, needed):
+        return ("The list was read by plugin %s, which does report real "
+                "product ids, so a read without them is a defect in the "
+                "reader rather than a list that needs reading again - worth "
+                "reporting with the plugin's own console line." % plugin)
+    return ("The list was read by plugin %s, and %s or newer is the version "
+            "that reports each listing's real product id - so updating the "
+            "plugin is the fix." % (plugin, needed))
+
+
+def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True):
+    """The whole sentence for a read nothing can be written from, or "".
+
+    Said once, where it can be read, instead of three paragraphs in three
+    places: what the reader did (a key holding 0, or no key at all), which
+    plugin version fixes it, and - for the console - what still works from
+    here. A read that can be written returns "" and says nothing.
+    """
+    rows = list(items or [])
+    if not rows or not nothing_editable(rows):
+        return ""
+    zeros, total = zero_product_id_counts(rows)
+    if zeros:
+        said = zero_product_id_note(zeros, total)
+    else:
+        said = ("No listing in that read carried a product id, so the edit "
+                "buttons cannot send anything: the plugin's reader is not "
+                "reporting one.")
+    parts = [said, needed_version_note(plugin, needed)]
+    if works:
+        parts.append("Searching, opening a listing and editing in the vendor "
+                     "dashboard all still work.")
+    return " ".join(part for part in parts if part)
 
 
 def nothing_editable(items):
