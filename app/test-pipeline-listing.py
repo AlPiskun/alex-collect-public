@@ -178,14 +178,27 @@ def test_dark_back_variant_keeps_its_front(root):
     #  parse_images() answers for ONE card, which is how the AI sheet text is
     #  read - two titles in, a front and a back out.
     parsed = card_pipeline.parse_images(
-        "\n".join((dark_front, dark_back)), "png")
+        "\n".join((dark_front, dark_back)))
     check("a dark-back card keeps both of its image titles",
-          parsed[0] == dark_front + ".png" and parsed[1] == dark_back + ".png",
+          parsed[0] == dark_front + ".webp" and parsed[1] == dark_back + ".webp",
           repr(parsed))
     parsed = card_pipeline.parse_images(
-        "\n".join((plain_front, plain_back)), "png")
+        "\n".join((plain_front, plain_back)))
     check("a plain card's titles are untouched",
-          parsed == (plain_front + ".png", plain_back + ".png"), repr(parsed))
+          parsed == (plain_front + ".webp", plain_back + ".webp"), repr(parsed))
+
+    #  The tiles are written as WebP, so the name says WebP - a title ending
+    #  in another extension is named in the pipeline's format, not the
+    #  title's. A ".jpg" name on a WebP file is what made the eBay Quick
+    #  List's image links lie about the pictures.
+    parsed = card_pipeline.parse_images(
+        plain_front + ".jpg\n" + plain_back + ".JPG")
+    check("a title that says .jpg is named .webp, because it is a WebP file",
+          parsed == (plain_front + ".webp", plain_back + ".webp"), repr(parsed))
+    parsed = card_pipeline.parse_images(
+        "\n".join((dark_front + ".png", dark_back)))
+    check("and a title that says .png is named .webp too",
+          parsed == (dark_front + ".webp", dark_back + ".webp"), repr(parsed))
 
     #  The fix must not resurrect the accident it replaced: two whole titles
     #  run together are still refused, not renamed to whichever side came
@@ -193,17 +206,17 @@ def test_dark_back_variant_keeps_its_front(root):
     joined = "16-Foo-front-16-Bar-back"
     err = StringIO()
     with redirect_stderr(err):
-        parsed = card_pipeline.parse_images(joined + "\n16-Bar-back", "png")
+        parsed = card_pipeline.parse_images(joined + "\n16-Bar-back")
     check("two whole titles run together are still refused",
-          parsed == ("", "16-Bar-back.png") and
+          parsed == ("", "16-Bar-back.webp") and
           "joined together" in err.getvalue(), repr((parsed, err.getvalue())))
 
-    rows = [{"Images": ", ".join((dark_front + ".png", dark_back + ".png"))},
-            {"Images": ", ".join((plain_front + ".png", plain_back + ".png"))}]
+    rows = [{"Images": ", ".join((dark_front + ".webp", dark_back + ".webp"))},
+            {"Images": ", ".join((plain_front + ".webp", plain_back + ".webp"))}]
     fronts, backs = card_pipeline.targets_from_rows(rows)
     check("the dark-back front is the front, not both sides",
-          fronts.get(1) == dark_front + ".png" and
-          backs.get(1) == dark_back + ".png",
+          fronts.get(1) == dark_front + ".webp" and
+          backs.get(1) == dark_back + ".webp",
           "fronts=%r backs=%r" % (fronts, backs))
     check("no card plans one file as both its front and its back",
           all(backs.get(pos) != name for pos, name in fronts.items()),
@@ -221,14 +234,14 @@ def test_dark_back_variant_keeps_its_front(root):
         str(folder), fronts, backs, "scan-front", "scan-back", "png")
     by_target = {Path(dst).name: Path(src).name for src, dst, _label in ops}
     check("a dark-back card's front image is renamed",
-          by_target.get(dark_front + ".png") == "scan-front_1.png",
+          by_target.get(dark_front + ".webp") == "scan-front_1.png",
           repr(by_target))
     check("a dark-back card's back image is renamed",
-          by_target.get(dark_back + ".png") == "scan-back_3.png",
+          by_target.get(dark_back + ".webp") == "scan-back_3.png",
           repr(by_target))
     check("the plain card is renamed the same way",
-          by_target.get(plain_front + ".png") == "scan-front_2.png" and
-          by_target.get(plain_back + ".png") == "scan-back_2.png",
+          by_target.get(plain_front + ".webp") == "scan-front_2.png" and
+          by_target.get(plain_back + ".webp") == "scan-back_2.png",
           repr(by_target))
     check("nothing is reported missing for either card",
           not [m for m in missing if "position 1 " in m

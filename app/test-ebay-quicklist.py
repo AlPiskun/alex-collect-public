@@ -70,6 +70,63 @@ def main():
                 "full_description": "Vintage trading card description.",
                 "front_img": "card-front.webp", "back_img": "card-back.webp",
             }
+            #  An image title that ends in anything but the pipeline's own
+            #  format is named in that format: the tile is WebP whatever the
+            #  title said, and a ".jpg" name would be a WebP file wearing a
+            #  JPEG extension - which the eBay links then repeat.
+            front, back = pipeline.parse_images(
+                "1-Ken-Dryden-1971-72-O-Pee-Chee-front-EX-5.jpg\n"
+                "1-Ken-Dryden-1971-72-O-Pee-Chee-back-EX-5.png")
+            assert front.endswith("-EX-5.webp") and back.endswith("-EX-5.webp"), \
+                (front, back)
+            assert "front-EX-5.webp" in front and "back-EX-5.webp" in back
+            plain, plain_back = pipeline.parse_images(
+                "1-Card-front\n1-Card-back")
+            assert plain.endswith("-front.webp") and plain_back.endswith(
+                "-back.webp"), (plain, plain_back)
+            already, _ = pipeline.parse_images("1-Card-front.webp\n1-Card-back.webp")
+            assert already == "1-Card-front.webp", already
+
+            #  A rename cannot leave a .jpg name on a WebP file any more.
+            rename_dir = root / "rename"
+            rename_dir.mkdir()
+            for tile in range(1, 3):
+                for side in ("scan_front", "scan_back"):
+                    pipeline.save_webp_target_size(
+                        pipeline.Image.new("RGB", (400, 560), (190, 160, 120)),
+                        str(rename_dir / ("%s_%d.webp" % (side, tile))))
+            rename_rows = [{"Images": front}]
+            fronts, backs = pipeline.targets_from_rows(rename_rows)
+            ops, missing = pipeline.plan_renames(
+                str(rename_dir), fronts, backs, "scan_front", "scan_back",
+                "webp")
+            pipeline.apply_renames(ops)
+            written = sorted(path.name for path in rename_dir.iterdir())
+            assert front in written, written
+            assert not any(name.endswith((".jpg", ".png")) for name in written), \
+                written
+            assert pipeline.looks_like_webp(rename_dir / front)
+
+            #  A batch renamed before this fix is repaired, not re-rendered:
+            #  only a file whose bytes are really WebP is touched.
+            repair_dir = root / "repair"
+            repair_dir.mkdir()
+            for name, mode in (("old-front.jpg", "WEBP"),
+                               ("old-back.jpg", "WEBP"),
+                               ("photo.jpg", "JPEG"),
+                               ("taken.jpg", "WEBP")):
+                pipeline.Image.new("RGB", (120, 160), (120, 90, 60)).save(
+                    repair_dir / name, mode)
+            pipeline.Image.new("RGB", (120, 160), (120, 90, 60)).save(
+                repair_dir / "taken.webp", "WEBP")
+            fixed, kept = pipeline.repair_image_extensions(repair_dir)
+            names = sorted(path.name for path in repair_dir.iterdir())
+            assert ("old-front.jpg", "old-front.webp") in fixed, fixed
+            assert "old-front.webp" in names and "old-front.jpg" not in names
+            assert "photo.jpg" in names, names          # a real JPEG keeps its name
+            assert "taken.jpg" in names and any(
+                "already there" in why for _name, why in kept), kept
+
             values = pipeline._ebay_quicklist_values(card)
             assert values["price"] == "13.00"  # WooCommerce rounds the price up.
             assert values["sport"] == "Hockey"
@@ -78,6 +135,18 @@ def main():
             assert "Wayne Gretzky" in page and "draggable=\"true\"" in page
             assert "Vintage trading card description." in page
             assert "https://store.example/uploads/" in page
+            assert "card-front.webp" in page
+
+            #  A card whose stored name still says .jpg is linked by the file
+            #  that is really in the folder: the page never shows a .jpg for a
+            #  WebP picture.
+            stale = dict(card, front_img="card-front.jpg",
+                         back_img="card-back.png")
+            stale_page, _ = pipeline._render_ebay_quicklist([stale])
+            assert "card-front.webp" in stale_page, stale_page[:400]
+            assert "card-front.jpg" not in stale_page
+            assert "card-back.webp" in stale_page
+            assert "card-back.png" not in stale_page
             pipeline.launch_urls = lambda urls, browser: opened.append((list(urls), browser)) or "System default browser"
             pipeline.open_folder = lambda _path: True
             with patch.object(builtins, "input", side_effect=["y", "1", ""]):

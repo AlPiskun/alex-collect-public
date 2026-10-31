@@ -465,6 +465,108 @@ def has_image_extension(name):
     return bool(IMAGE_EXT_RE.search(name))
 
 
+#: How the image format is written in a sentence ("WebP", not "WEBP").
+FORMAT_LABEL = "WebP" if IMG_FORMAT.lower() == "webp" else IMG_FORMAT.upper()
+
+#: Titles whose extension was already corrected, so the note is said once
+#: per extension per run instead of once per card.
+_EXTENSION_NOTES = set()
+
+
+def _note_extension_change(original, honest):
+    """Say once that an image title's extension was not the real one."""
+    suffix = os.path.splitext(original)[1].lower()
+    if not suffix or suffix in _EXTENSION_NOTES:
+        return
+    _EXTENSION_NOTES.add(suffix)
+    print("  NOTE: %r is saved as %r - the pipeline writes %s, so a %s name "
+          "would be a %s file wearing the wrong extension."
+          % (original, honest, FORMAT_LABEL, suffix, FORMAT_LABEL))
+
+
+def output_image_name(name):
+    """The name a tile is written under: the pipeline's own format, always.
+
+    The image titles come from an AI reply, and a reply sometimes ends one
+    with ".jpg" out of habit. The tiles are WebP - ``split_scan`` saves them
+    with ``IMG_FORMAT`` - so renaming one to a ".jpg" name leaves a WebP file
+    wearing a JPEG extension, and every later step repeats the lie: the
+    WooCommerce and CanadianShopper CSVs, the eBay Quick List's image links,
+    and any upload that reads the extension instead of the bytes.
+
+    The format wins over the title. A title with no extension gets one; a
+    title with any other gets the pipeline's own, and the difference is said
+    once in the console. The rest of the name - the card, the side, the grade
+    - is never touched.
+    """
+    name = str(name or "").strip()
+    if not name:
+        return ""
+    if has_image_extension(name):
+        name = IMAGE_EXT_RE.sub("", name)
+    return "%s.%s" % (name, IMG_FORMAT.lower())
+
+
+def looks_like_webp(path):
+    """True when the file really holds WebP, whatever it is called."""
+    try:
+        with open(path, "rb") as stream:
+            head = stream.read(12)
+    except OSError:
+        return False
+    return len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP"
+
+
+def repair_image_extensions(directory, ext=IMG_FORMAT):
+    """Rename picture files whose name and bytes disagree.
+
+    A batch renamed while an image title still said ".jpg" leaves WebP files
+    wearing that extension. Nothing reads the bytes: the CSVs carry the name,
+    the eBay Quick List links the name, and an uploader may trust the name -
+    so the name is repaired in the image folder before anything reads it.
+
+    Only a file whose bytes really are WebP is renamed, only when the honest
+    name is free, and an unreadable file or a taken name is left exactly where
+    it is with the reason. The bytes are never rewritten.
+    """
+    fixed, kept = [], []
+    directory = Path(directory)
+    if not directory.is_dir():
+        return fixed, kept
+    honest_ext = "." + str(ext or IMG_FORMAT).lstrip(".").lower()
+    for path in sorted(directory.iterdir()):
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        if suffix not in (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif",
+                          ".tiff") or suffix == honest_ext:
+            continue
+        if not looks_like_webp(path):
+            continue
+        target = path.with_suffix(honest_ext)
+        if target.exists():
+            kept.append((path.name, "%s is already there" % target.name))
+            continue
+        try:
+            os.replace(path, target)
+        except OSError as exc:
+            kept.append((path.name, str(exc)))
+            continue
+        fixed.append((path.name, target.name))
+    return fixed, kept
+
+
+def repair_image_folder(directory):
+    """Repair the image folder's names and say what was done, if anything."""
+    fixed, kept = repair_image_extensions(directory)
+    for old, new in fixed:
+        print("  Renamed %s -> %s: it is a %s file, whatever its name said."
+              % (old, new, FORMAT_LABEL))
+    for name, why in kept:
+        print("  Left as it is: %s - %s" % (name, why), file=sys.stderr)
+    return fixed, kept
+
+
 # =====================================================================
 #  Category / sub-category tree + detection
 # =====================================================================
@@ -852,12 +954,16 @@ def looks_joined(filename):
     return found[-1].start() != previous.end()
 
 
-def parse_images(images_text, default_ext="webp"):
+def parse_images(images_text):
     """
     Read the front and back filenames straight out of the supplied
-    'SEO Image titles' section. These are the exact filenames used for
-    renaming and for the CSV's Images column -- only the configured
-    image extension is appended if the supplied title didn't include one.
+    'SEO Image titles' section. These are the filenames used for renaming
+    and for the CSV's Images column.
+
+    The extension is always the pipeline's own output format (``IMG_FORMAT``),
+    whatever the title said and whatever the scans were: ``split_scan`` writes
+    WebP tiles, so a ".jpg" in the reply would name a WebP file as a JPEG one.
+    The rest of the title - card, side, grade - is never touched.
 
     Expected examples:
         1-Eddie-Shack-1969-70-O-Pee-Chee-front-VG-EX-4
@@ -867,7 +973,6 @@ def parse_images(images_text, default_ext="webp"):
     """
     front = ""
     back = ""
-    default_ext = default_ext.lstrip(".")
 
     text = strip_markdown(images_text)
 
@@ -911,10 +1016,15 @@ def parse_images(images_text, default_ext="webp"):
         if not is_front and not is_back:
             continue
 
-        # Add only the extension when no extension was supplied.
-        # Do not add, remove, or modify the grade portion.
-        if not has_image_extension(filename):
-            filename += "." + default_ext
+        #  The extension is the pipeline's own, not the title's: the tiles
+        #  are WebP, and a ".jpg" in the reply would name a WebP file as a
+        #  JPEG one - which the CSVs, the eBay Quick List and any uploader
+        #  would then repeat. The rest of the title, the grade included, is
+        #  never touched.
+        supplied = filename
+        filename = output_image_name(filename)
+        if filename != supplied:
+            _note_extension_change(supplied, filename)
 
         if is_front:
             front = filename
@@ -1001,7 +1111,7 @@ def build_short_description(description_text, grade):
     return " ".join(parts)
 
 
-def parse_card(card_dict, default_brand, image_ext="webp"):
+def parse_card(card_dict, default_brand):
     seo_title = first_line(card_dict.get("seo_title", ""))
     grade = clean_grade(card_dict.get("grade_estimate", ""))
     keyword = first_line(card_dict.get("keyword", ""))
@@ -1010,9 +1120,7 @@ def parse_card(card_dict, default_brand, image_ext="webp"):
     tags_raw = first_line(card_dict.get("tags", ""))
     tags = ", ".join(t.strip() for t in tags_raw.split(",") if t.strip())
 
-    front_img, back_img = parse_images(
-        card_dict.get("images", ""), default_ext=image_ext
-    )
+    front_img, back_img = parse_images(card_dict.get("images", ""))
 
     description_text = clean_description_text(
         card_dict.get("product_description", "")
@@ -2558,6 +2666,28 @@ def _ebay_image_url(filename, base_url):
     return canadianshopper_image_url(filename, base_url) if base_url else ""
 
 
+def _quicklist_picture_name(filename):
+    """A picture's name as it actually is in the image folder.
+
+    The Quick List is a page of links a person drags onto eBay, so a link that
+    names a .jpg for a .webp file sends the wrong picture to the wrong place.
+    The honest name is used whenever that file is there - which is what the
+    rename stage and the repair leave behind - and a full web address is
+    passed through untouched. When neither name is on disk the honest one is
+    still what is shown, because the bytes can only be WebP.
+    """
+    name = str(filename or "").strip()
+    if not name or name.lower().startswith(("http://", "https://")):
+        return name
+    name = Path(name).name
+    honest = output_image_name(name)
+    if (OUTPUT_DIR / honest).is_file():
+        return honest
+    if (OUTPUT_DIR / name).is_file():
+        return name
+    return honest
+
+
 def _render_ebay_quicklist(cards):
     """Create a self-contained copy/drag helper from the cards in this run."""
     image_base = _ebay_image_base_url()
@@ -2591,6 +2721,7 @@ def _render_ebay_quicklist(cards):
         image_cards = []
         for label, filename in (("Front", values["front_image"]),
                                 ("Back", values["back_image"])):
+            filename = _quicklist_picture_name(filename)
             url = _ebay_image_url(filename, image_base)
             if not (filename or url):
                 continue
@@ -2673,6 +2804,9 @@ def maybe_run_ebay_quicklist(cards_parsed):
     """Ask which cards to prepare for manual eBay listing and open template tabs."""
     if not USER_SETTINGS.get("ebay_quicklist_enabled", True) or not cards_parsed:
         return
+    #  A batch renamed while an image title still said ".jpg" has WebP files
+    #  wearing that name; the links below have to name what is really there.
+    repair_image_folder(OUTPUT_DIR)
     EBAY_QUICKLIST_DIR.mkdir(parents=True, exist_ok=True)
     # Older pages are now durable in one history file; leave only this run's
     # current page in the active folder.
@@ -2806,9 +2940,9 @@ def parse_listing_text(raw_text, args):
     """Split and parse an AI reply into card dictionaries."""
     card_dicts = split_into_cards(raw_text)
     default_brand = getattr(args, "brand", "O-Pee-Chee")
-    image_ext = getattr(args, "image_ext", IMG_FORMAT)
-    return [parse_card(cd, default_brand, image_ext=image_ext)
-            for cd in card_dicts]
+    #  ``--image-ext`` says what the SCANS are, which is used to find them by
+    #  name; the pictures written here are always the pipeline's own format.
+    return [parse_card(cd, default_brand) for cd in card_dicts]
 
 
 def print_parsed_cards(parsed):
@@ -2921,6 +3055,7 @@ def cmd_rerun(args):
 
     needs_cards = market in ("woocommerce", "canadianshopper", "ebay", "all")
     parsed = None
+    repaired = []
     if needs_cards:
         input_path = find_rerun_input(args)
         if input_path is None:
@@ -2936,6 +3071,9 @@ def cmd_rerun(args):
             sys.exit("Could not parse any card listings from the input text.")
         print_parsed_cards(parsed)
         quantity = confirm_card_metadata(parsed, args)
+        #  The rebuilt outputs name the pictures; the folder has to agree, so a
+        #  WebP file still wearing a ".jpg" name is corrected first.
+        repaired, _kept = repair_image_folder(OUTPUT_DIR)
     else:
         quantity = getattr(args, "quantity", 1)
 
@@ -2964,6 +3102,14 @@ def cmd_rerun(args):
     if market in ("ebay", "all"):
         maybe_run_ebay_quicklist(parsed)
 
+    if repaired and market not in ("woocommerce", "all"):
+        #  The picture files now say what they are, but a CSV written before
+        #  the repair still names the old extension - and a CSV that names a
+        #  file which is not there is worse than one that is stale.
+        print("\n  %d image name(s) were corrected in the image folder, so the "
+              "WooCommerce CSV written earlier still names them the old way. "
+              "Re-run --market woocommerce to write it again."
+              % len(repaired))
     print("\nRe-run finished: %s." % market)
     return report_unfinished(failures, ", ".join(written))
 
@@ -3004,6 +3150,11 @@ def cmd_listing(args):
         print(f"\nImage directory not found: {directory}  (nothing renamed)",
               file=sys.stderr)
         sys.exit(1)
+
+    #  Older batches may still hold WebP files wearing a ".jpg" name; the CSV
+    #  written above and the renames below both use the honest name, so the
+    #  files are brought to it first rather than the other way round.
+    repair_image_folder(directory)
 
     front_prefix = getattr(args, "front_prefix", None)
     back_prefix = getattr(args, "back_prefix", None)
