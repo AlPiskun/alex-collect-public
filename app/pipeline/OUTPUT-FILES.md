@@ -25,7 +25,14 @@ python app/pipeline/organize_pipeline_outputs.py --pipeline-dir "<your pipeline 
 
 These are outside the marketplace result rollups and may grow or persist by design:
 
-- `output/` contains renamed/split WebP card photos. It is a user-facing image workspace and is **not** automatically cleaned; review it periodically if it gets large.
+- `output/` contains renamed/split WebP card photos, and `replacements/`
+  beside it the fronts and backs cut out of every replacement sheet (tiles live
+  under `replacements/_tiles/<sheet>/`). Both are a user-facing image workspace
+  and no run deletes from them. They are emptied by the **Older card images go
+  to** setting instead: before a new batch writes its first image, the older
+  ones are moved into `<setting>/<output|replacements>/<YYYY-MM-DD HH-MM>/`,
+  after a confirmation. Only images move - the CSVs and reports in the same
+  folders are records and stay.
 - `canadianshopper_products/cs-image-cache.json` grows as images are uploaded. It prevents duplicate uploads, so do not delete it casually. The older plugin-side cache is moved here if needed.
 - `facebook_runlog_YYYY-MM-DD.txt` accumulates one run log per day; `feed_debug_response.txt` is only written on feed-fetch failure and is overwritten on the next such failure.
 - `facebook_merchant_products/helper_last_run.log` holds everything a nested Facebook helper printed on its last failure - the traceback the console used to lose. It is overwritten by the next failing helper and written only when one fails.

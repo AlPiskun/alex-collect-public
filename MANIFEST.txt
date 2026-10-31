@@ -1,4 +1,4 @@
-Alex Collect 2.99 — public core package
+Alex Collect 3.00 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -39,6 +39,8 @@ app/:
                                    totals, and a second page when it overruns
   order_pdf.py                    draw an order on the same paper, with a
                                    picture of every card on it
+  image_store.py                   move the last batch's card images out of
+                                   the way before a new batch writes its own
   doc_images.py                    the cards' pictures: fetch each once, keep
                                    it, draw it in its box (both documents)
   pdf_writer.py                    write the drawn pages as a PDF, with a

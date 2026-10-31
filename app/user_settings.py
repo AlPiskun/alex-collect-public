@@ -92,6 +92,10 @@ def load_user_settings(path: Path = SETTINGS_FILE) -> dict:
         "seen_wizard": False,
         "pipeline_dir": "",
         "scan_dir": default_scan_dir(),
+        #  Where the card images from earlier batches are moved before a new
+        #  batch writes its own into output/ and replacements/. Empty means
+        #  "ask", which is what the app does the first time there is a pile.
+        "image_store_dir": "",
         "ai_agent_url": "",
         "browser_name": "",
         "store_name": "",
