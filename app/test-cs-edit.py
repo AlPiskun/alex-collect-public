@@ -756,6 +756,33 @@ def test_opening_a_listing_and_the_last_read():
           "https://cs.example/l/7" and
           cs_edit.link({"href": "//cs.example/l/8"}) ==
           "https://cs.example/l/8", "")
+    check("and the same key in another spelling is the same key",
+          cs_edit.link({"productUrl": "https://cs.example/l/2"}) ==
+          "https://cs.example/l/2" and
+          cs_edit.link({"PRODUCT_URL": "/listing/3"},
+                       "https://canadianshopper.ca") ==
+          "https://canadianshopper.ca/listing/3" and
+          cs_edit.link({"Product URL": "https://cs.example/l/4"}) ==
+          "https://cs.example/l/4",
+          str([cs_edit.link({key: "https://cs.example/l/2"})
+               for key in ("productUrl", "PRODUCT_URL", "Product URL")]))
+    check("every address key the plugin may use is read",
+          all(cs_edit.link({key: "https://cs.example/l/5"}) ==
+              "https://cs.example/l/5" for key in
+              ("url", "link", "permalink", "href", "product_url", "productUrl",
+               "listing_url", "web_url", "view_url", "address", "page")), "")
+    check("an address that is not the web is refused, not opened",
+          cs_edit.link({"permalink": "javascript:alert(1)"}) == "" and
+          cs_edit.link({"url": "mailto:shop@example.com"}) == "" and
+          cs_edit.link({"href": "C:\\tmp\\x.html"}) == "",
+          str([cs_edit.link({"permalink": "javascript:alert(1)"}),
+               cs_edit.link({"url": "mailto:shop@example.com"})]))
+    check("and a bad address does not hide a good one beside it",
+          cs_edit.link({"href": "javascript:alert(1)",
+                        "url": "https://cs.example/l/9"}) ==
+          "https://cs.example/l/9", "")
+    check("an empty address is no address",
+          cs_edit.link({"url": "", "link": None}) == "", "")
 
     #  A panel opened again offers the list that is already on disk, so a
     #  search works before anything is read.

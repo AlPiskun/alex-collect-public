@@ -24,6 +24,7 @@ in this module touches a site.
 """
 
 import json
+import re
 from pathlib import Path
 
 import stock_compare
@@ -97,7 +98,6 @@ def price_number(item):
     The plugin may report ``"8.50"``, ``8.5`` or ``"CA$8.50"``; all three are
     the same money, and the plan needs the number.
     """
-    import re
     text = price_text(item).replace(",", "")
     match = re.search(r"\d+(?:\.\d+)?", text)
     if not match:
@@ -214,8 +214,25 @@ EDIT_STATES = (("active", "On sale"), ("archived", "Archived"))
 #: The keys a plugin may report a listing's own page under. ``url`` is the one
 #: the interface documents; the rest cost nothing and turn "no link for that
 #: listing" into a working button for a plugin that spells it differently.
-LINK_KEYS = ("url", "link", "permalink", "href", "product_url", "listing_url",
-             "web_url", "view_url", "address", "page")
+LINK_KEYS = ("url", "link", "permalink", "href", "product_url", "producturl",
+             "listing_url", "listingurl", "web_url", "weburl", "view_url",
+             "viewurl", "address", "page")
+
+#: A key is compared with everything but its letters and digits removed, so
+#: ``product_url``, ``productUrl`` and ``Product URL`` are one key: a plugin
+#: that names the field in its own language should not lose the link over it.
+_LINK_BY_SHAPE = {}
+
+
+def _shape(key):
+    return "".join(char for char in str(key).lower() if char.isalnum())
+
+
+for _key in LINK_KEYS:
+    _LINK_BY_SHAPE.setdefault(_shape(_key), _key)
+
+#: Anything with a scheme of its own that is not the web is not a listing page.
+_SCHEME = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:")
 
 
 def link(item, base=""):
@@ -223,20 +240,42 @@ def link(item, base=""):
 
     A relative address is joined onto ``base`` (the site itself), because a
     plugin reading its own dashboard has the path to hand long before it has
-    the host name.
+    the host name. Anything that carries another scheme - ``javascript:``,
+    ``mailto:``, a Windows path - is refused rather than opened, and a plugin
+    that guesses an address is no help: an empty answer is what the panel's
+    store-and-clipboard fallback is for.
     """
-    raw = ""
-    for key in LINK_KEYS:
-        value = str((item or {}).get(key) or "").strip()
-        if value:
-            raw = value
-            break
+    if not isinstance(item, dict):
+        return ""
+    found = {}
+    for key, value in item.items():
+        if not _LINK_BY_SHAPE.get(_shape(key)):
+            continue
+        text = str(value or "").strip()
+        if text:
+            found.setdefault(_LINK_BY_SHAPE[_shape(key)], text)
+    #  A key that holds something unusable is skipped rather than answered
+    #  with: a plugin that reports both a bad ``href`` and a good ``url`` is
+    #  one whose link still works.
+    for wanted in LINK_KEYS:
+        candidate = _absolute(found.get(wanted, ""), base)
+        if candidate:
+            return candidate
+    return ""
+
+
+def _absolute(raw, base=""):
+    """``raw`` as an http(s) address, or "" when it is not one."""
+    raw = str(raw or "").strip()
     if not raw:
         return ""
-    if raw.startswith(("http://", "https://")):
+    lowered = raw.lower()
+    if lowered.startswith(("http://", "https://")):
         return raw
     if raw.startswith("//"):
         return "https:" + raw
+    if _SCHEME.match(raw):
+        return ""
     if not str(base or "").strip():
         return ""
     return str(base).rstrip("/") + "/" + raw.lstrip("/")

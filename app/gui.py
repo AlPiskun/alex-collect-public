@@ -70,7 +70,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.92"
+VERSION = "2.93"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1184,9 +1184,17 @@ only the state, which is the quick way through a restock.
 Every change is named field by field before it is sent - "Stock: 2 -> 5",
 "State: archived -> on sale" - and only the fields that changed are sent (with
 the title, which is how the plugin finds the listing), so an edit can never put
-back a value that was changed in the dashboard while this panel was open. It writes on CanadianShopper only: your website's title, price
-and stock are not touched, and nothing is deleted - an archived listing is put
-away, and the other button brings it back.
+back a value that was changed in the dashboard while this panel was open. It
+writes on CanadianShopper only: your website's title, price and stock are not
+touched, and nothing is deleted - an archived listing is put away, and the
+other button brings it back.
+
+The listing's own page opens for the details this panel does not edit - its
+description and photos. Plugin 1.0.29 sends an absolute address for every
+listing the vendor data has one for, and any spelling of that address (url,
+link, permalink, href, productUrl) is understood; when a listing really has
+none, your store opens instead and the card and its listing id go on the
+clipboard, so there is something to search for rather than a dead end.
 
 Reading the catalogue needs the plugin's stock reader (1.0.25 or newer reports
 the listings that are not on sale too), and editing needs plugin 1.0.28 or

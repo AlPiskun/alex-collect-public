@@ -436,13 +436,22 @@ listing** panel, which shows the price in its row and opens the address behind
 its **Open the selected listing** button. An older reader that omits them still
 lists, searches and edits; the row simply has no price in it.
 
-`url` may be absolute or a path from the site (`/listing/12345`), which is
-joined onto `https://canadianshopper.ca`. The core also reads `link`,
-`permalink`, `href`, `product_url`, `listing_url`, `web_url`, `view_url`,
-`address` and `page`, in that order, so a reader that spells it differently
-still opens the listing. With none of them the button is not a dead end: the
-seller's own store opens and the card's title and listing id are put on the
-clipboard to search for - but a listing opened directly is what `url` is for.
+Since plugin **1.0.29** every row's `url` is an absolute `http(s)` address
+taken from the vendor's own data, which is what the core opens directly. The
+core also accepts a path from the site (`/listing/12345`) and joins it onto
+`https://canadianshopper.ca`, and it reads the same address under `link`,
+`permalink`, `href`, `product_url`, `productUrl`, `listing_url`, `web_url`,
+`view_url`, `address` and `page` - in that order, with capitals, underscores
+and spaces ignored, so `productUrl`, `product_url` and `Product URL` are one
+key. A key holding something that is not the web (`javascript:`, `mailto:`, a
+Windows path) is skipped, not opened, and a bad key never hides a good one
+beside it.
+
+A row with no usable address is not a dead end: the button opens the seller's
+own store and puts the card's title and listing id on the clipboard to search
+for. That is the fallback, though, not the plan - 1.0.29 emits the address for
+every listing whose vendor data has one, so `url` is what makes the button open
+the listing itself.
 
 ## Security
 
