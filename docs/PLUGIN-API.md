@@ -400,10 +400,20 @@ it is on the site:
   the reader gave it: `product_id`, `productId`, `listing_id`, `post_id`,
   `wp_id` and the like. A catalogue's listing and the product its API patches
   are not always the same key, and the writer must get both - with only the
-  page id it can address a resource the site does not know, which is a 404 and
-  no change at all. `url` (the row's own address) is passed for the same
+  listing id it can address a resource the site does not know, which is a 404
+  and no change at all. `url` (the row's own address) is passed for the same
   reason. **The ids in the plan are exactly what `stock.list` emitted**: the
-  core never invents, derives or rewrites one.
+  core never invents, derives or rewrites one, so a writer that needs the
+  product key must emit it.
+
+  A listing's `id` is its catalogue id and is **not** a product id. When the
+  vendor supplies a product id, `stock.list` must report it as `product_id`
+  (or `productId`) and the update action must build its
+  `/api/products/<product_id>/` path from that key alone. A listing with no
+  product id is a listing this action cannot patch: report it in `failed` with
+  a sentence saying so, before any request is made. It must never be guessed
+  from the listing id, a slug or a title - a guess that hits another listing
+  edits the wrong card and reports success.
 - `title`, when present, is the **new** title. `card` is always the old one, so
   a log line can say what the listing was.
 - `price` is a decimal string; `inventory` is an integer (`0` is a real count);
@@ -450,6 +460,12 @@ SKU**, and links to the listing's own page. A row already has `title`/`name`, `s
 | --- | --- |
 | `price` | the listing's price, as the vendor shows it (`"CA$8.50"` and `"8.50"` are both read) |
 | `url` | the listing's own page address |
+| `product_id` | the id the update action patches, when the vendor supplies one and it differs from `id` |
+
+`product_id` is the only key with a write behind it: everything else on a row
+is for display. A row without one still lists, searches, prices and opens -
+the edit form still opens on it - and the plugin answers the write with the
+reason it could not be made.
 
 Both are display-only and are used by the **Find and edit a CanadianShopper
 listing** panel, which shows the price in its row and opens the address behind

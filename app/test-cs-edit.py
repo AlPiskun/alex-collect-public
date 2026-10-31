@@ -385,6 +385,63 @@ def read_into(app, folder, parent, payload=None):
     return out
 
 
+def test_the_12030_reproduction():
+    """The row and the answer plugin 1.0.30 sends, end to end.
+
+    This is the exact pair from the bug: a catalogue id that is not a product
+    id, a product id reported beside it, and a writer that answers with the
+    product id it patched. The listing must come back *changed* - not UNKNOWN,
+    which is what the panel said while the writer was 404ing.
+    """
+    print()
+    print("== 5b. the row and the answer plugin 1.0.30 sends ==")
+    row = {"id": "14effcaceb8a4b66b6f14e7aded86e2d", "inventory": 1,
+           "price": "8.50", "product_id": 4321, "sku": "OPC70-81",
+           "status": "active",
+           "title": "1970-71 O-Pee-Chee Larry Hillman #81 (Mint)",
+           "url": "https://canadianshopper.ca/listing/81"}
+    item = stock_compare.plugin_items({"items": [row]})[0]
+    check("the catalogue id is kept, and so is the product id beside it",
+          item["id"] == "14effcaceb8a4b66b6f14e7aded86e2d" and
+          item["ids"] == {"product_id": 4321}, str(item))
+    entry = cs_edit.plan(item, inventory=2)
+    check("the plan carries both ids, so the writer can address the product",
+          entry["id"] == "14effcaceb8a4b66b6f14e7aded86e2d" and
+          entry["product_id"] == 4321 and entry["inventory"] == 2,
+          str(entry))
+    report = cs_edit.report([entry], {"updated": [{"id": 4321}],
+                                      "failed": []})
+    check("an answer naming the product id is one changed listing",
+          len(report["changed"]) == 1 and not report["unknown"] and
+          not report["failed"], str(report))
+    report = cs_edit.report([entry], {"updated": [{"product_id": 4321}],
+                                      "failed": []})
+    check("and so is one that names it by key",
+          len(report["changed"]) == 1 and not report["unknown"], str(report))
+    check("the row says what the plugin said, price and all",
+          cs_edit.label(item, number=1, width=1).endswith("8.50  -  OPC70-81") and
+          "Larry Hillman" in cs_edit.label(item), cs_edit.label(item))
+    check("the form opens on the listing as it stands",
+          cs_edit.edit_values(item) == {
+              "title": "1970-71 O-Pee-Chee Larry Hillman #81 (Mint)",
+              "price": "8.50", "count": "1", "state": "On sale"},
+          str(cs_edit.edit_values(item)))
+
+    #  A plugin that cannot resolve a product must say so rather than patch
+    #  something else, and the core reports its sentence as a failure - never
+    #  as a change.
+    report = cs_edit.report([entry], {"updated": [], "failed": [{
+        "id": 4321, "why": "this listing has no product id; nothing was "
+                           "changed"}]})
+    check("a listing the plugin refuses is a failure, in its own words",
+          not report["changed"] and report["failed"] and
+          "no product id" in report["failed"][0]["why"], str(report))
+    check("and the console can say how the plan named it",
+          cs_edit.identified_by(entry) ==
+          "id 14effcaceb8a4b66b6f14e7aded86e2d, product id 4321, SKU OPC70-81",
+          cs_edit.identified_by(entry))
+
+
 def test_the_panel_reads_and_lists():
     print()
     print("== 6. the panel lists the catalogue and searches it ==")
@@ -883,6 +940,7 @@ def main():
     test_only_what_changed_is_sent()
     test_the_confirmation_says_what_will_change()
     test_the_plugins_answer_is_read_conservatively()
+    test_the_12030_reproduction()
     test_the_panel_reads_and_lists()
     test_the_edit_form()
     test_the_panel_refuses_what_it_cannot_do()
