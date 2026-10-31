@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -38,7 +39,7 @@ import woo_media
 
 PRODUCTS_PATH = "/wp-json/wc/v3/products"
 CATEGORIES_PATH = "/wp-json/wc/v3/products/categories"
-USER_AGENT = "AlexCollect/3.07"
+USER_AGENT = "AlexCollect/3.08"
 
 #  A read is safe to repeat, so a site answering with its own error page gets
 #  asked again before a card is called missing: two of the three failures in
@@ -229,6 +230,21 @@ def plan(rows, image_folders=()):
     return {"items": items, "problems": problems, "folder": folder}
 
 
+def duplicate_skus(items):
+    """SKUs more than one card in the batch claims, with the cards' names.
+
+    The website holds one product per SKU. Two cards on one SKU therefore
+    become one product and one card silently left out, so it is said in the
+    confirmation - the last moment before anything is written.
+    """
+    seen = {}
+    for item in items or []:
+        sku = str(item.get("sku") or "").strip()
+        if sku:
+            seen.setdefault(sku, []).append(str(item.get("name") or ""))
+    return [(sku, names) for sku, names in seen.items() if len(names) > 1]
+
+
 def describe(plan_result, limit=12):
     """The confirmation: one line per product, and what is incomplete."""
     items = (plan_result or {}).get("items") or []
@@ -248,6 +264,10 @@ def describe(plan_result, limit=12):
         lines.append(detail)
     if len(items) > limit:
         lines.append("  ... and %d more" % (len(items) - limit))
+    for sku, names in duplicate_skus(items):
+        lines.append("  ! %d cards share the SKU %s - only one of them can "
+                     "exist on the website: %s"
+                     % (len(names), sku, "; ".join(names)))
     return lines
 
 
@@ -466,6 +486,38 @@ def _send(url, method, payload=None, timeout=60, opener=None):
 
 
 # ---------------------------------------------------------------- the site
+
+#  The back printing joined the SKU in 3.08: a card used to be written as
+#  "...-EX-5" and is now "...-EX-5-DB". A product made before that is found
+#  under the shorter SKU, and finding it is what stops a re-run from making a
+#  second copy of a card that is already on the website.
+LEGACY_SKU_SUFFIXES = ("-DB", "-LB")
+
+
+def older_skus(sku):
+    """The SKUs an older version of this app would have written for a card."""
+    sku = str(sku or "").strip()
+    for suffix in LEGACY_SKU_SUFFIXES:
+        if sku.upper().endswith(suffix):
+            return [sku[:-len(suffix)]]
+    return []
+
+
+def title_key(text):
+    """A title reduced to the words that decide whether it names the same card.
+
+    Spacing, punctuation, case and "&"/"and" are how the same card is written
+    twice; the words are what make it one card or two.
+    """
+    text = str(text or "").lower().replace("&", " and ")
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", text)).strip()
+
+
+def same_card(title_a, title_b):
+    """Whether two titles name the same card."""
+    first, second = title_key(title_a), title_key(title_b)
+    return bool(first) and first == second
+
 
 def find_by_sku(site, key, secret, sku, timeout=60, opener=None):
     """The product already carrying this SKU, or ``None``.
@@ -841,12 +893,51 @@ def run(plan_result, site, key, secret, username="", app_password="",
         try:
             existing = find_by_sku(site, key, secret, item["sku"],
                                    timeout=timeout, opener=opener)
+            older = ""
+            if existing is None:
+                #  A card made before its back printing was part of the SKU is
+                #  on the website under the shorter one. Only a product whose
+                #  own title is this card is taken as this card - the shorter
+                #  SKU is a guess, and a guess must never stand between a real
+                #  card and its product.
+                for written_before in older_skus(item["sku"]):
+                    found = find_by_sku(site, key, secret, written_before,
+                                        timeout=timeout, opener=opener)
+                    if found is not None and same_card(found.get("name"),
+                                                       item["name"]):
+                        existing, older = found, written_before
+                        break
+            site_name = str((existing or {}).get("name") or "").strip()
+            if existing is not None and site_name and not same_card(site_name,
+                                                                    item["name"]):
+                #  Two cards were given one SKU. The website can only hold one
+                #  product per SKU, so this card cannot be created under it -
+                #  and calling the other card "already there" is how a card
+                #  that is missing looks like a card that was done.
+                entry.update({
+                    "id": existing.get("id"),
+                    "why": ("The SKU %s is already used on the website by a "
+                            "product called %r, which is not this card's "
+                            "title, so this card was not created."
+                            % (item["sku"], site_name)),
+                    "hint": ("A website holds one product per SKU. If that "
+                             "product is a different card, give this card a "
+                             "SKU of its own in the SKU column of the CSV and "
+                             "run the creation again; if it is this card "
+                             "under another title, nothing needs doing."),
+                    "status": existing.get("status") or "",
+                    "state": "sku-clash"})
+                failed.append(entry)
+                streak[0] = 0
+                continue
             if existing is not None:
                 entry.update({"id": existing.get("id"),
                               "why": "already on the website",
                               "status": existing.get("status") or "",
                               "images": len(existing.get("images") or []),
                               "link": existing.get("permalink") or ""})
+                if older:
+                    entry["older_sku"] = older
                 skipped.append(entry)
                 #  A batch that stopped half way leaves products behind as
                 #  drafts. Skipping them is right - they are not created
@@ -1057,6 +1148,14 @@ def report_text(report, site=""):
             detail = "state %r, left alone" % (status or "unknown")
         lines.append("Already there: %s (product %s) - %s."
                      % (entry.get("name"), entry.get("id"), detail))
+        if entry.get("older_sku"):
+            #  Not a failure - the card is there and nothing was changed - but
+            #  said plainly, because the CSV now writes a SKU the website does
+            #  not have, and that is worth knowing before the next comparison.
+            lines.append("  Its SKU on the website is the older %s, written "
+                         "before a card's printing joined the SKU; the CSV "
+                         "now writes %s, and the product keeps the SKU it has."
+                         % (entry.get("older_sku"), entry.get("sku")))
     for entry in failed:
         why = str(entry.get("why") or "")
         hint = str(entry.get("hint") or "")

@@ -396,7 +396,12 @@ def test_creation():
     # ---- running the same batch again must not make twins
     again = FakeSite(categories={"Sports Card": 11, "Hockey Card": 12},
                      exist=[("OPC1971-001-PR-2", 501),
-                            ("OPC1971-002-PR-2", 502)])
+                            ("OPC1971-002-PR-2", 502)],
+                     existing={
+                         "OPC1971-001-PR-2": {
+                             "name": "1971-72 O-Pee-Chee Test Card #001 (PR)"},
+                         "OPC1971-002-PR-2": {
+                             "name": "1971-72 O-Pee-Chee Test Card #002 (PR)"}})
     report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
                             username="owner", app_password="pw",
                             publish=False, opener=again)
@@ -648,8 +653,10 @@ def test_existing_products():
     with tempfile.TemporaryDirectory() as td:
         site = FakeSite(exist=exist, existing={
             "OPC1971-001-PR-2": {"status": "publish",
+                                 "name": "1971-72 O-Pee-Chee Test Card #001 (PR)",
                                  "images": [{"id": 1}, {"id": 2}]},
             "OPC1971-002-PR-2": {"status": "draft",
+                                 "name": "1971-72 O-Pee-Chee Test Card #002 (PR)",
                                  "images": [{"id": 3}, {"id": 4}]}})
         read, planned = build(Path(td), rows)
         report = woo_create.run(planned, "https://shop.example", "ck_a",
@@ -668,8 +675,10 @@ def test_existing_products():
     with tempfile.TemporaryDirectory() as td:
         site = FakeSite(exist=exist, existing={
             "OPC1971-001-PR-2": {"status": "publish",
+                                 "name": "1971-72 O-Pee-Chee Test Card #001 (PR)",
                                  "images": [{"id": 1}, {"id": 2}]},
             "OPC1971-002-PR-2": {"status": "draft",
+                                 "name": "1971-72 O-Pee-Chee Test Card #002 (PR)",
                                  "images": [{"id": 3}, {"id": 4}]}})
         read, planned = build(Path(td), rows)
         report = woo_create.run(planned, "https://shop.example", "ck_a",
@@ -690,7 +699,8 @@ def test_existing_products():
         #  A draft with no photos is a product nobody finished: publishing it
         #  would put a card on sale with an empty gallery.
         site = FakeSite(exist=[("OPC1971-001-PR-2", 701)], existing={
-            "OPC1971-001-PR-2": {"status": "draft", "images": []}})
+            "OPC1971-001-PR-2": {"status": "draft", "images": [],
+                                 "name": "1971-72 O-Pee-Chee Test Card #001 (PR)"}})
         read, planned = build(Path(td), [row(1)])
         report = woo_create.run(planned, "https://shop.example", "ck_a",
                                 "cs_b", publish=True, opener=site)
@@ -1311,6 +1321,136 @@ def test_a_slow_website():
     check("and both are created", len(report["created"]) == 2, str(report))
 
 
+def test_one_sku_per_card():
+    """Two cards, one SKU: the website holds one product per SKU.
+
+    The run this was written for: a dark-back card and a light-back card of
+    the same player, number and grade shared a SKU, so the light back was
+    reported as "already there" - as the dark back the app had just created -
+    and never existed. The SKU now carries the printing (the pipeline's job);
+    what is checked here is the app never mistakes one card for another, and
+    that neither a re-run nor an older product makes a twin.
+    """
+    print()
+    print("== 10. two cards, one SKU: nothing is called already there that "
+          "is a different card ==")
+    dark = "1973-74 O-Pee-Chee Neil Komadoski #16 Rookie Card Dark Back"
+    light = "1973-74 O-Pee-Chee Neil Komadoski #16 Rookie Card Light Back"
+    dark_sku = "OPC1973-74-16-Komadoski-EX-5-DB"
+    light_sku = "OPC1973-74-16-Komadoski-EX-5-LB"
+    old_sku = "OPC1973-74-16-Komadoski-EX-5"
+    categories = {"Sports Card": 11, "Hockey Card": 12}
+
+    check("two titles that differ only in spacing and case are one card",
+          woo_create.same_card("1971-72 O-Pee-Chee Test Card #001 (PR)",
+                               "1971-72  O-Pee-Chee  Test Card #001 (pr)"),
+          "")
+    check("'&' and 'and' are the same word",
+          woo_create.same_card("Hockey & Cards", "Hockey and Cards"), "")
+    check("a different card number is a different card",
+          not woo_create.same_card("Card #1 Dark Back", "Card #1 Light Back"),
+          "")
+    check("and nothing is claimed about a title the site did not send",
+          not woo_create.same_card("", "Card #1"), "")
+
+    check("a card's older SKU is the one without the printing",
+          woo_create.older_skus(light_sku) == [old_sku],
+          str(woo_create.older_skus(light_sku)))
+    check("a card with no printing in its SKU has no older one",
+          woo_create.older_skus(old_sku) == [],
+          str(woo_create.older_skus(old_sku)))
+
+    # ---- the pipeline's two SKUs are two products
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [
+        row(1, SKU=dark_sku, Name=dark), row(2, SKU=light_sku, Name=light)])
+    site = FakeSite(categories=categories)
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    check("a dark back and a light back are two products",
+          len(report["created"]) == 2 and not report["failed"],
+          str(report))
+    check("with the SKUs the CSV carries",
+          sorted(entry["sku"] for entry in report["created"]) ==
+          [dark_sku, light_sku], str(report["created"]))
+
+    # ---- a card created before the printing joined the SKU is still found
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(2, SKU=light_sku, Name=light)])
+    site = FakeSite(categories=categories, exist=[(old_sku, 14115)],
+                    existing={old_sku: {"name": light, "status": "publish",
+                                        "images": [{"id": 3}]}})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    text = "\n".join(woo_create.report_text(report, "https://shop.example"))
+    posts = [call for call in site.calls if call["method"] == "POST"]
+    check("a product made under the older SKU is not created a second time",
+          posts == [] and len(report["skipped"]) == 1, str(posts))
+    check("it is reported as already there, with the product's own id",
+          "Already there: %s (product 14115)" % light in text, text)
+    check("and the older SKU is named, so the CSV's SKU makes sense",
+          old_sku in text and light_sku in text, text)
+
+    # ---- the same older SKU on a different card is not this card
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(2, SKU=light_sku, Name=light)])
+    site = FakeSite(categories=categories, exist=[(old_sku, 14115)],
+                    existing={old_sku: {"name": dark, "status": "publish"}})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    check("the older SKU held by another card does not stand in for this one",
+          len(report["created"]) == 1 and report["created"][0]["sku"] ==
+          light_sku and not report["failed"], str(report))
+
+    # ---- the SKU is taken by a different card: said, not skipped quietly
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1, SKU=old_sku, Name=dark),
+                                row(2, SKU="OPC1973-74-80-Harper-VG-EX-4",
+                                    Name="1973-74 O-Pee-Chee Terry Harper #80")])
+    site = FakeSite(categories=categories, exist=[(old_sku, 14115)],
+                    existing={old_sku: {"name": light, "status": "publish"}})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    text = "\n".join(woo_create.report_text(report, "https://shop.example"))
+    check("a SKU held by a different card is not called already there",
+          len(report["skipped"]) == 0 and len(report["failed"]) == 1,
+          str(report))
+    check("the card is named as not created, with the reason",
+          report["failed"][0]["state"] == "sku-clash" and
+          "Not created: %s" % dark in text, text)
+    check("both titles are shown, so the mix-up is visible",
+          dark in text and light in text and old_sku in text, text)
+    check("and the way out is one edit to one cell",
+          "SKU column" in text, text)
+    check("the rest of the batch still happens",
+          len(report["created"]) == 1, str(report))
+
+    # ---- the same card with a slightly different title is the same card
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1, SKU=old_sku, Name=dark)])
+    site = FakeSite(categories=categories, exist=[(old_sku, 14115)],
+                    existing={old_sku: {
+                        "name": "1973-74 O-Pee-Chee Neil Komadoski #16 Rookie "
+                                "Card Dark Back  ", "status": "publish"}})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    check("a title that only differs in spacing is the same card",
+          len(report["skipped"]) == 1 and not report["failed"], str(report))
+
+    # ---- two rows on one SKU are said before anything is written
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1, SKU=old_sku, Name=dark),
+                                row(2, SKU=old_sku, Name=dark)])
+    lines = woo_create.describe(planned)
+    check("the confirmation says two cards share one SKU",
+          any("share the SKU" in line and old_sku in line for line in lines),
+          str(lines))
+    lines = woo_create.describe(planned.__class__(
+        {"items": planned["items"][:1]}))
+    check("and says nothing when every card has its own",
+          not any("share the SKU" in line for line in lines), str(lines))
+
+
 def main():
     test_reading()
     test_payload()
@@ -1323,6 +1463,7 @@ def main():
     test_categories_and_help()
     test_error_pages()
     test_a_slow_website()
+    test_one_sku_per_card()
     with tempfile.TemporaryDirectory() as td:
         test_pipeline_glue(Path(td))
     print()
