@@ -443,11 +443,16 @@ The result file is the same shape as `stock.set`, read the same way:
   *nothing was written*: the panel takes that at its word.
 
 A writer that refuses a listing because it has no explicit product id is
-answered by the app, not by the person: the list on screen was read before the
-plugin reported product ids, so the panel says so, offers to read the catalogue
-again, and then **re-plans the same change** from the freshly read row - matched
-by the id that was being edited - and asks for it once more before writing. The
-plugin's own sentence is still printed, unedited, in the console.
+answered by the app, not by the person. The panel asks **before** it spends a
+write that could only fail: a row with no product id in the list on screen gets
+"read the listings again?" rather than a doomed request, because the difference
+between an old list and a listing the site gives no product id for is exactly
+one read. After the read it **re-plans the same change** from the fresh row -
+matched by the id that was being edited - and asks for it once more before
+writing. If the fresh row still has no product id, it says so and leaves the
+listing for the vendor dashboard. The plugin's own sentence is still printed,
+unedited, in the console, and a refusal that arrives anyway is read the same
+way.
 
 When any of this fails, the panel prints the failure in the plugin's own words
 and then **how the plan named the listing** - `The plan named it: id
@@ -472,7 +477,11 @@ SKU**, and links to the listing's own page. A row already has `title`/`name`, `s
 `product_id` is the only key with a write behind it: everything else on a row
 is for display. A row without one still lists, searches, prices and opens -
 the edit form still opens on it - and the plugin answers the write with the
-reason it could not be made.
+reason it could not be made. The core counts them after every read and says
+so ("`12 listings read; 10 with a product id, so 10 can be edited here`"), and
+a plugin that summarises `listings: N, with product id: M` in its own console
+line is saying the same thing in its own words - the two numbers agree because
+both count the rows the reader emitted.
 
 Both are display-only and are used by the **Find and edit a CanadianShopper
 listing** panel, which shows the price in its row and opens the address behind

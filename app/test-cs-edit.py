@@ -45,18 +45,27 @@ gui = harness.gui
 import cs_edit                                        # noqa: E402
 import stock_compare                                  # noqa: E402
 
+#  A list as plugin 1.0.31 reports it: every listing keeps its own catalogue
+#  id, and carries the product id its API patches beside it. A list read before
+#  that - one row without a product id - is built by the tests that are about
+#  exactly that.
 LISTINGS = [
-    {"id": 101, "title": "1973-74 O-Pee-Chee Walt Tkaczuk #25 EX-MT",
+    {"id": 101, "product_id": 1101,
+     "title": "1973-74 O-Pee-Chee Walt Tkaczuk #25 EX-MT",
      "sku": "OPC73-25", "inventory": 3, "status": "active",
      "price": "CA$8.50", "url": "https://cs.example/l/101"},
-    {"id": 102, "title": "1973-74 O-Pee-Chee Joe Watson #91 EX-MT",
+    {"id": 102, "product_id": 1102,
+     "title": "1973-74 O-Pee-Chee Joe Watson #91 EX-MT",
      "sku": "OPC73-91", "inventory": 0, "status": "Archived",
      "price": "5.00", "url": "https://cs.example/l/102"},
-    {"id": 103, "title": "1989 O-Pee-Chee Wayne Gretzky #1",
+    {"id": 103, "product_id": 1103,
+     "title": "1989 O-Pee-Chee Wayne Gretzky #1",
      "sku": "OPC89-1", "inventory": 1, "status": "Draft", "price": "12"},
-    {"id": 104, "title": "1971-72 O-Pee-Chee Eddie Shack #60",
+    {"id": 104, "product_id": 1104,
+     "title": "1971-72 O-Pee-Chee Eddie Shack #60",
      "sku": "OPC71-60", "inventory": 2, "status": "active"},
-    {"id": 105, "title": "1971-72 O-Pee-Chee Jean Beliveau #20",
+    {"id": 105, "product_id": 1105,
+     "title": "1971-72 O-Pee-Chee Jean Beliveau #20",
      "sku": "OPC71-20", "inventory": None, "status": "active"},
 ]
 
@@ -203,7 +212,8 @@ def test_only_what_changed_is_sent():
           entry["title"].endswith("New York Rangers") and entry["id"] == 101,
           str(entry))
     check("and nothing else but how the listing is found",
-          set(entry) == {"id", "sku", "title", "card", "url"}, str(entry))
+          set(entry) == {"id", "sku", "title", "card", "url",
+                         "product_id"}, str(entry))
     check("the address the reader reported travels with the plan",
           entry["url"] == "https://cs.example/l/101", str(entry))
     entry = cs_edit.plan(rows[0], price=9.5, inventory=2)
@@ -484,15 +494,21 @@ def test_a_list_read_before_product_ids():
           cs_edit.replan(cs_edit.plan(items()[0], inventory=9), same) is None,
           str(cs_edit.replan(cs_edit.plan(items()[0], inventory=9), same)))
 
-    # ---- the panel offers the re-read, then makes the same change
+    # ---- the panel asks before spending a write that could only fail
+    old_list = [{key: value for key, value in row.items()
+                 if key != "product_id"} for row in LISTINGS]
     folder, app, parent = build_panel()
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/stock.py"):
-        read_into(app, folder, parent)
+        read_into(app, folder, parent, old_list)
+    check("an old list says none of it can be edited until it is read again",
+          any("0 with a product id, so 0 can be edited here" in text
+              for _tag, text in app.lines), str(app.lines[-4:]))
     find(parent, gui.ttk.Button, "Search").invoke()
     select(parent, "Watson")
     answers = []
-    harness._BOX.askyesno = lambda title, *a, **k: (answers.append(title), True)[1]
+    harness._BOX.askyesno = lambda title, *a, **k: (answers.append(title),
+                                                   True)[1]
 
     def tools(action):
         #  Both actions stay resolvable for the whole sequence: the retry is a
@@ -501,20 +517,19 @@ def test_a_list_read_before_product_ids():
         return ("/plugins/cs/edit.py" if action == gui.CS_LISTING_UPDATE_ACTION
                 else "/plugins/cs/stock.py")
 
+    runs_before = len(app.runs)
     with patch.object(gui, "TOOL_ACTION", tools):
         find(parent, gui.ttk.Button,
              "Put the selected listing on sale").invoke()
-    run = app.runs[-1]
-    Path(run["args"][3]).write_text(json.dumps(refusal), encoding="utf-8")
-    reads_before = len(app.runs)
-    with patch.object(gui, "TOOL_ACTION", tools):
-        run["on_done"](1)
-    check("the panel says the list is older than the plugin's product ids",
-          any("read before the plugin reported product ids" in text
+    check("a row with no product id sends no write at all",
+          all("--set-file" not in run["args"] for run in app.runs[runs_before:]),
+          str(app.runs[runs_before:]))
+    check("the panel says why, before anything is spent",
+          any("has no product id in the list on screen" in text
               for _tag, text in app.lines), str(app.lines[-3:]))
-    check("and offers to read the listings again, once",
-          answers.count("Read the listings again?") == 1, str(answers))
-    check("which starts the read", len(app.runs) == reads_before + 1 and
+    check("and offers the read that would give it one",
+          answers == ["Read the listings again?"], str(answers))
+    check("which starts the read", len(app.runs) == runs_before + 1 and
           "--stock-out" in app.runs[-1]["args"], str(app.runs[-1:]))
 
     refreshed = [{"id": 102, "product_id": 4321,
@@ -527,7 +542,7 @@ def test_a_list_read_before_product_ids():
     writes_before = len(app.runs)
     with patch.object(gui, "TOOL_ACTION", tools):
         read_run["on_done"](0)
-    check("the same change is made again from the fresh row",
+    check("the same change is made from the fresh row",
           len(app.runs) == writes_before + 1 and
           "--set-file" in app.runs[-1]["args"], str(app.runs[-1:]))
     plan = json.loads((folder / "cs-listing-update.json").read_text(
@@ -537,6 +552,42 @@ def test_a_list_read_before_product_ids():
           plan["id"] == 102, str(plan))
     check("the change is named again before it is written",
           answers.count("Change this listing?") == 1, str(answers))
+
+    # ---- and when the site genuinely has no product id for it
+    folder, app, parent = build_panel()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app, folder, parent, old_list)
+    find(parent, gui.ttk.Button, "Search").invoke()
+    select(parent, "Watson")
+    harness._BOX.shown.clear()
+    runs_before = len(app.runs)
+    with patch.object(gui, "TOOL_ACTION", tools):
+        find(parent, gui.ttk.Button,
+             "Put the selected listing on sale").invoke()
+    read_run = app.runs[-1]
+    #  The fresh list still has no product id for this listing.
+    Path(read_run["args"][1]).write_text(json.dumps({"items": [
+        {"id": 102, "title": "1973-74 O-Pee-Chee Joe Watson #91 EX-MT",
+         "sku": "OPC73-91", "inventory": 0, "status": "Archived"}]}),
+        encoding="utf-8")
+    with patch.object(gui, "TOOL_ACTION", tools):
+        read_run["on_done"](0)
+    check("a listing the site gives no product id for is not written",
+          all("--set-file" not in run["args"]
+              for run in app.runs[runs_before + 1:]),
+          str(app.runs[runs_before:]))
+    check("and the panel says where it has to be changed instead",
+          any("vendor dashboard" in str(payload)
+              for _kind, payload in harness._BOX.shown) and
+          any("no product id" in text for _tag, text in app.lines),
+          str(harness._BOX.shown[-1:]) + str(app.lines[-2:]))
+
+    # ---- a plugin that refuses one anyway is still handled
+    report = cs_edit.report([entry], refusal)
+    check("a refusal after a write is still read as a failure",
+          cs_edit.wants_product_id(report) and not report["changed"],
+          str(report))
 
 
 def test_the_list_says_which_plugin_read_it():
@@ -607,6 +658,9 @@ def test_the_panel_reads_and_lists():
     check("every listing is on the list",
           len(listing_box(parent).items) == len(LISTINGS),
           str(listing_box(parent).items))
+    check("the read says how much of the list can be edited here",
+          any("every one with a product id, so every one can be edited here"
+              in text for _tag, text in app.lines), str(app.lines[-4:]))
     check("the rows are numbered in the list",
           listing_box(parent).items[0].startswith("1. ") and
           listing_box(parent).items[1].startswith("2. "),
@@ -774,7 +828,8 @@ def test_the_edit_form():
         encoding="utf-8"))["items"][0]
     check("the title alone is sent when it is the only thing changed",
           plan.get("title", "").endswith("Rangers") and
-          set(plan) == {"id", "sku", "title", "card", "url"} and
+          set(plan) == {"id", "sku", "title", "card", "url",
+                        "product_id"} and
           len(app.runs) == runs_before + 1, str(plan))
     check("and a state the form was merely showing is not written back",
           "status" not in plan and "inventory" not in plan and
@@ -830,7 +885,8 @@ def test_the_edit_form():
         encoding="utf-8"))["items"][0]
     check("the state button sends the state and nothing else",
           plan["id"] == 102 and plan["status"] == "active" and
-          set(plan) == {"id", "sku", "title", "card", "url", "status"},
+          set(plan) == {"id", "sku", "title", "card", "url", "status",
+                        "product_id"},
           str(plan))
     run = app.runs[-1]
     Path(run["args"][3]).write_text(json.dumps(

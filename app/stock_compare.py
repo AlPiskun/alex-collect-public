@@ -316,7 +316,10 @@ def extra_ids(row):
     """
     found = {}
     for key, value in (row or {}).items():
-        if _bare_name(key) not in _ID_NAME_SHAPES:
+        shape = _bare_name(key)
+        #  ``listing_product_id``, ``parent_product_id``: a reader that keeps
+        #  its own spelling of the product key still means the product key.
+        if shape not in _ID_NAME_SHAPES and not shape.endswith("productid"):
             continue
         if value in (None, "") or isinstance(value, (dict, list, tuple)):
             continue

@@ -396,6 +396,18 @@ def product_id(entry):
     return ""
 
 
+def product_id_counts(items):
+    """How many listings carry a product id, and how many there are.
+
+    A listing without one is not broken and is not hidden: it lists, searches,
+    is priced and opens. It just cannot be written from here, because the
+    plugin will not guess which product a listing id belongs to - so the panel
+    says the count after every read rather than letting an edit find out.
+    """
+    rows = list(items or [])
+    return len([row for row in rows if product_id(row)]), len(rows)
+
+
 def wants_product_id(report):
     """Whether a failure is the plugin refusing to guess a product id.
 

@@ -70,7 +70,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.95"
+VERSION = "2.96"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1201,10 +1201,14 @@ the listings that are not on sale too), and editing needs plugin 1.0.28 or
 newer (marketplace.listing_update). Without it, the panel says so and changes
 nothing rather than pretending.
 
-The list on screen says which plugin read it, and a change the plugin refuses
-for having no product id is met with a re-read rather than a shrug: the panel
-reads the catalogue again, re-plans the same change from the fresh row, and
-asks once more before writing it."""
+The list on screen says which plugin read it, and how much of it can be
+edited: "12 listings read; 12 with a product id, so 12 can be edited here" -
+because a listing the vendor gives no product id for can be found and read
+but not written, and it is better to know that before choosing one. A change
+the plugin refuses for having no product id is met with a re-read rather than
+a shrug: the panel reads the catalogue again, re-plans the same change from
+the fresh row, and asks once more before writing it. A listing the site gives
+no product id for at all says so, and is left for the vendor dashboard."""
 
 DOCS["square"] = """\
 Square up a photo (or a whole folder) by padding it onto a white
@@ -6776,6 +6780,17 @@ def build_csledit(parent, app):
     #  described by the plugin that made it, not by when this panel opened.
     meta_file = BASE / "cs-stock-meta.json"
 
+    def describe_editable(editable, total):
+        """How much of this list the editor can actually write, in words."""
+        if not total:
+            return "none to edit"
+        if editable == total:
+            return "every one with a product id, so every one can be edited " \
+                   "here"
+        return ("%d with a product id, so %d can be edited here; the rest "
+                "have to be changed in the vendor dashboard"
+                % (editable, editable))
+
     def write_meta(count):
         try:
             meta_file.write_text(json.dumps(
@@ -6819,10 +6834,11 @@ def build_csledit(parent, app):
             return False
         write_meta(len(items))
         state["read"] = "live"
-        load(items, "%d listings read from CanadianShopper."
-                   % len(items))
-        say("CanadianShopper: %d listings read. Type a card's name to find "
-            "one." % len(items), "ok")
+        editable, total = cs_edit.product_id_counts(items)
+        note = "%d listings read from CanadianShopper." % total
+        load(items, note)
+        say("CanadianShopper: %d listings read; %s. Type a card's name to "
+            "find one." % (total, describe_editable(editable, total)), "ok")
         pending, state["then"] = state["then"], None
         if pending is not None:
             pending(items)
@@ -7007,6 +7023,35 @@ def build_csledit(parent, app):
             summary.configure(text="The plugin reported no change.")
         return False
 
+    def addressable(item, entry):
+        """Whether this row can be written at all - asked before confirming.
+
+        A row with no product id is not sent: the plugin will not guess which
+        product a listing id belongs to, and a write that can only fail is a
+        worse answer than a question. The question is worth asking, though,
+        because an old list and a listing the vendor gives no product id for
+        look identical until the catalogue is read again.
+        """
+        if cs_edit.product_id(entry) or item.get("id") is None:
+            return True
+        say("That row has no product id in the list on screen, so nothing "
+            "was sent. Reading CanadianShopper's listings is what tells an "
+            "old list from a listing without one.", "dim")
+        if messagebox.askyesno(
+                "Read the listings again?",
+                "%s has no product id in the list this panel is showing.\n\n"
+                "If the list is old, reading it again gives the row a "
+                "product id and the change can be made straight away; if the "
+                "site reports none, the listing has to be edited in the "
+                "vendor dashboard.\n\nRead the listings again now?"
+                % (str(item.get("name") or "That listing")),
+                parent=box.winfo_toplevel()):
+            read_listings(lambda items: retry_after_read(entry, item, items))
+        else:
+            summary.configure(text="That row has no product id, so nothing "
+                                   "was sent.")
+        return False
+
     def retry_after_read(entry, item, items):
         """The same change, planned again from what the site says now.
 
@@ -7038,6 +7083,25 @@ def build_csledit(parent, app):
                 "Nothing changed",
                 "CanadianShopper already shows that listing exactly as the "
                 "change would leave it, so there is nothing to send.",
+                parent=box.winfo_toplevel())
+            return
+        if not cs_edit.product_id(replanned):
+            #  The list is current now and still has no product id for this
+            #  listing, so no amount of re-reading will make it editable. Say
+            #  which listing, and where the change can be made instead.
+            say("%s has no product id in the list CanadianShopper returned, "
+                "so this app cannot address it. Nothing was changed - that "
+                "listing has to be edited in the vendor dashboard."
+                % (fresh.get("name") or "That listing"), "err")
+            summary.configure(text="That listing has no product id, so it "
+                                   "cannot be edited from here.")
+            messagebox.showinfo(
+                "That listing has no product id",
+                "%s\n\nThe list the plugin returned carries no product id "
+                "for it, so there is nothing this app can safely address - "
+                "guessing one could change a different listing.\n\nNothing "
+                "was changed. Edit it in the CanadianShopper vendor "
+                "dashboard." % (fresh.get("name") or "That listing"),
                 parent=box.winfo_toplevel())
             return
         lines = cs_edit.describe(replanned, fresh)
@@ -7175,6 +7239,8 @@ def build_csledit(parent, app):
                 "Every field is exactly as it already is, so nothing would be "
                 "sent.", parent=window)
             return
+        if not addressable(item, entry):
+            return
         lines = cs_edit.describe(entry, item)
         if not ask_yes(
                 "Change this listing?",
@@ -7190,6 +7256,8 @@ def build_csledit(parent, app):
         if item is None:
             return
         entry = cs_edit.plan(item, status=kind)
+        if entry is not None and not addressable(item, entry):
+            return
         if entry is None:
             messagebox.showinfo(
                 "Nothing to change",
