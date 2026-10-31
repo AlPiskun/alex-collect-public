@@ -292,6 +292,38 @@ def status_words(item):
     return raw or kind
 
 
+#: Names a reader may use for the id its *write* endpoint takes, beside the
+#: ``id`` it lists the row under. A catalogue's listings and its products are
+#: not always the same object - one is what the shopfront shows, the other is
+#: what an API patches - and a reader that reports both must not have the
+#: second one dropped on the way to the writer.
+_ID_NAME_SHAPES = ("productid", "listingid", "postid", "wpid", "itemid",
+                   "productidentifier")
+
+
+def _bare_name(key):
+    """A key with everything but its letters and digits removed, lowercased."""
+    return "".join(char for char in str(key).lower() if char.isalnum())
+
+
+def extra_ids(row):
+    """The listing's other identifiers, as ``{key: value}``.
+
+    Anything a reader reports that names an id and is a plain value travels
+    with the row; a title-shaped key never does, because a title is not an
+    identifier and matching a write on one is how the wrong listing gets
+    changed.
+    """
+    found = {}
+    for key, value in (row or {}).items():
+        if _bare_name(key) not in _ID_NAME_SHAPES:
+            continue
+        if value in (None, "") or isinstance(value, (dict, list, tuple)):
+            continue
+        found[str(key)] = value
+    return found
+
+
 def plugin_items(payload):
     """The listings a plugin reported, in this module's one shape.
 
@@ -328,6 +360,9 @@ def plugin_items(payload):
             value = row.get(extra)
             if value not in (None, ""):
                 entry[extra] = value
+        ids = extra_ids(row)
+        if ids:
+            entry["ids"] = ids
         if quantity is not None and str(quantity).strip() != "":
             try:
                 entry["qty"] = int(quantity)
@@ -1027,10 +1062,23 @@ def _matches(row, entry):
     title are the fallback only when one side has no id at all, which is what a
     plugin that does not report ids, or a plan built without them, looks like.
     """
-    entry_id = str(_first(entry, "id", "product_id", "listing_id") or "")
-    row_id = str(row.get("id") or "")
-    if entry_id and row_id:
-        return entry_id == row_id
+    entry_id = str(_first(entry, "id", "product_id", "listing_id",
+                          "productId", "listingId") or "")
+    #  Every id the row carries counts, not only the one it is listed under:
+    #  a writer that answers with the product id of a listing it knows by its
+    #  page id has still written *that* listing, and calling it unknown would
+    #  report a change that happened as a change that did not.
+    row_ids = {str(row.get("id") or "")}
+    row_ids |= {str(value) for value in (row.get("ids") or {}).values()}
+    #  A plan carries those ids at its top level (``product_id`` beside ``id``)
+    #  because that is what the writer is handed, so both shapes are read.
+    for key, value in (row or {}).items():
+        if _bare_name(key) in _ID_NAME_SHAPES and not isinstance(
+                value, (dict, list, tuple)):
+            row_ids.add(str(value or ""))
+    row_ids.discard("")
+    if entry_id and row_ids:
+        return entry_id in row_ids
     entry_sku = str(_first(entry, "sku") or "").strip().lower()
     row_sku = str(row.get("sku") or "").strip().lower()
     if entry_sku and row_sku:

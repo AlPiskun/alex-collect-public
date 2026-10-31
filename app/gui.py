@@ -70,7 +70,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.93"
+VERSION = "2.94"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -6907,6 +6907,18 @@ def build_csledit(parent, app):
         for failure in report["failed"]:
             say("Not changed: %s - %s" % (failure["card"] or "that listing",
                                           failure["why"]), "err")
+        if rc != 0 or report["failed"]:
+            #  A write that failed is a question about which listing was
+            #  addressed, and the answer is only useful if the console says
+            #  what the plan actually named the listing by.
+            say("The plan named it: %s." % cs_edit.identified_by(entry), "dim")
+            reasons = " ".join(str(failure.get("why") or "")
+                               for failure in report["failed"]).lower()
+            if "404" in reasons or "not found" in reasons:
+                say("CanadianShopper's API does not know a listing by that id: "
+                    "the plugin's reader and the endpoint it writes to are "
+                    "naming the listing differently. Nothing was changed on "
+                    "the site - the listing is exactly as it was.", "err")
         if rc != 0:
             say("The edit did not finish (exit %s). Nothing was changed." % rc,
                 "err")

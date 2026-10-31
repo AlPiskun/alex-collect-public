@@ -202,8 +202,10 @@ def test_only_what_changed_is_sent():
     check("a rename sends the new title",
           entry["title"].endswith("New York Rangers") and entry["id"] == 101,
           str(entry))
-    check("and nothing else", set(entry) == {"id", "sku", "title", "card"},
-          str(entry))
+    check("and nothing else but how the listing is found",
+          set(entry) == {"id", "sku", "title", "card", "url"}, str(entry))
+    check("the address the reader reported travels with the plan",
+          entry["url"] == "https://cs.example/l/101", str(entry))
     entry = cs_edit.plan(rows[0], price=9.5, inventory=2)
     check("a reprice and a recount are two fields",
           entry["price"] == "9.50" and entry["inventory"] == 2, str(entry))
@@ -223,6 +225,33 @@ def test_only_what_changed_is_sent():
     check("a listing with no id can still be planned by SKU and title",
           cs_edit.plan({"name": "No id card", "sku": "NI-1", "qty": 1,
                         "status": "active"}, inventory=4)["sku"] == "NI-1", "")
+
+    # ---- every id the reader reports reaches the writer
+    #
+    #  A catalogue's listing and the product its API patches are not always
+    #  the same key, and a reader that reports both must not have one dropped
+    #  on the way: the writer is left addressing something the site does not
+    #  know, which is a 404 and no change at all.
+    page_id = "14effcaceb8a4b66b6f14e7aded86e2d"
+    reader_row = {"id": page_id, "product_id": 4321,
+                  "name": "1970-71 O-Pee-Chee Larry Hillman #81 (Mint)",
+                  "sku": "OPC70-81", "inventory": 1, "status": "active",
+                  "url": "https://cs.example/l/81"}
+    rows_with_ids = stock_compare.plugin_items({"items": [reader_row]})
+    check("a product id reported beside the listing id is kept",
+          rows_with_ids[0].get("ids") == {"product_id": 4321},
+          str(rows_with_ids[0]))
+    entry = cs_edit.plan(rows_with_ids[0], inventory=2)
+    check("and it travels in the plan, so the writer can address the product",
+          entry.get("product_id") == 4321 and entry["id"] == page_id,
+          str(entry))
+    check("a key that names a title is not an identifier however it looks",
+          stock_compare.plugin_items({"items": [
+              {"id": 5, "name": "A card", "product_name": "A card",
+               "productId": "not-an-id-either"}]})[0].get("ids") ==
+          {"productId": "not-an-id-either"},
+          str(stock_compare.plugin_items({"items": [
+              {"id": 5, "name": "A card", "product_name": "A card"}]})))
 
 
 def test_the_confirmation_says_what_will_change():
@@ -266,6 +295,26 @@ def test_the_plugins_answer_is_read_conservatively():
     report = cs_edit.report([entry], answer)
     check("the listing the plugin reports is changed",
           report["changed"] == [entry] and not report["failed"], str(report))
+    #  A writer that resolves the page id to the product id answers with the
+    #  product id. That is the listing that was written, and calling it
+    #  unknown would report a change that happened as one that did not.
+    pair = cs_edit.plan(stock_compare.plugin_items({"items": [
+        {"id": "14effcaceb8a4b66b6f14e7aded86e2d", "product_id": 4321,
+         "name": "1971-72 O-Pee-Chee Larry Hillman #81", "sku": "OPC71-81",
+         "inventory": 1, "status": "active"}]})[0], inventory=2)
+    report = cs_edit.report([pair], {"updated": [{"product_id": 4321}],
+                                     "failed": []})
+    check("an answer naming the product id confirms the listing",
+          report["changed"] == [pair] and not report["unknown"], str(report))
+    report = cs_edit.report([pair], {"updated": [{"product_id": 9999}],
+                                     "failed": []})
+    check("but another product's id is another listing",
+          not report["changed"] and report["unknown"] == [pair], str(report))
+    check("a failure message can say how the listing was named",
+          cs_edit.identified_by(pair) ==
+          "id 14effcaceb8a4b66b6f14e7aded86e2d, product id 4321, SKU OPC71-81",
+          cs_edit.identified_by(pair))
+
     report = cs_edit.report([entry], {"updated": [], "failed": [
         {"id": 102, "why": "that listing is not editable"}]})
     check("a failure keeps the plugin's own sentence",
@@ -535,7 +584,7 @@ def test_the_edit_form():
         encoding="utf-8"))["items"][0]
     check("the title alone is sent when it is the only thing changed",
           plan.get("title", "").endswith("Rangers") and
-          set(plan) == {"id", "sku", "title", "card"} and
+          set(plan) == {"id", "sku", "title", "card", "url"} and
           len(app.runs) == runs_before + 1, str(plan))
     check("and a state the form was merely showing is not written back",
           "status" not in plan and "inventory" not in plan and
@@ -591,7 +640,7 @@ def test_the_edit_form():
         encoding="utf-8"))["items"][0]
     check("the state button sends the state and nothing else",
           plan["id"] == 102 and plan["status"] == "active" and
-          set(plan) == {"id", "sku", "title", "card", "status"},
+          set(plan) == {"id", "sku", "title", "card", "url", "status"},
           str(plan))
     run = app.runs[-1]
     Path(run["args"][3]).write_text(json.dumps(
@@ -693,6 +742,31 @@ def test_the_panel_refuses_what_it_cannot_do():
     check("a failure is printed in the plugin's own words",
           any("that listing is protected" in text for _tag, text in app.lines),
           str(app.lines[-3:]))
+
+    #  A 404 is a question about which listing was addressed, so the console
+    #  says how the plan named it - the one fact the plugin (and the person
+    #  reading the console) needs to fix an id the site does not know.
+    select(parent, "Beliveau")
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/edit.py"):
+        find(parent, gui.ttk.Button, "Archive the selected listing").invoke()
+    run = app.runs[-1]
+    Path(run["args"][3]).write_text(json.dumps(
+        {"updated": [], "failed": [{
+            "id": 105, "why": "CanadianShopper API returned HTTP 404 for "
+                              "PATCH /api/products/abc/: Not Found."}]}),
+        encoding="utf-8")
+    run["on_done"](1)
+    check("a 404 says how the plan named the listing",
+          any("The plan named it:" in text and "105" in text
+              for _tag, text in app.lines), str(app.lines[-4:]))
+    check("and says the site was not changed by it",
+          any("does not know a listing by that id" in text
+              for _tag, text in app.lines), str(app.lines[-4:]))
+    check("and the row is left exactly as it was",
+          any("Beliveau" in text and "on sale" in text
+              for text in listing_box(parent).items),
+          str(listing_box(parent).items))
 
     #  Nothing selected is a question, not a guess. An empty list is the one
     #  state the test's stand-in can express it in.

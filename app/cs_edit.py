@@ -340,6 +340,17 @@ def plan(item, **changes):
              "sku": str(item.get("sku") or "").strip(),
              "title": now["title"],
              "card": now["title"]}
+    #  Everything else the reader said identifies this listing goes with it -
+    #  the product id its write endpoint takes beside the id it is listed
+    #  under, say - and so does the address it reported. These are not fields
+    #  being changed; they are how the writer finds the listing at all, and a
+    #  writer left holding the wrong one answers 404 and changes nothing.
+    for key, value in (item.get("ids") or {}).items():
+        if key not in entry and value not in (None, ""):
+            entry[key] = value
+    page = link(item)
+    if page:
+        entry["url"] = page
     changed = False
     if "title" in changes:
         title = " ".join(str(changes.get("title") or "").split())
@@ -362,6 +373,24 @@ def plan(item, **changes):
             entry["status"] = status
             changed = True
     return entry if changed else None
+
+
+def identified_by(entry):
+    """How a plan entry names its listing, in words, for a failure message.
+
+    A write that comes back "not found" is a question about *which* listing
+    was addressed, and the answer is only useful if it says what was sent.
+    """
+    parts = []
+    for key in ("id", "product_id", "productId", "listing_id", "listingId",
+                "post_id"):
+        value = (entry or {}).get(key)
+        if value not in (None, ""):
+            parts.append("%s %s" % (key.replace("_", " "), value))
+    sku = str((entry or {}).get("sku") or "").strip()
+    if sku:
+        parts.append("SKU %s" % sku)
+    return ", ".join(parts) or "nothing that identifies it"
 
 
 def describe(entry, item=None):

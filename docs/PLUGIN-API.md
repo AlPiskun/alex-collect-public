@@ -379,8 +379,9 @@ cs-listing-update.py --set-file "<plan.json>" --set-out "<result.json>" [--cooki
 ```
 
 The plan is one entry per listing: the fields that identify it (`id`, `sku`,
-and `title` as it stands), plus **only the fields that change**. A field that is
-absent must be left exactly as it is on the site:
+any other id `stock.list` reported, `url`, and `title` as it stands), plus
+**only the fields that change**. A field that is absent must be left exactly as
+it is on the site:
 
 ```json
 {"items": [{"id": 13820,
@@ -395,6 +396,14 @@ absent must be left exactly as it is on the site:
 - `id`, `sku` and the old `title` identify the listing, in that order of
   confidence - the same rule `stock.set` uses, so one listing is never mistaken
   for its neighbour in the set.
+- **Any other id `stock.list` reported travels with the plan**, under the name
+  the reader gave it: `product_id`, `productId`, `listing_id`, `post_id`,
+  `wp_id` and the like. A catalogue's listing and the product its API patches
+  are not always the same key, and the writer must get both - with only the
+  page id it can address a resource the site does not know, which is a 404 and
+  no change at all. `url` (the row's own address) is passed for the same
+  reason. **The ids in the plan are exactly what `stock.list` emitted**: the
+  core never invents, derives or rewrites one.
 - `title`, when present, is the **new** title. `card` is always the old one, so
   a log line can say what the listing was.
 - `price` is a decimal string; `inventory` is an integer (`0` is a real count);
@@ -412,13 +421,24 @@ The result file is the same shape as `stock.set`, read the same way:
  "failed":  [{"id": 13821, "why": "that listing is protected"}]}
 ```
 
-- An entry may be named by `id` (also `product_id`, `listing_id`), `sku`,
-  `title`, `card` or `name`; the id wins when both sides have one.
+- An entry may be named by `id` (also `product_id`, `productId`, `listing_id`,
+  `post_id`), `sku`, `title`, `card` or `name`; the id wins when both sides
+  have one, and **any** of the ids the plan was given counts - a writer that
+  resolves the page id to the product id and answers with the product id is
+  confirming the same listing.
 - `why`, `reason`, `error` and `message` are all accepted as the failure's
   sentence, and it is shown unedited.
 - A listing the result does not mention is **unknown** - the panel says it
   cannot confirm the change and leaves the row as it was. Exit non-zero to mean
   *nothing was written*: the panel takes that at its word.
+
+When any of this fails, the panel prints the failure in the plugin's own words
+and then **how the plan named the listing** - `The plan named it: id
+14effcaceb8a4b66b6f14e7aded86e2d, product id 4321, SKU OPC70-81` - because
+"not found" is a question about which listing was addressed. A 404 is called
+what it is: the reader and the endpoint the plugin writes to are naming the
+listing by different keys, nothing on the site was changed, and the fix is in
+the plugin, not in the app.
 
 ### What a `stock.list` row carries (since plugin 1.0.28)
 
