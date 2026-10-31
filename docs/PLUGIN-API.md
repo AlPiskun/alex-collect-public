@@ -179,6 +179,39 @@ when the plugin is older, and after 20 s of silence at
 `ALEX_COLLECT_NESTED` is a hint, not a gate: the core makes no decision on it
 and no action changes shape.
 
+## Progress channel
+
+A tool that is about to work through many items can put a bar above the app's
+console instead of only printing lines. It writes to stdout, once per event:
+
+```
+\x1eALEX_COLLECT_PROGRESS:{"index":3,"total":9,"stage":"photos","item":{"name":"Card name"}}\x1f
+```
+
+- `index` is the item being worked on (1-based) and `total` is how many there
+  are. The bar fills as `index` grows.
+- `stage` is free text. The app has clear words for `start`, `photos`,
+  `create`, `attach`, `publish` and `done`; any other value is shown as it
+  arrives rather than ignored.
+- `item.name` is what the person recognises. Keep it short: the bar shows one
+  line, and the tool's own printed lines still say everything else.
+- The marker is hidden from the console, so a tool must keep printing its
+  plain lines too - the marker is for the bar, not for the reader. A run that
+  prints markers and nothing else looks like a run that says nothing.
+- Progress is optional in both directions: no marker means no bar, and a
+  malformed marker is dropped. Nothing a marker does can fail the work.
+- **`{"stage": "finish"}` takes the bar down** and means "this step is over";
+  `index`/`total`/`item` are not needed with it. Send it when your step ends,
+  not when the whole run does: a batch goes on to other tools afterwards, and
+  a bar left at the last item through all of that reads as work that has
+  stopped. Nothing later in the same run redraws the bar unless a new item
+  emits `start`; the bar is also taken down when the process ends, whatever
+  it printed.
+
+The card pipeline writes these only when `ALEX_COLLECT_NESTED=1` (the app
+sets it), so the same script run in a terminal prints plain lines and never
+shows a marker.
+
 ## Dialog channel
 
 A tool can ask the app a question and get a structured answer, instead of
@@ -482,6 +515,15 @@ so ("`12 listings read; 10 with a product id, so 10 can be edited here`"), and
 a plugin that summarises `listings: N, with product id: M` in its own console
 line is saying the same thing in its own words - the two numbers agree because
 both count the rows the reader emitted.
+
+**`with product id: 0` is a bug report, not a shop.** When no row in a read
+carries one, the core stops offering to re-read and says the reader is not
+reporting product ids: a second reading of the same catalogue returns the same
+nothing, and telling someone to edit 2,541 listings in the dashboard would be
+advice that costs them an evening. Nothing on either site is changed by any of
+this, and the panel still searches, opens and links each listing. The fix
+belongs in the reader: emit `product_id` for each row the vendor's data gives
+one for.
 
 Both are display-only and are used by the **Find and edit a CanadianShopper
 listing** panel, which shows the price in its row and opens the address behind

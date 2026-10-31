@@ -735,6 +735,56 @@ def grade_slug(grade):
     return re.sub(r"\s+", "-", grade)
 
 
+#  The side marker, case-sensitive: the real one is always lowercase
+#  ``-front``/``-back``, while a variant phrase ("Dark Back") is capitalised in
+#  titles the AI writes. It is also found *anywhere* in the name, which is why
+#  the last one decides - see image_side().
+_SIDE = re.compile(r"-(front|back)(?=-|\.|$)")
+
+
+def image_side(filename):
+    """Which side of a card a filename is: ``"front"``, ``"back"`` or ``""``.
+
+    The **last** side marker decides, and that is the whole rule. A variant
+    card is named after the variant *and* the side - "16-...-Kings-dark-back-
+    front" is the front of a dark-back card - so a name can contain the word
+    ``-back`` twice while being a front. Reading "contains -back" as "is a
+    back" made exactly those four cards lose their front title, which is why
+    a dark-back card's front image was never renamed: the title was dropped as
+    "a front and back joined together" before the rename was planned.
+
+    Joined titles ("...-front-EX85-...-back-EX") are repaired by
+    split_joined_image_titles() before this is asked, so the last marker is
+    the card's real side and not the next card's.
+    """
+    found = _side_markers(filename)
+    if not found:
+        return ""
+    return found[-1].group(1)
+
+
+def _side_markers(filename):
+    """Every side marker in a name, left to right."""
+    return list(_SIDE.finditer(str(filename or "")))
+
+
+def looks_joined(filename):
+    """Whether a name carries two card titles run together.
+
+    Two markers are normal when they sit next to each other - that is a
+    variant name, ``...-dark-back-front``, and the last one is the side. Two
+    markers with other words between them are the old accident: a front title
+    and a back title that lost the line break between them
+    (``...-front-EX85-A-...-back-EX``). That name belongs to no card, so it is
+    still refused rather than renamed to whichever side came last.
+    """
+    found = _side_markers(filename)
+    if len(found) < 2:
+        return False
+    previous = found[-2]
+    return found[-1].start() != previous.end()
+
+
 def parse_images(images_text, default_ext="webp"):
     """
     Read the front and back filenames straight out of the supplied
@@ -774,33 +824,24 @@ def parse_images(images_text, default_ext="webp"):
         if not filename:
             continue
 
-        # A valid SEO image title must contain exactly one image side.
-        # NOTE: this match is intentionally case-SENSITIVE. Variant
-        # descriptors like "Dark Back" / "Light Back" are Title Case in
-        # supplied filenames, while the actual side marker is always
-        # lowercase "-front"/"-back". Matching case-insensitively would
-        # make a filename like "...-Dark-Back-front" match BOTH is_front
-        # (from "-front") and is_back (from "-Back-"), causing a false
-        # "joined together" detection and dropping the title entirely.
-        is_front = bool(
-            re.search(r"-front(?:-|\.|$)", filename)
-        )
-        is_back = bool(
-            re.search(r"-back(?:-|\.|$)", filename)
-        )
-
-        # Ignore lines that are not image-title filenames.
-        if not is_front and not is_back:
-            continue
-
-        # A filename cannot be both a front and a back. If it is, that means
-        # two titles were accidentally joined together; do not use it.
-        if is_front and is_back:
+        #  Two titles that lost their line break belong to no card: refuse
+        #  them instead of renaming a photo to the wrong name.
+        if looks_joined(filename):
             print(
                 "WARNING: A front and back image title were joined together "
                 f"and will be ignored:\n  {filename}",
                 file=sys.stderr,
             )
+            continue
+
+        #  Which side of the card this is. The last marker wins, so a variant
+        #  name ("...-dark-back-front") is a front; see image_side().
+        side = image_side(filename)
+        is_front = side == "front"
+        is_back = side == "back"
+
+        # Ignore lines that are not image-title filenames.
+        if not is_front and not is_back:
             continue
 
         # Add only the extension when no extension was supplied.
@@ -1039,27 +1080,19 @@ def targets_from_rows(rows):
             if name.strip()
         ]
 
-        # Case-sensitive for the same reason as in parse_images(): variant
-        # words like "Dark Back" are Title Case, while the real side
-        # marker is always lowercase "-front"/"-back".
+        #  The same rule as parse_images(): the last side marker decides, so
+        #  the front of a dark-back card ("...-dark-back-front") is a front
+        #  here too rather than being taken as the card's back as well.
         front = next(
-            (
-                name for name in image_names
-                if re.search(r"-front(?:-|\.|$)", name)
-            ),
-            "",
-        )
+            (name for name in image_names if image_side(name) == "front"), "")
         back = next(
-            (
-                name for name in image_names
-                if re.search(r"-back(?:-|\.|$)", name)
-            ),
-            "",
-        )
+            (name for name in image_names if image_side(name) == "back"), "")
 
         if front:
             fronts[position] = front
-        if back:
+        #  One name cannot be both destinations: that would plan two renames
+        #  onto the same file and lose whichever ran second.
+        if back and back != front:
             backs[position] = back
 
     return fronts, backs
@@ -1589,6 +1622,12 @@ def run_facebook_export_script():
     return True
 
 
+#  Facebook's bulk-create page: where an exported CSV is uploaded. It is the
+#  one page that has nothing to do with reading stock, so it is not the
+#  selling list saved for the stock comparison.
+FACEBOOK_BULK_CREATE_URL = "https://www.facebook.com/marketplace/create/bulk"
+
+
 def open_facebook_delivery():
     """Open the newly generated Facebook workbook, its folder, and review page."""
     export_dir = SCRIPT_DIR / "facebook_merchant_products"
@@ -1603,16 +1642,21 @@ def open_facebook_delivery():
             print("Could not open the Facebook workbook automatically: %s" % latest)
     if open_folder(export_dir):
         print("Opened the Facebook export folder: %s" % export_dir)
-    page_url = str(USER_SETTINGS.get("facebook_selling_url", "") or "").strip()
+    #  The CSVs are uploaded through Facebook's bulk-create page. Opening the
+    #  selling list instead showed the stock already on sale, which is the one
+    #  thing this step is not about: the files have just been written and the
+    #  next thing to do is feed them in.
+    page_url = str(USER_SETTINGS.get("facebook_bulk_create_url", "")
+                   or FACEBOOK_BULK_CREATE_URL).strip()
     if page_url:
         try:
             browser_used = open_in_browser(page_url)
-            print("Opened the configured Facebook review/listing page in %s: %s" %
+            print("Opened the Facebook bulk-create page in %s: %s" %
                   (browser_used or "your browser", page_url))
         except Exception as exc:
             print("Could not open the Facebook page: %s" % exc)
     else:
-        print("Set a Facebook listing/review page URL in User Settings to open it.")
+        print("Set a Facebook bulk-create page URL in User Settings to open it.")
     try:
         input("Review the Facebook workbook/page, then press Enter to continue to the next stage...")
     except EOFError:
@@ -1652,6 +1696,30 @@ def ask_yes_no(question, default_no=True):
     if answer in ("n", "no"):
         return False
     return not default_no
+
+
+def emit_progress(event):
+    """Hand one progress event to the app that started this run.
+
+    The app turns these into the bar above its console. They are only written
+    when ``ALEX_COLLECT_NESTED`` says the app is running this process, so
+    anyone running card_pipeline.py in a terminal reads plain lines and never
+    sees a marker. A failure here cannot be allowed to stop a batch that is
+    halfway through creating products, so everything is swallowed.
+    """
+    if os.environ.get("ALEX_COLLECT_NESTED") != "1":
+        return
+    event = event or {}
+    item = event.get("item") if isinstance(event.get("item"), dict) else {}
+    payload = {"index": event.get("index"), "total": event.get("total"),
+               "stage": event.get("stage"),
+               "item": {"name": item.get("name") or ""}}
+    try:
+        text = json.dumps(payload, ensure_ascii=False)
+        sys.stdout.write("\x1eALEX_COLLECT_PROGRESS:" + text + "\x1f")
+        sys.stdout.flush()
+    except Exception:
+        pass
 
 
 def create_products_from_csv(csv_path, args, ask=True):
@@ -1740,13 +1808,27 @@ def create_products_from_csv(csv_path, args, ask=True):
     _, username, app_password = woo_photo_keys()
 
     def progress(step):
-        if step["stage"] == "start":
-            print("  [%d/%d] %s" % (step["index"], step["total"],
-                                    step["item"]["name"]))
+        #  One line per card for a person reading a terminal, and one marker
+        #  per event for the app's bar - which also shows the part of the
+        #  work that is not a new card: the photos going up, the draft being
+        #  read back, the card being put on sale.
+        stage = step.get("stage") or ""
+        name = (step.get("item") or {}).get("name") or ""
+        if stage == "start":
+            print("  [%d/%d] %s" % (step["index"], step["total"], name))
+        emit_progress(step)
 
-    report = woo_create.run(planned, site, key, secret, username=username,
-                            app_password=app_password, publish=publish,
-                            on_item=progress)
+    try:
+        report = woo_create.run(planned, site, key, secret, username=username,
+                                app_password=app_password, publish=publish,
+                                on_item=progress)
+    finally:
+        #  This step is over, and the batch is not: CanadianShopper, eBay and
+        #  Facebook can take minutes more. Saying so is what lets the app put
+        #  its bar away here instead of leaving it frozen at the last card
+        #  while a completely different step runs.
+        emit_progress({"stage": "finish", "index": len(planned["items"]),
+                       "total": len(planned["items"]), "item": {"name": ""}})
     report_path = woo_create.write_report(
         Path(csv_path).parent / "woo-create-result.json", report, site)
     print("")
@@ -1764,6 +1846,23 @@ def create_products_from_csv(csv_path, args, ask=True):
               "and finishes what this run could not.")
         print("  The CSV is unchanged: %s" % csv_path)
     return bool(report["created"]), creation_failure_note(report)
+
+
+def failure_names(entries, limit=2):
+    """The cards that failed, by name, with a one-line reason each."""
+    said = []
+    entries = list(entries or [])
+    for entry in entries[:limit]:
+        name = " ".join(str(entry.get("name") or entry.get("sku")
+                            or "a card").split())
+        why = " ".join(str(entry.get("why") or "").split())
+        if len(why) > 120:
+            why = why[:117].rstrip() + "..."
+        said.append("%s - %s" % (name, why) if why else name)
+    left = len(entries) - limit
+    if left > 0:
+        said.append("and %d more" % left)
+    return "; ".join(said)
 
 
 def creation_failure_note(report):
@@ -1788,9 +1887,18 @@ def creation_failure_note(report):
     missing = len(failed) - len(waiting)
     parts = []
     if missing:
-        parts.append("%d of %d card%s %s not on the website"
+        #  Named, with the site's own words: "1 of 9 cards is not on the
+        #  website" says a card is missing and leaves the person scanning
+        #  hundreds of console lines for which one and why. The reason is
+        #  short on purpose - the full text is in the report file and in the
+        #  creation block above.
+        not_created = [entry for entry in failed
+                       if str(entry.get("state") or "") != "created-not-live"]
+        named = failure_names(not_created)
+        parts.append("%d of %d card%s %s not on the website%s"
                      % (missing, total, "" if total == 1 else "s",
-                        "is" if missing == 1 else "are"))
+                        "is" if missing == 1 else "are",
+                        (": " + named) if named else ""))
     if waiting:
         parts.append("%d of %d card%s %s created but the site would not put "
                      "%s on sale"
@@ -1859,20 +1967,32 @@ def maybe_run_facebook(args, created_directly=False):
               "unless they were uploaded already.")
         print("  3. Confirm the products are published/live on your store.")
     print("\nThe Facebook feed only includes products already published.")
-    media_url = site_admin_url("wp-admin/media-new.php", USER_SETTINGS)
-    if not media_url:
-        print("Set your WooCommerce site URL in User settings to open its media page.")
+    #  Where to look depends on how the products got there. A batch this app
+    #  created already has its photos, so the useful page is the product list
+    #  - it is where "are they published?" is answered. A batch imported by
+    #  hand still has its renamed images sitting in the output folder, and
+    #  those go up through the media page.
+    if created_directly:
+        page_url = site_admin_url("wp-admin/edit.php?post_type=product",
+                                  USER_SETTINGS)
+        page_kind = "product list"
+    else:
+        page_url = site_admin_url("wp-admin/media-new.php", USER_SETTINGS)
+        page_kind = "media upload page"
+    if not page_url:
+        print("Set your WooCommerce site URL in User settings to open its %s."
+              % page_kind)
     # The renamed images live in OUTPUT_DIR and have to be uploaded whatever
-    # the media page is, so opening the folder must not depend on media_url
-    # being configured. --no-browser still suppresses both.
+    # the page is, so opening the folder must not depend on page_url being
+    # configured. --no-browser still suppresses both.
     if not getattr(args, "no_browser", False):
-        if media_url:
+        if page_url:
             try:
-                browser_used = open_in_browser(media_url)
-                print("Opened the WordPress media upload page in %s: %s" %
-                      (browser_used or "your browser", media_url))
+                browser_used = open_in_browser(page_url)
+                print("Opened the WordPress %s in %s: %s" %
+                      (page_kind, browser_used or "your browser", page_url))
             except Exception as exc:
-                print("Could not open the media upload page: %s" % exc)
+                print("Could not open the %s: %s" % (page_kind, exc))
         if open_folder(OUTPUT_DIR):
             print("Opened the image output folder: %s" % OUTPUT_DIR)
 

@@ -157,6 +157,84 @@ def test_rename_applies_with_yes(root):
           applied["ops"] == ops, repr(applied["ops"]))
 
 
+def test_dark_back_variant_keeps_its_front(root):
+    """A dark-back card's front is renamed like any other card's.
+
+    A variant card is named after the variant *and* the side, so
+    "16-...-Kings-dark-back-front" contains the word "-back" twice. The side
+    used to be decided by "does the name contain -front/ -back anywhere",
+    which matched both, printed "a front and back were joined together",
+    dropped the front title - and left that card's front image unrenamed.
+    Four cards in one real batch were dark backs.
+    """
+    folder = root / "renames"
+    folder.mkdir()
+    dark_front = ("16-Neil-Komadoski-1972-73-O-Pee-Chee-Los-Angeles-Kings-"
+                  "dark-back-front")
+    dark_back = dark_front[:-len("front")] + "back"
+    plain_front = "7-Foo-1972-73-O-Pee-Chee-Minnesota-North-Stars-front"
+    plain_back = plain_front[:-len("front")] + "back"
+
+    #  parse_images() answers for ONE card, which is how the AI sheet text is
+    #  read - two titles in, a front and a back out.
+    parsed = card_pipeline.parse_images(
+        "\n".join((dark_front, dark_back)), "png")
+    check("a dark-back card keeps both of its image titles",
+          parsed[0] == dark_front + ".png" and parsed[1] == dark_back + ".png",
+          repr(parsed))
+    parsed = card_pipeline.parse_images(
+        "\n".join((plain_front, plain_back)), "png")
+    check("a plain card's titles are untouched",
+          parsed == (plain_front + ".png", plain_back + ".png"), repr(parsed))
+
+    #  The fix must not resurrect the accident it replaced: two whole titles
+    #  run together are still refused, not renamed to whichever side came
+    #  last.
+    joined = "16-Foo-front-16-Bar-back"
+    err = StringIO()
+    with redirect_stderr(err):
+        parsed = card_pipeline.parse_images(joined + "\n16-Bar-back", "png")
+    check("two whole titles run together are still refused",
+          parsed == ("", "16-Bar-back.png") and
+          "joined together" in err.getvalue(), repr((parsed, err.getvalue())))
+
+    rows = [{"Images": ", ".join((dark_front + ".png", dark_back + ".png"))},
+            {"Images": ", ".join((plain_front + ".png", plain_back + ".png"))}]
+    fronts, backs = card_pipeline.targets_from_rows(rows)
+    check("the dark-back front is the front, not both sides",
+          fronts.get(1) == dark_front + ".png" and
+          backs.get(1) == dark_back + ".png",
+          "fronts=%r backs=%r" % (fronts, backs))
+    check("no card plans one file as both its front and its back",
+          all(backs.get(pos) != name for pos, name in fronts.items()),
+          "fronts=%r backs=%r" % (fronts, backs))
+
+    #  End to end: the four sources a real scan would leave behind, renamed
+    #  through the same plan the listing stage uses.
+    #  Two cards, so the second is position 2. A back sleeve is mirrored:
+    #  back position 3 belongs to the card in front position 1, and the middle
+    #  column (back position 2) to the card in front position 2.
+    for name in ("scan-front_1.png", "scan-front_2.png",
+                 "scan-back_3.png", "scan-back_2.png"):
+        (folder / name).write_bytes(b"image")
+    ops, missing = card_pipeline.plan_renames(
+        str(folder), fronts, backs, "scan-front", "scan-back", "png")
+    by_target = {Path(dst).name: Path(src).name for src, dst, _label in ops}
+    check("a dark-back card's front image is renamed",
+          by_target.get(dark_front + ".png") == "scan-front_1.png",
+          repr(by_target))
+    check("a dark-back card's back image is renamed",
+          by_target.get(dark_back + ".png") == "scan-back_3.png",
+          repr(by_target))
+    check("the plain card is renamed the same way",
+          by_target.get(plain_front + ".png") == "scan-front_2.png" and
+          by_target.get(plain_back + ".png") == "scan-back_2.png",
+          repr(by_target))
+    check("nothing is reported missing for either card",
+          not [m for m in missing if "position 1 " in m
+               or "position 2 " in m], repr(missing))
+
+
 def test_shipped_script_runs_end_to_end(root):
     """The real script, copied the way an install looks, exits 0."""
     d = root / "install"
@@ -365,6 +443,9 @@ def main():
         stage.mkdir()
         test_rename_stage_reaches_its_confirmation(stage)
         test_rename_applies_with_yes(stage)
+
+        print("== 1b. a variant card's front is renamed too ==")
+        test_dark_back_variant_keeps_its_front(root)
 
         print("== 2. the shipped script runs end to end ==")
         test_shipped_script_runs_end_to_end(root)

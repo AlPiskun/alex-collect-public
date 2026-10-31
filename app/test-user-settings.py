@@ -38,6 +38,13 @@ def main():
         assert settings["facebook_feed_condition"] == "Used - Good"
         assert "{product_url}" in settings["facebook_feed_description_template"]
         assert settings["ebay_quicklist_enabled"] is True
+        #  The page the exported CSVs are uploaded through is its own setting,
+        #  so it can never be confused with the selling list the stock read
+        #  uses.
+        assert settings["facebook_bulk_create_url"] == (
+            "https://www.facebook.com/marketplace/create/bulk")
+        assert settings["facebook_selling_url"] == (
+            "https://www.facebook.com/marketplace/you/selling")
         assert "templateId=6683629012" in settings["ebay_template_hockey_url"]
         assert settings["ebay_default_condition"] == "Mint"
         assert settings["woo_site_url"] == "https://legacy.example"
@@ -90,6 +97,33 @@ def main():
         "open", "https://shop.example/wp-admin/media-new.php", "chrome")
     assert events[1][0] == "prompt"
     assert "created and published on the website" in events[1][1]
+    assert folder_events == [pipeline.OUTPUT_DIR]
+
+    #  A batch whose products and photos the app already put on the site is
+    #  answered on the product list, not on the media upload page: there is
+    #  nothing left to upload, and "are they published?" lives there.
+    events = []
+    folder_events = []
+    try:
+        pipeline.USER_SETTINGS = custom_settings
+        with patch.object(pipeline, "launch_urls",
+                          side_effect=lambda urls, browser, **k: (
+                              events.append(("open", urls[0], browser)) or
+                              "Test browser")), \
+             patch.object(pipeline, "open_folder",
+                          side_effect=lambda path: (
+                              folder_events.append(Path(path)) or True)), \
+             patch("builtins.input", side_effect=lambda prompt: (
+                 events.append(("prompt", prompt)) or "n")):
+            with redirect_stdout(StringIO()):
+                pipeline.maybe_run_facebook(SimpleNamespace(
+                    facebook=True, no_browser=False), created_directly=True)
+    finally:
+        pipeline.USER_SETTINGS = old_settings
+    assert events[0] == (
+        "open",
+        "https://shop.example/wp-admin/edit.php?post_type=product",
+        "chrome"), events
     assert folder_events == [pipeline.OUTPUT_DIR]
     launched = []
     with patch.object(browser_utils, "browser_executable",
@@ -249,6 +283,7 @@ def main():
 
     print("PASS legacy Woo URL migration, media/admin URLs, and feed overrides")
     print("PASS pipeline opens the configured media upload page before asking")
+    print("PASS a batch the app created is answered on the product list")
     print("PASS CanadianShopper folder selection prefers staged output, then current CSV")
     print("PASS photo replacement reads the private keys and the saved seller pages")
     print("PASS the credentials file is readable only by this account")

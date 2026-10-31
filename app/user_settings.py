@@ -138,6 +138,11 @@ def load_user_settings(path: Path = SETTINGS_FILE) -> dict:
         "ebay_default_autographed": "No",
         "ebay_default_description": "Vintage trading card from the original manufacturer.",
         "facebook_selling_url": "https://www.facebook.com/marketplace/you/selling",
+        #  Where the exported CSVs are actually uploaded. It is a different
+        #  page from the selling list above - the selling list is read (it has
+        #  the stock numbers), this one is written to.
+        "facebook_bulk_create_url":
+            "https://www.facebook.com/marketplace/create/bulk",
         #  Quotes: the look is remembered so the second quote is one press,
         #  and quotes_dir is empty until the user picks a folder of their own
         #  (the app's own quotes/ folder is used then).
@@ -295,6 +300,8 @@ def marketplace_seller_urls(settings: dict | None = None) -> list:
     """The saved seller pages for the other marketplaces, in a stable order."""
     settings = settings if settings is not None else load_user_settings()
     urls = []
+    #  The bulk-create page is deliberately not here: these are the pages a
+    #  person visits to mark a card sold elsewhere, and bulk upload is not one.
     for name in ("canadianshopper_store_url", "ebay_selling_url",
                  "facebook_selling_url"):
         url = normalize_web_url(settings.get(name, ""))

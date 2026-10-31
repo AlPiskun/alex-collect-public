@@ -329,6 +329,243 @@ def test_unknown_type():
           isinstance(answer, dict), str(type(answer)))
 
 
+class FakeBar:
+    def __init__(self):
+        self.kw = {"maximum": 100, "value": 0}
+
+    def configure(self, **changes):
+        self.kw.update(changes)
+
+    def cget(self, key):
+        return self.kw.get(key)
+
+
+class FakeLabel:
+    def __init__(self):
+        self.text = ""
+
+    def config(self, **changes):
+        self.text = changes.get("text", self.text)
+
+
+class FakeRow:
+    def __init__(self):
+        self.shown = False
+
+    def grid(self, *a, **k):
+        self.shown = True
+
+    def grid_remove(self):
+        self.shown = False
+
+
+def make_progress_app(running=True):
+    """An app carrying only what the progress bar needs, unbound from Tk."""
+    app = types.SimpleNamespace(
+        progress_bar=FakeBar(), progress_label=FakeLabel(),
+        progress_row=FakeRow(), status=FakeLabel(),
+        runner=types.SimpleNamespace(title="Card pipeline: listing"),
+        console_line=lambda *a, **k: None,
+        _input_enable=lambda *a, **k: None,
+        after=lambda *a, **k: None)
+    for name in ("on_progress", "progress_show", "progress_hide",
+                 "on_run_start", "on_run_end"):
+        setattr(app, name, types.MethodType(getattr(CLS, name), app))
+    app._progress_shown = False
+    app._progress_closed = True
+    app._progress_finished = False
+    app.progress_hide()
+    if running:
+        #  The same flag on_run_start sets; this fake has no console.
+        app._progress_closed = False
+    return app
+
+
+def test_progress_markers():
+    print()
+    print("== 9. a long step moves a bar instead of printing gibberish ==")
+    app = make_progress_app()
+    runner = gui.Runner(app)
+    runner.send = lambda text: None
+    marker = gui._TOOL_PROGRESS_START
+    event = json.dumps({"index": 3, "total": 9, "stage": "create",
+                        "item": {"name": "16-Foo-dark-back-front"}})
+
+    before = runner._consume_dialog_protocol("card 2 of 9\n" + marker[:12])
+    after = runner._consume_dialog_protocol(
+        marker[12:] + event + gui._TOOL_DIALOG_END + "card 3 of 9\n")
+    check("the marker never reaches the console",
+          before + after == "card 2 of 9\ncard 3 of 9\n",
+          repr(before + after))
+    check("a marker split across chunks still moves the bar",
+          app.progress_bar.cget("maximum") == 9 and
+          app.progress_bar.cget("value") == 2,
+          str(app.progress_bar.kw))
+    check("the bar says which card and which part of the work",
+          app.progress_label.text ==
+          "[3/9] creating the draft and reading it back - "
+          "16-Foo-dark-back-front", repr(app.progress_label.text))
+    check("the bar is on screen while the step runs", app.progress_row.shown)
+
+    #  "done" for a card is what fills its slot.
+    runner._consume_dialog_protocol(
+        marker + json.dumps({"index": 3, "total": 9, "stage": "done",
+                             "item": {"name": "Card"}}) + gui._TOOL_DIALOG_END)
+    check("finishing a card fills its slot",
+          app.progress_bar.cget("value") == 3, str(app.progress_bar.kw))
+
+    #  A stage the app has no words for is shown as the tool wrote it, and a
+    #  broken event changes nothing at all.
+    runner._consume_dialog_protocol(
+        marker + json.dumps({"index": 4, "total": 9, "stage": "resize",
+                             "item": {"name": "Card"}}) + gui._TOOL_DIALOG_END)
+    check("an unknown stage is shown as it arrives",
+          "resize" in app.progress_label.text, app.progress_label.text)
+    runner._consume_dialog_protocol(marker + "{not json" + gui._TOOL_DIALOG_END)
+    check("a broken event is dropped, not fatal",
+          app.progress_bar.cget("value") == 3 and
+          app.progress_label.text.startswith("[4/9]"),
+          str(app.progress_bar.kw))
+    runner._consume_dialog_protocol(
+        marker + json.dumps({"index": 0, "total": 0, "stage": "start"}) +
+        gui._TOOL_DIALOG_END)
+    check("an event with no total leaves the bar alone",
+          app.progress_bar.cget("value") == 3, str(app.progress_bar.kw))
+
+    app.progress_hide()
+    check("a finished run puts the bar away",
+          not app.progress_row.shown and
+          app.progress_bar.cget("value") == 0 and app.progress_label.text == "")
+
+
+def test_progress_ends_with_the_step():
+    """The bar must go when the products are done, not when the batch is.
+
+    A real run left the bar sitting at the last card while CanadianShopper
+    published drafts, wired photos, the eBay Quick List opened and the
+    Facebook question came and went - minutes of "9/9" over a run that was
+    plainly still going, which reads as a bar that is stuck.
+    """
+    print()
+    print("== 10. the bar ends with the step that owns it ==")
+    app = make_progress_app()
+    runner = gui.Runner(app)
+    runner.send = lambda text: None
+    marker = gui._TOOL_PROGRESS_START
+
+    runner._consume_dialog_protocol(
+        marker + json.dumps({"index": 9, "total": 9, "stage": "publish",
+                             "item": {"name": "Last card"}}) +
+        gui._TOOL_DIALOG_END)
+    check("the step is on screen at its last card",
+          app.progress_row.shown and app.progress_bar.cget("value") == 9,
+          str(app.progress_bar.kw))
+    runner._consume_dialog_protocol(
+        marker + json.dumps({"stage": "finish", "index": 9, "total": 9}) +
+        gui._TOOL_DIALOG_END)
+    check("the step saying it is over takes the bar away",
+          not app.progress_row.shown)
+    check("and the status line says the batch is still running",
+          "still running" in app.status.text, repr(app.status.text))
+
+    #  Nothing that arrives after that may redraw it.
+    runner._consume_dialog_protocol(
+        marker + json.dumps({"index": 3, "total": 9, "stage": "photos",
+                             "item": {"name": "Later"}}) + gui._TOOL_DIALOG_END)
+    check("a leftover event after the step ends cannot bring the bar back",
+          not app.progress_row.shown)
+    #  ...but real new work can: a later step that starts its own items gets
+    #  its own bar rather than silence.
+    runner._consume_dialog_protocol(
+        marker + json.dumps({"index": 1, "total": 5, "stage": "start",
+                             "item": {"name": "Another step"}}) +
+        gui._TOOL_DIALOG_END)
+    check("a later step that starts its own items gets the bar back",
+          app.progress_row.shown and app.progress_bar.cget("maximum") == 5,
+          str(app.progress_bar.kw))
+
+    #  And the end of the run is final even if a marker was in flight.
+    app = make_progress_app()
+    runner = gui.Runner(app)
+    runner.send = lambda text: None
+    app._progress_closed = True
+    runner._consume_dialog_protocol(
+        marker + json.dumps({"index": 2, "total": 9, "stage": "photos",
+                             "item": {"name": "Late"}}) + gui._TOOL_DIALOG_END)
+    check("a finished run never shows a bar again", not app.progress_row.shown)
+
+    #  A tool that prints a bar and then dies without saying "finish" still
+    #  loses it: the run ending is the backstop.
+    app = make_progress_app()
+    app.on_run_end("Card pipeline: listing", 1)
+    check("a run that ends for any reason leaves no bar behind",
+          not app.progress_row.shown and app._progress_closed)
+
+
+def test_windows_only_suite_calls_real_methods():
+    """test-gui.py can only run where there is a display; this can.
+
+    A typo in that suite costs a whole round trip through the Windows machine,
+    which is exactly what happened: it called the tool-dialog parser on the app
+    instead of on the runner, and the run died half way through section 19
+    after 250 passing checks. Reading the file instead of running it catches
+    that class of mistake here, in a second.
+    """
+    print()
+    print("== 11. the Windows-only suite only calls things that exist ==")
+    import ast
+    app_dir = Path(__file__).resolve().parent
+    gui_tree = ast.parse((app_dir / "gui.py").read_text(encoding="utf-8"))
+    suite_tree = ast.parse((app_dir / "test-gui.py").read_text(
+        encoding="utf-8"))
+
+    def api(cls, owners):
+        """What that object has: its class's methods, plus its attributes.
+
+        The attributes are collected across the whole file because several
+        panels hang their state on ``app.`` (``app._custom_ai_editor``) from
+        inside a builder function, not from the class.
+        """
+        methods = set()
+        if cls:
+            for node in gui_tree.body:
+                if isinstance(node, ast.ClassDef) and node.name == cls:
+                    methods |= {item.name for item in ast.walk(node)
+                                if isinstance(item, (ast.FunctionDef,
+                                                     ast.AsyncFunctionDef))}
+        assigned = {node.attr for node in ast.walk(gui_tree)
+                    if isinstance(node, ast.Attribute)
+                    and isinstance(node.ctx, ast.Store)
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id in owners}
+        return methods | assigned
+
+    known = {"app": api("App", {"self", "app"}),
+             "runner": api("Runner", {"self"})}
+    #  Only private names are checked: ``app.status`` and friends are Tk
+    #  methods and widgets this file cannot enumerate without a display.
+    missing = {}
+    for node in ast.walk(suite_tree):
+        if (isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)
+                and isinstance(node.value, ast.Name)
+                and node.value.id in known
+                and node.attr.startswith("_")
+                and node.attr not in known[node.value.id]):
+            missing.setdefault(
+                "%s.%s (line %d)" % (node.value.id, node.attr, node.lineno),
+                node.lineno)
+    check("every private app/runner method the suite calls really exists",
+          not missing, str(missing))
+
+    #  And the other way round for the two names this app must not confuse:
+    #  the dialog channel belongs to the runner, the bar to the app.
+    check("the dialog channel belongs to the runner", hasattr(
+        gui.Runner, "_consume_dialog_protocol") and
+        not hasattr(gui.App, "_consume_dialog_protocol"))
+    check("the bar belongs to the app", hasattr(gui.App, "on_progress") and
+          hasattr(gui.App, "progress_hide"))
+
+
 def main():
     test_pick_a_row()
     test_add_instead()
@@ -338,6 +575,9 @@ def main():
     test_one_row()
     test_row_without_id()
     test_unknown_type()
+    test_progress_markers()
+    test_progress_ends_with_the_step()
+    test_windows_only_suite_calls_real_methods()
     print()
     print("=" * 60)
     if FAIL:

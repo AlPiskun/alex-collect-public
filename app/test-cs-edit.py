@@ -495,14 +495,18 @@ def test_a_list_read_before_product_ids():
           str(cs_edit.replan(cs_edit.plan(items()[0], inventory=9), same)))
 
     # ---- the panel asks before spending a write that could only fail
-    old_list = [{key: value for key, value in row.items()
-                 if key != "product_id"} for row in LISTINGS]
+    #
+    #  One row without a product id among rows that have one: a list read
+    #  before this listing had one, or a listing the plugin has just started
+    #  reporting. Either way one read settles it.
+    mixed = [dict(row) for row in LISTINGS]
+    mixed[1].pop("product_id")            # Watson: no product id
     folder, app, parent = build_panel()
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/stock.py"):
-        read_into(app, folder, parent, old_list)
-    check("an old list says none of it can be edited until it is read again",
-          any("0 with a product id, so 0 can be edited here" in text
+        read_into(app, folder, parent, mixed)
+    check("a mixed read says how many of it can be edited",
+          any("4 with a product id, so 4 can be edited here" in text
               for _tag, text in app.lines), str(app.lines[-4:]))
     find(parent, gui.ttk.Button, "Search").invoke()
     select(parent, "Watson")
@@ -553,14 +557,14 @@ def test_a_list_read_before_product_ids():
     check("the change is named again before it is written",
           answers.count("Change this listing?") == 1, str(answers))
 
-    # ---- and when the site genuinely has no product id for it
+    # ---- and when the site gives no product id for one listing at all
     folder, app, parent = build_panel()
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/stock.py"):
-        read_into(app, folder, parent, old_list)
+        read_into(app, folder, parent, mixed)
     find(parent, gui.ttk.Button, "Search").invoke()
     select(parent, "Watson")
-    harness._BOX.shown.clear()
+    answers.clear()
     runs_before = len(app.runs)
     with patch.object(gui, "TOOL_ACTION", tools):
         find(parent, gui.ttk.Button,
@@ -588,6 +592,61 @@ def test_a_list_read_before_product_ids():
     check("a refusal after a write is still read as a failure",
           cs_edit.wants_product_id(report) and not report["changed"],
           str(report))
+
+
+def test_a_read_with_no_product_ids_at_all():
+    """The live case: 2,541 listings, not one product id.
+
+    That is not 2,541 listings to edit by hand - it is a reading that does not
+    carry product ids. The panel must say so once, must not offer to read the
+    same nothing again, and must still lead somewhere: the listing's own page.
+    """
+    print()
+    print("== 5d0. a read in which no listing has a product id ==")
+    nothing = [{key: value for key, value in row.items()
+                if key != "product_id"} for row in LISTINGS]
+    check("the note says what the reading is missing, not what to do by hand",
+          "none can be edited here yet" in
+          cs_edit.editable_note(0, len(nothing)) and
+          "vendor dashboard" not in cs_edit.editable_note(0, len(nothing)),
+          cs_edit.editable_note(0, len(nothing)))
+    check("and the whole-read case is told apart from a single missing row",
+          cs_edit.nothing_editable(nothing) and
+          not cs_edit.nothing_editable(items()) and
+          not cs_edit.nothing_editable([]), "")
+
+    folder, app, parent = build_panel()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app, folder, parent, nothing)
+    check("the read says so in one line",
+          any("none of them with a product id" in text
+              for _tag, text in app.lines), str(app.lines[-4:]))
+    check("and the console explains it is the reader, not this list",
+          any("reader is not reporting one" in text
+              for _tag, text in app.lines), str(app.lines[-3:]))
+
+    find(parent, gui.ttk.Button, "Search").invoke()
+    select(parent, "Watson")          # archived, so a change is available
+    harness._BOX.shown.clear()
+    answers = []
+    runs_before = len(app.runs)
+    harness._BOX.askyesno = lambda title, *a, **k: (answers.append(title),
+                                                   True)[1]
+    app.opened[:] = []
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/edit.py"):
+        find(parent, gui.ttk.Button,
+             "Put the selected listing on sale").invoke()
+    check("nothing is sent", len(app.runs) == runs_before, str(app.runs[-1:]))
+    check("the panel does not offer to read the same nothing again",
+          answers == ["That listing has to be changed on the site"],
+          str(answers))
+    check("it opens the listing's own page so it can be changed there",
+          app.opened == ["https://cs.example/l/102"], str(app.opened))
+    check("and says nothing in the read can be addressed",
+          any("no listing in that read carried a product id" in text.lower()
+              for _tag, text in app.lines), str(app.lines[-3:]))
 
 
 def test_the_list_says_which_plugin_read_it():
@@ -1131,6 +1190,7 @@ def main():
     test_the_plugins_answer_is_read_conservatively()
     test_the_12030_reproduction()
     test_a_list_read_before_product_ids()
+    test_a_read_with_no_product_ids_at_all()
     test_the_list_says_which_plugin_read_it()
     test_the_panel_reads_and_lists()
     test_the_edit_form()
