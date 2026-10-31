@@ -2059,6 +2059,7 @@ def main():
     progress = json.dumps({"index": 4, "total": 9, "stage": "photos",
                            "item": {"name": "Test card"}})
     app.progress_hide()
+    app._progress_closed = False        # a run is going
     first = runner._consume_dialog_protocol("line\n" + progress_marker[:11])
     second = runner._consume_dialog_protocol(
         progress_marker[11:] + progress + gui._TOOL_DIALOG_END + "\nnext\n")
@@ -2077,6 +2078,25 @@ def main():
     check("a moving bar takes the status line with it",
           "[4/9]" in str(app.status.cget("text")),
           repr(app.status.cget("text")))
+    #  Creating the products is one step of the batch, and the batch runs on
+    #  into CanadianShopper, eBay and Facebook. A bar left at the last card
+    #  through all of that reads as work that has stopped - which is exactly
+    #  what the app did on the real run this was written for.
+    app._consume_dialog_protocol(
+        progress_marker + json.dumps({"stage": "finish", "index": 9,
+                                      "total": 9}) + gui._TOOL_DIALOG_END)
+    check("the step saying it is over puts the bar away at once",
+          int(float(app.progress_bar["value"])) == 0 and
+          app.progress_label["text"] == "",
+          "value=%r label=%r" % (app.progress_bar["value"],
+                                 app.progress_label["text"]))
+    app._consume_dialog_protocol(
+        progress_marker + json.dumps({"index": 9, "total": 9,
+                                      "stage": "photos",
+                                      "item": {"name": "late"}}) +
+        gui._TOOL_DIALOG_END)
+    check("a leftover event cannot bring the bar back",
+          not app._progress_shown)
     #  A finished run must not leave a bar sitting at 100% under the console:
     #  a full bar beside "Ready" reads as work still going on.
     old_input_enable = app._input_enable
@@ -2085,6 +2105,7 @@ def main():
         app.on_run_end("Test run", 0)
     finally:
         app._input_enable = old_input_enable
+    check("a finished run stays finished", app._progress_closed)
     check("the bar is put away when the run ends",
           int(float(app.progress_bar["value"])) == 0 and
           app.progress_label["text"] == "",

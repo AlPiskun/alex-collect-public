@@ -200,6 +200,13 @@ console instead of only printing lines. It writes to stdout, once per event:
   prints markers and nothing else looks like a run that says nothing.
 - Progress is optional in both directions: no marker means no bar, and a
   malformed marker is dropped. Nothing a marker does can fail the work.
+- **`{"stage": "finish"}` takes the bar down** and means "this step is over";
+  `index`/`total`/`item` are not needed with it. Send it when your step ends,
+  not when the whole run does: a batch goes on to other tools afterwards, and
+  a bar left at the last item through all of that reads as work that has
+  stopped. Nothing later in the same run redraws the bar unless a new item
+  emits `start`; the bar is also taken down when the process ends, whatever
+  it printed.
 
 The card pipeline writes these only when `ALEX_COLLECT_NESTED=1` (the app
 sets it), so the same script run in a terminal prints plain lines and never

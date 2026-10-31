@@ -70,7 +70,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.98"
+VERSION = "2.99"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -2219,6 +2219,12 @@ class App(tk.Tk):
                     "How many of this run's items are done; the words beside "
                     "it say which part is running.")
         self.progress_row.grid_remove()
+        #  Whether the bar is on screen, and whether the run that owns it is
+        #  still going. Both are kept here, not asked of Tk, so the bar can be
+        #  cleared from anywhere without a call that might raise.
+        self._progress_shown = False
+        self._progress_closed = True
+        self._progress_finished = False
 
         row = ttk.Frame(box)
         row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(2, 0))
@@ -2308,6 +2314,11 @@ class App(tk.Tk):
         if not self.winfo_exists():
             return
         self.runner.drain()
+        #  Whatever any of that did, a bar cannot outlive the process it
+        #  describes: this is the one place every run passes through, and it
+        #  costs one flag test.
+        if getattr(self, "_progress_shown", False) and not self.runner.busy():
+            self.progress_hide()
         try:
             self._poll_job = self.after(120, self._poll)
         except tk.TclError:
@@ -2320,10 +2331,12 @@ class App(tk.Tk):
                                         value=max(0, int(done)))
             self.progress_label.config(text=words)
             self.progress_row.grid()
+            self._progress_shown = True
         except (AttributeError, tk.TclError):
             pass          # a headless run, or the window has gone
 
     def progress_hide(self):
+        self._progress_shown = False
         try:
             self.progress_row.grid_remove()
             self.progress_bar.configure(value=0)
@@ -2338,8 +2351,37 @@ class App(tk.Tk):
         they arrive: a progress display must never be able to stop the work
         it is describing, and a new stage name added to a tool should appear
         on screen even before this dictionary learns the words for it.
+
+        Two things end the bar, and both are needed:
+
+        * ``finish`` - the tool says the *step* is over. Creating the
+          products is one step of a batch, and the batch goes on to
+          CanadianShopper, eBay and Facebook for minutes afterwards; a bar
+          frozen at the last card through all of that reads as work that has
+          stopped. Nothing later in the same run redraws it unless a new item
+          ``start``s, which is a new piece of work saying so.
+        * the end of the run - nothing at all may redraw it afterwards, so a
+          finished run stays finished.
         """
         event = event if isinstance(event, dict) else {}
+        stage = str(event.get("stage") or "")
+        if getattr(self, "_progress_closed", True):
+            self.progress_hide()
+            return        # the run is over; no late event may redraw this
+        if stage == "finish":
+            self.progress_hide()
+            self._progress_finished = True
+            try:
+                self.status.config(
+                    text="Products done - the rest of the batch is still "
+                         "running: " + (self.runner.title or ""))
+            except (AttributeError, tk.TclError):
+                pass
+            return
+        if getattr(self, "_progress_finished", False):
+            if stage != "start":
+                return    # that step ended; its leftover events say nothing
+            self._progress_finished = False
         try:
             total = int(event.get("total") or 0)
             index = int(event.get("index") or 0)
@@ -2347,7 +2389,6 @@ class App(tk.Tk):
             return
         if total <= 0 or index <= 0:
             return
-        stage = str(event.get("stage") or "")
         item = event.get("item") if isinstance(event.get("item"), dict) else {}
         name = str(item.get("name") or "")
         phrase = PROGRESS_WORDS.get(stage, stage or "working")
@@ -2365,6 +2406,8 @@ class App(tk.Tk):
     def on_run_start(self, title, cmd):
         self._saw_dangling_prompt = False
         self._hinted = set()
+        self._progress_closed = False
+        self._progress_finished = False
         self.progress_hide()
         self.console_line("")
         self.console_line("---- " + title + " " + "-" * max(0, 60 - len(title)),
@@ -2375,11 +2418,12 @@ class App(tk.Tk):
 
     def on_run_end(self, title, rc):
         ok = (rc == 0)
+        self._progress_closed = True
+        self.progress_hide()
         self.console_line(
             "---- finished (%s, exit code %s) " %
             ("OK" if ok else "PROBLEM", rc) + "-" * 30,
             "ok" if ok else "err")
-        self.progress_hide()
         self.status.config(
             text=("Finished: " if ok else "Stopped with a problem: ") + title +
             ("  -  the log keeps everything: " + LOG_FILE.name))

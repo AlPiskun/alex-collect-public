@@ -359,15 +359,25 @@ class FakeRow:
         self.shown = False
 
 
-def make_progress_app():
+def make_progress_app(running=True):
     """An app carrying only what the progress bar needs, unbound from Tk."""
     app = types.SimpleNamespace(
         progress_bar=FakeBar(), progress_label=FakeLabel(),
         progress_row=FakeRow(), status=FakeLabel(),
+        runner=types.SimpleNamespace(title="Card pipeline: listing"),
+        console_line=lambda *a, **k: None,
+        _input_enable=lambda *a, **k: None,
         after=lambda *a, **k: None)
-    for name in ("on_progress", "progress_show", "progress_hide"):
+    for name in ("on_progress", "progress_show", "progress_hide",
+                 "on_run_start", "on_run_end"):
         setattr(app, name, types.MethodType(getattr(CLS, name), app))
+    app._progress_shown = False
+    app._progress_closed = True
+    app._progress_finished = False
     app.progress_hide()
+    if running:
+        #  The same flag on_run_start sets; this fake has no console.
+        app._progress_closed = False
     return app
 
 
@@ -428,6 +438,70 @@ def test_progress_markers():
           app.progress_bar.cget("value") == 0 and app.progress_label.text == "")
 
 
+def test_progress_ends_with_the_step():
+    """The bar must go when the products are done, not when the batch is.
+
+    A real run left the bar sitting at the last card while CanadianShopper
+    published drafts, wired photos, the eBay Quick List opened and the
+    Facebook question came and went - minutes of "9/9" over a run that was
+    plainly still going, which reads as a bar that is stuck.
+    """
+    print()
+    print("== 10. the bar ends with the step that owns it ==")
+    app = make_progress_app()
+    runner = gui.Runner(app)
+    runner.send = lambda text: None
+    marker = gui._TOOL_PROGRESS_START
+
+    runner._consume_dialog_protocol(
+        marker + json.dumps({"index": 9, "total": 9, "stage": "publish",
+                             "item": {"name": "Last card"}}) +
+        gui._TOOL_DIALOG_END)
+    check("the step is on screen at its last card",
+          app.progress_row.shown and app.progress_bar.cget("value") == 9,
+          str(app.progress_bar.kw))
+    runner._consume_dialog_protocol(
+        marker + json.dumps({"stage": "finish", "index": 9, "total": 9}) +
+        gui._TOOL_DIALOG_END)
+    check("the step saying it is over takes the bar away",
+          not app.progress_row.shown)
+    check("and the status line says the batch is still running",
+          "still running" in app.status.text, repr(app.status.text))
+
+    #  Nothing that arrives after that may redraw it.
+    runner._consume_dialog_protocol(
+        marker + json.dumps({"index": 3, "total": 9, "stage": "photos",
+                             "item": {"name": "Later"}}) + gui._TOOL_DIALOG_END)
+    check("a leftover event after the step ends cannot bring the bar back",
+          not app.progress_row.shown)
+    #  ...but real new work can: a later step that starts its own items gets
+    #  its own bar rather than silence.
+    runner._consume_dialog_protocol(
+        marker + json.dumps({"index": 1, "total": 5, "stage": "start",
+                             "item": {"name": "Another step"}}) +
+        gui._TOOL_DIALOG_END)
+    check("a later step that starts its own items gets the bar back",
+          app.progress_row.shown and app.progress_bar.cget("maximum") == 5,
+          str(app.progress_bar.kw))
+
+    #  And the end of the run is final even if a marker was in flight.
+    app = make_progress_app()
+    runner = gui.Runner(app)
+    runner.send = lambda text: None
+    app._progress_closed = True
+    runner._consume_dialog_protocol(
+        marker + json.dumps({"index": 2, "total": 9, "stage": "photos",
+                             "item": {"name": "Late"}}) + gui._TOOL_DIALOG_END)
+    check("a finished run never shows a bar again", not app.progress_row.shown)
+
+    #  A tool that prints a bar and then dies without saying "finish" still
+    #  loses it: the run ending is the backstop.
+    app = make_progress_app()
+    app.on_run_end("Card pipeline: listing", 1)
+    check("a run that ends for any reason leaves no bar behind",
+          not app.progress_row.shown and app._progress_closed)
+
+
 def main():
     test_pick_a_row()
     test_add_instead()
@@ -438,6 +512,7 @@ def main():
     test_row_without_id()
     test_unknown_type()
     test_progress_markers()
+    test_progress_ends_with_the_step()
     print()
     print("=" * 60)
     if FAIL:

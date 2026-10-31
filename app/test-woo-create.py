@@ -994,12 +994,21 @@ def test_pipeline_glue(tmp):
         body = piece.split("\x1f", 1)[0]
         events.append(json.loads(body))
     check("the app is told how far the creation has got",
-          [event["stage"] for event in events] == ["start", "photos"] and
+          [event["stage"] for event in events] ==
+          ["start", "photos", "finish"] and
           all(event["index"] == 1 and event["total"] == 1
               for event in events), str(events))
     check("a marker carries the card's name, not its whole plan",
-          events and events[-1]["item"] == {"name": planned["items"][0]["name"]},
-          str(events[:1]))
+          events[0]["item"] == {"name": planned["items"][0]["name"]} and
+          events[1]["item"] == {"name": planned["items"][0]["name"]},
+          str(events[:2]))
+
+    #  The creation step is over when the products are, and the batch runs on
+    #  into CanadianShopper, eBay and Facebook afterwards. The last statement
+    #  the pipeline makes about this step is that it is finished; without it
+    #  the app's bar sat at the last card for the rest of the run.
+    check("the creation step says when it is over",
+          events and events[-1]["stage"] == "finish", str(events[-3:]))
     check("and the console still reads as sentences and counts",
           "  [1/1] " in output, output[:200])
     with patch.dict(os.environ, {}, clear=False):
@@ -1014,6 +1023,28 @@ def test_pipeline_glue(tmp):
     created, output, calls, prompts = glue(
         args(create_products=True, publish_products=True, confirmed=True),
         keys=(site, "ck_a", "cs_b"), failure=True)
+    #  "1 of 9 cards is not on the website" only says a card is missing. The
+    #  note now names it and gives the site's own short reason, because the
+    #  alternative is scanning hundreds of console lines for which one.
+    note = card_pipeline.creation_failure_note({
+        "created": [{"name": "A card", "sku": "A1"}],
+        "skipped": [], "published": [], "unpublished": [],
+        "failed": [{"name": "1972-73 O-Pee-Chee Mike Corrigan #48 Dark Back",
+                    "sku": "S9", "state": "not-created",
+                    "why": "The website answered with its own error page "
+                           "(HTTP 500) instead of a result."}]})
+    check("the failed card is named, with the site's reason",
+          "Mike Corrigan" in note and "HTTP 500" in note, note)
+    check("and the count is still there", "1 of 2" in note, note)
+    many = card_pipeline.creation_failure_note({
+        "created": [], "skipped": [], "published": [], "unpublished": [],
+        "failed": [{"name": "Card %d" % index, "sku": "S%d" % index,
+                    "state": "not-created", "why": "refused"}
+                   for index in range(1, 5)]})
+    check("a long list says how many were left out",
+          "Card 1" in many and "Card 2" in many and "Card 3" not in many and
+          "and 2 more" in many, many)
+
     check("a batch the site broke names the button that finishes it",
           "Re-run a marketplace" in output and "WooCommerce CSV" in output,
           output[-500:])

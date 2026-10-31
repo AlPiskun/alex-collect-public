@@ -1818,9 +1818,17 @@ def create_products_from_csv(csv_path, args, ask=True):
             print("  [%d/%d] %s" % (step["index"], step["total"], name))
         emit_progress(step)
 
-    report = woo_create.run(planned, site, key, secret, username=username,
-                            app_password=app_password, publish=publish,
-                            on_item=progress)
+    try:
+        report = woo_create.run(planned, site, key, secret, username=username,
+                                app_password=app_password, publish=publish,
+                                on_item=progress)
+    finally:
+        #  This step is over, and the batch is not: CanadianShopper, eBay and
+        #  Facebook can take minutes more. Saying so is what lets the app put
+        #  its bar away here instead of leaving it frozen at the last card
+        #  while a completely different step runs.
+        emit_progress({"stage": "finish", "index": len(planned["items"]),
+                       "total": len(planned["items"]), "item": {"name": ""}})
     report_path = woo_create.write_report(
         Path(csv_path).parent / "woo-create-result.json", report, site)
     print("")
@@ -1838,6 +1846,23 @@ def create_products_from_csv(csv_path, args, ask=True):
               "and finishes what this run could not.")
         print("  The CSV is unchanged: %s" % csv_path)
     return bool(report["created"]), creation_failure_note(report)
+
+
+def failure_names(entries, limit=2):
+    """The cards that failed, by name, with a one-line reason each."""
+    said = []
+    entries = list(entries or [])
+    for entry in entries[:limit]:
+        name = " ".join(str(entry.get("name") or entry.get("sku")
+                            or "a card").split())
+        why = " ".join(str(entry.get("why") or "").split())
+        if len(why) > 120:
+            why = why[:117].rstrip() + "..."
+        said.append("%s - %s" % (name, why) if why else name)
+    left = len(entries) - limit
+    if left > 0:
+        said.append("and %d more" % left)
+    return "; ".join(said)
 
 
 def creation_failure_note(report):
@@ -1862,9 +1887,18 @@ def creation_failure_note(report):
     missing = len(failed) - len(waiting)
     parts = []
     if missing:
-        parts.append("%d of %d card%s %s not on the website"
+        #  Named, with the site's own words: "1 of 9 cards is not on the
+        #  website" says a card is missing and leaves the person scanning
+        #  hundreds of console lines for which one and why. The reason is
+        #  short on purpose - the full text is in the report file and in the
+        #  creation block above.
+        not_created = [entry for entry in failed
+                       if str(entry.get("state") or "") != "created-not-live"]
+        named = failure_names(not_created)
+        parts.append("%d of %d card%s %s not on the website%s"
                      % (missing, total, "" if total == 1 else "s",
-                        "is" if missing == 1 else "are"))
+                        "is" if missing == 1 else "are",
+                        (": " + named) if named else ""))
     if waiting:
         parts.append("%d of %d card%s %s created but the site would not put "
                      "%s on sale"
