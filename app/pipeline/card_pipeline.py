@@ -84,6 +84,10 @@ try:
     import woo_create
 except ImportError:                      # a bare batch folder with no app
     woo_create = None
+try:
+    import image_store
+except ImportError:                      # a bare batch folder with no app
+    image_store = None
 
 USER_SETTINGS = load_user_settings(APP_DIR / "gui-settings.json")
 OUTPUT_DIR = SCRIPT_DIR / "output"
@@ -253,11 +257,74 @@ def split_scan(image_path: Path, output_dir: Path) -> list:
     return created
 
 
+def maybe_store_old_images(folder, settings=None):
+    """Offer to move the last batch's images out before this one is written.
+
+    Only from a terminal. The app asks its own question - with a folder
+    picker - before it starts this step, and asking here as well would be the
+    same question twice, once of them without the picker.
+
+    Returns the number of images moved (0 when nothing was asked, or the
+    answer was no).
+    """
+    if image_store is None:
+        return 0
+    settings = settings if settings is not None else USER_SETTINGS
+    older = image_store.images_in(folder)
+    if not older:
+        return 0
+    store = str(settings.get("image_store_dir", "") or "").strip()
+    if not store:
+        #  Nothing to ask about a folder that was never chosen; the hint is
+        #  what makes the setting discoverable from a terminal. It is printed
+        #  even when the app is running this batch, where there is no folder
+        #  picker to choose with and the app has nothing to ask about.
+        print("\n  %s from earlier batches are still in %s."
+              % (image_store.plural(len(older), "image"), folder))
+        print("  Set \"Older card images go to\" in Alex Collect's User "
+              "Settings and each new batch moves the last one out of the way.")
+        return 0
+    if os.environ.get("ALEX_COLLECT_NESTED") == "1":
+        #  The app has already put the question, with a folder picker, before
+        #  it started this run; reading a question from a console nobody is
+        #  typing into would only look like a hang.
+        return 0
+    problem = image_store.check_store(store, folder)
+    if problem:
+        print("\n  The saved folder for older card images cannot be used: %s."
+              % problem, file=sys.stderr)
+        return 0
+    plan = image_store.plan(folder, store)
+    #  A terminal has no window to look at them in, so nothing is deleted
+    #  here - but saying how many look empty explains what the app offers,
+    #  and why a folder of black tiles is not worth keeping. The check reads
+    #  every image, so it is skipped for a pile that was never cleared.
+    if len(plan["files"]) <= 300:
+        blanks = image_store.blank_images(plan["files"])
+        if blanks:
+            print("  %s of them look empty - only the background, no card. "
+                  "Alex Collect offers to delete those, in a window you can "
+                  "look at them in, before it moves the rest."
+                  % len(blanks))
+    if not ask_yes_no("\n  %s.\n  Move them? [y/N] "
+                      % image_store.describe(plan)):
+        print("  Keeping them where they are.")
+        return 0
+    result = image_store.move(plan)
+    for line in image_store.result_text(result):
+        print("  " + line)
+    return len(result["moved"])
+
+
 def cmd_split(args):
     """Handle the 'split' sub-command."""
     front_path = Path(args.front)
     if not front_path.is_file():
         sys.exit(f"Front image not found: {front_path}")
+
+    #  Before the first tile is written: the folder belongs to the last batch
+    #  until now, and the person is asked what to do with what is in it.
+    maybe_store_old_images(OUTPUT_DIR)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 

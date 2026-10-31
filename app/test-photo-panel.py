@@ -379,6 +379,18 @@ class FakeApp:
             bar.destroy()
         self._action_bar = None
 
+    def prepare_image_folder(self, folder, keep=(), what=""):
+        """The app's image store, recorded instead of drawn.
+
+        It is the real method that asks the question, so here it is only
+        noted: what the panel has to prove is that it asks *before* it cuts
+        another sheet, and that it hands over the tiles still in use.
+        """
+        self.image_calls = getattr(self, "image_calls", [])
+        self.image_calls.append({"folder": Path(folder), "keep": list(keep),
+                                 "what": what})
+        return True
+
     def winfo_screenwidth(self):
         return 800          # the small screen the picker has to fit on
 
@@ -2208,6 +2220,85 @@ def test_one_way_to_name_the_cards():
     shutil.rmtree(folder, ignore_errors=True)
 
 
+
+
+def test_images_are_offered_a_home():
+    print()
+    print("== 33. older card images are offered a home before more are cut ==")
+    folder = Path(tempfile.mkdtemp(prefix="photo-store-"))
+    install_plugin("1.0.16", folder / "plugin")
+    replacements = folder / "replacements"
+    replacements.mkdir()
+    #  Last week's batch left its images behind; this one is about to add to
+    #  the same folder.
+    (replacements / "old-card-front.webp").write_bytes(b"an older image")
+    first = make_sheet(folder / "Scan-1.jpg", blanks=(2, 9))
+    second = make_sheet(folder / "Scan-2.jpg", blanks=(2, 9))
+    app = FakeApp(folder)
+    parent = FakeWidget()
+    gui.build_newphotos(parent, app)
+    add = next(w for w in parent.walk() if w.cget("text") == "Add sheets...")
+
+    with patch.object(gui, "ProgressWindow", ProgressRecorder):
+        _DIALOG.askopenfilenames = lambda **k: (str(first),)
+        add.invoke()
+    calls = getattr(app, "image_calls", [])
+    check("the images already in the folder are asked about first",
+          len(calls) == 1, str(calls))
+    check("the folder offered is the replacements folder",
+          calls and calls[0]["folder"] == replacements,
+          str(calls[0]["folder"] if calls else ""))
+    check("the older image really is there", calls and
+          (replacements / "old-card-front.webp").is_file())
+    check("nothing is held back on the first sheet",
+          calls and calls[0]["keep"] == [], str(calls and calls[0]["keep"]))
+    check("and the question says it is about this sitting",
+          calls and "sitting" in calls[0]["what"],
+          str(calls and calls[0]["what"]))
+    check("the sheet was still loaded", len(app.photo_pool.sheets) == 1,
+          str(len(app.photo_pool.sheets)))
+
+    held = [tile["path"] for tile in app.photo_pool.tiles()]
+    with patch.object(gui, "ProgressWindow", ProgressRecorder):
+        _DIALOG.askopenfilenames = lambda **k: (str(second),)
+        add.invoke()
+    calls = getattr(app, "image_calls", [])
+    check("a second sheet asks again, because there are more to cut",
+          len(calls) == 2, str(len(calls)))
+    check("but the first sheet's images are kept - they are in this sitting",
+          calls and sorted(calls[-1]["keep"]) == sorted(held) and held,
+          "%r vs %r" % (calls and calls[-1]["keep"][:3], held[:3]))
+    check("the second sheet was loaded too", len(app.photo_pool.sheets) == 2,
+          str(len(app.photo_pool.sheets)))
+
+    print()
+    print("== 34. answering no to the move stops the sheet, it does not move "
+          "it ==")
+    app = FakeApp(folder)
+    app.image_calls = []
+
+    def decline(*a, **k):
+        app.image_calls.append({"kept": True})
+        return False      # the same answer a closed question gives
+
+    app.prepare_image_folder = decline
+    parent = FakeWidget()
+    gui.build_newphotos(parent, app)
+    add = next(w for w in parent.walk() if w.cget("text") == "Add sheets...")
+    with patch.object(gui, "ProgressWindow", ProgressRecorder):
+        _DIALOG.askopenfilenames = lambda **k: (str(third_sheet(folder)),)
+        add.invoke()
+    check("the question was asked", bool(app.image_calls))
+    check("no sheet was cut after a refusal",
+          len(app.photo_pool.sheets) == 0, str(len(app.photo_pool.sheets)))
+    shutil.rmtree(folder, ignore_errors=True)
+
+
+def third_sheet(folder):
+    return make_sheet(folder / "Scan-3.jpg", blanks=(2, 9))
+
+
+
 def main():
     test_version_gates()
     test_pair_saved_and_sent()
@@ -2241,6 +2332,7 @@ def main():
     test_spent_sitting()
     test_empty_sheet()
     test_website_first()
+    test_images_are_offered_a_home()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))

@@ -44,6 +44,7 @@ from browser_utils import available_browsers, browser_label, open_urls as launch
 from plugin_manager import (PluginError, PluginManager,
                             version_at_least)
 from process_utils import no_window_kwargs
+import image_store
 import photo_assign
 import photo_pool
 import photo_queue
@@ -70,7 +71,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.99"
+VERSION = "3.01"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -741,6 +742,20 @@ def _safe_mtime(path):
         return 0.0
 
 
+def short_file_name(path, width=18):
+    """A file's name without its extension, cut short for a small caption.
+
+    The grid's captions sit under a 132-pixel picture, so a listing title
+    would wrap into three lines and push the next row off the window. What
+    matters here is telling one tile from another, and the start of the name
+    does that; the full name is in the console line after a failure.
+    """
+    stem = Path(str(path)).stem or Path(str(path)).name
+    if len(stem) <= width:
+        return stem
+    return stem[:max(1, width - 1)] + "\u2026"
+
+
 def find_pipeline_script(settings):
     """Where card_pipeline.py lives: saved batch folder, the app's own
     pipeline folder, next to the tools folder (the Scan folder), or next
@@ -1033,7 +1048,7 @@ installed) is a live login; do not share it, and refresh it when the plugin
 reports that authentication has expired."""
 
 DOCS["folders"] = """\
-Three folders the tools should know about:
+Four folders the tools should know about:
 
 * Batch folder - where card_pipeline.py and generated CSVs live. It is
   detected beside the tools by default; change it if your files are elsewhere.
@@ -1043,7 +1058,16 @@ Three folders the tools should know about:
 
 * Quotes folder - where the quote panel saves each quote and its PDF. Leave
   it blank to keep them in the app's own quotes folder, which is the one
-  **Open the quotes folder** opens."""
+  **Open the quotes folder** opens.
+
+* Older card images - where the images from earlier batches are moved before
+  a new batch writes its own. A batch folder is a workspace, not an archive:
+  output/ and replacements/ fill up with every image the shop has ever used,
+  so before the first image of a new batch is written the older ones are
+  offered a way out. Nothing is deleted and nothing is renamed - they are
+  moved into a dated folder per batch. Left blank, Alex Collect asks the
+  first time there is something to move, and remembers the answer for that
+  sitting only."""
 
 DOCS["pipeline"] = """\
 Use this for a new batch of cards. Choose the FRONT scan and, if you have
@@ -1935,6 +1959,11 @@ TOOLTIPS = {
     "Add / update button": "Save this command as a new button, or update the selected one",
     "Run the Facebook feed updater": "Run the Facebook feed companion on its own",
     "Split the scans and build the CSV": "Split the scans and run the listing step",
+    # -- empty tiles ------------------------------------------------------
+    "Delete the ticked images": "Delete the images left ticked here - they are only the background, with no card on them",
+    "Keep them all": "Delete nothing; these images are moved with the rest",
+    "Tick everything": "Tick every image here, so all of them would be deleted",
+    "Untick everything": "Untick every image here, so none of them would be deleted",
     # -- console ----------------------------------------------------------
     "Send": "Send what you typed to the running tool",
     "Enter": "Send a bare Enter to the running tool",
@@ -2777,6 +2806,322 @@ class App(tk.Tk):
     def set_setting(self, key, value):
         self.settings[key] = value
         save_settings(self.settings)
+
+    # ---------------------------------------------------- the image store
+    def image_store_dir(self):
+        """The folder older card images are moved to, or ``""`` when unset."""
+        return str(self.settings.get("image_store_dir", "") or "").strip()
+
+    def ask_image_store(self, folder):
+        """Ask where older card images should go, and remember the answer.
+
+        Asked when the setting has never been set and there is really a pile
+        to move - a person who has never run a batch has nothing to decide
+        yet. Declining is remembered **for this sitting only**: the pile is
+        still there next time the app opens, so the question is worth asking
+        again then, and never twice in one session.
+        """
+        if getattr(self, "_image_store_declined", False):
+            return ""
+        try:
+            worth_it = messagebox.askyesno(
+                "Where should finished card images go?",
+                "Card images from earlier batches are still in\n%s\n\n"
+                "Alex Collect can move them out of the way to a folder you "
+                "choose before it writes this batch's images - nothing is "
+                "deleted, every image keeps its name, and nothing is moved "
+                "without asking.\n\n"
+                "Choose that folder now? (You can change it any time in "
+                "User Settings.)" % folder, parent=self)
+        except Exception:
+            return ""
+        if not worth_it:
+            self._image_store_declined = True
+            return ""
+        try:
+            chosen = filedialog.askdirectory(
+                title="Where should finished card images go?",
+                initialdir=str(Path(folder).parent), parent=self)
+        except Exception:
+            chosen = ""
+        if not chosen:
+            return ""
+        problem = image_store.check_store(chosen, folder)
+        if problem:
+            messagebox.showwarning(
+                "That folder will not do",
+                "The older card images cannot be kept there, because %s.\n\n"
+                "Pick a folder outside %s." % (problem, folder), parent=self)
+            return ""
+        self.set_setting("image_store_dir", str(Path(chosen)))
+        self.console_line(
+            "Card images: from now on, the older ones are moved to %s."
+            % chosen, "ok")
+        return str(Path(chosen))
+
+    def prepare_image_folder(self, folder, keep=(), what="this batch"):
+        """Make room for this batch's images, with the person's say-so.
+
+        Called **before** anything is written, because that is the only moment
+        the older images can be moved out of the way without touching the new
+        ones. Returns True to carry on, and False only when the person
+        cancelled - a question they did not answer is never allowed to look
+        like a decision to throw their work away.
+        """
+        folder = Path(folder)
+        older = image_store.images_in(folder, keep=keep)
+        store = self.image_store_dir()
+        if store:
+            problem = image_store.check_store(store, folder)
+            if problem:
+                #  Said, not silently ignored: a setting that cannot work is
+                #  the one thing that makes the pile come back unexplained.
+                self.console_line("Card images: the saved folder is not "
+                                  "usable - %s. Set it again in User Settings "
+                                  "(Working folders)." % problem, "warn")
+                store = ""
+        if not store:
+            if not older:
+                return True
+            store = self.ask_image_store(folder)
+            if not store:
+                self.console_line(
+                    "Card images: %s from earlier batches stay in %s. Set "
+                    "\"Older card images go to\" in User Settings to have "
+                    "them moved next time."
+                    % (image_store.plural(len(older), "image"), folder), "dim")
+                return True
+            #  Choosing the folder is its own answer to "move them"; asking
+            #  again straight away would be the same question twice.
+            return self._move_older_images(folder, store, older, what, asked=False)
+        return self._move_older_images(folder, store, older, what, asked=True)
+
+    def _move_older_images(self, folder, store, older, what, asked=True):
+        """Ask, then move - the two lines both callers share."""
+        if not older:
+            return True
+        plan = image_store.plan(folder, store)
+        if asked:
+            try:
+                answer = messagebox.askyesnocancel(
+                    "Move the older card images?",
+                    "%s from earlier batches are still in\n%s\n\n"
+                    "Move them to\n%s\nbefore %s writes its own images?\n\n"
+                    "Any of them that are only the background are shown to "
+                    "you first, and the ones you leave ticked are deleted "
+                    "rather than filed.\n\n"
+                    "Yes: move them and carry on.\n"
+                    "No: keep them where they are and carry on.\n"
+                    "Cancel: do not start this run."
+                    % (image_store.plural(len(older), "card image"), folder,
+                       plan["target"], what), parent=self)
+            except Exception:
+                answer = True
+            if answer is None:
+                self.console_line(
+                    "Nothing was started: the older card images were left "
+                    "where they are and this run was cancelled.", "dim")
+                return False
+            if answer is False:
+                self.console_line(
+                    "Card images: keeping the %s from earlier batches in %s."
+                    % (image_store.plural(len(older), "image"), folder), "dim")
+                return True
+        #  Before anything is moved: the pictures that are only background
+        #  are offered for deletion, laid out so they can be looked at first.
+        #  An image that is really a card is unticked there and moves with
+        #  the rest, and nothing is deleted without that answer.
+        try:
+            self.ask_delete_blank_images(folder, plan["files"])
+        except Exception as exc:
+            self.console_line("Card images: could not look for empty images "
+                              "(%s)." % exc, "warn")
+        plan = image_store.forget_missing(plan)
+        result = image_store.move(plan)
+        for line in image_store.result_text(result):
+            self.console_line("Card images: " + line,
+                              "warn" if result["failed"] else "ok")
+        return True
+
+    def ask_delete_blank_images(self, folder, files):
+        """Show the images that look empty, and delete only the ticked ones.
+
+        A blank slot on a scan is near-black, and its tile is a photograph of
+        nothing: carrying it into the store would file it, and finding it
+        again later is a job for nothing. So before the older images are
+        moved, the ones that look empty are laid out as pictures to be looked
+        at - a deleted picture does not come back, so the decision is made by
+        eye and not by a file name - and only the ones left ticked are
+        deleted. An unticked picture is simply moved with the rest.
+
+        Returns the images that were deleted.
+        """
+        files = [Path(path) for path in files or ()]
+        if not files:
+            return []
+
+        #  Measuring hundreds of images is not instant; say so rather than
+        #  leaving the window looking hung before it has opened.
+        progress = None
+        try:
+            if len(files) >= 24:
+                progress = ProgressWindow(
+                    self, title="Looking for empty images",
+                    text="Checking %s for ones that are only the background..."
+                    % image_store.plural(len(files), "image"),
+                    total=len(files))
+        except Exception:
+            progress = None
+
+        def step(done, total):
+            if progress is not None:
+                try:
+                    progress.step(done=done, total=total)
+                    progress.pump()
+                except Exception:
+                    pass
+
+        try:
+            blanks = image_store.blank_images(files, on_step=step)
+        finally:
+            if progress is not None:
+                try:
+                    progress.close()
+                except Exception:
+                    pass
+        if not blanks:
+            return []
+
+        top = tk.Toplevel(self)
+        top.title("Images with nothing on them")
+        top.transient(self)
+        try:
+            top.grab_set()
+        except Exception:
+            pass
+        width = min(900, max(560, self.winfo_screenwidth() - 60))
+        height = min(640, max(430, self.winfo_screenheight() - 90))
+        try:
+            top.geometry("%dx%d" % (width, height))
+        except Exception:
+            pass
+
+        ticks = {str(path): tk.BooleanVar(master=top, value=True)
+                 for path in blanks}
+        answer = {"delete": False, "files": []}
+
+        def ticked_now():
+            chosen = []
+            for key, var in ticks.items():
+                try:
+                    wanted = bool(var.get())
+                except Exception:
+                    wanted = True       # an unreadable tick never deletes
+                if wanted:
+                    chosen.append(Path(key))
+            return chosen
+
+        #  Actions first, pictures under them, the explanation last - the
+        #  buttons must never scroll away under a long grid.
+        bar = ttk.Frame(top)
+        bar.pack(fill="x", padx=10, pady=(10, 2))
+        count_line = ttk.Label(bar, text="", style="Dim.TLabel")
+        count_line.pack(side="left")
+        ttk.Button(bar, text="Keep them all",
+                   command=lambda: finish(False)).pack(side="right", padx=8)
+        ttk.Button(bar, text="Delete the ticked images",
+                   command=lambda: finish(True)).pack(side="right")
+
+        ticks_row = ttk.Frame(top)
+        ticks_row.pack(fill="x", padx=10, pady=(0, 4))
+
+        def refresh_count():
+            try:
+                count_line.configure(
+                    text="%d of %d ticked for deleting"
+                    % (len(ticked_now()), len(blanks)))
+            except Exception:
+                pass
+
+        def set_all(value):
+            for var in ticks.values():
+                try:
+                    var.set(value)
+                except Exception:
+                    pass
+            refresh_count()
+
+        ttk.Button(ticks_row, text="Tick everything",
+                   command=lambda: set_all(True)).pack(side="left")
+        ttk.Button(ticks_row, text="Untick everything",
+                   command=lambda: set_all(False)).pack(side="left", padx=8)
+
+        holder = ScrollFrame(top)
+        holder.pack(fill="both", expand=True, padx=10, pady=(0, 4))
+        thumbs = photo_thumbs.Thumbnails()
+        keep_pictures = {}                 # Tk frees an unreferenced image
+        for row in photo_thumbs.rows(blanks):
+            line = ttk.Frame(holder.inner)
+            line.pack(anchor="w", pady=4)
+            for path in row:
+                key = str(path)
+                cell = tk.Frame(line, highlightthickness=1,
+                                highlightbackground="#d8dce2")
+                cell.pack(side="left", padx=6)
+                label = ttk.Label(cell, text="(no picture)")
+                picture = photo_thumbs.as_photo(thumbs.get(path))
+                if picture is not None:
+                    keep_pictures[key] = picture
+                    label.configure(image=picture, text="")
+                label.pack(padx=2, pady=(2, 0))
+                ttk.Checkbutton(cell, text=short_file_name(path),
+                                variable=ticks[key],
+                                command=refresh_count).pack(padx=2, pady=(0, 2))
+        refresh_count()
+
+        ttk.Label(top, text="These %s look empty - only the background, no "
+                  "card. They are the ones in %s.\n\n"
+                  "Look at them before you delete: a deleted picture cannot be "
+                  "brought back. Ticked ones are deleted; unticked ones are "
+                  "moved to the image store with the others. The other %s are "
+                  "cards and are moved as they are. Closing this window "
+                  "deletes nothing."
+                  % (image_store.plural(len(blanks), "image"), folder,
+                     image_store.plural(len(files) - len(blanks), "image")),
+                  wraplength=max(500, width - 40), justify="left",
+                  style="Dim.TLabel").pack(anchor="w", padx=10, pady=(0, 8))
+
+        def finish(delete):
+            answer["delete"] = bool(delete)
+            answer["files"] = ticked_now() if delete else []
+            try:
+                top.destroy()
+            except Exception:
+                pass
+
+        try:
+            top.protocol("WM_DELETE_WINDOW", lambda: finish(False))
+        except Exception:
+            pass
+        attach_tooltips(top)
+        self.wait_window(top)
+
+        if not answer["delete"]:
+            self.console_line(
+                "Card images: keeping the %s that look empty - they are moved "
+                "with the rest." % image_store.plural(len(blanks), "image"),
+                "dim")
+            return []
+        chosen = answer["files"]
+        if not chosen:
+            self.console_line("Card images: nothing was ticked, so nothing "
+                              "was deleted.", "dim")
+            return []
+        result = image_store.delete(chosen)
+        for line in image_store.delete_text(result):
+            self.console_line("Card images: " + line,
+                              "warn" if result["failed"] else "ok")
+        return [item["path"] for item in result["deleted"]]
 
     def _choose_browser(self):
         """Ask once, on first use, which installed browser should open URLs."""
@@ -3669,11 +4014,16 @@ def build_cookie(parent, app):
     fields["pipeline_dir"] = app._pipeline_var
     fields["scan_dir"] = app._scan_var
     fields["quotes_dir"] = app._quotes_var
+    app._image_store_var = tk.StringVar(
+        master=grid, value=app.settings.get("image_store_dir", ""))
+    fields["image_store_dir"] = app._image_store_var
     for r, (label, var, start) in enumerate((
             ("Batch folder (card_pipeline.py):", app._pipeline_var, WORK),
             ("Scanner folder:", app._scan_var, Path.home()),
             ("Quotes folder (blank = the app's own):", app._quotes_var,
-             Path.home()))):
+             Path.home()),
+            ("Older card images go to (blank = ask):",
+             app._image_store_var, Path.home()))):
         ttk.Label(grid, text=label).grid(row=r, column=0, sticky="w",
                                          padx=(0, 6), pady=2)
         ttk.Entry(grid, textvariable=var).grid(row=r, column=1, sticky="ew",
@@ -3802,6 +4152,20 @@ def build_cookie(parent, app):
         app.settings["pipeline_dir"] = app._pipeline_var.get().strip() or str(WORK)
         app.settings["scan_dir"] = app._scan_var.get().strip() or DEFAULT_SCAN_DIR
         app.settings["quotes_dir"] = app._quotes_var.get().strip()
+        store = app._image_store_var.get().strip()
+        if store:
+            batch = Path(app._pipeline_var.get().strip() or WORK)
+            for folder in (batch / "output", batch / "replacements"):
+                problem = image_store.check_store(store, folder)
+                if problem:
+                    messagebox.showwarning(
+                        "That folder will not do",
+                        "The older card images cannot be kept in the folder "
+                        "you chose, because %s.\n\nLeave the box blank to be "
+                        "asked each time, or pick a folder outside %s."
+                        % (problem, batch))
+                    return False
+        app.settings["image_store_dir"] = store
         save_settings(app.settings)
         sync_site_url_to_woo_keys(app.settings["woo_site_url"])
         app.console_line("User settings saved.", "ok")
@@ -9945,6 +10309,14 @@ def build_newphotos(parent, app):
         if not chosen:
             return False
         chosen = list(chosen) if not isinstance(chosen, str) else [chosen]
+        #  The replacements folder keeps every card image this app has ever
+        #  cut out of a scan. Before another pile is added to it, the older
+        #  ones are offered a home - the tiles this sitting still holds are
+        #  never part of that, because they are about to be used.
+        if not app.prepare_image_folder(
+                replace_dir(), keep=[tile["path"] for tile in pool.tiles()],
+                what="this sitting"):
+            return False
         pool.tiles_dir = replace_dir()
         failed, added = [], 0
         #  Splitting a high-resolution scan takes seconds, and this used to run
@@ -10555,6 +10927,13 @@ def build_newphotos(parent, app):
                 filetypes=sheet_files())
             if not chosen_path:
                 return None
+            #  Same rule as the photos panel: the sitting is about to cut
+            #  another sheet into the replacements folder, so the images from
+            #  earlier sittings are offered a home first.
+            if not app.prepare_image_folder(
+                    replace_dir(), keep=[tile["path"] for tile in pool.tiles()],
+                    what="this sitting"):
+                return None
             try:
                 pool.tiles_dir = replace_dir()
                 sheet = pool.add_sheet(chosen_path, index=len(pool.sheets))
@@ -10609,6 +10988,10 @@ def build_newphotos(parent, app):
                     app.open_webpages(urls)
                 return
 
+        #  No image-store question here: this copies a tile that was cut out
+        #  of a sheet the sitting already loaded, and that sheet could not be
+        #  loaded without the question first (add_sheets / ask_for_sheet).
+        #  Asking again per card would be the same question eleven times.
         try:
             current = photo_replace.woo_image_name(product)
             written = photo_replace.save_pair(
@@ -10695,6 +11078,8 @@ def build_newphotos(parent, app):
             partner = pool.same_slot(tile)
             if partner is not None and partner["used_by"]:
                 partner = None
+            #  The sheet these tiles came from was cleared with the image
+            #  store before it was cut; see the comment above.
             try:
                 current = photo_replace.woo_image_name(product)
                 written = photo_replace.save_pair(
@@ -11416,6 +11801,9 @@ class PipelineDialog(tk.Toplevel):
         args, scans = self._scan_args()
         if args is None:
             return
+        if not self.app.prepare_image_folder(self.script.parent / "output",
+                                             what="this split"):
+            return
         self.remember_scans(*scans)
 
         def split_done(rc):
@@ -11498,6 +11886,11 @@ class PipelineDialog(tk.Toplevel):
         }[product_choice]
         self._product_choice = product_choice
 
+        #  This batch is about to write its own images into output/, so the
+        #  last batch's are offered a way out first - before anything is
+        #  written, and only with an answer that says yes.
+        if not self.app.prepare_image_folder(self.script.parent / "output"):
+            return
         input_file = self.script.parent / "_card_input.txt"
         try:
             input_file.write_text(answer + "\n", encoding="utf-8-sig")
