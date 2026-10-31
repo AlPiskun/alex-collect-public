@@ -3096,6 +3096,14 @@ def test_creating_products_from_the_listings():
 
     create = find(parent, gui.ttk.Button,
                   "Create website products for the selected cards...")
+    kept = gui.stock_compare.plugin_items([
+        dict(only_cs[-1], description="<p>Its own words.</p>",
+             keywords=["hockey", "vintage"], condition="NM")])
+    check("a reader that reports the words and the grade keeps them on the row",
+          kept[0].get("description") == "<p>Its own words.</p>" and
+          kept[0].get("keywords") == ["hockey", "vintage"] and
+          kept[0].get("condition") == "NM", str(kept[0]))
+
     check("the button to create it sits beside the one that lists the other "
           "way", create is not None and find(
               parent, gui.ttk.Button,
@@ -3151,7 +3159,10 @@ def test_creating_products_from_the_listings():
 
     def fake_page(url, cookie="", timeout=25):
         page_reads.append(url)
-        return ""
+        return ('<meta name="description" content="A centred Mahovlich with a '
+                'clean back."><meta name="keywords" content="hockey, vintage">'
+                '<div id="details"><p>A centred Mahovlich with a clean back.'
+                '</p><p>Posted in a sleeve.</p></div>')
 
     with patch.object(gui, "BASE", folder), \
             patch.object(gui, "read_woo_credentials",
@@ -3188,8 +3199,8 @@ def test_creating_products_from_the_listings():
           len(item.get("images") or []) == 2 and
           item["images"][0].endswith("-front.webp") and
           item["images"][1].endswith("-back.webp"), str(item.get("images")))
-    check("taken from the reader, so no listing page was read",
-          page_reads == [], str(page_reads))
+    check("the reader's pictures needed no page read, but the description did",
+          page_reads == ["https://cs.example/listing/201"], str(page_reads))
     check("the photo file is really there",
           bool(item.get("images")) and
           (plan["folder"] / item["images"][0]).is_file(),
@@ -3210,6 +3221,22 @@ def test_creating_products_from_the_listings():
         check("and it is the card, not a square", False, "no photo")
     check("the photos were uploaded with the Application Password",
           made and made[0]["username"] == "owner", str(made[:1]))
+    check("the back is the gallery, not the main image",
+          item.get("gallery") == item["images"][1:] and
+          len(item.get("gallery") or []) == 1, str(item.get("gallery")))
+    check("the listing's description was copied onto the product",
+          "A centred Mahovlich" in str(item.get("description")) and
+          "<p>" in str(item.get("description")), str(item.get("description")))
+    check("its keywords came across as tags",
+          "hockey" in (item.get("tags") or []) and
+          "vintage" in (item.get("tags") or []), str(item.get("tags")))
+    names = [attr.get("name") for attr in item.get("attributes") or []]
+    check("and the card's facts as attributes",
+          "Year" in names and "Set" in names and "Card number" in names and
+          "Player" in names, str(names))
+    check("the confirmation says what came with it",
+          any("description" in line for line in gui.cs_products.describe(
+              {"items": [item], "folder": plan["folder"]})), "")
     check("the console says they are drafts, not live",
           any("draft" in line.lower() for _tag, line in app.lines),
           str(app.lines[-4:]))

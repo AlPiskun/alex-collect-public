@@ -388,8 +388,13 @@ def plugin_items(payload):
                  "status": str(row.get("status") or "").strip()}
         #  Anything else the reader reported travels with the row rather than
         #  being thrown away: the listing panel edits a price and opens a
-        #  listing's page, and both need what only the vendor knows.
-        for extra in ("price", "url"):
+        #  listing's page, and both need what only the vendor knows. A reader
+        #  that reports the listing's own description and card details saves
+        #  the creation step a page read, so those travel too.
+        for extra in ("price", "url", "description", "short_description",
+                      "keywords", "tags", "condition", "grade", "year", "set",
+                      "card_number", "player", "brand", "manufacturer",
+                      "language", "sport"):
             value = row.get(extra)
             if value not in (None, ""):
                 entry[extra] = value

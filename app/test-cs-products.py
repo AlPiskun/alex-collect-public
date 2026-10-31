@@ -414,7 +414,27 @@ def test_the_reader_pictures():
     check("with the primary picture named as the front",
           saved["files"] and saved["files"][0]["url"] ==
           "https://cdn.example/primary.jpg", str(saved["files"][:1]))
-    check("and still no page was read", pages == [], str(pages))
+    check("the page was read once, only because no description was given",
+          pages == ["https://cs.example/listing/201"], str(pages))
+    check("and the reader's own pictures were still the ones used",
+          [entry["url"] for entry in saved["files"]] == urls[:2],
+          str([entry["url"] for entry in saved["files"]]))
+
+    #  A reader that reports the description and keywords as well - what the
+    #  plugin can do - needs no page read at all.
+    pages.clear()
+    rich = dict(listing, description="<p>A sharp, centred copy.</p>",
+                keywords=["hockey", "1971-72", "Ken Dryden"])
+    card = cs_products.card_from(row, rich)
+    cs_products.save_pictures(
+        card, Path(tempfile.mkdtemp(prefix="cs-rich-")),
+        fetch=lambda url, _cookie="", _timeout=25: png_bytes(square_card()),
+        fetch_page=fetch_page)
+    check("a listing that states its own description needs no page read",
+          pages == [], str(pages))
+    check("and its words are on the card",
+          "A sharp, centred copy." in card["description"] and
+          "hockey" in card["tags"], str(card.get("description")) + str(card["tags"]))
 
     print()
     print("== 12. a picture the reader spells another way is still found ==")
@@ -465,6 +485,156 @@ def test_the_reader_pictures():
           str(saved["notes"]))
 
 
+def test_the_details():
+    print()
+    print("== 14. the listing's own description, keywords and card details ==")
+    page = """<html><head>
+      <meta name="description" content="A centred Ken Dryden, sharp corners.">
+      <meta name="keywords" content="hockey, vintage, Ken Dryden">
+      <script type="application/ld+json">
+      {"@type": "Product", "name": "1971-72 O-Pee-Chee Ken Dryden #10",
+       "description": "<p>Sharp corners and a clean back.</p>
+                       <p>Posted in a sleeve and a toploader.</p>",
+       "keywords": ["hockey", "O-Pee-Chee"],
+       "category": "Sports Cards > Hockey > Singles",
+       "brand": {"@type": "Brand", "name": "O-Pee-Chee"},
+       "additionalProperty": [
+          {"@type": "PropertyValue", "name": "Year", "value": "1971-72"},
+          {"@type": "PropertyValue", "name": "Card number", "value": "10"}]}
+      </script></head><body>
+      <div class="product-description"><p>ignored, the structured data wins</p></div>
+      </body></html>"""
+    found = cs_products.details({}, page=page)
+    check("the description is copied, not the page around it",
+          "Sharp corners and a clean back." in found["plain"] and
+          "Posted in a sleeve and a toploader." in found["plain"],
+          found["plain"])
+    check("and written back as plain paragraphs",
+          found["description"].startswith("<p>Sharp corners") and
+          "</p>\n<p>Posted in a sleeve" in found["description"],
+          found["description"])
+    check("a script or an iframe never travels with the words",
+          "<script" not in found["description"].lower() and
+          "<iframe" not in found["description"].lower(), found["description"])
+    check("the keywords are copied", "hockey" in found["tags"] and
+          "vintage" in found["tags"], str(found["tags"]))
+    check("and the vendor's section comes with them",
+          "Sports Cards" in found["tags"] and "Singles" in found["tags"],
+          str(found["tags"]))
+    names = [attr["name"] for attr in found["attributes"]]
+    check("the card's own facts become attributes",
+          "Year" in names and "Card number" in names and "Brand" in names,
+          str(names))
+    check("as the website's own attribute shape",
+          all(set(attr) == {"name", "options", "visible", "variation"}
+              and isinstance(attr["options"], list) and attr["visible"]
+              for attr in found["attributes"]), str(found["attributes"][:2]))
+    check("a description that is already short needs no short one",
+          found["short"] == "", found["short"])
+    long_page = ("<meta name=\"description\" content=\"%s\">"
+                 % ("A sharp 1971-72 O-Pee-Chee Ken Dryden with four " * 8))
+    long_found = cs_products.details({}, page=long_page)
+    check("a long description gets its first sentence as the short one",
+          long_found["short"].startswith("A sharp 1971-72 O-Pee-Chee") and
+          long_found["short"].endswith("\u2026") and
+          len(long_found["short"]) < len(long_found["plain"]),
+          long_found["short"])
+
+    print()
+    print("== 15. a page without structured data is still read ==")
+    plain = """<html><head>
+      <meta property="og:description" content="A tidy 1972 Topps Bob Orr.">
+      </head><body>
+      <div class="listing-details"><p>A tidy 1972 Topps Bobby Orr.</p>
+      <p>Sharp corners, one soft one.</p></div></body></html>"""
+    found = cs_products.details({}, page=plain)
+    check("the page's own description is used when there is no data",
+          found["plain"] == "A tidy 1972 Topps Bob Orr.", found["plain"])
+    block_page = """<html><body>
+      <div id="details" class="product-details"><p>First line.</p>
+        <div><p>Second line, nested.</p></div></div></body></html>"""
+    found = cs_products.details({}, page=block_page)
+    check("a block the shop calls details is read whole",
+          "First line." in found["plain"] and
+          "Second line, nested." in found["plain"], found["plain"])
+    check("a page with nothing on it copies nothing and says so",
+          cs_products.details({}, page="<p>hello</p>")["description"] == "" and
+          any("no description" in note for note in
+              cs_products.details({}, page="<p>hello</p>")["notes"]), "")
+
+    print()
+    print("== 16. what the title states is read, and nothing else ==")
+    facts = cs_products.facts_from_title(
+        "1971-72 O-Pee-Chee Ken Dryden #10 EX-MT")
+    check("the year", facts.get("Year") == "1971-72", str(facts))
+    check("the maker as the set", facts.get("Set") == "O-Pee-Chee", str(facts))
+    check("the card number", facts.get("Card number") == "10", str(facts))
+    check("the grade as the condition", facts.get("Condition") == "EX-MT",
+          str(facts))
+    check("and the player's name, without the rest",
+          facts.get("Player") == "Ken Dryden", str(facts))
+    facts = cs_products.facts_from_title("Mystery card #12")
+    check("a title with no known maker gets no player guessed",
+          "Player" not in facts and facts.get("Card number") == "12",
+          str(facts))
+    found = cs_products.details(
+        {"name": "1971-72 O-Pee-Chee Ken Dryden #10 EX-MT", "condition": "NM"},
+        page="")
+    conditions = [attr for attr in found["attributes"]
+                  if attr["name"] == "Condition"]
+    check("a fact the reader reports beats the one in the title",
+          conditions and conditions[0]["options"] == ["NM"], str(conditions))
+    check("the facts are keywords too",
+          "1971-72" in found["tags"] and "O-Pee-Chee" in found["tags"] and
+          "#10" in found["tags"] and "Ken Dryden" in found["tags"],
+          str(found["tags"]))
+    check("a keyword is never listed twice",
+          len(found["tags"]) == len({tag.lower() for tag in found["tags"]}),
+          str(found["tags"]))
+
+    print()
+    print("== 17. the plan carries the words, details and the gallery ==")
+    cards = [{"name": "1971-72 O-Pee-Chee Ken Dryden #10", "sku": "KD-10",
+              "stock": 4, "price": "12.50", "photos": ["kd-front.webp"],
+              "backs": ["kd-back.webp"],
+              "description": "<p>Sharp corners.</p>",
+              "short": "Sharp corners.",
+              "tags": ["hockey", "1971-72"],
+              "attributes": [{"name": "Year", "options": ["1971-72"],
+                              "visible": True, "variation": False}]}]
+    built = cs_products.plan(cards, Path("/tmp/wherever"))
+    item = built["items"][0]
+    check("the front is the main image and the back follows it",
+          item["images"] == ["kd-front.webp", "kd-back.webp"], str(item["images"]))
+    check("the back is named as the gallery",
+          item["gallery"] == ["kd-back.webp"], str(item.get("gallery")))
+    check("the description is on the product",
+          item["description"] == "<p>Sharp corners.</p>", item["description"])
+    check("and the short description", item["short"] == "Sharp corners.", "")
+    check("with the keywords as tags",
+          item["tags"] == ["hockey", "1971-72"], str(item["tags"]))
+    check("and the card's details as attributes",
+          item["attributes"] and item["attributes"][0]["name"] == "Year",
+          str(item["attributes"]))
+    printed = cs_products.describe(built)[0]
+    check("the confirmation says the words and the gallery came too",
+          "description" in printed or any("description" in line
+                                          for line in cs_products.describe(built)),
+          str(cs_products.describe(built)))
+    check("a card with no second picture is told it has an empty gallery",
+          any("empty gallery" in note for note in
+              cs_products.plan([{"name": "A card", "stock": 1, "price": "1.00",
+                                 "photos": ["one.webp"]}])["notes"]),
+          str(cs_products.plan([{"name": "A card", "stock": 1, "price": "1.00",
+                                 "photos": ["one.webp"]}])["notes"]))
+    check("a card with no description is named, not filled with a guess",
+          any("description is left empty" in note for note in
+              cs_products.plan([{"name": "A card", "stock": 1, "price": "1.00",
+                                 "photos": ["one.webp"]}])["notes"]),
+          str(cs_products.plan([{"name": "A card", "stock": 1, "price": "1.00",
+                                 "photos": ["one.webp"]}])["notes"]))
+
+
 def main():
     test_prices()
     test_picture_addresses()
@@ -475,6 +645,7 @@ def main():
     test_the_names()
     test_the_cookie()
     test_the_reader_pictures()
+    test_the_details()
     print()
     print("=" * 60)
     if FAIL:

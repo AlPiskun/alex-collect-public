@@ -506,6 +506,22 @@ SKU**, and links to the listing's own page. A row already has `title`/`name`, `s
 | `price` | the listing's price, as the vendor shows it (`"CA$8.50"` and `"8.50"` are both read) |
 | `url` | the listing's own page address |
 | `product_id` | the id the update action patches, when the vendor supplies one and it differs from `id` |
+| `images` | since 1.0.32: the listing's pictures, absolute `http(s)` addresses, the primary picture first and then the gallery in the vendor's own order |
+
+Optional, and worth reporting because they save the core a page read:
+`description` (the listing's own words, HTML is fine), `short_description`,
+`keywords` or `tags`, and the card's own facts - `condition`, `grade`, `year`,
+`set`, `card_number`, `player`, `brand`, `language`, `sport`.
+
+"Create website products from CanadianShopper-only listings" copies all of
+them onto the new draft: `description` becomes the product's description (its
+tags stripped, its paragraphs kept), the keywords and the facts become
+WooCommerce tags and attributes, and the pictures are uploaded with the first
+one as the product's main image and the rest in its gallery. A reader that
+reports none of them costs one read of the listing's own page, where the core
+looks for structured data, the page's description meta tags and a block named
+like a description. Nothing is invented: with no description anywhere the
+product's description is left empty and the console says so.
 
 `product_id` is the only key with a write behind it: everything else on a row
 is for display. A row without one still lists, searches, prices and opens -

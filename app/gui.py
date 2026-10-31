@@ -73,7 +73,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.03"
+VERSION = "3.04"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -6196,7 +6196,8 @@ def build_stock(parent, app):
         photos_note = (
             "The photos come from each listing and are cropped back to the "
             "card's own shape first - %s shows them square, which the website "
-            "does not want." % state["label"])
+            "does not want - and the back goes into the product's gallery "
+            "beside the front." % state["label"])
         warning = ""
         if not (username and app_password):
             warning = ("\n\nNo WordPress Application Password is saved, so "
@@ -6205,7 +6206,9 @@ def build_stock(parent, app):
                        "the end of woo-keys.txt add that.")
         question = (
             "Each of these becomes a draft product on your website, with "
-            "the listing's own title, price and stock count.\n\n%s\n\n"
+            "the listing's own title, price and stock count, and its own "
+            "description, keywords and card details wherever the listing "
+            "states them.\n\n%s\n\n"
             "%s\n\nNothing on %s is changed, and nothing is published - they "
             "arrive as drafts.%s\n\nCreate them?"
             % (body, photos_note, state["label"], warning))
@@ -6228,13 +6231,14 @@ def build_stock(parent, app):
             return cs_products.fetch_text(url, cookie=cookie)
 
         app.console_line(
-            "Getting the photos for %d card%s off %s - each one is cropped "
-            "back to the card's own shape..." %
+            "Getting the photos and details for %d card%s off %s - the front "
+            "and back are cropped back to the card's own shape, and its own "
+            "description, keywords and card details are copied across..." %
             (len(cards), "" if len(cards) == 1 else "s", state["label"]),
             "cmd")
-        summary.configure(text="Getting the card photos...")
+        summary.configure(text="Getting the photos and details...")
         progress = ProgressWindow(box.winfo_toplevel(),
-                                  title="Getting the card photos",
+                                  title="Getting the card photos and details",
                                   text="Reading each listing...",
                                   total=len(cards))
 
@@ -6246,9 +6250,9 @@ def build_stock(parent, app):
                         card, folder, fetch=fetch, fetch_page=fetch_page)
                 except Exception as exc:          # one card, not the run
                     saved = {"files": [], "notes": [str(exc)]}
-                card["photos"] = [entry["name"] for entry in saved["files"]]
-                card["crops"] = saved["files"]
-                card["notes"].extend(saved["notes"])
+                #  The front is the product's main image and the back goes in
+                #  the gallery; both are filed by the module that named them.
+                cs_products.apply_pictures(card, saved)
                 finished.append(card)
                 try:
                     app.after(0, lambda i=index, n=card["name"]: progress.step(

@@ -1,4 +1,4 @@
-Alex Collect 3.03 — public core package
+Alex Collect 3.04 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -63,7 +63,9 @@ app/:
                                    of the template for a batch folder with no app)
   cs_products.py                   the same job the other way round: a
                                    CanadianShopper listing that is not on the
-                                   website becomes a draft product, photos first
+                                   website becomes a draft product, photos
+                                   first, with its own description, keywords
+                                   and card details copied across
   photo_unsquare.py                crop a square, padded listing photo back to
                                    the card's own shape before uploading it
   sold-everywhere.py              sale checklist workflow
