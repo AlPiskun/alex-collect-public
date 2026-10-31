@@ -70,7 +70,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.94"
+VERSION = "2.95"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1199,7 +1199,12 @@ clipboard, so there is something to search for rather than a dead end.
 Reading the catalogue needs the plugin's stock reader (1.0.25 or newer reports
 the listings that are not on sale too), and editing needs plugin 1.0.28 or
 newer (marketplace.listing_update). Without it, the panel says so and changes
-nothing rather than pretending."""
+nothing rather than pretending.
+
+The list on screen says which plugin read it, and a change the plugin refuses
+for having no product id is met with a re-read rather than a shrug: the panel
+reads the catalogue again, re-plans the same change from the fresh row, and
+asks once more before writing it."""
 
 DOCS["square"] = """\
 Square up a photo (or a whole folder) by padding it onto a white
@@ -6759,10 +6764,33 @@ def build_csledit(parent, app):
     box = ttk.Frame(parent)
     box.pack(fill="both", expand=True)
 
-    state = {"items": [], "rows": [], "state": "any"}
+    state = {"items": [], "rows": [], "state": "any", "then": None,
+             "read": "cache"}
 
     def say(text, tag="cmd"):
         app.console_line(text, tag)
+
+    #  What the list on screen was read by. A catalogue read before the plugin
+    #  started reporting product ids cannot be edited by a plugin that insists
+    #  on one, and "press Read again" is the whole fix - so the read is
+    #  described by the plugin that made it, not by when this panel opened.
+    meta_file = BASE / "cs-stock-meta.json"
+
+    def write_meta(count):
+        try:
+            meta_file.write_text(json.dumps(
+                {"plugin": plugin_version(), "count": count,
+                 "at": datetime.now().isoformat(timespec="seconds")}),
+                encoding="utf-8")
+        except OSError:
+            pass
+
+    def read_meta():
+        try:
+            data = json.loads(meta_file.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
 
     # --------------------------------------------------------------- reading
     def load(items, note):
@@ -6789,13 +6817,18 @@ def build_csledit(parent, app):
                 "The plugin finished but left no list to read.\n\nNothing "
                 "was changed.", parent=box.winfo_toplevel())
             return False
+        write_meta(len(items))
+        state["read"] = "live"
         load(items, "%d listings read from CanadianShopper."
                    % len(items))
         say("CanadianShopper: %d listings read. Type a card's name to find "
             "one." % len(items), "ok")
+        pending, state["then"] = state["then"], None
+        if pending is not None:
+            pending(items)
         return True
 
-    def read_listings():
+    def read_listings(then=None):
         action = TOOL_ACTION(CS_STOCK_ACTION)
         if not action:
             messagebox.showinfo(
@@ -6807,6 +6840,7 @@ def build_csledit(parent, app):
             say("This CanadianShopper plugin cannot list its listings yet "
                 "(%s)." % CS_STOCK_ACTION, "dim")
             return
+        state["then"] = then
         out = BASE / "cs-stock.json"
         try:
             out.unlink()
@@ -6914,6 +6948,27 @@ def build_csledit(parent, app):
             say("The plan named it: %s." % cs_edit.identified_by(entry), "dim")
             reasons = " ".join(str(failure.get("why") or "")
                                for failure in report["failed"]).lower()
+            if cs_edit.wants_product_id(report):
+                #  Not a broken listing: an old list. The plugin only knows
+                #  which product to patch if the read that produced this row
+                #  reported one, and a list read before it did has no product
+                #  id to give - so the fix is a fresh read, not another edit.
+                say("That list was read before the plugin reported product "
+                    "ids, so the row on screen has none to send. Reading "
+                    "CanadianShopper's listings again is what fixes it; "
+                    "nothing on the site was changed.", "err")
+                if messagebox.askyesno(
+                        "Read the listings again?",
+                        "The list on screen was read before the plugin "
+                        "started reporting product ids, so it has none to "
+                        "edit with.\n\nNothing on CanadianShopper was "
+                        "changed.\n\nRead the listings again now, and make "
+                        "the same change to %s once they are in?"
+                        % (str(item.get("name") or "that listing")),
+                        parent=box.winfo_toplevel()):
+                    read_listings(lambda items: retry_after_read(entry, item,
+                                                                 items))
+                    return False
             if "404" in reasons or "not found" in reasons:
                 say("CanadianShopper's API does not know a listing by that id: "
                     "the plugin's reader and the endpoint it writes to are "
@@ -6951,6 +7006,49 @@ def build_csledit(parent, app):
             say("The plugin finished but reported no change.", "err")
             summary.configure(text="The plugin reported no change.")
         return False
+
+    def retry_after_read(entry, item, items):
+        """The same change, planned again from what the site says now.
+
+        The person already confirmed this change; what they did not have was a
+        row the plugin could address. The new plan is built from the freshly
+        read row - matched by the id that was edited - and confirmed again,
+        because a price read minutes ago is not a promise either.
+        """
+        fresh = None
+        wanted = str(item.get("id") or "")
+        for candidate in items or []:
+            if wanted and str(candidate.get("id")) == wanted:
+                fresh = candidate
+                break
+        if fresh is None:
+            for candidate in items or []:
+                if stock_compare.same_words(candidate.get("name"),
+                                            item.get("name")):
+                    fresh = candidate
+                    break
+        if fresh is None:
+            say("That listing is not in the list any more, so the change was "
+                "not made. Nothing on CanadianShopper was changed.", "err")
+            summary.configure(text="That listing is not in the list any more.")
+            return
+        replanned = cs_edit.replan(entry, fresh)
+        if replanned is None:
+            messagebox.showinfo(
+                "Nothing changed",
+                "CanadianShopper already shows that listing exactly as the "
+                "change would leave it, so there is nothing to send.",
+                parent=box.winfo_toplevel())
+            return
+        lines = cs_edit.describe(replanned, fresh)
+        if not ask_yes(
+                "Change this listing?",
+                "%s\n\n%s\n\nOn CanadianShopper only: your website, its "
+                "prices and its stock are not touched. Write it now?" %
+                (fresh.get("name") or "That listing", "\n".join(lines))):
+            say("The edit was not confirmed; nothing was written.", "dim")
+            return
+        apply_change(fresh, replanned)
 
     # --------------------------------------------------------------- actions
     def ask_yes(title, question):
@@ -7240,9 +7338,20 @@ def build_csledit(parent, app):
     if (BASE / "cs-stock.json").is_file():
         cached = stock_compare.read_stock_file(BASE / "cs-stock.json")
         if cached:
-            load(cached, "%d listings from the last read. Press \"Read "
-                         "CanadianShopper's listings\" to refresh them."
-                 % len(cached))
+            note = ("%d listings from the last read. Press \"Read "
+                    "CanadianShopper's listings\" to refresh them."
+                    % len(cached))
+            read_by = str(read_meta().get("plugin") or "")
+            installed = plugin_version()
+            if read_by and installed and read_by != installed:
+                #  A list read by an older plugin is not wrong, it is old -
+                #  and an older one may not know each listing's product id,
+                #  which is what an edit needs.
+                note = ("%d listings from the last read, read by plugin %s; "
+                        "%s is installed. Press \"Read CanadianShopper's "
+                        "listings\" so the list is the current one."
+                        % (len(cached), read_by, installed))
+            load(cached, note)
 
 
 def build_plugins(parent, app):

@@ -442,6 +442,139 @@ def test_the_12030_reproduction():
           cs_edit.identified_by(entry))
 
 
+def test_a_list_read_before_product_ids():
+    """The plugin's refusal to guess a product id, and what the panel does.
+
+    A row from a list read before the plugin reported product ids has none to
+    send. Shouting at the person to edit it by hand would be wrong: the panel
+    re-reads, re-plans the same change from the fresh row, and asks again.
+    """
+    print()
+    print("== 5c. a list read before the plugin knew product ids ==")
+    entry = cs_edit.plan(items()[1], status="active")
+    refusal = {"updated": [], "failed": [{
+        "id": 102, "why": "The matched listing has no explicit "
+                          "product_id/productId; refusing to guess a product "
+                          "id from its listing id, slug, or title."}]}
+    report = cs_edit.report([entry], refusal)
+    check("the plugin's refusal is read as a failure, not a change",
+          not report["changed"] and len(report["failed"]) == 1,
+          str(report))
+    check("and it is understood as a missing product id",
+          cs_edit.wants_product_id(report) and
+          not cs_edit.wants_product_id(
+              {"failed": [{"why": "that listing is protected"}]}), "")
+    check("a row that carries a product id is not the case",
+          cs_edit.product_id({"product_id": 4321}) == "4321" and
+          cs_edit.product_id({"ids": {"productId": 7}}) == "7" and
+          cs_edit.product_id({"id": "14effcac"}) == "", "")
+
+    #  The same change, planned again from a row that has what it needs.
+    fresh = dict(items()[1])
+    fresh["ids"] = {"product_id": 4321}
+    fresh["name"] = "1973-74 O-Pee-Chee Joe Watson #91 EX-MT"
+    again = cs_edit.replan(entry, fresh)
+    check("the change is re-planned for the fresh row, product id and all",
+          again["status"] == "active" and again["id"] == 102 and
+          again["product_id"] == 4321 and
+          cs_edit.product_id(again) == "4321", str(again))
+    same = dict(items()[0])
+    same["qty"] = 9
+    check("a re-planned change the fresh row already has is not sent",
+          cs_edit.replan(cs_edit.plan(items()[0], inventory=9), same) is None,
+          str(cs_edit.replan(cs_edit.plan(items()[0], inventory=9), same)))
+
+    # ---- the panel offers the re-read, then makes the same change
+    folder, app, parent = build_panel()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app, folder, parent)
+    find(parent, gui.ttk.Button, "Search").invoke()
+    select(parent, "Watson")
+    answers = []
+    harness._BOX.askyesno = lambda title, *a, **k: (answers.append(title), True)[1]
+
+    def tools(action):
+        #  Both actions stay resolvable for the whole sequence: the retry is a
+        #  read followed by another write, and a test that only patched the
+        #  write would be testing a read that never starts.
+        return ("/plugins/cs/edit.py" if action == gui.CS_LISTING_UPDATE_ACTION
+                else "/plugins/cs/stock.py")
+
+    with patch.object(gui, "TOOL_ACTION", tools):
+        find(parent, gui.ttk.Button,
+             "Put the selected listing on sale").invoke()
+    run = app.runs[-1]
+    Path(run["args"][3]).write_text(json.dumps(refusal), encoding="utf-8")
+    reads_before = len(app.runs)
+    with patch.object(gui, "TOOL_ACTION", tools):
+        run["on_done"](1)
+    check("the panel says the list is older than the plugin's product ids",
+          any("read before the plugin reported product ids" in text
+              for _tag, text in app.lines), str(app.lines[-3:]))
+    check("and offers to read the listings again, once",
+          answers.count("Read the listings again?") == 1, str(answers))
+    check("which starts the read", len(app.runs) == reads_before + 1 and
+          "--stock-out" in app.runs[-1]["args"], str(app.runs[-1:]))
+
+    refreshed = [{"id": 102, "product_id": 4321,
+                  "title": "1973-74 O-Pee-Chee Joe Watson #91 EX-MT",
+                  "sku": "OPC73-91", "inventory": 0, "status": "Archived",
+                  "price": "5.00"}]
+    read_run = app.runs[-1]
+    Path(read_run["args"][1]).write_text(json.dumps({"items": refreshed}),
+                                        encoding="utf-8")
+    writes_before = len(app.runs)
+    with patch.object(gui, "TOOL_ACTION", tools):
+        read_run["on_done"](0)
+    check("the same change is made again from the fresh row",
+          len(app.runs) == writes_before + 1 and
+          "--set-file" in app.runs[-1]["args"], str(app.runs[-1:]))
+    plan = json.loads((folder / "cs-listing-update.json").read_text(
+        encoding="utf-8"))["items"][0]
+    check("and it carries the product id this time",
+          plan["product_id"] == 4321 and plan["status"] == "active" and
+          plan["id"] == 102, str(plan))
+    check("the change is named again before it is written",
+          answers.count("Change this listing?") == 1, str(answers))
+
+
+def test_the_list_says_which_plugin_read_it():
+    print()
+    print("== 5d. the list on screen says which plugin read it ==")
+    folder = Path(tempfile.mkdtemp())
+    harness.install_plugin("1.0.30", folder / "plugin")
+    gui.BASE = folder
+    (folder / "cs-stock.json").write_text(json.dumps({"items": LISTINGS}),
+                                          encoding="utf-8")
+    (folder / "cs-stock-meta.json").write_text(json.dumps(
+        {"plugin": "1.0.29", "count": len(LISTINGS)}), encoding="utf-8")
+    parent = harness.FakeWidget()
+    gui.build_csledit(parent, harness.FakeApp(folder))
+    notes = [str(w.cget("text")) for w in parent.walk()
+             if isinstance(w, gui.ttk.Label)]
+    check("a list read by an older plugin is described as one",
+          any("read by plugin 1.0.29" in note and "1.0.30 is installed" in note
+              for note in notes), str(notes[-3:]))
+    check("and it still lists, so reading is not blocked by it",
+          len(listing_box(parent).items) == len(LISTINGS),
+          str(listing_box(parent).items))
+
+    folder2 = Path(tempfile.mkdtemp())
+    harness.install_plugin("1.0.30", folder2 / "plugin")
+    gui.BASE = folder2
+    (folder2 / "cs-stock.json").write_text(json.dumps({"items": LISTINGS}),
+                                           encoding="utf-8")
+    (folder2 / "cs-stock-meta.json").write_text(json.dumps(
+        {"plugin": "1.0.30", "count": len(LISTINGS)}), encoding="utf-8")
+    parent2 = harness.FakeWidget()
+    gui.build_csledit(parent2, harness.FakeApp(folder2))
+    notes2 = [str(w.cget("text")) for w in parent2.walk()
+              if isinstance(w, gui.ttk.Label)]
+    check("a list read by the installed plugin is not",
+          not any("read by plugin" in note for note in notes2), str(notes2[-3:]))
+
+
 def test_the_panel_reads_and_lists():
     print()
     print("== 6. the panel lists the catalogue and searches it ==")
@@ -941,6 +1074,8 @@ def main():
     test_the_confirmation_says_what_will_change()
     test_the_plugins_answer_is_read_conservatively()
     test_the_12030_reproduction()
+    test_a_list_read_before_product_ids()
+    test_the_list_says_which_plugin_read_it()
     test_the_panel_reads_and_lists()
     test_the_edit_form()
     test_the_panel_refuses_what_it_cannot_do()

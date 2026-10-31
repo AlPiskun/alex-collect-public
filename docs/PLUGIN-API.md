@@ -442,6 +442,13 @@ The result file is the same shape as `stock.set`, read the same way:
   cannot confirm the change and leaves the row as it was. Exit non-zero to mean
   *nothing was written*: the panel takes that at its word.
 
+A writer that refuses a listing because it has no explicit product id is
+answered by the app, not by the person: the list on screen was read before the
+plugin reported product ids, so the panel says so, offers to read the catalogue
+again, and then **re-plans the same change** from the freshly read row - matched
+by the id that was being edited - and asks for it once more before writing. The
+plugin's own sentence is still printed, unedited, in the console.
+
 When any of this fails, the panel prints the failure in the plugin's own words
 and then **how the plan named the listing** - `The plan named it: id
 14effcaceb8a4b66b6f14e7aded86e2d, product id 4321, SKU OPC70-81` - because

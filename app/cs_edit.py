@@ -375,6 +375,61 @@ def plan(item, **changes):
     return entry if changed else None
 
 
+#: The names a reader or a writer uses for the id an API patches. A listing's
+#: own ``id`` is its catalogue id and is not one of these.
+PRODUCT_KEYS = ("product_id", "productId", "productid")
+
+
+def product_id(entry):
+    """The product id a mapping carries, as text, or "" when it carries none."""
+    entry = entry or {}
+    for key in PRODUCT_KEYS:
+        value = entry.get(key) if isinstance(entry, dict) else None
+        if value not in (None, ""):
+            return str(value)
+    ids = entry.get("ids") if isinstance(entry, dict) else None
+    if isinstance(ids, dict):
+        for key in PRODUCT_KEYS:
+            value = ids.get(key)
+            if value not in (None, ""):
+                return str(value)
+    return ""
+
+
+def wants_product_id(report):
+    """Whether a failure is the plugin refusing to guess a product id.
+
+    That is not a broken listing - it is a list that was read before the plugin
+    started reporting product ids, so the answer is a fresh read, not an edit
+    of the row on the screen.
+    """
+    for failure in (report or {}).get("failed") or []:
+        said = str((failure or {}).get("why") or "").lower()
+        if "product id" in said or "product_id" in said:
+            return True
+    return False
+
+
+def replan(entry, item):
+    """The same change again, planned for a freshly read row.
+
+    Used after a re-read: the row the person selected is stale, the change they
+    confirmed is not, and the new plan is built from what the site says now.
+    """
+    entry = entry or {}
+    changes = {}
+    for key in ("inventory", "status"):
+        if key in entry:
+            changes[key] = entry[key]
+    if "price" in entry:
+        changes["price"] = price_number({"price": entry["price"]})
+    if "title" in entry and entry["title"] != str(entry.get("card") or ""):
+        changes["title"] = entry["title"]
+    if not changes:
+        return None
+    return plan(item, **changes)
+
+
 def identified_by(entry):
     """How a plan entry names its listing, in words, for a failure message.
 
