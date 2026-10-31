@@ -502,6 +502,70 @@ def test_progress_ends_with_the_step():
           not app.progress_row.shown and app._progress_closed)
 
 
+def test_windows_only_suite_calls_real_methods():
+    """test-gui.py can only run where there is a display; this can.
+
+    A typo in that suite costs a whole round trip through the Windows machine,
+    which is exactly what happened: it called the tool-dialog parser on the app
+    instead of on the runner, and the run died half way through section 19
+    after 250 passing checks. Reading the file instead of running it catches
+    that class of mistake here, in a second.
+    """
+    print()
+    print("== 11. the Windows-only suite only calls things that exist ==")
+    import ast
+    app_dir = Path(__file__).resolve().parent
+    gui_tree = ast.parse((app_dir / "gui.py").read_text(encoding="utf-8"))
+    suite_tree = ast.parse((app_dir / "test-gui.py").read_text(
+        encoding="utf-8"))
+
+    def api(cls, owners):
+        """What that object has: its class's methods, plus its attributes.
+
+        The attributes are collected across the whole file because several
+        panels hang their state on ``app.`` (``app._custom_ai_editor``) from
+        inside a builder function, not from the class.
+        """
+        methods = set()
+        if cls:
+            for node in gui_tree.body:
+                if isinstance(node, ast.ClassDef) and node.name == cls:
+                    methods |= {item.name for item in ast.walk(node)
+                                if isinstance(item, (ast.FunctionDef,
+                                                     ast.AsyncFunctionDef))}
+        assigned = {node.attr for node in ast.walk(gui_tree)
+                    if isinstance(node, ast.Attribute)
+                    and isinstance(node.ctx, ast.Store)
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id in owners}
+        return methods | assigned
+
+    known = {"app": api("App", {"self", "app"}),
+             "runner": api("Runner", {"self"})}
+    #  Only private names are checked: ``app.status`` and friends are Tk
+    #  methods and widgets this file cannot enumerate without a display.
+    missing = {}
+    for node in ast.walk(suite_tree):
+        if (isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)
+                and isinstance(node.value, ast.Name)
+                and node.value.id in known
+                and node.attr.startswith("_")
+                and node.attr not in known[node.value.id]):
+            missing.setdefault(
+                "%s.%s (line %d)" % (node.value.id, node.attr, node.lineno),
+                node.lineno)
+    check("every private app/runner method the suite calls really exists",
+          not missing, str(missing))
+
+    #  And the other way round for the two names this app must not confuse:
+    #  the dialog channel belongs to the runner, the bar to the app.
+    check("the dialog channel belongs to the runner", hasattr(
+        gui.Runner, "_consume_dialog_protocol") and
+        not hasattr(gui.App, "_consume_dialog_protocol"))
+    check("the bar belongs to the app", hasattr(gui.App, "on_progress") and
+          hasattr(gui.App, "progress_hide"))
+
+
 def main():
     test_pick_a_row()
     test_add_instead()
@@ -513,6 +577,7 @@ def main():
     test_unknown_type()
     test_progress_markers()
     test_progress_ends_with_the_step()
+    test_windows_only_suite_calls_real_methods()
     print()
     print("=" * 60)
     if FAIL:

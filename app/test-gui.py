@@ -2082,7 +2082,7 @@ def main():
     #  into CanadianShopper, eBay and Facebook. A bar left at the last card
     #  through all of that reads as work that has stopped - which is exactly
     #  what the app did on the real run this was written for.
-    app._consume_dialog_protocol(
+    runner._consume_dialog_protocol(
         progress_marker + json.dumps({"stage": "finish", "index": 9,
                                       "total": 9}) + gui._TOOL_DIALOG_END)
     check("the step saying it is over puts the bar away at once",
@@ -2090,7 +2090,7 @@ def main():
           app.progress_label["text"] == "",
           "value=%r label=%r" % (app.progress_bar["value"],
                                  app.progress_label["text"]))
-    app._consume_dialog_protocol(
+    runner._consume_dialog_protocol(
         progress_marker + json.dumps({"index": 9, "total": 9,
                                       "stage": "photos",
                                       "item": {"name": "late"}}) +
