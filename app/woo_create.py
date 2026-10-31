@@ -38,13 +38,28 @@ import woo_media
 
 PRODUCTS_PATH = "/wp-json/wc/v3/products"
 CATEGORIES_PATH = "/wp-json/wc/v3/products/categories"
-USER_AGENT = "AlexCollect/3.06"
+USER_AGENT = "AlexCollect/3.07"
 
 #  A read is safe to repeat, so a site answering with its own error page gets
 #  asked again before a card is called missing: two of the three failures in
 #  the run this was written for were single reads of the product list.
 SITE_RETRIES = 3
 SITE_RETRY_PAUSE = 1.5
+
+#  A slow website is the normal case, not the exception: the shop runs PHP on
+#  a shared host, and a card that is created in two seconds one minute can
+#  take twenty the next. A card is therefore tried this many times, waiting a
+#  little longer before each try, before it is given up on - and giving up
+#  never stops the batch, it moves on to the next card.
+CREATE_ATTEMPTS = 4
+CREATE_RETRY_PAUSE = 3.0        # wait before the second try
+CREATE_RETRY_GROWTH = 2.0       # each further wait is this many times longer
+CREATE_RETRY_MAX_PAUSE = 20.0   # ...but never longer than this
+
+#  A small pause between products, so nine cards do not arrive as nine
+#  creations, nine photo uploads and a category lookup in one breath - which
+#  is what a shared host answers with its own error page.
+CREATE_PACE = 1.0
 
 #  How many answers in a row may be the site's own error page before the run
 #  stops touching it.
@@ -297,6 +312,66 @@ def api_url(site, path, key, secret, params=None):
     return "%s%s?%s" % (root, path, urllib.parse.urlencode(query))
 
 
+def wants_another_try(status):
+    """Whether a site's answer is worth asking about again.
+
+    An error page (5xx) or a refusal to take more requests (429) is the site
+    being busy rather than the card being wrong - a slow host that times out
+    at twenty seconds answers fine at forty. A 400, 401, 403 or 404 is an
+    answer about the card or the keys, and sending it again would get the same
+    one twice.
+    """
+    status = int(status or 0)
+    return status == 0 or status == 429 or 500 <= status < 600
+
+
+def retry_pause(attempt, attempts=None):
+    """How long to wait before try ``attempt`` + 1: 3s, 6s, 12s, ..."""
+    attempt = max(1, int(attempt or 1))
+    seconds = float(CREATE_RETRY_PAUSE or 0) * (
+        float(CREATE_RETRY_GROWTH or 1) ** (attempt - 1))
+    return min(float(CREATE_RETRY_MAX_PAUSE or 0), max(0.0, seconds))
+
+
+def wait(seconds):
+    """Wait; a wait of zero (what the checks use) touches nothing.
+
+    Every pause in this module goes through here, so there is one place to
+    watch instead of ``time.sleep`` calls scattered about.
+    """
+    seconds = max(0.0, float(seconds or 0))
+    if not seconds:
+        return 0.0
+    time.sleep(seconds)
+    return seconds
+
+
+def _try_again(attempt, attempts, on_retry=None, why=""):
+    """Wait before try ``attempt`` + 1, saying which try is coming and why.
+
+    The caller is told *before* the wait rather than after it: a progress bar
+    that has not moved for twenty seconds reads as a hung app, and "the
+    website is slow - trying again (2 of 4)" is the sentence that stops that.
+
+    Returns False when there is no try left, so a caller can give up instead
+    of waiting for nothing.
+    """
+    attempt = int(attempt or 1)
+    attempts = max(1, int(attempts or 1))
+    if attempt >= attempts:
+        return False
+    note = ("the website is slow - trying again (%d of %d)"
+            % (attempt + 1, attempts))
+    seconds = retry_pause(attempt)
+    if callable(on_retry):
+        try:
+            on_retry(seconds, note if not why else "%s: %s" % (why, note))
+        except Exception:
+            pass
+    wait(seconds)
+    return True
+
+
 def _http(request, timeout, opener=None):
     if opener is None:
         def opener(req, timeout):
@@ -494,65 +569,143 @@ def build_payload(item, image_ids=(), category_ids_=()):
     return payload
 
 
-def create_product(site, key, secret, payload, timeout=60, opener=None):
-    """Create one draft product and confirm the site kept it."""
-    url = api_url(site, PRODUCTS_PATH, key, secret)
-    if not url:
-        raise ProductError("No website address or keys are available.",
-                           keys_missing_hint())
-    status, answer = _send(url, "POST", payload, timeout, opener)
-    if 500 <= status < 600:
-        #  A fatal error can happen *after* WordPress has written the product -
-        #  the row is saved, then the response dies. Sending it again would make
-        #  a twin, so the SKU decides: if the product is there, it was created;
-        #  if the list reads cleanly and it is not, it was not.
-        sku = str(payload.get("sku") or "")
-        try:
-            found = find_by_sku(site, key, secret, sku, timeout=timeout,
-                                opener=opener)
-        except ProductError:
-            found = None
-            known_empty = False
-        else:
-            known_empty = bool(sku)
-        if found is not None:
-            recovered = dict(found)
-            recovered["_recovered"] = True
-            return recovered
-        if known_empty:
-            raise ProductError(
-                "The website answered with its own error page (HTTP %s) when "
-                "this card was sent, and no product with that SKU is there "
-                "afterwards, so it was not created." % status,
-                "The 'critical error' page hides the real cause - it is in "
-                "the site's PHP error log, and is usually the PHP memory "
-                "limit or a request timeout. The keys are not the problem. "
-                "Run the batch again once the site is fixed.", status,
-                state="not-created")
-    if status not in (200, 201):
-        raise _explain(status, answer, "create %r" % payload.get("name"))
+def _product_answer(answer, payload, tries=1):
+    """The site's answer to a creation, checked before it is believed."""
     if not isinstance(answer, dict) or not answer.get("id"):
         raise ProductError(
             "The website accepted the product but sent no id back, so it "
             "cannot be confirmed.", "Check Products on the website before "
             "running this batch again.")
-    if str(answer.get("sku") or "").strip() != str(payload.get("sku") or ""):
-        if payload.get("sku"):
-            raise ProductError(
-                "The website stored a different SKU (%r) than the one sent "
-                "(%r)." % (answer.get("sku"), payload.get("sku")),
-                "Check the product on the website.")
+    if payload.get("sku") and (str(answer.get("sku") or "").strip() !=
+                               str(payload.get("sku") or "").strip()):
+        raise ProductError(
+            "The website stored a different SKU (%r) than the one sent (%r)."
+            % (answer.get("sku"), payload.get("sku")),
+            "Check the product on the website.")
+    if int(tries or 1) > 1:
+        answer = dict(answer)
+        answer["_tries"] = int(tries)
     return answer
 
 
+def _looked_up(site, key, secret, sku, timeout, opener):
+    """``(product, known)`` for a SKU: what is there, and whether it is known.
+
+    ``known`` is False when the lookup itself failed, and that difference is
+    the whole point: "there is no product with this SKU" allows a second send,
+    while "the site would not say" does not.
+    """
+    try:
+        found = find_by_sku(site, key, secret, sku, timeout=timeout,
+                            opener=opener)
+    except ProductError:
+        return None, False
+    return found, bool(str(sku or "").strip())
+
+
+def create_product(site, key, secret, payload, timeout=60, opener=None,
+                   attempts=None, on_retry=None):
+    """Create one draft product and confirm the site kept it.
+
+    A slow website is tried again rather than reported as a failed card: up to
+    ``CREATE_ATTEMPTS`` attempts, each after a longer pause, because a host
+    that times out at twenty seconds answers fine at forty.
+
+    A POST is never repeated blindly. After every failure the SKU is looked up
+    first, so a product that was written before the site's error page - or
+    before the connection died - is returned rather than created twice. And
+    when that lookup itself cannot be made, the card is called unconfirmed
+    instead of being sent again: a twin is worse than an unfinished batch.
+    """
+    url = api_url(site, PRODUCTS_PATH, key, secret)
+    if not url:
+        raise ProductError("No website address or keys are available.",
+                           keys_missing_hint())
+    sku = str(payload.get("sku") or "").strip()
+    name = payload.get("name")
+    attempts = max(1, int(CREATE_ATTEMPTS if attempts is None else attempts))
+    status = 0
+    answer = {}
+    for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            _try_again(attempt - 1, attempts, on_retry,
+                       "creating the product")
+        try:
+            status, answer = _send(url, "POST", payload, timeout, opener)
+        except ProductError:
+            #  The connection died: nothing is known about whether the write
+            #  happened, so the SKU decides - as it does after an error page.
+            status, answer = 0, {}
+        if status in (200, 201):
+            return _product_answer(answer, payload, attempt)
+        if status and status != 429 and not 500 <= status < 600:
+            #  A refusal about the card or the keys, not about the site being
+            #  busy: asking again would get the same answer twice.
+            raise _explain(status, answer, "create %r" % name)
+        if status == 429:
+            #  Too many requests: the site did not look at this one, so it is
+            #  simply sent again - after a longer wait than the last time.
+            continue
+        #  An error page, or no answer at all. The product may have been
+        #  written before the response died, so look before sending again.
+        found, known = _looked_up(site, key, secret, sku, timeout, opener)
+        if found is not None:
+            recovered = dict(found)
+            recovered["_recovered"] = True
+            if attempt > 1:
+                recovered["_tries"] = attempt
+            return recovered
+        if not known:
+            if not status:
+                raise ProductError(
+                    "The connection to the website dropped while this card "
+                    "was being sent, and the site could not be read "
+                    "afterwards, so nobody knows whether it was created.",
+                    "The keys are not the problem. Look the SKU up under "
+                    "Products on the website, then run the batch again - a "
+                    "card that is already there is skipped, never created "
+                    "twice.", 0, state="unknown")
+            raise _explain(status, answer, "create %r" % name)
+    if status == 429:
+        raise ProductError(
+            "The website refused the request as too many at once (HTTP 429) "
+            "even after %d tries." % attempts,
+            "Wait a minute and run the batch again - it checks every SKU "
+            "first, so nothing is created twice.", 429, state="not-created")
+    if status:
+        raise ProductError(
+            "The website answered with its own error page (HTTP %s) every "
+            "time - %d tries - and no product with that SKU is there "
+            "afterwards, so it was not created." % (status, attempts),
+            "The 'critical error' page hides the real cause - it is in the "
+            "site's PHP error log, and is usually the PHP memory limit or a "
+            "request timeout. The keys are not the problem. Run the batch "
+            "again once the site is fixed: it checks every SKU first and "
+            "never creates a card twice.", status, state="not-created")
+    raise ProductError(
+        "The website did not answer when this card was sent %d times."
+        % attempts,
+        "Check the site is reachable, then run the batch again - it checks "
+        "every SKU first.", 0, state="not-created")
+
+
 def publish_product(site, key, secret, product_id, timeout=60, opener=None,
-                    retries=2):
-    """Put a draft on sale, and confirm the site says it is published."""
+                    retries=None, on_retry=None):
+    """Put a draft on sale, and confirm the site says it is published.
+
+    Setting the status is safe to repeat - a product that is already
+    published stays published - so a slow site gets the same growing pauses
+    a creation does rather than leaving a finished card as a draft.
+    """
     url = api_url(site, "%s/%s" % (PRODUCTS_PATH, product_id), key, secret)
     if not url:
         raise ProductError("No website address or keys are available.")
+    attempts = max(1, int(CREATE_ATTEMPTS if retries is None else retries))
     last = None
-    for _attempt in range(max(1, retries)):
+    for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            _try_again(attempt - 1, attempts, on_retry,
+                       "putting it on sale")
         status, answer = _send(url, "PUT", {"status": "publish"}, timeout,
                                opener)
         if status in (200, 201):
@@ -563,36 +716,66 @@ def publish_product(site, key, secret, product_id, timeout=60, opener=None,
                     "Publish it from the website's product list.")
             return answer
         last = _explain(status, answer, "publish the product")
-        if status and status < 500:
+        if not wants_another_try(status):
             break
     raise last or ProductError("The website did not publish the product.")
 
 
+def _upload_one(site, username, app_password, path, title, timeout, opener,
+                attempts, on_retry=None):
+    """Upload one photo, trying again while the site is only being slow.
+
+    A slow site can take the file and then lose the answer - WordPress
+    creates the attachment, spends seconds making thumbnails, and the request
+    dies on the way back. So after a failure that might have landed, the media
+    library is asked whether the file is already there and that copy is used,
+    because uploading it twice leaves a duplicate in the library.
+    """
+    last = None
+    for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            _try_again(attempt - 1, attempts, on_retry,
+                       "uploading %s" % path.name)
+        try:
+            return woo_media.upload_media(
+                site, username, app_password, path, title=title,
+                timeout=timeout, opener=opener)
+        except woo_media.MediaError as exc:
+            last = exc
+            if not wants_another_try(exc.status):
+                break
+            if attempt < attempts:
+                found = woo_media.find_media(site, username, app_password,
+                                             path.name, timeout=timeout,
+                                             opener=opener)
+                if found:
+                    return found
+    raise ProductError(
+        "The photo %s could not be uploaded. %s" % (path.name, last.message),
+        "Creating products needs the WordPress username and Application "
+        "Password (lines 4 and 5 of woo-keys.txt).", last.status)
+
+
 def upload_photos(site, username, app_password, item, folder, timeout=60,
-                  opener=None):
+                  opener=None, attempts=None, on_retry=None):
     """Upload the item's photos and return their attachment ids, in order.
 
     A photo that cannot be uploaded is a ProductError naming the file: the
     product stays a draft, because a live product with a missing front photo
-    is worse than an unpublished one.
+    is worse than an unpublished one. A site that is only slow is tried again
+    first - see ``_upload_one``.
     """
     ids = []
+    attempts = max(1, int(CREATE_ATTEMPTS if attempts is None else attempts))
     for name in item.get("images") or []:
         path = Path(str(folder)) / name
         if not path.is_file():
             raise ProductError("The photo %s is not in %s." % (name, folder),
                                "Re-run the image step, or create this batch "
                                "from the CSV as before.")
-        try:
-            attachment = woo_media.upload_media(
-                site, username, app_password, path,
-                title=item["name"], timeout=timeout, opener=opener)
-        except woo_media.MediaError as exc:
-            raise ProductError("The photo %s could not be uploaded. %s"
-                               % (name, exc.message),
-                               "Creating products needs the WordPress "
-                               "username and Application Password (lines 4 "
-                               "and 5 of woo-keys.txt).", exc.status)
+        attachment = _upload_one(site, username, app_password, path,
+                                 item["name"], timeout, opener, attempts,
+                                 on_retry)
         ids.append(int(attachment["id"]))
     return ids
 
@@ -625,19 +808,36 @@ def run(plan_result, site, key, secret, username="", app_password="",
                            "step": "create", "why": why, "hint": "",
                            "state": "not-attempted"})
 
-    def tell(index, stage, item):
+    def tell(index, stage, item, note=""):
         """Report where this card is, so a bar can say more than a count."""
         if not callable(on_item):
             return
+        event = {"index": index, "total": len(items), "item": item,
+                 "stage": stage}
+        if note:
+            event["note"] = note
         try:
-            on_item({"index": index, "total": len(items), "item": item,
-                     "stage": stage})
+            on_item(event)
         except Exception:
             pass
+
+    def told(index, item):
+        """What a retry or a pause says, in the words the person sees."""
+        def note(_seconds, why):
+            tell(index, "retry", item, note=why)
+        return note
 
     for index, item in enumerate(items, start=1):
         entry = {"name": item["name"], "sku": item["sku"], "step": "create"}
         tell(index, "start", item)
+        if index > 1 and CREATE_PACE:
+            #  A batch of nine is nine creations, nine photo sets and a
+            #  category lookup each. Sent as fast as the socket allows, that
+            #  is exactly the shape a shared host answers with its own error
+            #  page - so the cards are spaced out a little.
+            tell(index, "pace", item,
+                 note="waiting a moment for the website")
+            wait(CREATE_PACE)
         try:
             existing = find_by_sku(site, key, secret, item["sku"],
                                    timeout=timeout, opener=opener)
@@ -656,7 +856,8 @@ def run(plan_result, site, key, secret, username="", app_password="",
                 if publish and entry["status"] == "draft" and entry["images"]:
                     try:
                         publish_product(site, key, secret, entry["id"],
-                                        timeout=timeout, opener=opener)
+                                        timeout=timeout, opener=opener,
+                                        on_retry=told(index, item))
                         entry["status"] = "publish"
                         entry["why"] = "already on the website as a draft"
                         published.append(entry)
@@ -681,7 +882,8 @@ def run(plan_result, site, key, secret, username="", app_password="",
                 tell(index, "photos", item)
                 image_ids = upload_photos(site, username, app_password, item,
                                           folder, timeout=timeout,
-                                          opener=opener)
+                                          opener=opener,
+                                          on_retry=told(index, item))
             elif item["images"]:
                 entry["no_photos"] = True
             category_ids_ = category_ids(site, key, secret, item["categories"],
@@ -689,7 +891,8 @@ def run(plan_result, site, key, secret, username="", app_password="",
             payload = build_payload(item, image_ids, category_ids_)
             tell(index, "create", item)
             answer = create_product(site, key, secret, payload,
-                                    timeout=timeout, opener=opener)
+                                    timeout=timeout, opener=opener,
+                                    on_retry=told(index, item))
             entry.update({"id": answer.get("id"),
                           "status": answer.get("status") or "draft",
                           "images": len(image_ids),
@@ -712,6 +915,8 @@ def run(plan_result, site, key, secret, username="", app_password="",
                                            or "")
             if answer.get("_recovered"):
                 entry["recovered"] = True
+            if answer.get("_tries"):
+                entry["tries"] = int(answer["_tries"])
             created.append(entry)
             streak[0] = 0
         except ProductError as exc:
@@ -734,7 +939,8 @@ def run(plan_result, site, key, secret, username="", app_password="",
             if site_failing(exc):
                 not_attempted(index,
                               "not attempted: the website kept answering "
-                              "with its own error page")
+                              "with its own error page, %d cards in a row"
+                              % SITE_BROKEN_LIMIT)
                 break
             continue
         if callable(on_item):
@@ -748,7 +954,8 @@ def run(plan_result, site, key, secret, username="", app_password="",
             try:
                 tell(index, "publish", item)
                 publish_product(site, key, secret, entry["id"],
-                                timeout=timeout, opener=opener)
+                                timeout=timeout, opener=opener,
+                                on_retry=told(index, item))
                 entry["status"] = "publish"
                 published.append(entry)
             except ProductError as exc:
@@ -760,7 +967,8 @@ def run(plan_result, site, key, secret, username="", app_password="",
                 if site_failing(exc):
                     not_attempted(index,
                                   "not attempted: the website kept answering "
-                                  "with its own error page")
+                                  "with its own error page, %d cards in a row"
+                                  % SITE_BROKEN_LIMIT)
                     break
             else:
                 streak[0] = 0
@@ -801,6 +1009,15 @@ def report_text(report, site=""):
         #  ready" - it is named below, with the site's answer.
         lines.append("%d left as a draft - publish them when they are ready."
                      % len(waiting))
+    retried = [entry for entry in created
+               if int(entry.get("tries") or 1) > 1]
+    if retried:
+        most = max(int(entry.get("tries") or 1) for entry in retried)
+        lines.append(
+            "%d product%s needed more than one try because the website was "
+            "slow%s." % (len(retried), "" if len(retried) == 1 else "s",
+                         "; the last went through on try %d of %d"
+                         % (most, CREATE_ATTEMPTS) if most else ""))
     recovered = [entry for entry in created if entry.get("recovered")]
     if recovered:
         lines.append("%d product%s was written even though the website "

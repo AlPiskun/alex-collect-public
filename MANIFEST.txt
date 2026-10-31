@@ -1,4 +1,4 @@
-Alex Collect 3.06 — public core package
+Alex Collect 3.07 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -27,10 +27,13 @@ app/:
   photo_replace.py                sheet split, blank-slot and replacement naming
   woo_media.py                    upload a photo, set it on the product,
                                    and file it under that product in the
-                                   media library
+                                   media library; and find a photo that
+                                   landed before its answer was lost
   woo_create.py                   create the batch's products on the website:
                                    drafts first, photos first, read back,
-                                   never twice (the CSV stays the record)
+                                   never twice (the CSV stays the record),
+                                   four tries on a slow site before a card
+                                   is given up on
   woo_orders.py                   turn a pasted card list into an order
   quote.py                        price a batch for a customer: the cards, the
                                    customer, the discount, the sums, the saved
