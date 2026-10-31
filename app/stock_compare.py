@@ -357,6 +357,15 @@ def listing_pictures(row):
     return found
 
 
+#: What a reader may report about a listing beyond its title, count and state.
+#: They travel with the row because the creation step copies them onto the
+#: product, and reading them here is what saves that step a page read.
+_CARRIED_KEYS = ("price", "url", "description", "short_description",
+                 "keywords", "tags", "condition", "grade", "year", "set",
+                 "set_name", "card_number", "player", "brand", "manufacturer",
+                 "language", "sport")
+
+
 def plugin_items(payload):
     """The listings a plugin reported, in this module's one shape.
 
@@ -391,13 +400,19 @@ def plugin_items(payload):
         #  listing's page, and both need what only the vendor knows. A reader
         #  that reports the listing's own description and card details saves
         #  the creation step a page read, so those travel too.
-        for extra in ("price", "url", "description", "short_description",
-                      "keywords", "tags", "condition", "grade", "year", "set",
-                      "card_number", "player", "brand", "manufacturer",
-                      "language", "sport"):
-            value = row.get(extra)
-            if value not in (None, ""):
-                entry[extra] = value
+        carried = {extra: row[extra] for extra in _CARRIED_KEYS
+                   if row.get(extra) not in (None, "")}
+        for key, value in row.items():
+            #  A reader spells its keys its own way: ``cardNumber``,
+            #  ``Card Number`` and ``card_number`` are one key, the same rule
+            #  the listing ids already follow.
+            shape = _bare_name(key)
+            for extra in _CARRIED_KEYS:
+                if extra in carried:
+                    continue
+                if _bare_name(extra) == shape and value not in (None, ""):
+                    carried[extra] = value
+        entry.update(carried)
         pictures = listing_pictures(row)
         if pictures:
             entry["images"] = pictures

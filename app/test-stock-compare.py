@@ -3289,6 +3289,177 @@ def test_creating_products_from_the_listings():
           str(harness._BOX.shown[-1:]))
 
 
+def test_a_listing_that_reports_everything():
+    print()
+    print("== 36. plugin 1.0.33: the row carries the words, so no page is read ==")
+    folder, app, parent = build_panel()
+    #  Exactly what plugin 1.0.33 sends when the vendor already has it: the
+    #  description with its own markup, the keywords, the card's facts, and
+    #  both pictures - the primary first, then the back.
+    rich = CS_ITEMS + [
+        {"id": 301, "title": "1971-72 O-Pee-Chee Frank Mahovlich #60",
+         "sku": "FM-60", "inventory": 4, "price": "CA$12.50",
+         "url": "https://cs.example/listing/301",
+         "images": ["https://cs.example/media/fm-front.jpg",
+                    "https://cs.example/media/fm-back.jpg"],
+         "description": "<p>Centred, sharp corners.</p>"
+                        "<p>Posted in a sleeve.</p>",
+         "keywords": ["hockey", "vintage"], "condition": "EX-MT",
+         "grade": "6", "year": "1971-72", "set": "O-Pee-Chee",
+         "cardNumber": "60", "player": "Frank Mahovlich",
+         "brand": "O-Pee-Chee"}]
+
+    def fetch_all(base, path, params, key, secret):
+        return (200, PRODUCTS) if params["page"] == 1 else (200, [])
+
+    out = folder / "cs-stock.json"
+    button = find(parent, gui.ttk.Button, "Compare stock", exact=False)
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_all), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        button.invoke()
+        out.write_text(json.dumps({"items": rich}), encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+    listing = next((w for w in parent.walk()
+                    if isinstance(w, gui.tk.Listbox)), None)
+    their_only = [index for index, text in enumerate(listing.items or [])
+                  if "not on your website" in text]
+    check("the card is on the list, once", len(their_only) == 1,
+          str(listing.items))
+    listing.selection = (their_only[0],)
+
+    def square_photo():
+        from PIL import Image as _Image, ImageDraw as _Draw
+        image = _Image.new("RGB", (600, 600), (255, 255, 255))
+        _Draw.Draw(image).rectangle([100, 40, 500, 560],
+                                    fill=(205, 185, 150))
+        buffer = __import__("io").BytesIO()
+        image.save(buffer, "PNG")
+        return buffer.getvalue()
+
+    photo_bytes = square_photo()
+    page_reads, fetches, made = [], [], []
+
+    def fake_fetch(url, cookie="", timeout=25):
+        fetches.append(url)
+        return photo_bytes
+
+    def fake_page(url, cookie="", timeout=25):
+        page_reads.append(url)
+        return "<html>a page that should not be read</html>"
+
+    def fake_run(plan, site, key, secret, username="", app_password="",
+                 publish=False, on_item=None):
+        made.append({"plan": plan, "username": username})
+        return {"created": [{"name": item["name"], "id": 900 + index,
+                             "images": len(item["images"]), "status": "draft"}
+                            for index, item in enumerate(plan["items"])],
+                "skipped": [], "failed": [], "published": [],
+                "unpublished": []}
+
+    harness._BOX.askyesno = lambda title, message, **k: (
+        True if title.startswith("Create website products") else False)
+    create = find(parent, gui.ttk.Button,
+                  "Create website products for the selected cards...")
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "read_wordpress_credentials",
+                         lambda path=None: ("https://shop.example", "owner",
+                                            "app password")), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui.cs_products, "fetch_bytes", fake_fetch), \
+            patch.object(gui.cs_products, "fetch_text", fake_page), \
+            patch.object(gui.woo_create, "run", fake_run):
+        create.invoke()
+
+    check("no listing page was read at all: the reader reported everything",
+          page_reads == [], str(page_reads))
+    check("both pictures were downloaded, and only those two",
+          len(fetches) == 2 and all(url.endswith(".jpg") for url in fetches),
+          str(fetches))
+    plan = made[0]["plan"] if made else {"items": []}
+    item = (plan.get("items") or [{}])[0]
+    check("the description is the listing's own, paragraph for paragraph",
+          "<p>Centred, sharp corners.</p>" in str(item.get("description")) and
+          "Posted in a sleeve." in str(item.get("description")),
+          str(item.get("description")))
+    check("the keywords are the product's tags",
+          "hockey" in (item.get("tags") or []) and
+          "vintage" in (item.get("tags") or []), str(item.get("tags")))
+    facts = {attr.get("name"): (attr.get("options") or [""])[0]
+             for attr in item.get("attributes") or []}
+    check("and the card's facts are its attributes",
+          facts.get("Year") == "1971-72" and facts.get("Set") == "O-Pee-Chee" and
+          facts.get("Player") == "Frank Mahovlich" and
+          facts.get("Card number") == "60" and
+          facts.get("Condition") == "EX-MT" and facts.get("Grade") == "6",
+          str(facts))
+    check("the front is the main image and the back is the gallery",
+          item.get("images") and len(item["images"]) == 2 and
+          item.get("gallery") == item["images"][1:], str(item.get("images")))
+    print()
+    print("== 37. plugin 1.0.33 with one picture still finds the back ==")
+    folder, app, parent = build_panel()
+    one_picture = CS_ITEMS + [
+        {"id": 302, "title": "1971-72 O-Pee-Chee Frank Mahovlich #60",
+         "inventory": 2, "price": "9.00",
+         "url": "https://cs.example/listing/302",
+         "images": ["https://cs.example/media/fm-front.jpg"],
+         "description": "<p>Centred.</p>", "keywords": ["hockey"]}]
+    out = folder / "cs-stock.json"
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_all), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        find(parent, gui.ttk.Button, "Compare stock", exact=False).invoke()
+        out.write_text(json.dumps({"items": one_picture}), encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+    listing = next((w for w in parent.walk()
+                    if isinstance(w, gui.tk.Listbox)), None)
+    their_only = [index for index, text in enumerate(listing.items or [])
+                  if "not on your website" in text]
+    listing.selection = (their_only[0],)
+    page_reads, made = [], []
+
+    def page_with_a_back(url, cookie="", timeout=25):
+        page_reads.append(url)
+        return '<img src="/media/fm-back.jpg">'
+
+    harness._BOX.askyesno = lambda title, message, **k: (
+        True if title.startswith("Create website products") else False)
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "read_wordpress_credentials",
+                         lambda path=None: ("https://shop.example", "owner",
+                                            "app password")), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui.cs_products, "fetch_bytes",
+                         lambda url, cookie="", timeout=25: photo_bytes), \
+            patch.object(gui.cs_products, "fetch_text", page_with_a_back), \
+            patch.object(gui.woo_create, "run", fake_run):
+        find(parent, gui.ttk.Button,
+             "Create website products for the selected cards...").invoke()
+    check("the page is read once, for the back the reader did not send",
+          page_reads == ["https://cs.example/listing/302"], str(page_reads))
+    item = ((made[0]["plan"].get("items") or [{}])[0]) if made else {}
+    check("and that back is in the gallery",
+          len(item.get("images") or []) == 2 and
+          item.get("gallery") == item["images"][1:], str(item.get("images")))
+
+
 def main():
     test_woo_items()
     test_plugin_items()
@@ -3330,6 +3501,7 @@ def main():
     test_what_the_reader_claimed()
     test_held_under_another_product()
     test_a_reader_that_cannot_ask_for_a_fresh_page()
+    test_a_listing_that_reports_everything()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))

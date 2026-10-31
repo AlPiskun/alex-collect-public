@@ -593,6 +593,28 @@ def test_the_details():
           str(found["tags"]))
 
     print()
+    print("== 16b. the reader's own spellings are understood ==")
+    #  Plugin 1.0.33 emits these as it finds them in the vendor's data, with
+    #  the vendor's own spellings carried through and empty values left out.
+    found = cs_products.details(
+        {"name": "A card", "description": "<p>Its own words.</p>",
+         "keywords": "hockey, vintage", "cardNumber": "60",
+         "Condition": "EX-MT", "Set Name": "O-Pee-Chee", "year": 1971},
+        page="")
+    facts = found["facts"]
+    check("cardNumber is the card's number", facts.get("Card number") == "60",
+          str(facts))
+    check("Set Name is the set", facts.get("Set") == "O-Pee-Chee", str(facts))
+    check("a capitalised Condition is the condition",
+          facts.get("Condition") == "EX-MT", str(facts))
+    check("a year sent as a number is still a year",
+          facts.get("Year") == "1971", str(facts))
+    check("a comma-separated keyword string becomes a list",
+          found["tags"][:2] == ["hockey", "vintage"], str(found["tags"]))
+    check("and the description is theirs, not the title's",
+          "Its own words." in found["plain"], found["plain"])
+
+    print()
     print("== 17. the plan carries the words, details and the gallery ==")
     cards = [{"name": "1971-72 O-Pee-Chee Ken Dryden #10", "sku": "KD-10",
               "stock": 4, "price": "12.50", "photos": ["kd-front.webp"],
