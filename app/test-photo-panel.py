@@ -43,6 +43,7 @@ class FakeWidget:
     def __init__(self, *args, **kwargs):
         self._kw = dict(kwargs)
         self.packed = False
+        self.destroyed = False
         self.children = []
         self.command = kwargs.get("command")
         self.value = kwargs.get("text", "")
@@ -91,6 +92,9 @@ class FakeWidget:
     def destroy(self):
         #  A destroyed widget leaves its parent: the panel rebuilds its grid
         #  after the pictures are decoded, and the old cells must be gone.
+        #  ``destroyed`` is how a test tells a dialog that closed from one that
+        #  refused what it was given and is still waiting for an answer.
+        self.destroyed = True
         self.packed = False
         parent = getattr(self, "parent", None)
         if parent is not None and hasattr(parent, "children"):
@@ -327,6 +331,13 @@ class FakeApp:
                          "facebook_selling_url": "https://fb.example/selling"}
         self.cs_addon = True
         self.runs, self.opened, self.lines = [], [], []
+        self.clipboard = ""
+
+    def clipboard_clear(self):
+        self.clipboard = ""
+
+    def clipboard_append(self, text):
+        self.clipboard += str(text)
 
     def run_tool(self, tool, args, title, cwd=None, on_done=None, confirm=None):
         #  on_done is kept, not just accepted: the sold panel only records an

@@ -1098,8 +1098,21 @@ def plan_summary(plan, other_label="CanadianShopper"):
         count, "" if count == 1 else "s", other_label)
 
 
-def label_action(row, other_label="CanadianShopper", mode="count"):
-    """One row of the action list, as it is shown."""
+def label_action(row, other_label="CanadianShopper", mode="count", number=None,
+                 width=1):
+    """One row of the action list, as it is shown - numbered, when asked.
+
+    The number is the row's place in the list the panel is showing, so the
+    same card can be pointed at after a sort or while working down the list.
+    """
+    text = _action_text(row, other_label, mode)
+    if number is None:
+        return text
+    return "%*d. %s" % (max(1, int(width)), int(number), text)
+
+
+def _action_text(row, other_label="CanadianShopper", mode="count"):
+    """The words of one row, without its number."""
     if row.get("kind") == ONLY_WOO:
         return "%s  -  website %s only, not on %s" % (
             row["card"], row["woo"], other_label)

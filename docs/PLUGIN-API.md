@@ -378,8 +378,9 @@ it just says it cannot write, and names the version that can.
 cs-listing-update.py --set-file "<plan.json>" --set-out "<result.json>" [--cookie-file "<cookie.txt>"]
 ```
 
-The plan is one entry per listing, and **only the fields that change are
-present**. A field that is absent must be left exactly as it is on the site:
+The plan is one entry per listing: the fields that identify it (`id`, `sku`,
+and `title` as it stands), plus **only the fields that change**. A field that is
+absent must be left exactly as it is on the site:
 
 ```json
 {"items": [{"id": 13820,
@@ -421,8 +422,8 @@ The result file is the same shape as `stock.set`, read the same way:
 
 ### What a `stock.list` row carries (since plugin 1.0.28)
 
-The listing panel shows a row as **card - state - stock - price - SKU**, and
-links to the listing's own page. A row already has `title`/`name`, `sku`,
+The listing panel shows a numbered row as **card - state - stock - price -
+SKU**, and links to the listing's own page. A row already has `title`/`name`, `sku`,
 `inventory` and (since 1.0.25) `status`; from 1.0.28 it also carries:
 
 | key | meaning |
@@ -433,8 +434,15 @@ links to the listing's own page. A row already has `title`/`name`, `sku`,
 Both are display-only and are used by the **Find and edit a CanadianShopper
 listing** panel, which shows the price in its row and opens the address behind
 its **Open the selected listing** button. An older reader that omits them still
-lists, searches and edits; the row simply has no price in it and the button
-says the link is missing rather than opening something guessed.
+lists, searches and edits; the row simply has no price in it.
+
+`url` may be absolute or a path from the site (`/listing/12345`), which is
+joined onto `https://canadianshopper.ca`. The core also reads `link`,
+`permalink`, `href`, `product_url`, `listing_url`, `web_url`, `view_url`,
+`address` and `page`, in that order, so a reader that spells it differently
+still opens the listing. With none of them the button is not a dead end: the
+seller's own store opens and the card's title and listing id are put on the
+clipboard to search for - but a listing opened directly is what `url` is for.
 
 ## Security
 

@@ -116,8 +116,13 @@ def stock_text(item):
     return "%d in stock" % int(qty)
 
 
-def label(item):
-    """One row of the list: the card, its state, its stock, its price."""
+def label(item, number=None, width=1):
+    """One row of the list: its number, the card, state, stock, price, SKU.
+
+    ``number`` is the row's place in the list as it is shown, so a search can
+    be talked about - "the third one" - and a re-sorted or re-filtered list
+    still counts from one.
+    """
     parts = [str((item or {}).get("name") or "")]
     state = stock_compare.status_words(item)
     parts.append(state or "on sale")
@@ -130,7 +135,10 @@ def label(item):
     sku = str((item or {}).get("sku") or "").strip()
     if sku:
         parts.append(sku)
-    return "  -  ".join(part for part in parts if part)
+    text = "  -  ".join(part for part in parts if part)
+    if number is None:
+        return text
+    return "%*d. %s" % (max(1, int(width)), int(number), text)
 
 
 def score(query, item):
@@ -196,6 +204,87 @@ def current(item):
                        else ("archived"
                              if stock_compare.is_archived(item) else "off")),
             }
+
+
+#: The two states a listing can be moved to. A listing can be in a third - a
+#: draft, a hidden one - and that word is offered first so the chooser opens on
+#: the truth instead of on a state the listing is not in.
+EDIT_STATES = (("active", "On sale"), ("archived", "Archived"))
+
+#: The keys a plugin may report a listing's own page under. ``url`` is the one
+#: the interface documents; the rest cost nothing and turn "no link for that
+#: listing" into a working button for a plugin that spells it differently.
+LINK_KEYS = ("url", "link", "permalink", "href", "product_url", "listing_url",
+             "web_url", "view_url", "address", "page")
+
+
+def link(item, base=""):
+    """A listing's own page address, or "" when the plugin sent none.
+
+    A relative address is joined onto ``base`` (the site itself), because a
+    plugin reading its own dashboard has the path to hand long before it has
+    the host name.
+    """
+    raw = ""
+    for key in LINK_KEYS:
+        value = str((item or {}).get(key) or "").strip()
+        if value:
+            raw = value
+            break
+    if not raw:
+        return ""
+    if raw.startswith(("http://", "https://")):
+        return raw
+    if raw.startswith("//"):
+        return "https:" + raw
+    if not str(base or "").strip():
+        return ""
+    return str(base).rstrip("/") + "/" + raw.lstrip("/")
+
+
+def edit_values(item):
+    """What the edit form is filled with before anybody touches it."""
+    now = current(item)
+    return {"title": now["title"],
+            "price": "" if now["price"] is None else "%.2f" % now["price"],
+            "count": "" if now["inventory"] is None else str(now["inventory"]),
+            "state": edit_state_word(item)}
+
+
+def edit_state_word(item):
+    """The word for the state a listing is in now, as the form names it.
+
+    A listing is *archived* in the vendor's own spelling as often as in the
+    core's, and a draft is neither of the two states the form can write - so
+    the current state is matched by what it means, not by how it is spelled,
+    and anything else is offered in the vendor's own words.
+    """
+    now = current(item)["status"]
+    for key, word in EDIT_STATES:
+        if key == now:
+            return word
+    #  A draft or a hidden listing: named as the vendor names it, and marked
+    #  so that choosing it again is understood to change nothing.
+    word = (stock_compare.status_words(item) or "not on sale").strip()
+    if word[:2].lower() == "a ":
+        word = word[2:]
+    word = word[:1].upper() + word[1:]
+    return "%s (as it is)" % word
+
+
+def edit_state_words(item):
+    """The words the edit form offers for a listing's state, current first."""
+    here = edit_state_word(item)
+    return [here] + [word for _key, word in EDIT_STATES if word != here]
+
+
+def edit_status(item, word):
+    """The status an edit-form word means; ``None`` means leave it as it is."""
+    now = current(item)["status"]
+    for key, text in EDIT_STATES:
+        if text == word:
+            return None if key == now else key
+    return None
 
 
 def plan(item, **changes):

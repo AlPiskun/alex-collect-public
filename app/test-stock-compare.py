@@ -2908,7 +2908,11 @@ def test_the_list_can_be_sorted():
                        if isinstance(w, gui.tk.Listbox))
         first = list(listing.items)
         check("the list opens in the order that needs attention first",
-              len(first) == 3 and first[0].startswith("Alpha card"),
+              len(first) == 3 and "Alpha card" in first[0],
+              str(first))
+        check("and every row is numbered in the order it is shown",
+              [row.split(". ", 1)[0] for row in first] == ["1", "2", "3"] and
+              "Gretzky" in first[1],
               str(first))
         chooser = next((w for w in parent.walk()
                         if isinstance(w, gui.ttk.Combobox)), None)

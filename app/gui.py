@@ -70,7 +70,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.91"
+VERSION = "2.92"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1175,16 +1175,16 @@ words the way the order panel does, so "tkaczuk 25" finds
 exactly is a hit on its own. Leave the box empty instead and pick a state to
 work through: everything archived, everything on sale, every draft.
 
-A row reads card, state, stock, price and SKU. Select one and it can be
-renamed, repriced or recounted with **Edit the selected listing...**, or moved
-between archived and on sale with the two state buttons - which is the whole
-job of putting a card back on sale after a restock, or parking one that sold
-out.
+Every row is numbered, and reads card, state, stock, price and SKU. Select one
+and **Edit the selected listing...** opens all of its details in one form -
+title, price, quantity in stock and state, each filled with what it is now - so
+repricing a card and archiving it is a single visit; the two state buttons do
+only the state, which is the quick way through a restock.
 
 Every change is named field by field before it is sent - "Stock: 2 -> 5",
-"State: archived -> on sale" - and only the fields that changed are sent, so an
-edit can never put back a value that was changed in the dashboard while this
-panel was open. It writes on CanadianShopper only: your website's title, price
+"State: archived -> on sale" - and only the fields that changed are sent (with
+the title, which is how the plugin finds the listing), so an edit can never put
+back a value that was changed in the dashboard while this panel was open. It writes on CanadianShopper only: your website's title, price
 and stock are not touched, and nothing is deleted - an archived listing is put
 away, and the other button brings it back.
 
@@ -1790,10 +1790,11 @@ TOOLTIPS = {
                                     "the search weighs them, so it does not "
                                     "have to be the exact title",
     "Read CanadianShopper's listings": "Read every listing on CanadianShopper, with its state and stock, so it can be searched here; nothing is changed",
-    "Edit the selected listing...": "Change the selected listing's title, price or stock on CanadianShopper; only the fields you change are sent, and your website is not touched",
+    "Edit the selected listing...": "Open the selected listing's own details - title, price, quantity in stock and whether it is on sale or archived - in one form filled with what they are now; only the fields you change are sent, and your website is not touched",
     "Put the selected listing on sale": "Move the selected listing from archived (or draft) back to on sale on CanadianShopper; its title, price and stock stay as they are",
     "Archive the selected listing": "Put the selected listing away on CanadianShopper - it is not deleted and can be put back on sale; your website is not changed",
-    "Open the selected listing on CanadianShopper": "Open the selected listing's own page on CanadianShopper, for the details this panel does not edit - its description and photos; nothing is changed",
+    "Open the selected listing on CanadianShopper": "Open the selected listing's own page on CanadianShopper for the details this panel does not edit - its description and photos; if the plugin sent no address for it, your store is opened and the card goes on the clipboard to search for; nothing is changed",
+    "Save the change": "Send the fields that changed to CanadianShopper, after showing exactly what changes; the listing is not deleted and your website is not touched",
     "Open the eBay cookie file": "Open ebay-cookie.txt so the eBay session cookie can be pasted; the file stays on this computer",
     "Open the Facebook cookie file": "Open fb-cookie.txt so the Facebook session cookie can be pasted; the file stays on this computer",
     "Preview new orders": "Read the orders that came in since you last looked, and write nothing",
@@ -5035,9 +5036,11 @@ def build_stock(parent, app):
             state["sort"])
         state["rows"] = rows
         listing.delete(0, "end")
-        for row in rows:
+        width = len(str(len(rows)))
+        for position, row in enumerate(rows, start=1):
             listing.insert("end", stock_compare.label_action(
-                row, state["label"], state["mode"]))
+                row, state["label"], state["mode"], number=position,
+                width=width))
         if rows:
             list_frame.pack(anchor="w", fill="x", pady=(3, 4))
             action_row.pack(anchor="w", pady=(0, 4))
@@ -5151,9 +5154,11 @@ def build_stock(parent, app):
         state["rows"] = [row for row in state["rows"]
                          if stock_compare.card_key(row["card"]) not in done]
         listing.delete(0, "end")
-        for row in state["rows"]:
+        width = len(str(len(state["rows"])))
+        for position, row in enumerate(state["rows"], start=1):
             listing.insert("end", stock_compare.label_action(
-                row, state["label"], state["mode"]))
+                row, state["label"], state["mode"], number=position,
+                width=width))
         if not state["rows"]:
             list_frame.pack_forget()
             action_row.pack_forget()
@@ -5303,9 +5308,11 @@ def build_stock(parent, app):
             state["rows"] = [row for row in state["rows"]
                              if str(row.get("woo_id")) not in done]
             listing.delete(0, "end")
-            for row in state["rows"]:
+            width = len(str(len(state["rows"])))
+            for position, row in enumerate(state["rows"], start=1):
                 listing.insert("end", stock_compare.label_action(
-                    row, state["label"], state["mode"]))
+                    row, state["label"], state["mode"], number=position,
+                    width=width))
             if not state["rows"]:
                 list_frame.pack_forget()
                 action_row.pack_forget()
@@ -6829,8 +6836,10 @@ def build_csledit(parent, app):
                               state["state"])
         state["rows"] = rows
         listing.delete(0, "end")
-        for item in rows:
-            listing.insert("end", cs_edit.label(item))
+        width = len(str(len(rows)))
+        for position, item in enumerate(rows, start=1):
+            listing.insert("end",
+                           cs_edit.label(item, number=position, width=width))
         if rows:
             list_frame.pack(anchor="w", fill="x", pady=(4, 3))
             actions.pack(anchor="w", pady=(0, 3))
@@ -6928,57 +6937,120 @@ def build_csledit(parent, app):
         return bool(messagebox.askyesno(title, question,
                                         parent=box.winfo_toplevel()))
 
+    def ask_edit(item):
+        """The edit form: every field the plugin can change, filled in.
+
+        Asking for the title, then the price, then the count, then the state is
+        four dialogs to close before anything happens, and a field that is not
+        shown is a field nobody knows can be changed. One form shows all four
+        as they are now, so correcting a price and archiving the same listing
+        is one visit - and only what was touched is sent.
+        """
+        first = cs_edit.edit_values(item)
+        top = tk.Toplevel(app)
+        top.title("Edit %s" % (first["title"] or "the listing"))
+        top.transient(app)
+        top.geometry("620x250")
+        top.grab_set()
+        body = ttk.Frame(top)
+        body.pack(fill="both", expand=True, padx=10, pady=(10, 2))
+        title_var = tk.StringVar(master=body, value=first["title"])
+        price_var = tk.StringVar(master=body, value=first["price"])
+        count_var = tk.StringVar(master=body, value=first["count"])
+        state_var = tk.StringVar(master=body, value=first["state"])
+        fields = (("Title", title_var, 56),
+                  ("Price", price_var, 14),
+                  ("Quantity in stock", count_var, 14))
+        for row, (caption, variable, width) in enumerate(fields):
+            ttk.Label(body, text=caption + ":").grid(
+                row=row, column=0, sticky="w", pady=2)
+            ttk.Entry(body, textvariable=variable, width=width).grid(
+                row=row, column=1, sticky="w", padx=(6, 0), pady=2)
+        ttk.Label(body, text="State:").grid(row=len(fields), column=0,
+                                            sticky="w", pady=2)
+        ttk.Combobox(body, textvariable=state_var, state="readonly", width=20,
+                     values=cs_edit.edit_state_words(item)).grid(
+                         row=len(fields), column=1, sticky="w", padx=(6, 0),
+                         pady=2)
+        ttk.Label(body, text="Only the fields you change are sent; the rest "
+                             "stay exactly as CanadianShopper holds them, and "
+                             "your website is never touched.",
+                  style="Dim.TLabel", wraplength=580,
+                  justify="left").grid(row=len(fields) + 1, column=0,
+                                       columnspan=2, sticky="w", pady=(8, 0))
+        result = {"done": False}
+
+        def save():
+            title = str(title_var.get() or "").strip()
+            price = str(price_var.get() or "").strip()
+            count = str(count_var.get() or "").strip()
+            if not title:
+                messagebox.showwarning(
+                    "A listing needs a title",
+                    "The title cannot be empty - clear it and the listing has "
+                    "nothing to be found by. Nothing was changed.",
+                    parent=top)
+                return
+            price_value = None
+            if price:
+                price_value = cs_edit.price_number({"price": price})
+                if price_value is None:
+                    messagebox.showwarning(
+                        "Not a price",
+                        "%r is not a price. Type the number only, such as "
+                        "8.50 - nothing was changed." % price, parent=top)
+                    return
+            count_value = None
+            if count:
+                try:
+                    count_value = int(count)
+                except ValueError:
+                    messagebox.showwarning(
+                        "Not a count",
+                        "%r is not a whole number of cards - nothing was "
+                        "changed." % count, parent=top)
+                    return
+                if count_value < 0:
+                    messagebox.showwarning(
+                        "Not a count",
+                        "A stock count cannot be negative - nothing was "
+                        "changed.", parent=top)
+                    return
+            result.update({"done": True, "title": title, "price": price_value,
+                           "inventory": count_value,
+                           "status": cs_edit.edit_status(item,
+                                                         str(state_var.get()))})
+            top.destroy()
+
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=10, pady=6)
+        save_btn = ttk.Button(buttons, text="Save the change", command=save)
+        save_btn.pack(side="right")
+        add_tooltip(save_btn, "Send the fields that changed to CanadianShopper, "
+                              "after showing exactly what will change; the "
+                              "listing is not deleted and your website is not "
+                              "touched")
+        ttk.Button(buttons, text="Cancel", command=top.destroy).pack(
+            side="right", padx=8)
+        top.protocol("WM_DELETE_WINDOW", top.destroy)
+        attach_tooltips(top)
+        app.wait_window(top)
+        return result if result["done"] else None
+
     def edit_selected():
         item = selected()
         if item is None:
             return
         window = box.winfo_toplevel()
-        title = simpledialog.askstring(
-            "Edit the listing",
-            "The title, as it should read on CanadianShopper:",
-            initialvalue=str(item.get("name") or ""), parent=window)
-        if title is None:
+        answers = ask_edit(item)
+        if answers is None:
+            say("The edit was closed without saving; nothing was written.",
+                "dim")
             return
-        price = simpledialog.askstring(
-            "Edit the listing",
-            "The price. Leave it empty to keep the price it has now"
-            "%s:" % ("" if not cs_edit.price_text(item)
-                     else " (%s)" % cs_edit.price_text(item)),
-            initialvalue="", parent=window)
-        if price is None:
-            return
-        count = simpledialog.askstring(
-            "Edit the listing",
-            "How many in stock? Leave it empty to keep the count it has now"
-            "%s:" % ("" if item.get("qty") is None
-                     else " (%s)" % cs_edit.stock_text(item)),
-            initialvalue="", parent=window)
-        if count is None:
-            return
-        price_value = None
-        if str(price).strip():
-            price_value = cs_edit.price_number({"price": price})
-            if price_value is None:
-                messagebox.showwarning("Not a price",
-                                       "%r is not a price." % price,
-                                       parent=window)
-                return
-        count_value = None
-        if str(count).strip():
-            try:
-                count_value = int(str(count).strip())
-            except ValueError:
-                messagebox.showwarning(
-                    "Not a count", "%r is not a whole number." % count,
-                    parent=window)
-                return
-            if count_value < 0:
-                messagebox.showwarning(
-                    "Not a count", "A stock count cannot be negative.",
-                    parent=window)
-                return
-        entry = cs_edit.plan(item, title=title, price=price_value,
-                             inventory=count_value)
+        entry = cs_edit.plan(item, title=answers["title"],
+                             price=answers["price"],
+                             inventory=answers["inventory"],
+                             status=answers["status"])
         if entry is None:
             messagebox.showinfo(
                 "Nothing changed",
@@ -7028,16 +7100,28 @@ def build_csledit(parent, app):
         item = selected()
         if item is None:
             return
-        url = str(item.get("url") or "").strip()
-        if not url:
-            messagebox.showinfo(
-                "No link for that listing",
-                "The installed plugin did not report the listing's address, so "
-                "there is nothing to open.\n\nPlugin %s and newer report it; "
-                "until then, search the card's name in the vendor dashboard."
-                % CS_LISTING_UPDATE_VERSION, parent=box.winfo_toplevel())
+        url = cs_edit.link(item, CS_HOME)
+        if url:
+            app.open_webpages([url])
             return
-        app.open_webpages([url])
+        #  The plugin did not say where the listing lives. A dialog saying "no
+        #  link" is a dead end; the seller's own store is where the card can be
+        #  found, so that opens and what to search for goes on the clipboard.
+        store = str(app.settings.get("canadianshopper_store_url") or "").strip()
+        app.open_webpages([store or CS_HOME])
+        wanted = "%s  (listing %s)" % (str(item.get("name") or "").strip(),
+                                       item.get("id") or "?")
+        try:
+            app.clipboard_clear()
+            app.clipboard_append(wanted)
+        except Exception:
+            pass
+        say("That listing's own address was not in the list the plugin sent, "
+            "so %s was opened instead - %s is on the clipboard to search "
+            "for. A plugin that reports each listing's url opens it directly."
+            % (store or "canadianshopper.ca", wanted), "dim")
+        summary.configure(text="No address for that listing in the "
+                               "plugin's list; the store was opened instead.")
 
     # ---------------------------------------------------------------- layout
     search_row = ttk.Frame(box)
@@ -7120,13 +7204,16 @@ def build_csledit(parent, app):
     panel_note(parent, (
         "Search the whole CanadianShopper catalogue by card name - the words "
         "you remember, not the exact title - or leave the box empty and pick a "
-        "state to work through the archived listings one by one. A row reads "
-        "card, state, stock, price and SKU. Select one and it can be renamed, "
-        "repriced, recounted, put back on sale or archived; the confirmation "
-        "names every field that changes, only the changed fields are sent, and "
-        "nothing on your website is touched. Editing a listing needs plugin "
-        "%s or newer; reading needs the stock reader (1.0.25+ reports the "
-        "archived ones too)." % CS_LISTING_UPDATE_VERSION))
+        "state to work through the archived listings one by one. Every row is "
+        "numbered and reads card, state, stock, price and SKU. Select one and "
+        "Edit the selected listing... opens all of its details at once - "
+        "title, price, quantity in stock and state - filled with what they are "
+        "now, so a card can be repriced and archived in the same visit; the "
+        "two state buttons do just the state. The confirmation names every "
+        "field that changes, only the changed fields are sent, and nothing on "
+        "your website is touched. Editing a listing needs plugin %s or newer; "
+        "reading needs the stock reader (1.0.25+ reports the archived ones "
+        "too)." % CS_LISTING_UPDATE_VERSION))
 
     #  The last read is already on disk, so opening the panel is not an empty
     #  box: a search works before anything is read again.

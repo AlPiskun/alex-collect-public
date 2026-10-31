@@ -140,6 +140,51 @@ def test_what_a_row_says():
           cs_edit.price_number({"price": ""}) is None, "")
 
 
+def test_what_the_edit_form_is_filled_with():
+    print()
+    print("== 2b. the edit form opens on the listing as it stands ==")
+    rows = items()
+    live = cs_edit.edit_values(rows[0])
+    check("the form is filled with the price, the count and the state",
+          live == {"title": "1973-74 O-Pee-Chee Walt Tkaczuk #25 EX-MT",
+                   "price": "8.50", "count": "3", "state": "On sale"},
+          str(live))
+    check("an archived listing opens on Archived, not on On sale",
+          cs_edit.edit_values(rows[1])["state"] == "Archived",
+          str(cs_edit.edit_values(rows[1])))
+    draft = rows[2]
+    check("a draft is offered in its own words, and both real states",
+          cs_edit.edit_state_words(draft) ==
+          ["Draft (as it is)", "On sale", "Archived"],
+          str(cs_edit.edit_state_words(draft)))
+    check("choosing the state it is already in changes nothing",
+          cs_edit.edit_status(draft, "Draft (as it is)") is None and
+          cs_edit.edit_status(rows[0], "On sale") is None, "")
+    check("and choosing the other one does",
+          cs_edit.edit_status(draft, "On sale") == "active" and
+          cs_edit.edit_status(rows[0], "Archived") == "archived" and
+          cs_edit.edit_status(rows[1], "On sale") == "active", "")
+    check("a listing with no price or count opens with those boxes empty",
+          cs_edit.edit_values(rows[4])["price"] == "" and
+          cs_edit.edit_values(rows[4])["count"] == "",
+          str(cs_edit.edit_values(rows[4])))
+
+
+def test_rows_are_numbered():
+    print()
+    print("== 2c. the rows are numbered, from one, in the order shown ==")
+    rows = items()
+    first = cs_edit.label(rows[0], number=1, width=1)
+    check("a numbered row starts with its place in the list",
+          first.startswith("1. ") and "Tkaczuk" in first, first)
+    check("the numbers line up when the list runs to two digits",
+          cs_edit.label(rows[0], number=2, width=2).startswith(" 2. ") and
+          cs_edit.label(rows[0], number=12, width=2).startswith("12. "),
+          cs_edit.label(rows[0], number=2, width=2))
+    check("an unnumbered row is the row it always was",
+          cs_edit.label(rows[0]) == cs_edit.label(rows[0], number=None), "")
+
+
 # ---------------------------------------------------------------- the change
 def test_only_what_changed_is_sent():
     print()
@@ -323,6 +368,10 @@ def test_the_panel_reads_and_lists():
     check("every listing is on the list",
           len(listing_box(parent).items) == len(LISTINGS),
           str(listing_box(parent).items))
+    check("the rows are numbered in the list",
+          listing_box(parent).items[0].startswith("1. ") and
+          listing_box(parent).items[1].startswith("2. "),
+          str(listing_box(parent).items[:2]))
     check("and the summary says how many came back",
           find(parent, gui.ttk.Label, "%d listings read" % len(LISTINGS),
                exact=False) is not None,
@@ -372,44 +421,179 @@ def test_the_panel_reads_and_lists():
           len(listing_box(parent).items) == 1 and
           "Watson" in listing_box(parent).items[0],
           str(listing_box(parent).items))
+    check("and the filtered list counts from one again",
+          listing_box(parent).items[0].startswith("1. "),
+          str(listing_box(parent).items))
     chooser._kw["textvariable"].set("Any state")
     chooser.event_generate("<<ComboboxSelected>>")
     check("and any state brings the catalogue back",
           len(listing_box(parent).items) == len(LISTINGS), "")
 
 
-def test_the_panel_changes_one_listing():
+def select(parent, word):
+    """Select the one row whose card name contains ``word``."""
+    box = listing_box(parent)
+    for index, text in enumerate(box.items):
+        if word in text:
+            box.selection_set(index)
+            return index
+    raise AssertionError("no row for %r in %r" % (word, box.items))
+
+
+def open_edit_form(parent, values=(None, None, None, None), agree=True):
+    """Press Edit on the selected row, fill the form and press Save.
+
+    ``values`` is (title, price, quantity, state); ``None`` leaves a field as
+    the form opened it, which is how "did not touch it" is expressed.
+    """
+    seen = {"fields": [], "asked": []}
+
+    def press(window):
+        fields = [w for w in window.walk()
+                  if w._kw.get("textvariable") is not None]
+        seen["fields"] = [field._kw["textvariable"].get() for field in fields]
+        for field, value in zip(fields, values):
+            if value is not None:
+                field._kw["textvariable"].set(value)
+        buttons = {w.cget("text"): w for w in window.walk() if w.cget("text")}
+        buttons["Save the change"].invoke()
+        seen["still_open"] = not window.destroyed
+        buttons["Cancel"].invoke()
+
+    def answer(*args, **kwargs):
+        seen["asked"].append(args)
+        return agree
+
+    harness.PICKER["press"] = press
+    harness._BOX.askyesno = answer
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/edit.py"):
+        find(parent, gui.ttk.Button, "Edit the selected listing",
+             exact=False).invoke()
+    return seen
+
+
+def test_the_edit_form():
     print()
-    print("== 7. one listing can be renamed, repriced, recounted or moved ==")
+    print("== 7. one form changes the title, the price, the count and the state ==")
     folder, app, parent = build_panel()
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/stock.py"):
         read_into(app, folder, parent)
-
-    # ---- moving an archived listing back on sale
     find(parent, gui.ttk.Button, "Search").invoke()
-    box = listing_box(parent)
-    index = next(i for i, text in enumerate(box.items)
-                 if "Watson" in text)
-    box.selection_set(index)
-    harness._BOX.askyesno = lambda *a, **k: True
+
+    # ---- the form opens on the listing as it stands, and saves nothing
+    select(parent, "Tkaczuk")
     harness._BOX.shown.clear()
     runs_before = len(app.runs)
+    seen = open_edit_form(parent)
+    check("the form holds the title, the price, the count and the state",
+          len(seen["fields"]) == 4, str(seen["fields"]))
+    check("and every one of them opens as the listing is now",
+          seen["fields"][:3] == ["1973-74 O-Pee-Chee Walt Tkaczuk #25 EX-MT",
+                                 "8.50", "3"] and
+          seen["fields"][3] == "On sale", str(seen["fields"]))
+    check("a form whose fields were not touched writes nothing",
+          len(app.runs) == runs_before and
+          any("Nothing changed" in str(payload)
+              for _kind, payload in harness._BOX.shown),
+          str(harness._BOX.shown) + str(len(app.runs)))
+
+    # ---- price, quantity and state in one visit
+    harness._BOX.shown.clear()
+    runs_before = len(app.runs)
+    seen = open_edit_form(parent, (None, "9.5", "2", "Archived"))
+    check("a price, a count and a state are sent together",
+          len(app.runs) == runs_before + 1, str(app.runs[-1:]))
+    plan = json.loads((folder / "cs-listing-update.json").read_text(
+        encoding="utf-8"))["items"][0]
+    check("the plan carries the three fields that changed",
+          plan.get("price") == "9.50" and plan.get("inventory") == 2 and
+          plan.get("status") == "archived" and
+          plan.get("title") == "1973-74 O-Pee-Chee Walt Tkaczuk #25 EX-MT",
+          str(plan))
+    check("the confirmation names every one of them",
+          seen["asked"] and all(word in str(seen["asked"][-1])
+                                for word in ("9.50", "2", "archived")),
+          str(seen["asked"]))
+    run = app.runs[-1]
+    Path(run["args"][3]).write_text(json.dumps(
+        {"updated": [{"id": 101}], "failed": []}), encoding="utf-8")
+    run["on_done"](0)
+    check("the row shows the new price, count and state",
+          any("Tkaczuk" in text and "9.50" in text and "2 in stock" in text and
+              "archived" in text.lower() for text in listing_box(parent).items),
+          str(listing_box(parent).items))
+
+    # ---- a title can be changed on its own
+    select(parent, "Tkaczuk")
+    runs_before = len(app.runs)
+    open_edit_form(parent,
+                   ("1973-74 O-Pee-Chee Walt Tkaczuk #25 EX-MT Rangers",
+                    None, None, None))
+    plan = json.loads((folder / "cs-listing-update.json").read_text(
+        encoding="utf-8"))["items"][0]
+    check("the title alone is sent when it is the only thing changed",
+          plan.get("title", "").endswith("Rangers") and
+          set(plan) == {"id", "sku", "title", "card"} and
+          len(app.runs) == runs_before + 1, str(plan))
+    check("and a state the form was merely showing is not written back",
+          "status" not in plan and "inventory" not in plan and
+          "price" not in plan, str(plan))
+    run = app.runs[-1]
+    Path(run["args"][3]).write_text(json.dumps(
+        {"updated": [{"id": 101}], "failed": []}), encoding="utf-8")
+    run["on_done"](0)
+    check("and the row is renamed",
+          any("Rangers" in text for text in listing_box(parent).items),
+          str(listing_box(parent).items))
+
+    # ---- what the form refuses, it refuses without closing
+    harness._BOX.shown.clear()
+    runs_before = len(app.runs)
+    seen = open_edit_form(parent, (None, "eight dollars", None, None))
+    check("a price that is not a number is refused",
+          seen["still_open"] and
+          any("showwarning" == kind for kind, _payload in harness._BOX.shown),
+          str(harness._BOX.shown))
+    check("and nothing was written",
+          len(app.runs) == runs_before, str(len(app.runs)))
+
+    harness._BOX.shown.clear()
+    seen = open_edit_form(parent, ("", None, None, None))
+    check("a listing cannot be saved with no title",
+          seen["still_open"] and
+          any("title" in str(payload).lower()
+              for _kind, payload in harness._BOX.shown),
+          str(harness._BOX.shown))
+    check("and that was not written either",
+          len(app.runs) == runs_before, str(len(app.runs)))
+
+    # ---- a declined confirmation writes nothing
+    runs_before = len(app.runs)
+    select(parent, "Shack")
+    open_edit_form(parent, (None, "7.00", None, None), agree=False)
+    check("an edit that is not confirmed is not written",
+          len(app.runs) == runs_before, str(len(app.runs)))
+    check("and the console says so",
+          any("not confirmed" in text for _tag, text in app.lines),
+          str(app.lines[-2:]))
+
+    # ---- the two state buttons still do just the state
+    select(parent, "Watson")
+    runs_before = len(app.runs)
+    harness._BOX.askyesno = lambda *a, **k: True
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/edit.py"):
         find(parent, gui.ttk.Button,
              "Put the selected listing on sale").invoke()
-    check("a state change is sent as one field",
-          len(app.runs) == runs_before + 1, str(app.runs[-1:]))
     plan = json.loads((folder / "cs-listing-update.json").read_text(
-        encoding="utf-8"))["items"]
-    check("the plan names the listing and only its state",
-          plan[0]["id"] == 102 and plan[0]["status"] == "active" and
-          "price" not in plan[0] and "inventory" not in plan[0], str(plan))
+        encoding="utf-8"))["items"][0]
+    check("the state button sends the state and nothing else",
+          plan["id"] == 102 and plan["status"] == "active" and
+          set(plan) == {"id", "sku", "title", "card", "status"},
+          str(plan))
     run = app.runs[-1]
-    check("the plugin is asked to write it",
-          "--set-file" in run["args"] and "--set-out" in run["args"],
-          str(run["args"]))
     Path(run["args"][3]).write_text(json.dumps(
         {"updated": [{"id": 102}], "failed": []}), encoding="utf-8")
     run["on_done"](0)
@@ -421,78 +605,8 @@ def test_the_panel_changes_one_listing():
           any("your website was not touched" in text.lower()
               for _tag, text in app.lines), str(app.lines[-2:]))
 
-    # ---- editing the details
-    box = listing_box(parent)
-    index = next(i for i, text in enumerate(box.items) if "Tkaczuk" in text)
-    box.selection_set(index)
-    answers = iter(["1973-74 O-Pee-Chee Walt Tkaczuk #25 EX-MT Rangers",
-                    "9.5", "2"])
-    shown = []
-    harness._BOX.shown.clear()
-
-    def ask_string(*args, **kwargs):
-        shown.append(args[0] if args else "")
-        return next(answers)
-
-    runs_before = len(app.runs)
-    with patch.object(gui, "TOOL_ACTION",
-                      lambda action: "/plugins/cs/edit.py"), \
-            patch.object(gui.simpledialog, "askstring", ask_string):
-        find(parent, gui.ttk.Button, "Edit the selected listing",
-             exact=False).invoke()
-    check("the editor asks for the title, the price and the stock",
-          len(shown) == 3, str(shown))
-    check("and sends exactly the three fields that changed",
-          len(app.runs) == runs_before + 1, str(app.runs[-1:]))
-    plan = json.loads((folder / "cs-listing-update.json").read_text(
-        encoding="utf-8"))["items"][0]
-    check("the title, price and count are all in the plan",
-          plan["title"].endswith("Rangers") and plan["price"] == "9.50" and
-          plan["inventory"] == 2, str(plan))
-    run = app.runs[-1]
-    Path(run["args"][3]).write_text(json.dumps(
-        {"updated": [{"id": 101}], "failed": []}), encoding="utf-8")
-    run["on_done"](0)
-    check("the row shows the new price and count",
-          any("Rangers" in text and "9.50" in text and "2 in stock" in text
-              for text in listing_box(parent).items),
-          str(listing_box(parent).items))
-
-    # ---- an edit that changes nothing is not sent
-    answers = iter(["1973-74 O-Pee-Chee Walt Tkaczuk #25 EX-MT Rangers", "", ""])
-    harness._BOX.shown.clear()
-    runs_before = len(app.runs)
-    with patch.object(gui, "TOOL_ACTION",
-                      lambda action: "/plugins/cs/edit.py"), \
-            patch.object(gui.simpledialog, "askstring", ask_string):
-        find(parent, gui.ttk.Button, "Edit the selected listing",
-             exact=False).invoke()
-    check("an unchanged listing writes nothing",
-          len(app.runs) == runs_before and
-          any("Nothing changed" in str(payload)
-              for _kind, payload in harness._BOX.shown),
-          str(harness._BOX.shown) + str(len(app.runs)))
-
-    # ---- a declined confirmation writes nothing
-    answers = iter(["A brand new title for this card", "", ""])
-    runs_before = len(app.runs)
-    harness._BOX.askyesno = lambda *a, **k: False
-    with patch.object(gui, "TOOL_ACTION",
-                      lambda action: "/plugins/cs/edit.py"), \
-            patch.object(gui.simpledialog, "askstring", ask_string):
-        find(parent, gui.ttk.Button, "Edit the selected listing",
-             exact=False).invoke()
-    check("an edit that is not confirmed is not written",
-          len(app.runs) == runs_before, str(len(app.runs)))
-    check("and the console says so",
-          any("not confirmed" in text for _tag, text in app.lines),
-          str(app.lines[-2:]))
-    harness._BOX.askyesno = lambda *a, **k: True
-
-    # ---- archiving
-    box = listing_box(parent)
-    index = next(i for i, text in enumerate(box.items) if "Gretzky" in text)
-    box.selection_set(index)
+    # ---- archiving from the state button
+    select(parent, "Gretzky")
     runs_before = len(app.runs)
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/edit.py"):
@@ -613,8 +727,8 @@ def test_opening_a_listing_and_the_last_read():
     check("the listing's own page opens in the browser",
           app.opened == ["https://cs.example/l/101"], str(app.opened))
 
-    #  A row the reader reported no address for says so instead of opening
-    #  something random.
+    #  A row the reader reported no address for still leads somewhere: the
+    #  seller's own store, with the card and its listing id on the clipboard.
     for index, text in enumerate(box.items):
         if "Shack" in text:
             box.selection_set(index)
@@ -623,10 +737,25 @@ def test_opening_a_listing_and_the_last_read():
     app.opened[:] = []
     find(parent, gui.ttk.Button,
          "Open the selected listing on CanadianShopper").invoke()
-    check("a listing with no link says why there is nothing to open",
-          not app.opened and harness._BOX.shown and
-          "did not report the listing's address" in str(harness._BOX.shown[-1]),
-          str(harness._BOX.shown))
+    check("a listing with no address opens the store instead of a dead end",
+          app.opened == ["https://cs.example/x"], str(app.opened))
+    check("and puts the card and its listing id on the clipboard",
+          "Eddie Shack" in app.clipboard and "104" in app.clipboard,
+          app.clipboard)
+    check("and says in the console what it did and why",
+          any("was not in the list" in text for _tag, text in app.lines),
+          str(app.lines[-2:]))
+
+    #  A relative address is a real address once it is joined to the site.
+    check("a short address from the plugin is joined to the site",
+          cs_edit.link({"url": "/listing/9"}, "https://canadianshopper.ca") ==
+          "https://canadianshopper.ca/listing/9",
+          cs_edit.link({"url": "/listing/9"}, "https://canadianshopper.ca"))
+    check("another plugin's word for the address is read too",
+          cs_edit.link({"permalink": "https://cs.example/l/7"}) ==
+          "https://cs.example/l/7" and
+          cs_edit.link({"href": "//cs.example/l/8"}) ==
+          "https://cs.example/l/8", "")
 
     #  A panel opened again offers the list that is already on disk, so a
     #  search works before anything is read.
@@ -648,11 +777,13 @@ def test_opening_a_listing_and_the_last_read():
 def main():
     test_finding_a_listing()
     test_what_a_row_says()
+    test_what_the_edit_form_is_filled_with()
+    test_rows_are_numbered()
     test_only_what_changed_is_sent()
     test_the_confirmation_says_what_will_change()
     test_the_plugins_answer_is_read_conservatively()
     test_the_panel_reads_and_lists()
-    test_the_panel_changes_one_listing()
+    test_the_edit_form()
     test_the_panel_refuses_what_it_cannot_do()
     test_opening_a_listing_and_the_last_read()
     print()
