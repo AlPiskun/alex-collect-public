@@ -340,6 +340,19 @@ def test_the_panel_reads_and_lists():
     check("and the summary counts what is shown",
           find(parent, gui.ttk.Label, "1 of %d listings shown" % len(LISTINGS),
                exact=False) is not None, "")
+
+    #  The plugin's own file is the only place a price or an address comes
+    #  from: a row that loses them in the reader would show neither, and the
+    #  Open button would have nothing to open.
+    kept = stock_compare.read_stock_file(folder / "cs-stock.json")
+    tkaczuk = next(row for row in kept
+                   if "Tkaczuk" in str(row.get("name") or row.get("title")))
+    check("the reader keeps the price and the address the plugin sent",
+          tkaczuk.get("price") == "CA$8.50" and
+          tkaczuk.get("url") == "https://cs.example/l/101", str(tkaczuk))
+    check("and the row shows the price as the vendor wrote it",
+          "8.50" in listing_box(parent).items[0],
+          str(listing_box(parent).items))
     entry._kw["textvariable"].set("zzzz nothing")
     find(parent, gui.ttk.Button, "Search").invoke()
     check("a search that matches nothing says so",

@@ -367,7 +367,7 @@ cs-import.py --csv "<file>" [--csv "<file>" ...] [--cookie-file "<cookie.txt>"] 
 - Exit non-zero when the import did not finish. The CSV is still in its
   folder and can be imported by hand.
 
-### `marketplace.listing_update` - changing one listing (plugin 1.0.28)
+### `marketplace.listing_update` - changing one listing (since plugin 1.0.28)
 
 The core's **Find and edit a CanadianShopper listing** panel searches the
 catalogue `stock.list` returns and can change one listing's title, price, stock
@@ -419,19 +419,21 @@ The result file is the same shape as `stock.set`, read the same way:
   cannot confirm the change and leaves the row as it was. Exit non-zero to mean
   *nothing was written*: the panel takes that at its word.
 
-### What `stock.list` rows should carry (plugin 1.0.28)
+### What a `stock.list` row carries (since plugin 1.0.28)
 
 The listing panel shows a row as **card - state - stock - price - SKU**, and
 links to the listing's own page. A row already has `title`/`name`, `sku`,
-`inventory` and (since 1.0.25) `status`; 1.0.28 should add:
+`inventory` and (since 1.0.25) `status`; from 1.0.28 it also carries:
 
 | key | meaning |
 | --- | --- |
 | `price` | the listing's price, as the vendor shows it (`"CA$8.50"` and `"8.50"` are both read) |
 | `url` | the listing's own page address |
 
-Both are optional and both are used only for display and for the **Open the
-selected listing** button; a reader without them still works, and the panel
+Both are display-only and are used by the **Find and edit a CanadianShopper
+listing** panel, which shows the price in its row and opens the address behind
+its **Open the selected listing** button. An older reader that omits them still
+lists, searches and edits; the row simply has no price in it and the button
 says the link is missing rather than opening something guessed.
 
 ## Security
