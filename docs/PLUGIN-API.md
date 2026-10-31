@@ -483,6 +483,15 @@ a plugin that summarises `listings: N, with product id: M` in its own console
 line is saying the same thing in its own words - the two numbers agree because
 both count the rows the reader emitted.
 
+**`with product id: 0` is a bug report, not a shop.** When no row in a read
+carries one, the core stops offering to re-read and says the reader is not
+reporting product ids: a second reading of the same catalogue returns the same
+nothing, and telling someone to edit 2,541 listings in the dashboard would be
+advice that costs them an evening. Nothing on either site is changed by any of
+this, and the panel still searches, opens and links each listing. The fix
+belongs in the reader: emit `product_id` for each row the vendor's data gives
+one for.
+
 Both are display-only and are used by the **Find and edit a CanadianShopper
 listing** panel, which shows the price in its row and opens the address behind
 its **Open the selected listing** button. An older reader that omits them still

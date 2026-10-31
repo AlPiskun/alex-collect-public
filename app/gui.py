@@ -70,7 +70,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.96"
+VERSION = "2.97"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1204,11 +1204,15 @@ nothing rather than pretending.
 The list on screen says which plugin read it, and how much of it can be
 edited: "12 listings read; 12 with a product id, so 12 can be edited here" -
 because a listing the vendor gives no product id for can be found and read
-but not written, and it is better to know that before choosing one. A change
-the plugin refuses for having no product id is met with a re-read rather than
-a shrug: the panel reads the catalogue again, re-plans the same change from
-the fresh row, and asks once more before writing it. A listing the site gives
-no product id for at all says so, and is left for the vendor dashboard."""
+but not written, and it is better to know that before choosing one.
+
+A row without a product id among rows that have one gets a re-read: the panel
+reads the catalogue again, re-plans the same change from the fresh row, and
+asks once more before writing it. A reading in which **no** listing carries a
+product id is a different thing and is said differently - that is the reader
+not reporting them, not a shop full of cards to fix by hand - so the panel
+says so once, does not offer a second pointless read, and opens the listing's
+own page for the change to be made there."""
 
 DOCS["square"] = """\
 Square up a photo (or a whole folder) by padding it onto a white
@@ -6780,17 +6784,6 @@ def build_csledit(parent, app):
     #  described by the plugin that made it, not by when this panel opened.
     meta_file = BASE / "cs-stock-meta.json"
 
-    def describe_editable(editable, total):
-        """How much of this list the editor can actually write, in words."""
-        if not total:
-            return "none to edit"
-        if editable == total:
-            return "every one with a product id, so every one can be edited " \
-                   "here"
-        return ("%d with a product id, so %d can be edited here; the rest "
-                "have to be changed in the vendor dashboard"
-                % (editable, editable))
-
     def write_meta(count):
         try:
             meta_file.write_text(json.dumps(
@@ -6838,7 +6831,19 @@ def build_csledit(parent, app):
         note = "%d listings read from CanadianShopper." % total
         load(items, note)
         say("CanadianShopper: %d listings read; %s. Type a card's name to "
-            "find one." % (total, describe_editable(editable, total)), "ok")
+            "find one." % (total, cs_edit.editable_note(editable, total)),
+            "ok")
+        if cs_edit.nothing_editable(items):
+            #  Nothing in the whole list can be written, which is not 2,541
+            #  listings to edit by hand - it is a reading that does not carry
+            #  product ids. Say it once, plainly, where it can be read.
+            say("No listing in that read carried a product id, so the edit "
+                "buttons cannot send anything: the plugin's reader is not "
+                "reporting one. Reading again will not change it - the "
+                "plugin's stock reader needs to report each listing's "
+                "product_id (marketplace.listing_update patches "
+                "/api/products/<product_id>/). Searching, opening a listing "
+                "and editing in the vendor dashboard all still work.", "err")
         pending, state["then"] = state["then"], None
         if pending is not None:
             pending(items)
@@ -7034,6 +7039,29 @@ def build_csledit(parent, app):
         """
         if cs_edit.product_id(entry) or item.get("id") is None:
             return True
+        named = str(item.get("name") or "That listing")
+        if cs_edit.nothing_editable(state["items"]):
+            #  Not one listing's problem: nothing in the whole read carries a
+            #  product id, so another 2,541-listing read would return the same
+            #  nothing. Do not offer it - offer the thing that does work.
+            say("%s cannot be changed from here: no listing in that read "
+                "carried a product id, so there is nothing for the writer to "
+                "address. Nothing was sent." % named, "err")
+            summary.configure(text="No listing in this read has a product "
+                                   "id, so nothing can be sent.")
+            if messagebox.askyesno(
+                    "That listing has to be changed on the site",
+                    "%s\n\nNo listing in this read carried a product id, so "
+                    "this app has nothing safe to address - and reading them "
+                    "again would return the same list. The reader has to "
+                    "report each listing's product id (the plugin's job; "
+                    "marketplace.listing_update patches "
+                    "/api/products/<product_id>/).\n\nNothing was changed. "
+                    "Open the listing on CanadianShopper so it can be edited "
+                    "there?" % named,
+                    parent=box.winfo_toplevel()):
+                open_page(item)
+            return False
         say("That row has no product id in the list on screen, so nothing "
             "was sent. Reading CanadianShopper's listings is what tells an "
             "old list from a listing without one.", "dim")
@@ -7044,8 +7072,7 @@ def build_csledit(parent, app):
                 "product id and the change can be made straight away; if the "
                 "site reports none, the listing has to be edited in the "
                 "vendor dashboard.\n\nRead the listings again now?"
-                % (str(item.get("name") or "That listing")),
-                parent=box.winfo_toplevel()):
+                % named, parent=box.winfo_toplevel()):
             read_listings(lambda items: retry_after_read(entry, item, items))
         else:
             summary.configure(text="That row has no product id, so nothing "
@@ -7282,10 +7309,8 @@ def build_csledit(parent, app):
             return
         apply_change(item, entry)
 
-    def open_listing():
-        item = selected()
-        if item is None:
-            return
+    def open_page(item):
+        """Open a listing's own page, or the store with what to search for."""
         url = cs_edit.link(item, CS_HOME)
         if url:
             app.open_webpages([url])
@@ -7308,6 +7333,12 @@ def build_csledit(parent, app):
             % (store or "canadianshopper.ca", wanted), "dim")
         summary.configure(text="No address for that listing in the "
                                "plugin's list; the store was opened instead.")
+
+    def open_listing():
+        item = selected()
+        if item is None:
+            return
+        open_page(item)
 
     # ---------------------------------------------------------------- layout
     search_row = ttk.Frame(box)

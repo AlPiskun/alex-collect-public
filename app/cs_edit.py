@@ -408,6 +408,41 @@ def product_id_counts(items):
     return len([row for row in rows if product_id(row)]), len(rows)
 
 
+def editable_note(editable, total):
+    """How much of a read the editor can actually write, in words.
+
+    Three different situations, and they must not read alike: a list where
+    every row is editable, a list where some are, and a list where **none** is
+    - which is not 2,541 listings that cannot be edited but a reader that is
+    not reporting product ids at all. Telling someone to change 2,541 listings
+    in the dashboard when the reading is what is missing would be advice that
+    costs them an evening.
+    """
+    editable, total = int(editable or 0), int(total or 0)
+    if not total:
+        return "none to edit"
+    if editable == total:
+        return ("every one with a product id, so every one can be edited "
+                "here")
+    if not editable:
+        return ("none of them with a product id, so none can be edited here "
+                "yet - the plugin is not reporting one for any listing, and "
+                "reading them again will not change that")
+    return ("%d with a product id, so %d can be edited here; the rest have "
+            "to be changed in the vendor dashboard" % (editable, editable))
+
+
+def nothing_editable(items):
+    """Whether a whole read carries no product id at all.
+
+    The difference matters: one row missing an id is a listing the vendor does
+    not expose, but no row having one is a reading that does not include them,
+    and the answer to that is the plugin, not the dashboard.
+    """
+    editable, total = product_id_counts(items)
+    return bool(total) and not editable
+
+
 def wants_product_id(report):
     """Whether a failure is the plugin refusing to guess a product id.
 
