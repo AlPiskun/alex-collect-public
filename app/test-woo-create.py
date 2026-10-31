@@ -42,6 +42,8 @@ def load(name):
 
 woo_create = load("woo_create.py")
 woo_create.SITE_RETRY_PAUSE = 0        # the tests do not need the waits
+woo_create.CREATE_RETRY_PAUSE = 0
+woo_create.CREATE_PACE = 0
 pipeline = load("pipeline/card_pipeline.py")
 
 FIELDS = ["SKU", "Name", "Published", "Is featured?", "Visibility in catalog",
@@ -104,7 +106,8 @@ class FakeSite:
 
     def __init__(self, exist=(), categories=None, refuse=None,
                  publish_status="publish", existing=None, fail_once=(),
-                 save_then_fail=()):
+                 save_then_fail=(), slow_create=0, upload_fail=0,
+                 upload_lost=0, media=()):
         self.calls = []
         self.products = {}
         self.by_sku = {sku: pid for sku, pid in exist}
@@ -129,6 +132,14 @@ class FakeSite:
         #  500 that the app has to tell apart.
         self.fail_once = list(fail_once)
         self.save_then_fail = set(save_then_fail)
+        #  A slow host: this many creations answer with its own error page
+        #  before anything is written, then it works.
+        self.slow_create = int(slow_create or 0)
+        #  An upload that fails before the file lands, and one that lands and
+        #  then loses the answer - the two shapes of a slow media library.
+        self.upload_fail = int(upload_fail or 0)
+        self.upload_lost = int(upload_lost or 0)
+        self.media = [dict(entry) for entry in media]
 
     def __call__(self, request, timeout=None):
         method = request.get_method()
@@ -143,10 +154,31 @@ class FakeSite:
 
         if "wp/v2/media" in url and method == "POST":
             self.uploads.append(url)
+            if self.upload_fail:
+                self.upload_fail -= 1
+                return 500, CRITICAL_ERROR_PAGE
             self.next_id += 1
-            return 201, json.dumps({"id": self.next_id,
-                                    "source_url": "https://shop.example/x.webp"}
-                                   ).encode("utf-8")
+            filename = ""
+            for value in request.headers.values():
+                if "filename=" in str(value):
+                    filename = str(value).split("filename=")[-1].strip('"')
+            filename = filename or "upload.webp"
+            record = {"id": self.next_id,
+                      "source_url": "https://shop.example/" + filename,
+                      "filename": filename,
+                      "title": {"rendered": filename.rsplit(".", 1)[0]}}
+            self.media.append(record)
+            if self.upload_lost:
+                #  The file is in the library, but the answer died on the way
+                #  back - WordPress's own error page.
+                self.upload_lost -= 1
+                return 500, CRITICAL_ERROR_PAGE
+            return 201, json.dumps(record).encode("utf-8")
+
+        if "wp/v2/media" in url and method == "GET":
+            #  The media library, searched: what woo_media.find_media asks
+            #  before an upload is tried a second time.
+            return 200, json.dumps(self.media).encode("utf-8")
 
         for pair in self.fail_once:
             if method == pair[0] and pair[1] in url:
@@ -187,6 +219,11 @@ class FakeSite:
                                    ).encode("utf-8")
 
         if "/products" in url and method == "POST":
+            if self.slow_create:
+                #  A slow host answering with its error page, with nothing
+                #  written: the card has to be sent again.
+                self.slow_create -= 1
+                return 503, CRITICAL_ERROR_PAGE
             self.next_id += 1
             product = dict(body)
             product.update({"id": self.next_id, "status": body.get("status"),
@@ -359,7 +396,12 @@ def test_creation():
     # ---- running the same batch again must not make twins
     again = FakeSite(categories={"Sports Card": 11, "Hockey Card": 12},
                      exist=[("OPC1971-001-PR-2", 501),
-                            ("OPC1971-002-PR-2", 502)])
+                            ("OPC1971-002-PR-2", 502)],
+                     existing={
+                         "OPC1971-001-PR-2": {
+                             "name": "1971-72 O-Pee-Chee Test Card #001 (PR)"},
+                         "OPC1971-002-PR-2": {
+                             "name": "1971-72 O-Pee-Chee Test Card #002 (PR)"}})
     report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
                             username="owner", app_password="pw",
                             publish=False, opener=again)
@@ -611,8 +653,10 @@ def test_existing_products():
     with tempfile.TemporaryDirectory() as td:
         site = FakeSite(exist=exist, existing={
             "OPC1971-001-PR-2": {"status": "publish",
+                                 "name": "1971-72 O-Pee-Chee Test Card #001 (PR)",
                                  "images": [{"id": 1}, {"id": 2}]},
             "OPC1971-002-PR-2": {"status": "draft",
+                                 "name": "1971-72 O-Pee-Chee Test Card #002 (PR)",
                                  "images": [{"id": 3}, {"id": 4}]}})
         read, planned = build(Path(td), rows)
         report = woo_create.run(planned, "https://shop.example", "ck_a",
@@ -631,8 +675,10 @@ def test_existing_products():
     with tempfile.TemporaryDirectory() as td:
         site = FakeSite(exist=exist, existing={
             "OPC1971-001-PR-2": {"status": "publish",
+                                 "name": "1971-72 O-Pee-Chee Test Card #001 (PR)",
                                  "images": [{"id": 1}, {"id": 2}]},
             "OPC1971-002-PR-2": {"status": "draft",
+                                 "name": "1971-72 O-Pee-Chee Test Card #002 (PR)",
                                  "images": [{"id": 3}, {"id": 4}]}})
         read, planned = build(Path(td), rows)
         report = woo_create.run(planned, "https://shop.example", "ck_a",
@@ -653,7 +699,8 @@ def test_existing_products():
         #  A draft with no photos is a product nobody finished: publishing it
         #  would put a card on sale with an empty gallery.
         site = FakeSite(exist=[("OPC1971-001-PR-2", 701)], existing={
-            "OPC1971-001-PR-2": {"status": "draft", "images": []}})
+            "OPC1971-001-PR-2": {"status": "draft", "images": [],
+                                 "name": "1971-72 O-Pee-Chee Test Card #001 (PR)"}})
         read, planned = build(Path(td), [row(1)])
         report = woo_create.run(planned, "https://shop.example", "ck_a",
                                 "cs_b", publish=True, opener=site)
@@ -1053,6 +1100,375 @@ def test_pipeline_glue(tmp):
           "do not import the CSV" in output, output[-500:])
 
 
+def test_a_slow_website():
+    print()
+    print("== 9. a slow website is tried again before the card is given up ==")
+    categories = {"Sports Card": 11, "Hockey Card": 12}
+    check("a card is tried four times before it is called failed",
+          woo_create.CREATE_ATTEMPTS == 4, woo_create.CREATE_ATTEMPTS)
+    saved = (woo_create.CREATE_RETRY_PAUSE, woo_create.CREATE_RETRY_GROWTH,
+             woo_create.CREATE_RETRY_MAX_PAUSE)
+    woo_create.CREATE_RETRY_PAUSE = 3.0
+    woo_create.CREATE_RETRY_GROWTH = 2.0
+    woo_create.CREATE_RETRY_MAX_PAUSE = 20.0
+    try:
+        pauses = [woo_create.retry_pause(n) for n in (1, 2, 3, 4, 5)]
+    finally:
+        (woo_create.CREATE_RETRY_PAUSE, woo_create.CREATE_RETRY_GROWTH,
+         woo_create.CREATE_RETRY_MAX_PAUSE) = saved
+    check("each wait is longer than the last, and never longer than the cap",
+          pauses == [3.0, 6.0, 12.0, 20.0, 20.0], str(pauses))
+    check("an error page and a lost connection are worth another try",
+          woo_create.wants_another_try(500) and
+          woo_create.wants_another_try(503) and
+          woo_create.wants_another_try(429) and
+          woo_create.wants_another_try(0), "")
+    check("a refused card or refused keys are not",
+          not woo_create.wants_another_try(400) and
+          not woo_create.wants_another_try(401) and
+          not woo_create.wants_another_try(403) and
+          not woo_create.wants_another_try(404), "")
+
+    # ---- the site answers with its error page twice, then works
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1)])
+    site = FakeSite(categories=categories, slow_create=2)
+    waits = []
+    original_wait = woo_create.wait
+    saved_pause = woo_create.CREATE_RETRY_PAUSE
+    woo_create.CREATE_RETRY_PAUSE = 3.0     # the real first pause
+    woo_create.wait = lambda seconds: waits.append(seconds) or 0.0
+    try:
+        report = woo_create.run(planned, "https://shop.example", "ck_a",
+                                "cs_b", username="owner", app_password="pw",
+                                opener=site)
+    finally:
+        woo_create.wait = original_wait
+        woo_create.CREATE_RETRY_PAUSE = saved_pause
+    posts = [call for call in site.calls if call["method"] == "POST"
+             and "wp/v2/media" not in call["url"]]
+    check("a card the site could not take is sent again", len(posts) == 3,
+          str(len(posts)))
+    check("and it is created on the third try", len(report["created"]) == 1,
+          str(report))
+    check("with how many tries it took recorded", 
+          report["created"][0].get("tries") == 3,
+          str(report["created"][0]))
+    check("the waits between tries got longer: 3s then 6s",
+          waits[:2] == [3.0, 6.0], str(waits))
+    text = "\n".join(woo_create.report_text(report, "https://shop.example"))
+    check("and the report says the website was slow, not that it failed",
+          "needed more than one try because the website was slow" in text,
+          text)
+
+    # ---- the person watching is told what is happening, before the wait
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1), row(2)])
+    site = FakeSite(categories=categories, slow_create=1)
+    events = []
+    original_wait = woo_create.wait
+    woo_create.wait = lambda seconds: 0.0
+    try:
+        woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                       username="owner", app_password="pw", opener=site,
+                       on_item=events.append)
+    finally:
+        woo_create.wait = original_wait
+    retries = [event for event in events if event.get("stage") == "retry"]
+    check("a retry is reported while it happens", len(retries) == 1,
+          str([e.get("stage") for e in events]))
+    check("with the words a person needs, and which try is coming",
+          "the website is slow - trying again (2 of 4)"
+          in str(retries[0].get("note") if retries else ""),
+          str(retries[:1]))
+    check("on the card being created, by its name",
+          retries and "1971-72" in str(retries[0].get("item", {})), "")
+
+    # ---- a card refused outright is not sent again
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1)])
+    site = FakeSite(categories=categories, refuse={("POST", "products?"): 400})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    posts = [call for call in site.calls if call["method"] == "POST"
+             and "wp/v2/media" not in call["url"]]
+    check("a refusal about the card is tried once, not four times",
+          len(posts) == 1, str(len(posts)))
+    check("and the card is named as not created",
+          len(report["failed"]) == 1 and
+          report["failed"][0]["state"] == "not-created", str(report["failed"]))
+
+    # ---- four tries, all of them error pages, then the batch moves on
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1), row(2)])
+    site = FakeSite(categories=categories, refuse={("POST", "products?"): 503})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    posts = [call for call in site.calls if call["method"] == "POST"
+             and "wp/v2/media" not in call["url"]]
+    text = "\n".join(woo_create.report_text(report, "https://shop.example"))
+    check("the first card really was tried four times",
+          len(posts) >= woo_create.CREATE_ATTEMPTS,
+          "%s %s" % (len(posts), text))
+    check("and the report says every time, with the count",
+          "every time - 4 tries" in text, text)
+    check("the run still says what to do, without inviting a duplicate",
+          "never creates a card twice" in text, text)
+
+    # ---- too many requests is a pause, not a failure
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1)])
+    site = FakeSite(categories=categories, refuse={("POST", "products?"): 429})
+    site.refuse = {("POST", "products?"): 429}
+    #  One refusal, then the site is happy again.
+    original_call = site
+
+    def once_429(request, timeout=None):
+        if request.get_method() == "POST" and "wp/v2/media" not in \
+                request.full_url and site.refuse:
+            del site.refuse[("POST", "products?")]
+            site.calls.append({"method": "POST", "url": request.full_url,
+                               "body": None})
+            return 429, b'{"message": "slow down"}'
+        return original_call(request, timeout)
+
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=once_429)
+    posts = [call for call in site.calls if call["method"] == "POST"
+             and "wp/v2/media" not in call["url"]]
+    check("a 429 is waited out and the card sent again", len(posts) == 2,
+          str(len(posts)))
+    check("and the card is created", len(report["created"]) == 1,
+          str(report))
+
+    # ---- the connection dies, the product was not written: send it again
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1)])
+    site = FakeSite(categories=categories)
+
+    def dies_once(request, timeout=None):
+        if request.get_method() == "POST" and "wp/v2/media" not in \
+                request.full_url and not getattr(dies_once, "done", False):
+            dies_once.done = True
+            site.calls.append({"method": "POST", "url": request.full_url,
+                               "body": None})
+            raise woo_create.urllib.error.URLError("timed out")
+        return site(request, timeout)
+
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw",
+                            opener=dies_once)
+    posts = [call for call in site.calls if call["method"] == "POST"
+             and "wp/v2/media" not in call["url"]]
+    check("a connection that drops is tried again", len(posts) == 2,
+          str(len(posts)))
+    check("and the card is created on the second try",
+          len(report["created"]) == 1 and
+          report["created"][0].get("tries") == 2, str(report["created"]))
+
+    # ---- a product written before the connection died is not sent again
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1)])
+    site = FakeSite(categories=categories, save_then_fail=["OPC1971-001-PR-2"])
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    posts = [call for call in site.calls if call["method"] == "POST"
+             and "wp/v2/media" not in call["url"]]
+    check("a twin is never made by retrying a write that landed",
+          len(posts) == 1 and len(report["created"]) == 1,
+          "%s %s" % (len(posts), report))
+
+    # ---- the photo upload is tried again too
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1)])
+    site = FakeSite(categories=categories, upload_fail=1)
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    check("an upload the site dropped is sent again",
+          len(site.uploads) == 2 and len(report["created"]) == 1,
+          "%s %s" % (len(site.uploads), report))
+
+    # ---- an upload that landed before its answer died is reused, not doubled
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1)])
+    site = FakeSite(categories=categories, upload_lost=1)
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    check("a photo already in the library is found instead of uploaded twice",
+          len(site.uploads) == 1 and len(site.media) == 1,
+          "%s %s" % (len(site.uploads), len(site.media)))
+    check("and the product points at that copy",
+          len(report["created"]) == 1, str(report))
+
+    # ---- the cards are spaced out a little, from the second one on
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1), row(2)])
+    site = FakeSite(categories=categories)
+    paces = []
+    original_wait = woo_create.wait
+    original_pace = woo_create.CREATE_PACE
+    woo_create.CREATE_PACE = 1.0
+    woo_create.wait = lambda seconds: paces.append(seconds) or 0.0
+    try:
+        report = woo_create.run(planned, "https://shop.example", "ck_a",
+                                "cs_b", username="owner", app_password="pw",
+                                opener=site)
+    finally:
+        woo_create.wait = original_wait
+        woo_create.CREATE_PACE = original_pace
+    check("two cards are not sent as one breath: one pause between them",
+          paces == [1.0], str(paces))
+    check("and both are created", len(report["created"]) == 2, str(report))
+
+
+def test_one_sku_per_card():
+    """Two cards, one SKU: the website holds one product per SKU.
+
+    The run this was written for: a dark-back card and a light-back card of
+    the same player, number and grade shared a SKU, so the light back was
+    reported as "already there" - as the dark back the app had just created -
+    and never existed. The SKU now carries the printing (the pipeline's job);
+    what is checked here is the app never mistakes one card for another, and
+    that neither a re-run nor an older product makes a twin.
+    """
+    print()
+    print("== 10. two cards, one SKU: nothing is called already there that "
+          "is a different card ==")
+    dark = "1973-74 O-Pee-Chee Neil Komadoski #16 Rookie Card Dark Back"
+    light = "1973-74 O-Pee-Chee Neil Komadoski #16 Rookie Card Light Back"
+    dark_sku = "OPC1973-74-16-Komadoski-EX-5-DB"
+    light_sku = "OPC1973-74-16-Komadoski-EX-5-LB"
+    old_sku = "OPC1973-74-16-Komadoski-EX-5"
+    categories = {"Sports Card": 11, "Hockey Card": 12}
+
+    check("two titles that differ only in spacing and case are one card",
+          woo_create.same_card("1971-72 O-Pee-Chee Test Card #001 (PR)",
+                               "1971-72  O-Pee-Chee  Test Card #001 (pr)"),
+          "")
+    check("'&' and 'and' are the same word",
+          woo_create.same_card("Hockey & Cards", "Hockey and Cards"), "")
+    check("a different card number is a different card",
+          not woo_create.same_card("Card #1 Dark Back", "Card #1 Light Back"),
+          "")
+    check("and nothing is claimed about a title the site did not send",
+          not woo_create.same_card("", "Card #1"), "")
+
+    check("a card's older SKU is the one without the printing",
+          woo_create.older_skus(light_sku) == [old_sku],
+          str(woo_create.older_skus(light_sku)))
+    check("a card with no printing in its SKU has no older one",
+          woo_create.older_skus(old_sku) == [],
+          str(woo_create.older_skus(old_sku)))
+
+    # ---- the pipeline's two SKUs are two products
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [
+        row(1, SKU=dark_sku, Name=dark), row(2, SKU=light_sku, Name=light)])
+    site = FakeSite(categories=categories)
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    check("a dark back and a light back are two products",
+          len(report["created"]) == 2 and not report["failed"],
+          str(report))
+    check("with the SKUs the CSV carries",
+          sorted(entry["sku"] for entry in report["created"]) ==
+          [dark_sku, light_sku], str(report["created"]))
+
+    # ---- a card created before the printing joined the SKU is still found
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(2, SKU=light_sku, Name=light)])
+    site = FakeSite(categories=categories, exist=[(old_sku, 14115)],
+                    existing={old_sku: {"name": light, "status": "publish",
+                                        "images": [{"id": 3}]}})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    text = "\n".join(woo_create.report_text(report, "https://shop.example"))
+    posts = [call for call in site.calls if call["method"] == "POST"]
+    check("a product made under the older SKU is not created a second time",
+          posts == [] and len(report["skipped"]) == 1, str(posts))
+    check("it is reported as already there, with the product's own id",
+          "Already there: %s (product 14115)" % light in text, text)
+    check("and the older SKU is named, so the CSV's SKU makes sense",
+          old_sku in text and light_sku in text, text)
+
+    # ---- the same older SKU on a different card is not this card
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(2, SKU=light_sku, Name=light)])
+    site = FakeSite(categories=categories, exist=[(old_sku, 14115)],
+                    existing={old_sku: {"name": dark, "status": "publish"}})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    check("the older SKU held by another card does not stand in for this one",
+          len(report["created"]) == 1 and report["created"][0]["sku"] ==
+          light_sku and not report["failed"], str(report))
+
+    # ---- the SKU is taken by a different card: said, not skipped quietly
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1, SKU=old_sku, Name=dark),
+                                row(2, SKU="OPC1973-74-80-Harper-VG-EX-4",
+                                    Name="1973-74 O-Pee-Chee Terry Harper #80")])
+    site = FakeSite(categories=categories, exist=[(old_sku, 14115)],
+                    existing={old_sku: {"name": light, "status": "publish"}})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    text = "\n".join(woo_create.report_text(report, "https://shop.example"))
+    check("a SKU held by a different card is not called already there",
+          len(report["skipped"]) == 0 and len(report["failed"]) == 1,
+          str(report))
+    check("the card is named as not created, with the reason",
+          report["failed"][0]["state"] == "sku-clash" and
+          "Not created: %s" % dark in text, text)
+    check("both titles are shown, so the mix-up is visible",
+          dark in text and light in text and old_sku in text, text)
+    check("and the way out is one edit to one cell",
+          "SKU column" in text, text)
+    check("the rest of the batch still happens",
+          len(report["created"]) == 1, str(report))
+
+    # ---- the same card with a slightly different title is the same card
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1, SKU=old_sku, Name=dark)])
+    site = FakeSite(categories=categories, exist=[(old_sku, 14115)],
+                    existing={old_sku: {
+                        "name": "1973-74 O-Pee-Chee Neil Komadoski #16 Rookie "
+                                "Card Dark Back  ", "status": "publish"}})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    check("a title that only differs in spacing is the same card",
+          len(report["skipped"]) == 1 and not report["failed"], str(report))
+
+    # ---- two rows on one SKU are said before anything is written
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1, SKU=old_sku, Name=dark),
+                                row(2, SKU=old_sku, Name=dark)])
+    lines = woo_create.describe(planned)
+    check("the confirmation says two cards share one SKU",
+          any("share the SKU" in line and old_sku in line for line in lines),
+          str(lines))
+    lines = woo_create.describe(planned.__class__(
+        {"items": planned["items"][:1]}))
+    check("and says nothing when every card has its own",
+          not any("share the SKU" in line for line in lines), str(lines))
+
+
+def test_a_report_is_said_once():
+    """The console a batch prints: no instruction twice."""
+    print()
+    print("== 11. the closing report says each thing once ==")
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1)])
+    site = FakeSite(categories={"Sports Card": 11, "Hockey Card": 12})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    lines = woo_create.report_text(report, "https://shop.example")
+    check("the report ends with what to do next, once",
+          sum("CSV import step is not needed" in line for line in lines) == 1,
+          str(lines))
+    check("and the recovery lines are part of that report",
+          woo_create.recovery_text(report) and
+          woo_create.recovery_text(report)[-1] == lines[-1], str(lines))
+
+
 def main():
     test_reading()
     test_payload()
@@ -1064,6 +1480,9 @@ def main():
     test_refusals()
     test_categories_and_help()
     test_error_pages()
+    test_a_slow_website()
+    test_one_sku_per_card()
+    test_a_report_is_said_once()
     with tempfile.TemporaryDirectory() as td:
         test_pipeline_glue(Path(td))
     print()

@@ -456,12 +456,71 @@ def _raises(fn):
     return False
 
 
+def test_finding_a_photo():
+    print()
+    print("== 13. a photo that landed before its answer died is found, not "
+          "uploaded again ==")
+    library = [
+        {"id": 7, "source_url": "https://shop.example/2026/10/other.webp",
+         "title": {"rendered": "other"}},
+        {"id": 901, "source_url": "https://shop.example/2026/10/gretzky-front-1.webp",
+         "title": {"rendered": "gretzky-front-1"}},
+    ]
+    opener = FakeOpener((200, json.dumps(library).encode("utf-8")))
+    found = woo_media.find_media(SITE, USER, PASSWORD, "gretzky-front-1.webp",
+                                 opener=opener)
+    sent = opener.requests[0]
+    check("the library is searched for the file's own name",
+          sent["method"] == "GET" and "/wp-json/wp/v2/media?" in sent["url"]
+          and "search=gretzky-front-1" in sent["url"], sent["url"])
+    check("it authenticates with the Application Password, not the keys",
+          header(sent, "Authorization").startswith("Basic ") and
+          KEY not in sent["url"], sent["url"])
+    check("and the file that is there is the one returned",
+          found and found["id"] == 901 and found["found"] is True, str(found))
+
+    #  WordPress may re-slug a name, so the title is compared too - but only
+    #  for a name long enough to mean something.
+    library = [{"id": 902, "source_url": "https://shop.example/2026/10/x.webp",
+                "title": {"rendered": "gretzky-front-2"}}]
+    found = woo_media.find_media(SITE, USER, PASSWORD, "gretzky-front-2.webp",
+                                 opener=FakeOpener(
+                                     (200, json.dumps(library).encode())))
+    check("a slugged name is still recognised by its title",
+          found and found["id"] == 902, str(found))
+
+    found = woo_media.find_media(
+        SITE, USER, PASSWORD, "missing-card.webp",
+        opener=FakeOpener((200, json.dumps(library).encode())))
+    check("a file that is not there is nothing found",
+          found is None, str(found))
+
+    found = woo_media.find_media(SITE, USER, PASSWORD, "gretzky-front-1.webp",
+                                 opener=FakeOpener((500, b"error")))
+    check("a library that refuses the search is nothing found, not a crash",
+          found is None, str(found))
+    found = woo_media.find_media(
+        SITE, USER, PASSWORD, "gretzky-front-1.webp",
+        opener=FakeOpener(urllib.error.URLError("no route")))
+    check("a library that cannot be reached is nothing found either",
+          found is None, str(found))
+
+    idle = FakeOpener()
+    found = woo_media.find_media(SITE, "", "", "gretzky-front-1.webp",
+                                 opener=idle)
+    check("without an Application Password nothing is sent",
+          found is None and not idle.requests, str(idle.requests))
+    check("and no password appears in what it returns",
+          PASSWORD not in str(found), str(found))
+
+
 def main():
     test_headers_and_names()
     test_refusals()
     test_product_update()
     test_attaching()
     test_parsing_helpers()
+    test_finding_a_photo()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))

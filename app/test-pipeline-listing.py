@@ -248,6 +248,94 @@ def test_dark_back_variant_keeps_its_front(root):
                or "position 2 " in m], repr(missing))
 
 
+def test_printing_is_part_of_the_sku(root):
+    """A dark back and a light back are two cards, so they need two SKUs.
+
+    The batch this was written for: 1973-74 O-Pee-Chee Neil Komadoski #16,
+    EX 5, in a dark-back and a light-back printing. Both got the SKU
+    ``OPC1973-74-16-Komadoski-EX-5``, so the website - which holds one product
+    per SKU - took the dark back and reported the light back as "already
+    there". The light back was never created and nothing said so.
+    """
+    check("a title that says dark back is the DB printing",
+          card_pipeline.back_variety(
+              "1973-74 O-Pee-Chee Neil Komadoski #16 Dark Back") == "DB", "")
+    check("the words are enough, however they are written",
+          card_pipeline.back_variety("1973-74 O-Pee-Chee x Dark-Back") == "DB" and
+          card_pipeline.back_variety("1973-74 O-Pee-Chee x light  back") == "LB",
+          "")
+    check("a title naming neither is no printing at all",
+          card_pipeline.back_variety(
+              "1973-74 O-Pee-Chee Terry Harper #80") == "", "")
+    check("and 'back' on its own is not a printing",
+          card_pipeline.back_variety("Card with a dark background") == "", "")
+
+    def card(title, num="16", grade="EX 5", last="Komadoski"):
+        return {"seo_title": title, "brand": "O-Pee-Chee", "year": "1973-74",
+                "card_num": num, "last": last, "grade": grade, "price": 5.0,
+                "keyword": "hockey card", "tags": "hockey",
+                "front_img": "f.webp", "back_img": "b.webp",
+                "short_desc": "Short.", "full_description": "Long.",
+                "category": "Sports Card", "subcategory": "Hockey Card"}
+
+    dark = card("1973-74 O-Pee-Chee Neil Komadoski #16 Rookie Card Dark Back")
+    light = card("1973-74 O-Pee-Chee Neil Komadoski #16 Rookie Card "
+                 "Light Back")
+    plain = card("1973-74 O-Pee-Chee Terry Harper #80 Light Back",
+                 num="80", last="Harper", grade="VG-EX 4")
+    rows = card_pipeline.build_rows([dark, light, plain])
+    check("the dark back's SKU ends in its printing",
+          rows[0]["SKU"] == "OPC1973-74-16-Komadoski-EX-5-DB",
+          rows[0]["SKU"])
+    check("and the light back gets an SKU of its own",
+          rows[1]["SKU"] == "OPC1973-74-16-Komadoski-EX-5-LB",
+          rows[1]["SKU"])
+    check("two cards that differ only in their back are no longer one SKU",
+          rows[0]["SKU"] != rows[1]["SKU"], "%r" % [r["SKU"] for r in rows])
+    check("nothing else in the row changed",
+          rows[0]["Name"] == dark["seo_title"] and
+          rows[0]["Regular price"] == 5 and rows[0]["Stock"] == 1,
+          str(rows[0]))
+    plain_sku = card_pipeline.build_rows([card(
+        "1973-74 O-Pee-Chee Terry Harper #80", num="80", last="Harper",
+        grade="VG-EX 4")])[0]["SKU"]
+    check("a card with no printing in its title keeps the SKU it always had",
+          plain_sku == "OPC1973-74-80-Harper-VG-EX-4", plain_sku)
+
+    #  Two rows on one SKU can still happen - a batch that lists one card
+    #  twice, or two printings whose titles do not name them. The website
+    #  holds one product per SKU, so the second would be skipped as "already
+    #  there" and the card would look lost; the CSV writer says so while
+    #  there is still time to edit one cell.
+    def printed(sku, name):
+        return {"SKU": sku, "Name": name, "Regular price": 5,
+                "Categories": "Sports Card > Hockey Card"}
+
+    twice = [printed("OPC1973-74-16-Komadoski-EX-5", "Card A"),
+             printed("OPC1973-74-16-Komadoski-EX-5", "Card B"),
+             printed("OPC1973-74-80-Harper-VG-EX-4", "Card C")]
+    found = card_pipeline.duplicate_skus(twice)
+    check("a SKU two rows claim is found, with both names",
+          len(found) == 1 and found[0][1] == ["Card A", "Card B"],
+          str(found))
+    check("one row per SKU is not a duplicate",
+          card_pipeline.duplicate_skus(twice[:1] + twice[2:]) == [], "")
+    out = StringIO()
+    with redirect_stdout(out):
+        card_pipeline.print_woocommerce_rows(twice, "woocommerce.csv")
+    printed = out.getvalue()
+    check("and the list of rows says it plainly",
+          "2 cards share the SKU OPC1973-74-16-Komadoski-EX-5" in printed and
+          "Card A" in printed and "Card B" in printed, printed)
+    check("with what to do about it",
+          "SKU column of the CSV" in printed, printed)
+    out = StringIO()
+    with redirect_stdout(out):
+        card_pipeline.print_woocommerce_rows(twice[:1] + twice[2:], "w.csv")
+    check("a clean batch prints no warning at all",
+          "share the SKU" not in out.getvalue(), out.getvalue())
+
+
 def test_shipped_script_runs_end_to_end(root):
     """The real script, copied the way an install looks, exits 0."""
     d = root / "install"
@@ -459,6 +547,9 @@ def main():
 
         print("== 1b. a variant card's front is renamed too ==")
         test_dark_back_variant_keeps_its_front(root)
+
+        print("== 1c. a card's printing is part of its SKU ==")
+        test_printing_is_part_of_the_sku(root)
 
         print("== 2. the shipped script runs end to end ==")
         test_shipped_script_runs_end_to_end(root)

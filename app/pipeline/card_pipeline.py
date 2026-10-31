@@ -894,6 +894,51 @@ def sanitize_filename_component(text):
     return text
 
 
+#  Some vintage sets printed a card with two different backs, and a title
+#  that names one - "Dark Back", "Light Back" - is a different card: a
+#  different printing, a different price, a different product. The SKU is
+#  what the website, the CSV and the comparison use to tell two products
+#  apart, so the printing goes into the SKU. Two cards that are otherwise
+#  identical (same year, number, player and grade) no longer share one SKU -
+#  which is how the light back of a card came to be skipped as "already on
+#  the website" the moment the dark back had been created.
+BACK_VARIETY_TOKENS = (("dark back", "DB"), ("light back", "LB"))
+
+
+def back_variety(title):
+    """``"DB"``/``"LB"`` when the title names a back printing, else ``""``.
+
+    Only the words decide, so "Dark Back", "Dark-Back" and "dark back" are the
+    same printing. A title naming neither keeps the SKU it has always had.
+    """
+    words = re.sub(r"[^a-z0-9]+", " ", str(title or "").lower())
+    words = " %s " % re.sub(r"\s+", " ", words).strip()
+    for phrase, token in BACK_VARIETY_TOKENS:
+        if " %s " % phrase in words:
+            return token
+    return ""
+
+
+def duplicate_skus(rows):
+    """SKUs more than one row claims, with the names that claim them.
+
+    Only one product per SKU can exist on the website, so a batch with two
+    rows on one SKU creates one card and quietly skips the other - which
+    reads as a card that vanished. Saying it while the CSV is being written is
+    the last moment it can be fixed by editing one cell.
+    """
+    seen, repeated = {}, []
+    for row in rows or []:
+        sku = str(row.get("SKU") or "").strip()
+        if not sku:
+            continue
+        seen.setdefault(sku, []).append(str(row.get("Name") or "").strip())
+    for sku, names in seen.items():
+        if len(names) > 1:
+            repeated.append((sku, names))
+    return repeated
+
+
 def grade_slug(grade):
     """Convert a cleaned grade string (e.g. 'EX 5' or 'VG-EX') into a
     filename-safe suffix (e.g. 'EX-5' or 'VG-EX'). Returns '' when no
@@ -1167,7 +1212,11 @@ def build_rows(cards_parsed, default_quantity=1):
     for c in cards_parsed:
         code = brand_code(c["brand"])
         grade_component = grade_slug(c["grade"])  # e.g. "EX-5", "VG-3"
-        sku_bits = [code + c["year"], c["card_num"], c["last"], grade_component]
+        #  The back printing is part of the SKU (see BACK_VARIETY_TOKENS): a
+        #  dark back and a light back of one card are two products, and one
+        #  SKU for both meant the second was skipped as already there.
+        sku_bits = [code + c["year"], c["card_num"], c["last"], grade_component,
+                    back_variety(c["seo_title"])]
         sku = "-".join(b for b in sku_bits if b)
 
         price = math.ceil(c["price"]) if c["price"] else ""
@@ -1991,6 +2040,10 @@ def create_products_from_csv(csv_path, args, ask=True):
         name = (step.get("item") or {}).get("name") or ""
         if stage == "start":
             print("  [%d/%d] %s" % (step["index"], step["total"], name))
+        elif stage in ("retry", "pace"):
+            #  Said in the terminal too: a batch that has gone quiet for
+            #  twenty seconds because the site is slow must say so.
+            print("     %s - %s" % (step.get("note") or stage, name))
         emit_progress(step)
 
     try:
@@ -2010,8 +2063,8 @@ def create_products_from_csv(csv_path, args, ask=True):
     for line in woo_create.report_text(report, site):
         print("  " + line)
     print("  Report: %s" % report_path)
-    for line in woo_create.recovery_text(report):
-        print("  " + line)
+    #  The way out is already the last line of the report above - saying it a
+    #  second time reads as a second instruction.
     if report["failed"]:
         #  Named, because it is the answer to "so what do I do now?": the same
         #  batch can be finished without the scans, and without a second copy.
@@ -2996,6 +3049,16 @@ def print_woocommerce_rows(rows, out_path):
     for r in rows:
         print(f"  - {r['SKU']}: {r['Name']}  "
               f"(${r['Regular price']})  [{r['Categories']}]")
+    for sku, names in duplicate_skus(rows):
+        #  Said here, before anything is written to a website: the site holds
+        #  one product per SKU, so the second of these cards would be skipped
+        #  as "already there" and the batch would look like it lost a card.
+        print(f"\n  ! {len(names)} cards share the SKU {sku} - only one of "
+              f"them can exist on the website:")
+        for name in names:
+            print(f"      {name}")
+        print("    Give one of them a SKU of its own in the SKU column of "
+              "the CSV before creating the products.")
 
 
 def find_rerun_input(args):

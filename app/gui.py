@@ -73,7 +73,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.06"
+VERSION = "3.08"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -259,6 +259,8 @@ PROGRESS_WORDS = {
     "photos": "uploading the photos",
     "create": "creating the draft and reading it back",
     "attach": "wiring the photos to the product",
+    "retry": "the website is slow - trying again",
+    "pace": "waiting a moment for the website",
     "publish": "putting it on sale",
     "done": "created and read back",
 }
@@ -2424,7 +2426,11 @@ class App(tk.Tk):
             return
         item = event.get("item") if isinstance(event.get("item"), dict) else {}
         name = str(item.get("name") or "")
-        phrase = PROGRESS_WORDS.get(stage, stage or "working")
+        #  A tool that says why it is waiting is more use than the name of
+        #  its stage: "the website is slow - trying again (2 of 4)" is the
+        #  sentence that stops a slow batch looking like a hung one.
+        phrase = (str(event.get("note") or "").strip()
+                  or PROGRESS_WORDS.get(stage, stage or "working"))
         #  "done"/"publish" finish an item; anything else is that item being
         #  worked on, so the bar sits one short of it.
         done = index if stage in ("done", "publish") else index - 1
@@ -6332,9 +6338,11 @@ def build_stock(parent, app):
             def on_item(event):
                 try:
                     stage = event.get("stage") or ""
-                    where = {"photos": "uploading the photos",
-                             "create": "creating the draft",
-                             "attach": "filing the photos"}.get(stage, stage)
+                    where = (str(event.get("note") or "").strip()
+                             or {"photos": "uploading the photos",
+                                 "create": "creating the draft",
+                                 "attach": "filing the photos"}.get(stage,
+                                                                    stage))
                     index = event.get("index") or 0
                     total = event.get("total") or len(built["items"])
                     name = ((event.get("item") or {}).get("name") or "")[:70]
