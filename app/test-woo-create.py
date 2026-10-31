@@ -1451,6 +1451,24 @@ def test_one_sku_per_card():
           not any("share the SKU" in line for line in lines), str(lines))
 
 
+def test_a_report_is_said_once():
+    """The console a batch prints: no instruction twice."""
+    print()
+    print("== 11. the closing report says each thing once ==")
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1)])
+    site = FakeSite(categories={"Sports Card": 11, "Hockey Card": 12})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    lines = woo_create.report_text(report, "https://shop.example")
+    check("the report ends with what to do next, once",
+          sum("CSV import step is not needed" in line for line in lines) == 1,
+          str(lines))
+    check("and the recovery lines are part of that report",
+          woo_create.recovery_text(report) and
+          woo_create.recovery_text(report)[-1] == lines[-1], str(lines))
+
+
 def main():
     test_reading()
     test_payload()
@@ -1464,6 +1482,7 @@ def main():
     test_error_pages()
     test_a_slow_website()
     test_one_sku_per_card()
+    test_a_report_is_said_once()
     with tempfile.TemporaryDirectory() as td:
         test_pipeline_glue(Path(td))
     print()

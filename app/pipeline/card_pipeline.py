@@ -2063,8 +2063,8 @@ def create_products_from_csv(csv_path, args, ask=True):
     for line in woo_create.report_text(report, site):
         print("  " + line)
     print("  Report: %s" % report_path)
-    for line in woo_create.recovery_text(report):
-        print("  " + line)
+    #  The way out is already the last line of the report above - saying it a
+    #  second time reads as a second instruction.
     if report["failed"]:
         #  Named, because it is the answer to "so what do I do now?": the same
         #  batch can be finished without the scans, and without a second copy.
