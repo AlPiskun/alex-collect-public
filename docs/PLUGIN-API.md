@@ -63,6 +63,7 @@ screens. The current core recognizes the following action IDs:
 - `batch.pipeline_stage`
 - `marketplace.publish_drafts`
 - `marketplace.import_csv`
+- `marketplace.listing_update`
 - `stock.set`
 
 The three photo actions are separate jobs even though one script usually
@@ -122,6 +123,8 @@ version as well as the action:
 | the publisher's `PUBLISH` question reaching the console | plugin **1.0.27** or newer |
 | writing a stock count on the other site (`stock.set`) | plugin **1.0.21** or newer |
 | importing a written CSV into the vendor dashboard (`marketplace.import_csv`) | plugin **1.0.23** or newer |
+| editing one listing from the app (`marketplace.listing_update`) | plugin **1.0.28** or newer |
+| an address, price and state on every `stock.list` row | plugin **1.0.28** or newer |
 
 `--back` was additive before 1.0.16 - it added the new back beside the old one
 - so sending it to 1.0.15 would leave the previous back photo on the listing.
@@ -363,6 +366,73 @@ cs-import.py --csv "<file>" [--csv "<file>" ...] [--cookie-file "<cookie.txt>"] 
   that the reader could not see, and the core says exactly that.
 - Exit non-zero when the import did not finish. The CSV is still in its
   folder and can be imported by hand.
+
+### `marketplace.listing_update` - changing one listing (plugin 1.0.28)
+
+The core's **Find and edit a CanadianShopper listing** panel searches the
+catalogue `stock.list` returns and can change one listing's title, price, stock
+or state from the app. Without this action the panel still reads and searches -
+it just says it cannot write, and names the version that can.
+
+```
+cs-listing-update.py --set-file "<plan.json>" --set-out "<result.json>" [--cookie-file "<cookie.txt>"]
+```
+
+The plan is one entry per listing, and **only the fields that change are
+present**. A field that is absent must be left exactly as it is on the site:
+
+```json
+{"items": [{"id": 13820,
+            "sku": "OPC1973-25",
+            "title": "1973-74 O-Pee-Chee Walt Tkaczuk #25 EX-MT Rangers",
+            "card": "1973-74 O-Pee-Chee Walt Tkaczuk #25 EX-MT",
+            "price": "9.50",
+            "inventory": 2,
+            "status": "active"}]}
+```
+
+- `id`, `sku` and the old `title` identify the listing, in that order of
+  confidence - the same rule `stock.set` uses, so one listing is never mistaken
+  for its neighbour in the set.
+- `title`, when present, is the **new** title. `card` is always the old one, so
+  a log line can say what the listing was.
+- `price` is a decimal string; `inventory` is an integer (`0` is a real count);
+  `status` is `active` or `archived` and means exactly that - nothing else is
+  republished or unpublished by it.
+- Nothing is ever added, deleted or duplicated by this action, and no other
+  field (description, photos, categories, shipping) is sent at all. The
+  description and the photos are the vendor dashboard's job, which is what the
+  panel's **Open the selected listing** button is for.
+
+The result file is the same shape as `stock.set`, read the same way:
+
+```json
+{"updated": [{"id": 13820}],
+ "failed":  [{"id": 13821, "why": "that listing is protected"}]}
+```
+
+- An entry may be named by `id` (also `product_id`, `listing_id`), `sku`,
+  `title`, `card` or `name`; the id wins when both sides have one.
+- `why`, `reason`, `error` and `message` are all accepted as the failure's
+  sentence, and it is shown unedited.
+- A listing the result does not mention is **unknown** - the panel says it
+  cannot confirm the change and leaves the row as it was. Exit non-zero to mean
+  *nothing was written*: the panel takes that at its word.
+
+### What `stock.list` rows should carry (plugin 1.0.28)
+
+The listing panel shows a row as **card - state - stock - price - SKU**, and
+links to the listing's own page. A row already has `title`/`name`, `sku`,
+`inventory` and (since 1.0.25) `status`; 1.0.28 should add:
+
+| key | meaning |
+| --- | --- |
+| `price` | the listing's price, as the vendor shows it (`"CA$8.50"` and `"8.50"` are both read) |
+| `url` | the listing's own page address |
+
+Both are optional and both are used only for display and for the **Open the
+selected listing** button; a reader without them still works, and the panel
+says the link is missing rather than opening something guessed.
 
 ## Security
 

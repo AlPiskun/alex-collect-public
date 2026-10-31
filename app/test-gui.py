@@ -299,6 +299,10 @@ def main():
     check("staging, importing and wiring are no longer task buttons",
           not ({"Stage the photos", "Import / publish drafts",
                 "Wire the photos"} & set(task_labels)), str(task_labels))
+    check("finding a CanadianShopper listing is an after-a-sale job",
+          task_labels.index("Find a CS listing") > task_labels.index(
+              "Compare stock") and task_labels.index("Find a CS listing") <
+          task_labels.index("Print an order"), str(task_labels))
 
     print("== 3. every panel builds from the task menu ==")
     for pid in gui.PANEL_ORDER:

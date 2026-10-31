@@ -244,6 +244,43 @@ def is_on_sale(item):
     return status_of(item) == "active"
 
 
+#  The vendor's word for a listing that has been put away rather than merely
+#  not published. Spelling variants are folded because the vendor spells it in
+#  its own way and in its own case.
+_ARCHIVED_WORDS = {"archived", "archive", "archiviert", "inactive archived"}
+_ARCHIVED_STATES = {"archived", "archive"}
+
+
+def is_archived(item):
+    """Whether this listing has been archived, as opposed to merely off sale.
+
+    Archived is the vendor's "put away" - the card is not coming back by
+    itself. A draft or a hidden listing is a different story: someone is in
+    the middle of something with it, or it is one publish away from selling.
+    """
+    raw = str((item or {}).get("status") or "").strip().lower()
+    folded = " ".join(raw.replace("_", " ").replace("-", " ").split())
+    return folded in _ARCHIVED_STATES or raw in _ARCHIVED_WORDS
+
+
+def archived_sold_out(pairs):
+    """Pairs where the other site archived the listing and the website is dry.
+
+    There is nothing to do about that pair: the website has nothing to sell,
+    the other site has put the card away on purpose, and the only way out is
+    restocking the card, which is a different job in a different place. Listed
+    with the other count disagreements, it reads as work that is not there.
+    """
+    found = []
+    for row in pairs or []:
+        other = row.get("other") or {}
+        if not is_archived(other):
+            continue
+        if int(row.get("woo", {}).get("qty") or 0) <= 0:
+            found.append(row)
+    return found
+
+
 def status_words(item):
     """The state in the words the person sees, or "" when it is on sale."""
     kind = status_of(item)
@@ -284,6 +321,13 @@ def plugin_items(payload):
                  "qty": None,
                  "id": row.get("id"),
                  "status": str(row.get("status") or "").strip()}
+        #  Anything else the reader reported travels with the row rather than
+        #  being thrown away: the listing panel edits a price and opens a
+        #  listing's page, and both need what only the vendor knows.
+        for extra in ("price", "url"):
+            value = row.get(extra)
+            if value not in (None, ""):
+                entry[extra] = value
         if quantity is not None and str(quantity).strip() != "":
             try:
                 entry["qty"] = int(quantity)
@@ -598,9 +642,15 @@ def action_list(pairs, only_woo, only_other, ignored=(), other_label=""):
     #  A pair whose other-site listing is not on sale is not a count
     #  disagreement: setting the count would leave the card unbuyable, and
     #  stock.set refuses it by design. It becomes its own row instead.
+    #  A pair where the other site archived the listing and the website has
+    #  nothing left is not a job: it needs a restock, not a count or a publish.
+    #  The pairs are counted instead, so the panel can say how many there are.
+    dry = {id(row) for row in archived_sold_out(pairs)}
     rows = []
     live = []
     for row in pairs or []:
+        if id(row) in dry:
+            continue
         if is_on_sale(row.get("other")) and row["other"].get("qty") is not None:
             live.append(row)
             continue
@@ -1140,6 +1190,15 @@ def summary(rows, pairs, only_woo, only_other, other_label="CanadianShopper"):
     if left_out:
         line += " Not compared: " + ", ".join(left_out) + "."
     return line
+
+
+def archived_note(pairs, other_label="CanadianShopper"):
+    """The sentence for the archived pairs that were left off the list."""
+    dry = archived_sold_out(pairs)
+    if not dry:
+        return ""
+    return ("%d archived on %s with nothing on your website, so not shown." %
+            (len(dry), other_label))
 
 
 def sold_out_note(only_woo, other_label="CanadianShopper"):

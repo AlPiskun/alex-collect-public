@@ -50,6 +50,17 @@ def main():
     task_ids = {pid for _group, ids in gui.groups_for(True) for pid in ids}
     check("settings, plugins, and logs are removed from task buttons",
           not ({"cookie", "plugins", "logs"} & task_ids))
+    check("the listing panel sits with the other after-a-sale jobs",
+          dict(gui.groups_for(True))["After a sale"][:5] ==
+          ["sold", "checklist", "stock", "csedit", "zerostock"] and
+          "csedit" not in {pid for _group, ids in gui.groups_for(False)
+                           for pid in ids},
+          str(dict(gui.groups_for(True))["After a sale"]))
+    check("and it is its own panel, with its own help",
+          gui.TITLES["csedit"] == "Find and edit a CanadianShopper listing" and
+          gui.PANEL_BUILDERS["csedit"] is gui.build_csledit and
+          "csedit" in gui.DOCS and gui.MENU_LABELS["csedit"] ==
+          "Find a CS listing", "")
     core_ids = {pid for _group, ids in gui.groups_for(False) for pid in ids}
     check("core task menu omits plugin-only tasks",
           not ({"stage", "wire", "zerostock", "rerun"} & core_ids))

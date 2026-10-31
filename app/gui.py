@@ -51,6 +51,7 @@ import photo_replace
 import market_stock
 import photo_thumbs
 import sale_preview
+import cs_edit
 import cs_listing
 import stock_compare
 import stock_write
@@ -69,7 +70,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "2.90"
+VERSION = "2.91"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -119,6 +120,13 @@ CS_NESTED_STREAM_VERSION = "1.0.27"
 #  Creating listings is the plugin's own importer: the core writes the CSV it
 #  has always written, and this action takes that file and makes the drafts.
 CS_IMPORT_ACTION = "marketplace.import_csv"
+#  Changing one listing's own details - its title, price, stock or state -
+#  without opening the vendor dashboard. The plugin is asked for the fields
+#  that changed and nothing else, so an edit cannot put an old value back.
+CS_LISTING_UPDATE_ACTION = "marketplace.listing_update"
+#  The plugin version that declares it, and the one that reports each
+#  listing's address and price so the panel can show and link them.
+CS_LISTING_UPDATE_VERSION = "1.0.28"
 #  batch.photo_replace existed in 1.0.14 but only matched a staged CSV
 #  row. The CSV-free --mode replace arrived in 1.0.15, so the action ID
 #  alone cannot tell the two apart - the version has to be checked.
@@ -1131,7 +1139,11 @@ is offered; anything else is a vendor-dashboard job.
 A card at zero on your website that the other site does not list either is not
 shown at all: there is no count to set and a listing at zero would be refused as
 out of stock, so the only thing such a row could do is make the list look like
-work. The summary says how many were left out, so a card never simply vanishes.
+work. Nor is a card whose listing the other site has **archived** while the
+website has none left - that pair needs a restock, not a count or a publish, and
+it is the shape a card takes after it sells out here and is swept off there. The
+summary says how many were left out in both cases, so a card never simply
+vanishes.
 
 The list can be sorted - what needs attention first, card name either way, the
 biggest difference, or the most stock on either side - and the choice is
@@ -1154,6 +1166,32 @@ readiness checks, and still asks for PUBLISH to be typed.
 A pair is only made when a shared SKU or the title identifies the same card - a
 wrong pair would accuse a card that is fine - and an unpaired card is never
 called wrong, only "on one side"."""
+
+DOCS["csedit"] = """\
+Find one CanadianShopper listing and change it here, without opening the vendor
+dashboard. Type the card's name the way you remember it - the search weighs
+words the way the order panel does, so "tkaczuk 25" finds
+"1973-74 O-Pee-Chee Walt Tkaczuk #25 EX-MT", and a SKU or a listing id typed
+exactly is a hit on its own. Leave the box empty instead and pick a state to
+work through: everything archived, everything on sale, every draft.
+
+A row reads card, state, stock, price and SKU. Select one and it can be
+renamed, repriced or recounted with **Edit the selected listing...**, or moved
+between archived and on sale with the two state buttons - which is the whole
+job of putting a card back on sale after a restock, or parking one that sold
+out.
+
+Every change is named field by field before it is sent - "Stock: 2 -> 5",
+"State: archived -> on sale" - and only the fields that changed are sent, so an
+edit can never put back a value that was changed in the dashboard while this
+panel was open. It writes on CanadianShopper only: your website's title, price
+and stock are not touched, and nothing is deleted - an archived listing is put
+away, and the other button brings it back.
+
+Reading the catalogue needs the plugin's stock reader (1.0.25 or newer reports
+the listings that are not on sale too), and editing needs plugin 1.0.28 or
+newer (marketplace.listing_update). Without it, the panel says so and changes
+nothing rather than pretending."""
 
 DOCS["square"] = """\
 Square up a photo (or a whole folder) by padding it onto a white
@@ -1743,8 +1781,19 @@ TOOLTIPS = {
     "Ignore the selected cards": "Stop comparing the selected cards: a card that is no longer sold on one site disappears from the list until it is restored; nothing on either site changes",
     "Publish the ready drafts...": "Scan CanadianShopper's drafts and activate only the ones that pass every readiness check - for cards whose listing exists but was never published; PUBLISH still has to be typed",
     "Restore ignored cards...": "Put every ignored card back into comparisons, after showing which ones they are",
-    "Read a saved eBay page...": "Read an eBay page you saved from your own signed-in browser (Ctrl+S, HTML only) - the way round eBay's \"Pardon our interruption\" check, using the same reader",
-    "Read a saved Facebook page...": "Read a Facebook selling page you saved from your own signed-in browser (Ctrl+S, HTML only) - the way round Facebook's HTTP 400, using the same reader",
+    "Read the saved eBay page": "Read the newest eBay page saved from your own signed-in browser, found automatically in this folder or Downloads - the way round eBay's \"Pardon our interruption\" check, using the same reader",
+    "Read the saved Facebook page": "Read the newest Facebook selling page saved from your own signed-in browser, found automatically in this folder or Downloads - the way round Facebook's HTTP 400, using the same reader",
+    "Choose a saved page...": "Pick a particular saved eBay or Facebook page by hand when the newest one is not the one you mean; the page says which site it belongs to",
+    # -- finding and editing one CanadianShopper listing -------------------
+    "Find a listing by card name:": "The words you remember from the card - "
+                                    "a name, a card number, a set or a SKU; "
+                                    "the search weighs them, so it does not "
+                                    "have to be the exact title",
+    "Read CanadianShopper's listings": "Read every listing on CanadianShopper, with its state and stock, so it can be searched here; nothing is changed",
+    "Edit the selected listing...": "Change the selected listing's title, price or stock on CanadianShopper; only the fields you change are sent, and your website is not touched",
+    "Put the selected listing on sale": "Move the selected listing from archived (or draft) back to on sale on CanadianShopper; its title, price and stock stay as they are",
+    "Archive the selected listing": "Put the selected listing away on CanadianShopper - it is not deleted and can be put back on sale; your website is not changed",
+    "Open the selected listing on CanadianShopper": "Open the selected listing's own page on CanadianShopper, for the details this panel does not edit - its description and photos; nothing is changed",
     "Open the eBay cookie file": "Open ebay-cookie.txt so the eBay session cookie can be pasted; the file stays on this computer",
     "Open the Facebook cookie file": "Open fb-cookie.txt so the Facebook session cookie can be pasted; the file stays on this computer",
     "Preview new orders": "Read the orders that came in since you last looked, and write nothing",
@@ -2623,8 +2672,8 @@ class App(tk.Tk):
 #  A panel = title + doc + controls. The same builder is used by the task
 #  menu, the tabs view and the wizard pages.
 PANEL_ORDER = ["cookie", "pipeline", "combine", "stage", "importpanel",
-               "wire", "rerun", "sold", "checklist", "stock", "zerostock",
-               "ordersheet", "square",
+               "wire", "rerun", "sold", "checklist", "stock", "csedit",
+               "zerostock", "ordersheet", "square",
                "newphotos", "ordertext", "quote", "markets", "logs",
                "plugins"]
 #  Four jobs, in the order a batch goes through them: sell something, make the
@@ -2635,8 +2684,8 @@ PANEL_ORDER = ["cookie", "pipeline", "combine", "stage", "importpanel",
 #  opens one by id keeps working.
 GROUPS_FULL = [("Sell to a customer", ["ordertext", "quote"]),
                ("Sell a new batch", ["pipeline", "combine", "markets"]),
-               ("After a sale", ["sold", "checklist", "stock", "zerostock",
-                                 "ordersheet"]),
+               ("After a sale", ["sold", "checklist", "stock", "csedit",
+                                 "zerostock", "ordersheet"]),
                ("Photos", ["square", "rerun", "newphotos"])]
 
 
@@ -2663,6 +2712,7 @@ TITLES = {
     "sold": "A card sold - mark it everywhere",
     "checklist": "The tick-off checklist",
     "stock": "Stock on every site",
+    "csedit": "Find and edit a CanadianShopper listing",
     "zerostock": "Archive CanadianShopper listings already at 0",
     "ordersheet": "Print an order as a PDF",
     "square": "Square up a photo (manual upload)",
@@ -2684,6 +2734,7 @@ MENU_LABELS = {
     "sold": "A card sold",
     "checklist": "The checklist",
     "stock": "Compare stock",
+    "csedit": "Find a CS listing",
     "zerostock": "Archive listings at 0",
     "ordersheet": "Print an order",
     "square": "Square up a photo",
@@ -2706,6 +2757,8 @@ BLURBS = {
     "checklist": "See what is still outstanding and tick it off.",
     "stock": "Find the cards whose counts disagree between your website "
              "and CanadianShopper, sort the list, and fix what needs it.",
+    "csedit": "Search CanadianShopper by card name, then rename, reprice, "
+              "recount, put a listing back on sale or archive it.",
     "zerostock": "Sweep: archive everything sitting at quantity 0.",
     "ordersheet": "Find an order by its number, the customer's name, or a "
                   "card's name, and print it with a picture of every card.",
@@ -5024,6 +5077,10 @@ def build_stock(parent, app):
                                                     state["label"])
         if sold_out_note:
             text += "  " + sold_out_note
+        archived_note = stock_compare.archived_note(state["pairs"],
+                                                    state["label"])
+        if archived_note:
+            text += "  " + archived_note
         if hidden:
             text += "  %d ignored." % hidden
         if state["card"]:
@@ -6149,21 +6206,71 @@ def build_stock(parent, app):
     #  is already signed in to is read instead. Both sites check whether the
     #  request comes from a browser, and both can refuse it - so a saved page
     #  is a first-class route here, not a last resort.
+    def saved_page_dirs():
+        """The folders a page saved from a browser could be sitting in."""
+        return market_stock.saved_page_dirs(BASE)
+
     def market_read(site_id, info, url, cookie):
+        """Read the site live, and prefer a saved page that covers more.
+
+        Facebook renders its first batch of listings and lazy-loads the rest,
+        so a request sees a window; eBay hands over 250 listings at most. A
+        page saved from a real browser after scrolling sees the whole shop, so
+        when one is recent and holds more, it is the better source - a card
+        missing from the window would be reported as missing from the site,
+        which is the one wrong answer this panel must not give.
+        """
         if site_id == "ebay":
             items, pages, text = market_stock.read_ebay(
                 market_stock.fetch, url, cookie)
-            return {"items": items, "pages": pages, "text": text}
-        status, text = market_stock.fetch(url, cookie)
-        if status != 200 or market_stock.looks_like_login(text) or \
-                market_stock.looks_like_blocked(text):
-            raise market_stock.describe_refusal(
-                info["label"], status, text, BASE / info["cookie"])
-        return {"items": market_stock.parse_listings(site_id, text), "pages": 1,
-                "text": text}
+            found = {"items": items, "pages": pages, "text": text}
+        else:
+            status, text = market_stock.fetch(url, cookie)
+            if status != 200 or market_stock.looks_like_login(text) or \
+                    market_stock.looks_like_blocked(text):
+                raise market_stock.describe_refusal(
+                    info["label"], status, text, BASE / info["cookie"])
+            found = {"items": market_stock.parse_listings(site_id, text),
+                     "pages": 1, "text": text}
+        found["source"] = "live"
+        #  What the site itself sent, kept even when a better saved page is
+        #  the one compared: this copy is the page the reader is repaired
+        #  against, and it must stay the site's own answer.
+        found["live_text"] = found["text"]
+        window = market_stock.SITE_WINDOW.get(site_id, 0)
+        if len(found["items"]) < window:
+            better = market_stock.better_saved_page(
+                site_id, saved_page_dirs(), found["items"])
+            if better is not None:
+                found.update({"items": better["items"], "text": better["text"],
+                              "source": "saved", "saved": better,
+                              "live_count": len(found["items"])})
+        return found
 
     def market_done(site_id, info, result, error, creds):
         read_done()
+        if error is not None and getattr(error, "kind", "") in ("session",
+                                                               "blocked"):
+            #  The site refused the app's own request - which is normal for
+            #  both of these - so before saying anything, look for the page
+            #  the person saved. The app already writes one on every read, and
+            #  a browser save lands in Downloads; finding it here is what stops
+            #  this from being a file-picker every time.
+            found = market_stock.saved_page(site_id, saved_page_dirs())
+            if found is not None:
+                app.console_line(
+                    "%s refused the app's request (%s); reading the saved page "
+                    "%s instead." % (info["label"],
+                                     getattr(error, "message", str(error)),
+                                     market_stock.describe_page(found)), "cmd")
+                market_done(site_id, info,
+                            {"items": found["items"], "text": found["text"],
+                             "pages": 1, "source": "saved", "saved": found,
+                             #  The site sent nothing at all - it refused -
+                             #  so there is no count to compare against.
+                             "refused": True},
+                            None, creds)
+                return
         if error is not None:
             message = getattr(error, "message", str(error))
             hint = getattr(error, "hint", "")
@@ -6181,8 +6288,9 @@ def build_stock(parent, app):
                                  "err")
                 summary.configure(text="%s could not be read. %s" %
                                        (info["label"],
-                                        "Save the page from your browser and "
-                                        "press \"Read a saved %s page\"."
+                                        "Save the page from your browser; "
+                                        "press \"Read the saved %s page\" and "
+                                        "the app will find it itself."
                                         % info["label"]
                                         if kind == "blocked" else
                                         "It is not signed in."))
@@ -6190,23 +6298,40 @@ def build_stock(parent, app):
                 return
             failed(info["label"], message, hint)
             return
-        page = market_stock.save_page(BASE / info["page"], result["text"])
+        source = result.get("source") or "live"
+        saved = result.get("saved") or {}
+        page = None
+        if result.get("live_text"):
+            #  The app's own copy is kept fresh with what the site really
+            #  served - never with a saved page's words, which would make the
+            #  copy a stale page wearing a fresh date.
+            page = market_stock.save_page(BASE / info["page"],
+                                          result["live_text"])
+        if source == "saved" and saved and not result.get("refused"):
+            app.console_line(
+                "%s sent %d listing%s; the page saved on this computer holds "
+                "%d, so it is what was compared (%s)." %
+                (info["label"], result.get("live_count", 0),
+                 "" if result.get("live_count") == 1 else "s",
+                 len(result["items"]), market_stock.describe_page(saved)),
+                "cmd")
         items = result["items"]
         if not items:
             #  A page with no listing in it that this reader can recognise: the
             #  page's wording changed, and the saved copy is how that gets
             #  fixed. Saying "nothing is listed" would be a lie.
             statuses[site_id].configure(text="page not understood")
+            where = page or saved.get("path") or "?"
             messagebox.showwarning(
                 "Nothing on the %s page could be read" % info["label"],
                 "The page came back as %s, but no listing on it could be read."
                 "\n\nNothing was compared and nothing was changed. The copy "
-                "saved beside the app is what the reader is repaired against:"
-                "\n\n  %s" % (market_stock.describe(result["text"], 200), page),
+                "saved on this computer is what the reader is repaired against:"
+                "\n\n  %s" % (market_stock.describe(result["text"], 200), where),
                 parent=box.winfo_toplevel())
             app.console_line(
                 "%s: the page loaded but no listing could be read; a copy is "
-                "at %s" % (info["label"], page), "err")
+                "at %s" % (info["label"], where), "err")
             clear_list()
             summary.configure(text="%s's page could not be understood." %
                                    info["label"])
@@ -6214,10 +6339,11 @@ def build_stock(parent, app):
         statuses[site_id].configure(text="%d listings" % len(items))
         state["label"] = info["label"]
         state["mode"] = "listed" if site_id == "facebook" else "count"
-        app.console_line(
-            "%s: %d listings read from %s (page copy at %s)." %
-            (info["label"], len(items), market_stock.describe(result["text"]),
-             page), "cmd")
+        if source == "live":
+            app.console_line(
+                "%s: %d listings read from %s (page copy at %s)." %
+                (info["label"], len(items),
+                 market_stock.describe(result["text"]), page), "cmd")
         compare_items(items, info["label"], state["mode"], creds)
         if site_id == "facebook":
             app.console_line(
@@ -6276,38 +6402,73 @@ def build_stock(parent, app):
             lambda result, error: market_done(site_id, info, result, error,
                                               creds))
 
-    def read_saved_page(site_id):
-        """Read a page the person saved from their own signed-in browser.
+    def read_saved_page(site_id, choose=False):
+        """Read the newest page saved from a browser, without a file picker.
 
         This is how eBay and Facebook are read when the site refuses the app's
-        request: the browser has the page, Ctrl+S keeps it, and the parser
-        here is the same one that reads a fetched page.
+        own request. The page is found rather than chosen: the app looks in its
+        own folder and in the folders a browser saves to, newest first, and
+        takes the first one that actually holds this site's listings - the page
+        is recognised by its contents, not by its filename, because a browser
+        names the file after the page's title. ``choose`` opens the picker for
+        the rare case of wanting a different page than the newest one.
         """
-        info = market_stock.SITES[site_id]
-        path = filedialog.askopenfilename(
-            title="Choose the %s page you saved from your browser" %
-                  info["label"],
-            initialdir=str(BASE),
-            filetypes=[("Saved page", "*.html *.htm"), ("All files", "*.*")])
-        if not path:
-            return
-        try:
-            text = Path(path).read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            messagebox.showerror("Could not open that file", str(exc),
-                                 parent=box.winfo_toplevel())
-            return
-        items = market_stock.parse_listings(site_id, text)
+        info = market_stock.SITES[site_id] if site_id else None
+        path, text, items = None, "", []
+        if not choose:
+            found = market_stock.saved_page(site_id, saved_page_dirs(),
+                                            max_age_days=None)
+            if found is not None:
+                path, text, items = found["path"], found["text"], found["items"]
+        if not items:
+            #  Nothing recognised automatically: look at the newest page of any
+            #  kind so its contents can be described, and let the person pick
+            #  one when that is what they meant to do.
+            recent = market_stock.saved_pages(saved_page_dirs(), limit=1)
+            chosen = None
+            if choose or not recent:
+                chosen = filedialog.askopenfilename(
+                    title="Choose the page you saved from your browser",
+                    initialdir=str(BASE),
+                    filetypes=[("Saved page", "*.html *.htm"),
+                               ("All files", "*.*")])
+                if not chosen:
+                    return
+            path = Path(chosen) if chosen else recent[0][0]
+            text = market_stock.read_page(path)
+            try:
+                if not text:
+                    text = Path(path).read_text(encoding="utf-8",
+                                                errors="replace")
+            except OSError as exc:
+                messagebox.showerror("Could not open that file", str(exc),
+                                     parent=box.winfo_toplevel())
+                return
+            if site_id:
+                items = market_stock.parse_listings(site_id, text)
+            else:
+                #  A picked file with no site named: the page says which site
+                #  it is, and saying so out loud beats asking a question the
+                #  page already answers.
+                detected = market_stock.detect_site(text)
+                if detected is not None:
+                    site_id = detected[0]
+                    info = market_stock.SITES[site_id]
+                    items = detected[1]
+                else:
+                    items = []
         if not items:
             messagebox.showwarning(
                 "No listing could be read from that page",
                 "%s looks like %s, but no listing in it could be read.\n\n"
-                "Make sure it is the signed-in %s page itself, not the sign-in "
-                "page or a listing form." %
+                "Make sure it is the signed-in %s listing page itself, not the "
+                "sign-in page or a listing form." %
                 (Path(path).name, market_stock.describe(text),
-                 info["label"]), parent=box.winfo_toplevel())
+                 info["label"] if info else "eBay or Facebook"),
+                parent=box.winfo_toplevel())
             app.console_line("%s: %s has no listing this reader recognises."
-                             % (info["label"], Path(path).name), "err")
+                             % (info["label"] if info else "A saved page",
+                                Path(path).name), "err")
             return
         creds = credentials()
         if not creds:
@@ -6331,13 +6492,20 @@ def build_stock(parent, app):
     ttk.Button(row, text="Compare stock with Facebook",
                command=lambda: compare_market("facebook")).pack(side="left")
 
+    #  The page the site saved is found, not chosen: the app looks in its own
+    #  folder and in Downloads, newest first, and recognises the page by what
+    #  is in it. Picking a file is still there for the odd case of wanting an
+    #  older or a downloaded one.
     row_saved = ttk.Frame(box)
     row_saved.pack(anchor="w", pady=(2, 0))
-    ttk.Button(row_saved, text="Read a saved eBay page...",
+    ttk.Button(row_saved, text="Read the saved eBay page",
                command=lambda: read_saved_page("ebay")).pack(side="left")
-    ttk.Button(row_saved, text="Read a saved Facebook page...",
+    ttk.Button(row_saved, text="Read the saved Facebook page",
                command=lambda: read_saved_page("facebook")).pack(
                    side="left", padx=8)
+    ttk.Button(row_saved, text="Choose a saved page...",
+               command=lambda: read_saved_page(None, choose=True)).pack(
+                   side="left")
 
     # -- what the read is doing ---------------------------------------------
     #  Reading a catalogue of a few thousand products takes long enough that
@@ -6541,17 +6709,433 @@ def build_stock(parent, app):
               text="Both sites need a signed-in session, and both check "
                    "whether a request comes from a browser - eBay answers "
                    "with a \"Pardon our interruption\" page and Facebook with "
-                   "HTTP 400. When that happens the app says so and changes "
-                   "nothing: save the page from your browser with Ctrl+S "
-                   "(HTML only) and use the \"Read a saved page\" button, which "
-                   "uses the same reader. The cookie goes in ebay-cookie.txt "
-                   "or fb-cookie.txt; the whole Cookie header can be pasted at "
-                   "once, on one line or several. A copy of every page read is "
-                   "kept beside the app (ebay-active.html, fb-selling.html) "
-                   "and is never sent anywhere.",
+                   "HTTP 400. Nothing is changed when that happens, and the "
+                   "comparison does not stop: the app looks for the page saved "
+                   "from a signed-in browser - in its own folder and in "
+                   "Downloads, newest first, recognised by what is in it - and "
+                   "reads that instead, saying which file it used. Every live "
+                   "read also writes the app's own copy (ebay-active.html, "
+                   "fb-selling.html) from the page the site really sent, and "
+                   "eBay is read up to 250 listings, the whole of a free "
+                   "store. Facebook renders its first batch and loads the rest "
+                   "as you scroll, so a page saved after scrolling covers more "
+                   "than a request can - when it does, that page is the one "
+                   "compared. The cookie goes in ebay-cookie.txt or "
+                   "fb-cookie.txt; the whole Cookie header can be pasted at "
+                   "once, on one line or several. Nothing on either site is "
+                   "ever changed from this panel.",
               style="Dim.TLabel", wraplength=680, justify="left").pack(
                   anchor="w", pady=(6, 0))
 
+
+
+def build_csledit(parent, app):
+    """Find one CanadianShopper listing by its card, and change it there.
+
+    The comparison panel works out *where the two sites disagree*; this one
+    answers the question that comes next - "where is this card on the other
+    site, and can I fix it from here". A listing can be worded differently,
+    archived months ago, priced from last year, and the vendor dashboard is
+    the only place any of that is visible. Typing the card's name and getting
+    the listing back is the difference between one edit and five minutes of
+    scrolling.
+    """
+    panel_header(parent, app, "csedit")
+    box = ttk.Frame(parent)
+    box.pack(fill="both", expand=True)
+
+    state = {"items": [], "rows": [], "state": "any"}
+
+    def say(text, tag="cmd"):
+        app.console_line(text, tag)
+
+    # --------------------------------------------------------------- reading
+    def load(items, note):
+        state["items"] = list(items or [])
+        run_search()
+        summary.configure(text=note)
+
+    def arrived(rc, out):
+        try:
+            read_btn.configure(state="normal")
+        except Exception:
+            pass
+        if rc != 0:
+            summary.configure(text="CanadianShopper could not be read (exit %s)."
+                                   % rc)
+            say("The CanadianShopper listing read failed (exit %s); nothing "
+                "was read and nothing was changed." % rc, "err")
+            return False
+        items = stock_compare.read_stock_file(out) if out.is_file() else None
+        if items is None:
+            summary.configure(text="CanadianShopper wrote no list to read.")
+            messagebox.showerror(
+                "Could not read CanadianShopper's listings",
+                "The plugin finished but left no list to read.\n\nNothing "
+                "was changed.", parent=box.winfo_toplevel())
+            return False
+        load(items, "%d listings read from CanadianShopper."
+                   % len(items))
+        say("CanadianShopper: %d listings read. Type a card's name to find "
+            "one." % len(items), "ok")
+        return True
+
+    def read_listings():
+        action = TOOL_ACTION(CS_STOCK_ACTION)
+        if not action:
+            messagebox.showinfo(
+                "CanadianShopper listings",
+                "Finding a listing needs the plugin's stock reader, and the "
+                "installed plugin does not have it yet.\n\nNothing is wrong "
+                "with the rest of the app: update the plugin and this panel "
+                "will list the whole catalogue.")
+            say("This CanadianShopper plugin cannot list its listings yet "
+                "(%s)." % CS_STOCK_ACTION, "dim")
+            return
+        out = BASE / "cs-stock.json"
+        try:
+            out.unlink()
+        except FileNotFoundError:
+            pass
+        args = ["--stock-out", str(out)]
+        if CS_COOKIE_FILE.is_file():
+            args += ["--cookie-file", str(CS_COOKIE_FILE)]
+        say("Reading CanadianShopper's listings...", "cmd")
+        summary.configure(text="Reading CanadianShopper's listings...")
+        try:
+            read_btn.configure(state="disabled")
+        except Exception:
+            pass
+        app.run_tool(action, args, "CanadianShopper listings",
+                     cwd=app.settings.get("pipeline_dir", str(WORK)),
+                     on_done=lambda rc: arrived(rc, out))
+
+    # --------------------------------------------------------------- the list
+    def selected():
+        picked = listing.curselection()
+        if not picked or not state["rows"]:
+            messagebox.showinfo("Which listing?",
+                                "Search, then click a listing in the list "
+                                "above.", parent=box.winfo_toplevel())
+            return None
+        index = picked[0]
+        if index >= len(state["rows"]):
+            return None
+        return state["rows"][index]
+
+    def run_search(_event=None):
+        state["state"] = cs_edit.state_key(str(state_var.get() or ""))
+        rows = cs_edit.search(state["items"], str(query_var.get() or ""),
+                              state["state"])
+        state["rows"] = rows
+        listing.delete(0, "end")
+        for item in rows:
+            listing.insert("end", cs_edit.label(item))
+        if rows:
+            list_frame.pack(anchor="w", fill="x", pady=(4, 3))
+            actions.pack(anchor="w", pady=(0, 3))
+        else:
+            list_frame.pack_forget()
+            actions.pack_forget()
+        if not state["items"]:
+            summary.configure(text="Nothing read yet. Press \"Read "
+                                   "CanadianShopper's listings\" first.")
+            return
+        if rows:
+            summary.configure(text="%d of %d listing%s shown." %
+                              (len(rows), len(state["items"]),
+                               "" if len(state["items"]) == 1 else "s"))
+        elif str(query_var.get() or "").strip():
+            summary.configure(text="No listing matches %r. Try fewer words, "
+                                   "or a card number." % query_var.get())
+        else:
+            summary.configure(text="No listing is in that state right now.")
+        return rows
+
+    # -------------------------------------------------------------- writing
+    def apply_change(item, entry):
+        """Send one edit to the plugin, after it has been confirmed."""
+        action = TOOL_ACTION(CS_LISTING_UPDATE_ACTION)
+        if not action:
+            messagebox.showinfo(
+                "This plugin cannot edit a listing yet",
+                "The installed CanadianShopper plugin can list its catalogue "
+                "and set stock, but not change a listing's own details.\n\n"
+                "Nothing was changed. Update the plugin to %s or newer and "
+                "this panel will make the edit for you."
+                % CS_LISTING_UPDATE_VERSION)
+            say("marketplace.listing_update is not declared by the installed "
+                "plugin (%s)." % CS_LISTING_UPDATE_ACTION, "dim")
+            return False
+        plan_path = BASE / "cs-listing-update.json"
+        out = BASE / "cs-listing-update-result.json"
+        try:
+            out.unlink()
+        except FileNotFoundError:
+            pass
+        plan_path.write_text(
+            json.dumps({"items": [entry]}, indent=1, ensure_ascii=False),
+            encoding="utf-8")
+        args = ["--set-file", str(plan_path), "--set-out", str(out)]
+        if CS_COOKIE_FILE.is_file():
+            args += ["--cookie-file", str(CS_COOKIE_FILE)]
+        say("Changing one listing on CanadianShopper...", "cmd")
+        summary.configure(text="Changing the listing on CanadianShopper...")
+        app.run_tool(action, args, "Edit CanadianShopper listing",
+                     cwd=app.settings.get("pipeline_dir", str(WORK)),
+                     on_done=lambda rc: written(rc, item, entry, out))
+
+    def written(rc, item, entry, out):
+        report = cs_edit.report([entry], cs_edit.read_result(out))
+        for failure in report["failed"]:
+            say("Not changed: %s - %s" % (failure["card"] or "that listing",
+                                          failure["why"]), "err")
+        if rc != 0:
+            say("The edit did not finish (exit %s). Nothing was changed." % rc,
+                "err")
+            summary.configure(text="The edit did not finish (exit %s); "
+                                   "nothing was changed." % rc)
+            return False
+        if report["changed"]:
+            #  The row the person was looking at becomes the listing as it now
+            #  stands - matched by identity, then by id, so a re-read is not
+            #  needed to see the change they just made.
+            updated = cs_edit.apply_to_item(item, entry)
+            state["items"] = [
+                updated if (row is item or (
+                    item.get("id") is not None and
+                    str(row.get("id")) == str(item.get("id")))) else row
+                for row in state["items"]]
+            run_search()
+            summary.configure(text="CanadianShopper shows the change now; "
+                                   "your website was not touched.")
+            say("%s: the listing was changed on CanadianShopper (your website "
+                "was not touched)." % (entry.get("title") or "That listing"),
+                "ok")
+            return True
+        if report["unknown"]:
+            say("The plugin did not report on that listing, so this panel "
+                "cannot say it was changed; read the listings again to see "
+                "where it stands.", "err")
+            summary.configure(text="The plugin did not confirm the change.")
+        elif not report["failed"]:
+            say("The plugin finished but reported no change.", "err")
+            summary.configure(text="The plugin reported no change.")
+        return False
+
+    # --------------------------------------------------------------- actions
+    def ask_yes(title, question):
+        return bool(messagebox.askyesno(title, question,
+                                        parent=box.winfo_toplevel()))
+
+    def edit_selected():
+        item = selected()
+        if item is None:
+            return
+        window = box.winfo_toplevel()
+        title = simpledialog.askstring(
+            "Edit the listing",
+            "The title, as it should read on CanadianShopper:",
+            initialvalue=str(item.get("name") or ""), parent=window)
+        if title is None:
+            return
+        price = simpledialog.askstring(
+            "Edit the listing",
+            "The price. Leave it empty to keep the price it has now"
+            "%s:" % ("" if not cs_edit.price_text(item)
+                     else " (%s)" % cs_edit.price_text(item)),
+            initialvalue="", parent=window)
+        if price is None:
+            return
+        count = simpledialog.askstring(
+            "Edit the listing",
+            "How many in stock? Leave it empty to keep the count it has now"
+            "%s:" % ("" if item.get("qty") is None
+                     else " (%s)" % cs_edit.stock_text(item)),
+            initialvalue="", parent=window)
+        if count is None:
+            return
+        price_value = None
+        if str(price).strip():
+            price_value = cs_edit.price_number({"price": price})
+            if price_value is None:
+                messagebox.showwarning("Not a price",
+                                       "%r is not a price." % price,
+                                       parent=window)
+                return
+        count_value = None
+        if str(count).strip():
+            try:
+                count_value = int(str(count).strip())
+            except ValueError:
+                messagebox.showwarning(
+                    "Not a count", "%r is not a whole number." % count,
+                    parent=window)
+                return
+            if count_value < 0:
+                messagebox.showwarning(
+                    "Not a count", "A stock count cannot be negative.",
+                    parent=window)
+                return
+        entry = cs_edit.plan(item, title=title, price=price_value,
+                             inventory=count_value)
+        if entry is None:
+            messagebox.showinfo(
+                "Nothing changed",
+                "Every field is exactly as it already is, so nothing would be "
+                "sent.", parent=window)
+            return
+        lines = cs_edit.describe(entry, item)
+        if not ask_yes(
+                "Change this listing?",
+                "%s\n\n%s\n\nOn CanadianShopper only: your website, its "
+                "prices and its stock are not touched. Write it now?" %
+                (item.get("name") or "That listing", "\n".join(lines))):
+            say("The edit was not confirmed; nothing was written.", "dim")
+            return
+        apply_change(item, entry)
+
+    def set_state(kind):
+        item = selected()
+        if item is None:
+            return
+        entry = cs_edit.plan(item, status=kind)
+        if entry is None:
+            messagebox.showinfo(
+                "Nothing to change",
+                "That listing is already %s." %
+                ("on sale" if kind == "active" else "archived"),
+                parent=box.winfo_toplevel())
+            return
+        if kind == "active":
+            question = ("Put %s on sale on CanadianShopper?\n\n"
+                        "Its state changes; its title, price and stock stay "
+                        "exactly as they are, and your website is not "
+                        "touched." % (item.get("name") or "this listing"))
+            title = "Put this listing on sale?"
+        else:
+            question = ("Archive %s on CanadianShopper?\n\n"
+                        "The listing is put away, not deleted - it can be put "
+                        "back on sale later. Your website is not touched." %
+                        (item.get("name") or "this listing"))
+            title = "Archive this listing?"
+        if not ask_yes(title, question):
+            say("The change was not confirmed; nothing was written.", "dim")
+            return
+        apply_change(item, entry)
+
+    def open_listing():
+        item = selected()
+        if item is None:
+            return
+        url = str(item.get("url") or "").strip()
+        if not url:
+            messagebox.showinfo(
+                "No link for that listing",
+                "The installed plugin did not report the listing's address, so "
+                "there is nothing to open.\n\nPlugin %s and newer report it; "
+                "until then, search the card's name in the vendor dashboard."
+                % CS_LISTING_UPDATE_VERSION, parent=box.winfo_toplevel())
+            return
+        app.open_webpages([url])
+
+    # ---------------------------------------------------------------- layout
+    search_row = ttk.Frame(box)
+    search_row.pack(anchor="w")
+    ttk.Label(search_row, text="Find a listing by card name:").pack(side="left",
+                                                                   padx=(0, 6))
+    query_var = tk.StringVar(master=search_row, value="")
+    query_entry = ttk.Entry(search_row, textvariable=query_var, width=42)
+    query_entry.pack(side="left")
+    query_entry.bind("<Return>", run_search)
+    search_btn = ttk.Button(search_row, text="Search", command=run_search)
+    search_btn.pack(side="left", padx=(6, 0))
+    add_tooltip(search_btn, "Search CanadianShopper's listings for the words "
+                            "typed - a card name, a card number or a SKU; "
+                            "nothing is compared and nothing is written")
+
+    filter_row = ttk.Frame(box)
+    filter_row.pack(anchor="w", pady=(3, 0))
+    ttk.Label(filter_row, text="Show:").pack(side="left", padx=(0, 6))
+    state_var = tk.StringVar(master=filter_row, value=cs_edit.state_label("any"))
+    state_box = ttk.Combobox(filter_row, textvariable=state_var,
+                             state="readonly", width=24,
+                             values=cs_edit.state_labels())
+    state_box.pack(side="left")
+    state_box.bind("<<ComboboxSelected>>", run_search)
+    read_btn = ttk.Button(filter_row, text="Read CanadianShopper's listings",
+                          command=read_listings)
+    read_btn.pack(side="left", padx=(10, 0))
+    add_tooltip(read_btn,
+                "Read every listing on CanadianShopper, with its state and "
+                "stock, so it can be searched here; nothing is changed")
+
+    list_frame = ttk.Frame(box)
+    listing = tk.Listbox(list_frame, height=9, exportselection=False)
+    scroll = ttk.Scrollbar(list_frame, orient="vertical",
+                           command=listing.yview)
+    listing.configure(yscrollcommand=scroll.set)
+    listing.pack(side="left", fill="both", expand=True)
+    scroll.pack(side="right", fill="y")
+
+    actions = ttk.Frame(box)
+    first_row = ttk.Frame(actions)
+    first_row.pack(anchor="w")
+    edit_btn = ttk.Button(first_row, text="Edit the selected listing...",
+                          style="Task.TButton", command=edit_selected)
+    edit_btn.pack(side="left")
+    add_tooltip(edit_btn,
+                "Change the selected listing's title, price or stock on "
+                "CanadianShopper; only the fields you change are sent, and "
+                "your website is not touched")
+    on_sale_btn = ttk.Button(first_row, text="Put the selected listing on sale",
+                             command=lambda: set_state("active"))
+    on_sale_btn.pack(side="left", padx=6)
+    add_tooltip(on_sale_btn,
+                "Move the selected listing from archived (or draft) back to "
+                "on sale on CanadianShopper; its title, price and stock stay "
+                "as they are")
+    archive_btn = ttk.Button(first_row, text="Archive the selected listing",
+                             command=lambda: set_state("archived"))
+    archive_btn.pack(side="left")
+    add_tooltip(archive_btn,
+                "Put the selected listing away on CanadianShopper - it is not "
+                "deleted and can be put back on sale; your website is not "
+                "changed")
+    second_row = ttk.Frame(actions)
+    second_row.pack(anchor="w", pady=(3, 0))
+    open_btn = ttk.Button(second_row,
+                          text="Open the selected listing on CanadianShopper",
+                          command=open_listing)
+    open_btn.pack(side="left")
+    add_tooltip(open_btn,
+                "Open the selected listing's own page on CanadianShopper, for "
+                "the details this panel does not edit - its description and "
+                "photos; nothing is changed")
+
+    summary = ttk.Label(box, text="Nothing read yet.", style="Dim.TLabel",
+                        wraplength=680, justify="left")
+    summary.pack(anchor="w", pady=(3, 0))
+
+    panel_note(parent, (
+        "Search the whole CanadianShopper catalogue by card name - the words "
+        "you remember, not the exact title - or leave the box empty and pick a "
+        "state to work through the archived listings one by one. A row reads "
+        "card, state, stock, price and SKU. Select one and it can be renamed, "
+        "repriced, recounted, put back on sale or archived; the confirmation "
+        "names every field that changes, only the changed fields are sent, and "
+        "nothing on your website is touched. Editing a listing needs plugin "
+        "%s or newer; reading needs the stock reader (1.0.25+ reports the "
+        "archived ones too)." % CS_LISTING_UPDATE_VERSION))
+
+    #  The last read is already on disk, so opening the panel is not an empty
+    #  box: a search works before anything is read again.
+    if (BASE / "cs-stock.json").is_file():
+        cached = stock_compare.read_stock_file(BASE / "cs-stock.json")
+        if cached:
+            load(cached, "%d listings from the last read. Press \"Read "
+                         "CanadianShopper's listings\" to refresh them."
+                 % len(cached))
 
 
 def build_plugins(parent, app):
@@ -9992,6 +10576,7 @@ PANEL_BUILDERS = {
     "sold": build_sold,
     "checklist": build_checklist,
     "stock": build_stock,
+    "csedit": build_csledit,
     "zerostock": build_zerostock,
     "ordersheet": build_ordersheet,
     "square": build_square,

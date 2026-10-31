@@ -1,0 +1,654 @@
+#!/usr/bin/env python3
+"""Checks for the CanadianShopper listing panel - finding one, changing it.
+
+No network, no vendor account: the plugin's stock list is a JSON file and the
+write is a recorded tool run. What is worth testing is everything that decides
+*what* gets written - the fuzzy search, the change plan that carries only the
+fields that changed, and the reading of the plugin's answer - because a
+listing edit that goes wrong is a title or a price on a live shop.
+"""
+import importlib.util
+import json
+import sys
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+APP = Path(__file__).resolve().parent
+sys.path[:0] = [str(APP), str(APP / "pipeline")]
+
+PASS = 0
+FAIL = 0
+
+
+def check(name, cond, extra=""):
+    global PASS, FAIL
+    if cond:
+        PASS += 1
+        print("  PASS  %s" % name)
+    else:
+        FAIL += 1
+        print("  FAIL  %s %s" % (name, extra))
+
+
+def load_harness():
+    spec = importlib.util.spec_from_file_location(
+        "panel", str(APP / "test-photo-panel.py"))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["panel"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+harness = load_harness()
+gui = harness.gui
+import cs_edit                                        # noqa: E402
+import stock_compare                                  # noqa: E402
+
+LISTINGS = [
+    {"id": 101, "title": "1973-74 O-Pee-Chee Walt Tkaczuk #25 EX-MT",
+     "sku": "OPC73-25", "inventory": 3, "status": "active",
+     "price": "CA$8.50", "url": "https://cs.example/l/101"},
+    {"id": 102, "title": "1973-74 O-Pee-Chee Joe Watson #91 EX-MT",
+     "sku": "OPC73-91", "inventory": 0, "status": "Archived",
+     "price": "5.00", "url": "https://cs.example/l/102"},
+    {"id": 103, "title": "1989 O-Pee-Chee Wayne Gretzky #1",
+     "sku": "OPC89-1", "inventory": 1, "status": "Draft", "price": "12"},
+    {"id": 104, "title": "1971-72 O-Pee-Chee Eddie Shack #60",
+     "sku": "OPC71-60", "inventory": 2, "status": "active"},
+    {"id": 105, "title": "1971-72 O-Pee-Chee Jean Beliveau #20",
+     "sku": "OPC71-20", "inventory": None, "status": "active"},
+]
+
+
+def items():
+    """The five listings, in the shape the plugin's reader produces."""
+    return stock_compare.plugin_items({"items": [dict(row) for row in LISTINGS]})
+
+
+# ---------------------------------------------------------------- the search
+def test_finding_a_listing():
+    print()
+    print("== 1. a card's name finds its listing, however it is worded ==")
+    rows = items()
+    found = cs_edit.search(rows, "tkaczuk")
+    check("a remembered surname finds the card",
+          [row["name"] for row in found] ==
+          ["1973-74 O-Pee-Chee Walt Tkaczuk #25 EX-MT"],
+          str([row["name"] for row in found]))
+    check("a card number finds it too",
+          [row["name"] for row in cs_edit.search(rows, "watson 91")] ==
+          ["1973-74 O-Pee-Chee Joe Watson #91 EX-MT"], "")
+    check("two cards from one set are told apart by their names",
+          len(cs_edit.search(rows, "gretzky")) == 1 and
+          len(cs_edit.search(rows, "shack")) == 1, "")
+    check("a SKU typed exactly is a hit on its own",
+          [row["id"] for row in cs_edit.search(rows, "OPC73-91")] == [102], "")
+    check("so is a listing id",
+          [row["id"] for row in cs_edit.search(rows, "103")] == [103], "")
+    check("a miss is an empty list, not everything",
+          cs_edit.search(rows, "zzzz not a card") == [], "")
+    check("an empty box is every listing, in name order",
+          [row["name"][:4] for row in cs_edit.search(rows, "")] ==
+          sorted(row["name"][:4] for row in rows), "")
+
+    #  The state filter is how the archived listings are worked through.
+    archived = cs_edit.search(rows, "", "archived")
+    check("the archived filter shows only what was put away",
+          [row["id"] for row in archived] == [102], str(archived))
+    check("the on-sale filter shows only what can be bought",
+          sorted(row["id"] for row in cs_edit.search(rows, "", "active")) ==
+          [101, 104, 105], "")
+    check("the draft filter shows what is one publish away",
+          [row["id"] for row in cs_edit.search(rows, "", "draft")] == [103], "")
+    check("anything not on sale is the off-sale filter",
+          sorted(row["id"] for row in cs_edit.search(rows, "", "off-sale")) ==
+          [102, 103], "")
+    check("a search and a filter work together",
+          [row["id"] for row in cs_edit.search(rows, "gretzky", "active")] ==
+          [], "")
+    check("any state is every state",
+          len(cs_edit.search(rows, "", "any")) == len(rows), "")
+    check("the chooser's words and keys agree both ways",
+          all(cs_edit.state_key(cs_edit.state_label(key)) == key
+              for key, _label in cs_edit.STATES), str(cs_edit.state_labels()))
+    check("a state nobody knows asks for everything",
+          cs_edit.state_key("sort by magic") == "any", "")
+    check("the list is capped so a catalogue cannot become a spreadsheet",
+          len(cs_edit.search(rows, "", limit=2)) == 2, "")
+
+
+def test_what_a_row_says():
+    print()
+    print("== 2. a row says the card, its state, its stock and its price ==")
+    rows = items()
+    live = cs_edit.label(rows[0])
+    check("a live listing reads as on sale",
+          "on sale" in live and "3 in stock" in live and "CA$8.50" in live and
+          "OPC73-25" in live, live)
+    check("an archived one says so in the vendor's word",
+          "archived" in cs_edit.label(rows[1]).lower(), cs_edit.label(rows[1]))
+    check("a draft is named as one",
+          "a Draft" in cs_edit.label(rows[2]), cs_edit.label(rows[2]))
+    check("a listing with no count says nothing rather than zero",
+          "in stock" not in cs_edit.label(rows[4]), cs_edit.label(rows[4]))
+    check("no price is printed when the reader reports none",
+          "CA$" not in cs_edit.label(rows[3]), cs_edit.label(rows[3]))
+    check("a price is read as a number whatever the vendor prefixes",
+          cs_edit.price_number(rows[0]) == 8.5 and
+          abs(cs_edit.price_number({"price": "1,250.00"}) - 1250.0) < 0.001 and
+          cs_edit.price_number({"price": ""}) is None, "")
+
+
+# ---------------------------------------------------------------- the change
+def test_only_what_changed_is_sent():
+    print()
+    print("== 3. a change carries the fields that changed, and nothing else ==")
+    rows = items()
+    entry = cs_edit.plan(rows[1], status="active")
+    check("putting an archived listing back on sale sends its state",
+          entry["status"] == "active" and "title" in entry and
+          entry["title"] == rows[1]["name"], str(entry))
+    check("and not its price, which was not asked about",
+          "price" not in entry, str(entry))
+    check("nor its stock", "inventory" not in entry, str(entry))
+    entry = cs_edit.plan(rows[0], title="1973-74 O-Pee-Chee Walt Tkaczuk #25 "
+                                       "EX-MT New York Rangers")
+    check("a rename sends the new title",
+          entry["title"].endswith("New York Rangers") and entry["id"] == 101,
+          str(entry))
+    check("and nothing else", set(entry) == {"id", "sku", "title", "card"},
+          str(entry))
+    entry = cs_edit.plan(rows[0], price=9.5, inventory=2)
+    check("a reprice and a recount are two fields",
+          entry["price"] == "9.50" and entry["inventory"] == 2, str(entry))
+    check("an unchanged field is not sent at all",
+          cs_edit.plan(rows[0], title=rows[0]["name"], price=8.5,
+                       inventory=3) is None, "")
+    check("nothing asked is nothing sent", cs_edit.plan(rows[0]) is None, "")
+    check("a count of zero is a real change, not an empty one",
+          cs_edit.plan(rows[0], inventory=0)["inventory"] == 0, "")
+    check("a title the plugin reports with odd spacing is not a change",
+          cs_edit.plan({"name": "A  card", "sku": "", "qty": 1,
+                        "status": "active"},
+                       title=" A card ") is None, "")
+    check("the state the plan compares against is the listing's own",
+          cs_edit.current(rows[1])["status"] == "archived" and
+          cs_edit.current(rows[2])["status"] == "off", str(cs_edit.current(rows[2])))
+    check("a listing with no id can still be planned by SKU and title",
+          cs_edit.plan({"name": "No id card", "sku": "NI-1", "qty": 1,
+                        "status": "active"}, inventory=4)["sku"] == "NI-1", "")
+
+
+def test_the_confirmation_says_what_will_change():
+    print()
+    print("== 4. the confirmation names every field, old and new ==")
+    rows = items()
+    lines = cs_edit.describe(cs_edit.plan(rows[1], status="active"), rows[1])
+    check("a state change reads both ways round",
+          len(lines) == 1 and "Archived" in lines[0] and
+          "->" in lines[0] and "on sale" in lines[0], str(lines))
+    lines = cs_edit.describe(cs_edit.plan(rows[0], inventory=5, price=11),
+                             rows[0])
+    check("a stock change names both counts",
+          any("Stock:  3 in stock  ->  5" == line for line in lines), str(lines))
+    check("a price change names both prices",
+          any("CA$8.50" in line and "11.00" in line for line in lines),
+          str(lines))
+    entry = cs_edit.plan(rows[0], title="A better title entirely")
+    lines = cs_edit.describe(entry, rows[0])
+    check("a rename shows the old title and the new one",
+          any(rows[0]["name"] in line for line in lines) and
+          any("A better title entirely" in line for line in lines), str(lines))
+    check("the summary counts the listings, not the fields",
+          cs_edit.summary([entry]) ==
+          "1 listing would be changed on CanadianShopper." and
+          "2 listings" in cs_edit.summary([entry, entry]), "")
+
+
+def test_the_plugins_answer_is_read_conservatively():
+    print()
+    print("== 5. what the plugin did not confirm did not happen ==")
+    folder = Path(tempfile.mkdtemp())
+    rows = items()
+    entry = cs_edit.plan(rows[1], status="active")
+    check("a missing result file is no answer at all",
+          cs_edit.read_result(folder / "nothing.json") == {}, "")
+    (folder / "broken.json").write_text("{oops", encoding="utf-8")
+    check("unreadable JSON is no answer either",
+          cs_edit.read_result(folder / "broken.json") == {}, "")
+    answer = {"updated": [{"id": 102}], "failed": []}
+    report = cs_edit.report([entry], answer)
+    check("the listing the plugin reports is changed",
+          report["changed"] == [entry] and not report["failed"], str(report))
+    report = cs_edit.report([entry], {"updated": [], "failed": [
+        {"id": 102, "why": "that listing is not editable"}]})
+    check("a failure keeps the plugin's own sentence",
+          report["failed"] and
+          report["failed"][0]["why"] == "that listing is not editable",
+          str(report))
+    report = cs_edit.report([entry], {"updated": []})
+    check("a listing the answer does not mention is unknown, never changed",
+          report["unknown"] == [entry] and not report["changed"], str(report))
+    check("the id decides when both sides have one, even over the title",
+          cs_edit.report([entry], {"updated": [{"id": 999}]})["unknown"] ==
+          [entry], "")
+    updated = cs_edit.apply_to_item(rows[1], entry)
+    check("the row becomes what was written",
+          updated["name"] == rows[1]["name"] and updated["qty"] == 0 and
+          updated["status"] == "active", str(updated))
+    check("and the listing it came from is not one of the changes",
+          rows[1]["status"] == "Archived", rows[1]["status"])
+    check("a price the reader reports as a number is still read",
+          cs_edit.price_number({"price": 8.5}) == 8.5, "")
+
+
+# ------------------------------------------------------------------ the panel
+def build_panel():
+    """A panel built in a throwaway folder, with the app pointed at it.
+
+    ``gui.BASE`` is left pointing at the folder for the rest of the test: the
+    panel's own closures read it when a button is pressed, so patching it only
+    while the panel is built would have the buttons write their plan into the
+    real application folder.
+    """
+    folder = Path(tempfile.mkdtemp())
+    harness.install_plugin("1.0.19", folder / "plugin")
+    gui.BASE = folder
+    app = harness.FakeApp(folder)
+    parent = harness.FakeWidget()
+    gui.build_csledit(parent, app)
+    return folder, app, parent
+
+
+def find(parent, kind, text, exact=True):
+    for widget in parent.walk():
+        if not isinstance(widget, kind):
+            continue
+        got = str(widget.cget("text"))
+        if (got == text) if exact else (got.startswith(text)):
+            return widget
+    return None
+
+
+def listing_box(parent):
+    return next((w for w in parent.walk()
+                 if isinstance(w, gui.tk.Listbox)), None)
+
+
+def query_box(parent):
+    return next((w for w in parent.walk() if isinstance(w, gui.ttk.Entry)),
+                None)
+
+
+def read_into(app, folder, parent, payload=None):
+    """Press the read button and hand it the plugin's stock list."""
+    find(parent, gui.ttk.Button, "Read CanadianShopper's listings").invoke()
+    run = app.runs[-1]
+    out = Path(run["args"][1])
+    out.write_text(json.dumps({"items": payload or LISTINGS}), encoding="utf-8")
+    run["on_done"](0)
+    return out
+
+
+def test_the_panel_reads_and_lists():
+    print()
+    print("== 6. the panel lists the catalogue and searches it ==")
+    folder, app, parent = build_panel()
+    check("it opens saying nothing has been read",
+          find(parent, gui.ttk.Label, "Nothing read yet", exact=False)
+          is not None,
+          str([w.cget("text") for w in parent.walk()
+               if isinstance(w, gui.ttk.Label)]))
+    check("with nothing read the list is empty and out of the way",
+          listing_box(parent) is not None and not listing_box(parent).items and
+          not listing_box(parent).parent.packed, "")
+
+    harness._BOX.shown.clear()
+    with patch.object(gui, "TOOL_ACTION", lambda action: ""):
+        find(parent, gui.ttk.Button, "Read CanadianShopper's listings").invoke()
+    check("without the plugin's reader it says what is missing",
+          harness._BOX.shown and "stock reader" in str(harness._BOX.shown[-1]),
+          str(harness._BOX.shown))
+    check("and starts nothing", not app.runs, str(app.runs))
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        out = read_into(app, folder, parent)
+    run = app.runs[-1]
+    check("it asks the plugin for the whole stock list",
+          "--stock-out" in run["args"] and Path(run["args"][1]) == out, str(run))
+    check("the plugin is the one that lists the catalogue",
+          run["tool"] == "/plugins/cs/stock.py", run["tool"])
+    check("every listing is on the list",
+          len(listing_box(parent).items) == len(LISTINGS),
+          str(listing_box(parent).items))
+    check("and the summary says how many came back",
+          find(parent, gui.ttk.Label, "%d listings read" % len(LISTINGS),
+               exact=False) is not None,
+          str([w.cget("text") for w in parent.walk()
+               if isinstance(w, gui.ttk.Label)][-3:]))
+
+    #  Typing a name, then pressing Search.
+    entry = query_box(parent)
+    entry._kw["textvariable"].set("tkaczuk")
+    find(parent, gui.ttk.Button, "Search").invoke()
+    check("a search narrows the list to the card",
+          len(listing_box(parent).items) == 1 and
+          "Tkaczuk" in listing_box(parent).items[0],
+          str(listing_box(parent).items))
+    check("and the summary counts what is shown",
+          find(parent, gui.ttk.Label, "1 of %d listings shown" % len(LISTINGS),
+               exact=False) is not None, "")
+    entry._kw["textvariable"].set("zzzz nothing")
+    find(parent, gui.ttk.Button, "Search").invoke()
+    check("a search that matches nothing says so",
+          find(parent, gui.ttk.Label, "No listing matches", exact=False)
+          is not None, "")
+    check("and the list is out of the way rather than empty",
+          not listing_box(parent).parent.packed, "")
+
+    #  The state chooser works on its own, which is how the archived listings
+    #  are worked through.
+    entry._kw["textvariable"].set("")
+    chooser = next(w for w in parent.walk()
+                   if isinstance(w, gui.ttk.Combobox))
+    chooser._kw["textvariable"].set("Archived")
+    chooser.event_generate("<<ComboboxSelected>>")
+    check("the archived filter shows the archived listing alone",
+          len(listing_box(parent).items) == 1 and
+          "Watson" in listing_box(parent).items[0],
+          str(listing_box(parent).items))
+    chooser._kw["textvariable"].set("Any state")
+    chooser.event_generate("<<ComboboxSelected>>")
+    check("and any state brings the catalogue back",
+          len(listing_box(parent).items) == len(LISTINGS), "")
+
+
+def test_the_panel_changes_one_listing():
+    print()
+    print("== 7. one listing can be renamed, repriced, recounted or moved ==")
+    folder, app, parent = build_panel()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app, folder, parent)
+
+    # ---- moving an archived listing back on sale
+    find(parent, gui.ttk.Button, "Search").invoke()
+    box = listing_box(parent)
+    index = next(i for i, text in enumerate(box.items)
+                 if "Watson" in text)
+    box.selection_set(index)
+    harness._BOX.askyesno = lambda *a, **k: True
+    harness._BOX.shown.clear()
+    runs_before = len(app.runs)
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/edit.py"):
+        find(parent, gui.ttk.Button,
+             "Put the selected listing on sale").invoke()
+    check("a state change is sent as one field",
+          len(app.runs) == runs_before + 1, str(app.runs[-1:]))
+    plan = json.loads((folder / "cs-listing-update.json").read_text(
+        encoding="utf-8"))["items"]
+    check("the plan names the listing and only its state",
+          plan[0]["id"] == 102 and plan[0]["status"] == "active" and
+          "price" not in plan[0] and "inventory" not in plan[0], str(plan))
+    run = app.runs[-1]
+    check("the plugin is asked to write it",
+          "--set-file" in run["args"] and "--set-out" in run["args"],
+          str(run["args"]))
+    Path(run["args"][3]).write_text(json.dumps(
+        {"updated": [{"id": 102}], "failed": []}), encoding="utf-8")
+    run["on_done"](0)
+    check("the row on the list now says it is on sale",
+          any("Watson" in text and "on sale" in text
+              for text in listing_box(parent).items),
+          str(listing_box(parent).items))
+    check("and the console says the website was not touched",
+          any("your website was not touched" in text.lower()
+              for _tag, text in app.lines), str(app.lines[-2:]))
+
+    # ---- editing the details
+    box = listing_box(parent)
+    index = next(i for i, text in enumerate(box.items) if "Tkaczuk" in text)
+    box.selection_set(index)
+    answers = iter(["1973-74 O-Pee-Chee Walt Tkaczuk #25 EX-MT Rangers",
+                    "9.5", "2"])
+    shown = []
+    harness._BOX.shown.clear()
+
+    def ask_string(*args, **kwargs):
+        shown.append(args[0] if args else "")
+        return next(answers)
+
+    runs_before = len(app.runs)
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/edit.py"), \
+            patch.object(gui.simpledialog, "askstring", ask_string):
+        find(parent, gui.ttk.Button, "Edit the selected listing",
+             exact=False).invoke()
+    check("the editor asks for the title, the price and the stock",
+          len(shown) == 3, str(shown))
+    check("and sends exactly the three fields that changed",
+          len(app.runs) == runs_before + 1, str(app.runs[-1:]))
+    plan = json.loads((folder / "cs-listing-update.json").read_text(
+        encoding="utf-8"))["items"][0]
+    check("the title, price and count are all in the plan",
+          plan["title"].endswith("Rangers") and plan["price"] == "9.50" and
+          plan["inventory"] == 2, str(plan))
+    run = app.runs[-1]
+    Path(run["args"][3]).write_text(json.dumps(
+        {"updated": [{"id": 101}], "failed": []}), encoding="utf-8")
+    run["on_done"](0)
+    check("the row shows the new price and count",
+          any("Rangers" in text and "9.50" in text and "2 in stock" in text
+              for text in listing_box(parent).items),
+          str(listing_box(parent).items))
+
+    # ---- an edit that changes nothing is not sent
+    answers = iter(["1973-74 O-Pee-Chee Walt Tkaczuk #25 EX-MT Rangers", "", ""])
+    harness._BOX.shown.clear()
+    runs_before = len(app.runs)
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/edit.py"), \
+            patch.object(gui.simpledialog, "askstring", ask_string):
+        find(parent, gui.ttk.Button, "Edit the selected listing",
+             exact=False).invoke()
+    check("an unchanged listing writes nothing",
+          len(app.runs) == runs_before and
+          any("Nothing changed" in str(payload)
+              for _kind, payload in harness._BOX.shown),
+          str(harness._BOX.shown) + str(len(app.runs)))
+
+    # ---- a declined confirmation writes nothing
+    answers = iter(["A brand new title for this card", "", ""])
+    runs_before = len(app.runs)
+    harness._BOX.askyesno = lambda *a, **k: False
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/edit.py"), \
+            patch.object(gui.simpledialog, "askstring", ask_string):
+        find(parent, gui.ttk.Button, "Edit the selected listing",
+             exact=False).invoke()
+    check("an edit that is not confirmed is not written",
+          len(app.runs) == runs_before, str(len(app.runs)))
+    check("and the console says so",
+          any("not confirmed" in text for _tag, text in app.lines),
+          str(app.lines[-2:]))
+    harness._BOX.askyesno = lambda *a, **k: True
+
+    # ---- archiving
+    box = listing_box(parent)
+    index = next(i for i, text in enumerate(box.items) if "Gretzky" in text)
+    box.selection_set(index)
+    runs_before = len(app.runs)
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/edit.py"):
+        find(parent, gui.ttk.Button, "Archive the selected listing").invoke()
+    plan = json.loads((folder / "cs-listing-update.json").read_text(
+        encoding="utf-8"))["items"][0]
+    check("archiving sends the archived state and nothing else",
+          plan["status"] == "archived" and plan["id"] == 103 and
+          len(app.runs) == runs_before + 1, str(plan))
+
+
+def test_the_panel_refuses_what_it_cannot_do():
+    print()
+    print("== 8. what the panel cannot do, it says - and changes nothing ==")
+    folder, app, parent = build_panel()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app, folder, parent)
+    find(parent, gui.ttk.Button, "Search").invoke()
+    listing_box(parent).selection_set(0)
+
+    box = listing_box(parent)
+    for index, text in enumerate(box.items):
+        if "Watson" in text:          # archived: a state change is possible
+            box.selection_set(index)
+            break
+    harness._BOX.shown.clear()
+    runs_before = len(app.runs)
+    with patch.object(gui, "TOOL_ACTION", lambda action: ""):
+        find(parent, gui.ttk.Button,
+             "Put the selected listing on sale").invoke()
+    check("a plugin that cannot edit is named, with the version that can",
+          harness._BOX.shown and "1.0.28" in str(harness._BOX.shown[-1]),
+          str(harness._BOX.shown))
+    check("and nothing was started", len(app.runs) == runs_before, "")
+
+    #  A listing that is already in the state asked for is not written at all.
+    box = listing_box(parent)
+    for index, text in enumerate(box.items):
+        if "Tkaczuk" in text:
+            box.selection_set(index)
+            break
+    harness._BOX.shown.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/edit.py"):
+        find(parent, gui.ttk.Button,
+             "Put the selected listing on sale").invoke()
+    check("a listing already on sale is not written again",
+          any("already on sale" in str(payload)
+              for _kind, payload in harness._BOX.shown),
+          str(harness._BOX.shown))
+
+    #  A result that does not mention the listing leaves it exactly as it was.
+    box = listing_box(parent)
+    for index, text in enumerate(box.items):
+        if "Shack" in text:
+            box.selection_set(index)
+            break
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/edit.py"):
+        find(parent, gui.ttk.Button, "Archive the selected listing").invoke()
+    run = app.runs[-1]
+    Path(run["args"][3]).write_text(json.dumps({"updated": []}),
+                                    encoding="utf-8")
+    run["on_done"](0)
+    check("an unconfirmed change is not shown as done",
+          any("did not confirm" in text or "did not report" in text
+              for _tag, text in app.lines), str(app.lines[-2:]))
+    check("and the row still says what it said",
+          any("Shack" in text and "on sale" in text
+              for text in listing_box(parent).items),
+          str(listing_box(parent).items))
+
+    #  A failure keeps the plugin's own words.
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/edit.py"):
+        find(parent, gui.ttk.Button, "Archive the selected listing").invoke()
+    run = app.runs[-1]
+    Path(run["args"][3]).write_text(json.dumps(
+        {"updated": [], "failed": [{"id": 104,
+                                    "why": "that listing is protected"}]}),
+        encoding="utf-8")
+    run["on_done"](0)
+    check("a failure is printed in the plugin's own words",
+          any("that listing is protected" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+
+    #  Nothing selected is a question, not a guess. An empty list is the one
+    #  state the test's stand-in can express it in.
+    entry = query_box(parent)
+    entry._kw["textvariable"].set("zzzz nothing")
+    find(parent, gui.ttk.Button, "Search").invoke()
+    harness._BOX.shown.clear()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/edit.py"):
+        find(parent, gui.ttk.Button, "Archive the selected listing").invoke()
+    check("with nothing selected it asks which listing",
+          any("Which listing" in str(payload)
+              for _kind, payload in harness._BOX.shown), str(harness._BOX.shown))
+
+
+def test_opening_a_listing_and_the_last_read():
+    print()
+    print("== 9. the listing's own page, and the list from the last read ==")
+    folder, app, parent = build_panel()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app, folder, parent)
+    find(parent, gui.ttk.Button, "Search").invoke()
+
+    box = listing_box(parent)
+    for index, text in enumerate(box.items):
+        if "Tkaczuk" in text:
+            box.selection_set(index)
+            break
+    find(parent, gui.ttk.Button,
+         "Open the selected listing on CanadianShopper").invoke()
+    check("the listing's own page opens in the browser",
+          app.opened == ["https://cs.example/l/101"], str(app.opened))
+
+    #  A row the reader reported no address for says so instead of opening
+    #  something random.
+    for index, text in enumerate(box.items):
+        if "Shack" in text:
+            box.selection_set(index)
+            break
+    harness._BOX.shown.clear()
+    app.opened[:] = []
+    find(parent, gui.ttk.Button,
+         "Open the selected listing on CanadianShopper").invoke()
+    check("a listing with no link says why there is nothing to open",
+          not app.opened and harness._BOX.shown and
+          "did not report the listing's address" in str(harness._BOX.shown[-1]),
+          str(harness._BOX.shown))
+
+    #  A panel opened again offers the list that is already on disk, so a
+    #  search works before anything is read.
+    (folder / "cs-stock.json").write_text(
+        json.dumps({"items": LISTINGS}), encoding="utf-8")
+    parent2 = harness.FakeWidget()
+    gui.build_csledit(parent2, harness.FakeApp(folder))
+    box2 = listing_box(parent2)
+    check("the last read is used when the panel opens again",
+          box2 is not None and len(box2.items) == len(LISTINGS),
+          str(box2 and box2.items))
+    check("and the panel says where the list came from",
+          any("from the last read" in str(w.cget("text"))
+              for w in parent2.walk() if isinstance(w, gui.ttk.Label)),
+          str([w.cget("text") for w in parent2.walk()
+               if isinstance(w, gui.ttk.Label)][-2:]))
+
+
+def main():
+    test_finding_a_listing()
+    test_what_a_row_says()
+    test_only_what_changed_is_sent()
+    test_the_confirmation_says_what_will_change()
+    test_the_plugins_answer_is_read_conservatively()
+    test_the_panel_reads_and_lists()
+    test_the_panel_changes_one_listing()
+    test_the_panel_refuses_what_it_cannot_do()
+    test_opening_a_listing_and_the_last_read()
+    print()
+    if FAIL:
+        print("FAILED %d   PASSED %d" % (FAIL, PASS))
+        return 1
+    print("ALL CS EDIT CHECKS PASSED (%d)" % PASS)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
