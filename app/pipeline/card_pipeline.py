@@ -295,6 +295,17 @@ def maybe_store_old_images(folder, settings=None):
               % problem, file=sys.stderr)
         return 0
     plan = image_store.plan(folder, store)
+    #  A terminal has no window to look at them in, so nothing is deleted
+    #  here - but saying how many look empty explains what the app offers,
+    #  and why a folder of black tiles is not worth keeping. The check reads
+    #  every image, so it is skipped for a pile that was never cleared.
+    if len(plan["files"]) <= 300:
+        blanks = image_store.blank_images(plan["files"])
+        if blanks:
+            print("  %s of them look empty - only the background, no card. "
+                  "Alex Collect offers to delete those, in a window you can "
+                  "look at them in, before it moves the rest."
+                  % len(blanks))
     if not ask_yes_no("\n  %s.\n  Move them? [y/N] "
                       % image_store.describe(plan)):
         print("  Keeping them where they are.")

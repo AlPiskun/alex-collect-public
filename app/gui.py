@@ -71,7 +71,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.00"
+VERSION = "3.01"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -740,6 +740,20 @@ def _safe_mtime(path):
         return path.stat().st_mtime
     except OSError:
         return 0.0
+
+
+def short_file_name(path, width=18):
+    """A file's name without its extension, cut short for a small caption.
+
+    The grid's captions sit under a 132-pixel picture, so a listing title
+    would wrap into three lines and push the next row off the window. What
+    matters here is telling one tile from another, and the start of the name
+    does that; the full name is in the console line after a failure.
+    """
+    stem = Path(str(path)).stem or Path(str(path)).name
+    if len(stem) <= width:
+        return stem
+    return stem[:max(1, width - 1)] + "\u2026"
 
 
 def find_pipeline_script(settings):
@@ -1945,6 +1959,11 @@ TOOLTIPS = {
     "Add / update button": "Save this command as a new button, or update the selected one",
     "Run the Facebook feed updater": "Run the Facebook feed companion on its own",
     "Split the scans and build the CSV": "Split the scans and run the listing step",
+    # -- empty tiles ------------------------------------------------------
+    "Delete the ticked images": "Delete the images left ticked here - they are only the background, with no card on them",
+    "Keep them all": "Delete nothing; these images are moved with the rest",
+    "Tick everything": "Tick every image here, so all of them would be deleted",
+    "Untick everything": "Untick every image here, so none of them would be deleted",
     # -- console ----------------------------------------------------------
     "Send": "Send what you typed to the running tool",
     "Enter": "Send a bare Enter to the running tool",
@@ -2888,6 +2907,9 @@ class App(tk.Tk):
                     "Move the older card images?",
                     "%s from earlier batches are still in\n%s\n\n"
                     "Move them to\n%s\nbefore %s writes its own images?\n\n"
+                    "Any of them that are only the background are shown to "
+                    "you first, and the ones you leave ticked are deleted "
+                    "rather than filed.\n\n"
                     "Yes: move them and carry on.\n"
                     "No: keep them where they are and carry on.\n"
                     "Cancel: do not start this run."
@@ -2905,11 +2927,201 @@ class App(tk.Tk):
                     "Card images: keeping the %s from earlier batches in %s."
                     % (image_store.plural(len(older), "image"), folder), "dim")
                 return True
+        #  Before anything is moved: the pictures that are only background
+        #  are offered for deletion, laid out so they can be looked at first.
+        #  An image that is really a card is unticked there and moves with
+        #  the rest, and nothing is deleted without that answer.
+        try:
+            self.ask_delete_blank_images(folder, plan["files"])
+        except Exception as exc:
+            self.console_line("Card images: could not look for empty images "
+                              "(%s)." % exc, "warn")
+        plan = image_store.forget_missing(plan)
         result = image_store.move(plan)
         for line in image_store.result_text(result):
             self.console_line("Card images: " + line,
                               "warn" if result["failed"] else "ok")
         return True
+
+    def ask_delete_blank_images(self, folder, files):
+        """Show the images that look empty, and delete only the ticked ones.
+
+        A blank slot on a scan is near-black, and its tile is a photograph of
+        nothing: carrying it into the store would file it, and finding it
+        again later is a job for nothing. So before the older images are
+        moved, the ones that look empty are laid out as pictures to be looked
+        at - a deleted picture does not come back, so the decision is made by
+        eye and not by a file name - and only the ones left ticked are
+        deleted. An unticked picture is simply moved with the rest.
+
+        Returns the images that were deleted.
+        """
+        files = [Path(path) for path in files or ()]
+        if not files:
+            return []
+
+        #  Measuring hundreds of images is not instant; say so rather than
+        #  leaving the window looking hung before it has opened.
+        progress = None
+        try:
+            if len(files) >= 24:
+                progress = ProgressWindow(
+                    self, title="Looking for empty images",
+                    text="Checking %s for ones that are only the background..."
+                    % image_store.plural(len(files), "image"),
+                    total=len(files))
+        except Exception:
+            progress = None
+
+        def step(done, total):
+            if progress is not None:
+                try:
+                    progress.step(done=done, total=total)
+                    progress.pump()
+                except Exception:
+                    pass
+
+        try:
+            blanks = image_store.blank_images(files, on_step=step)
+        finally:
+            if progress is not None:
+                try:
+                    progress.close()
+                except Exception:
+                    pass
+        if not blanks:
+            return []
+
+        top = tk.Toplevel(self)
+        top.title("Images with nothing on them")
+        top.transient(self)
+        try:
+            top.grab_set()
+        except Exception:
+            pass
+        width = min(900, max(560, self.winfo_screenwidth() - 60))
+        height = min(640, max(430, self.winfo_screenheight() - 90))
+        try:
+            top.geometry("%dx%d" % (width, height))
+        except Exception:
+            pass
+
+        ticks = {str(path): tk.BooleanVar(master=top, value=True)
+                 for path in blanks}
+        answer = {"delete": False, "files": []}
+
+        def ticked_now():
+            chosen = []
+            for key, var in ticks.items():
+                try:
+                    wanted = bool(var.get())
+                except Exception:
+                    wanted = True       # an unreadable tick never deletes
+                if wanted:
+                    chosen.append(Path(key))
+            return chosen
+
+        #  Actions first, pictures under them, the explanation last - the
+        #  buttons must never scroll away under a long grid.
+        bar = ttk.Frame(top)
+        bar.pack(fill="x", padx=10, pady=(10, 2))
+        count_line = ttk.Label(bar, text="", style="Dim.TLabel")
+        count_line.pack(side="left")
+        ttk.Button(bar, text="Keep them all",
+                   command=lambda: finish(False)).pack(side="right", padx=8)
+        ttk.Button(bar, text="Delete the ticked images",
+                   command=lambda: finish(True)).pack(side="right")
+
+        ticks_row = ttk.Frame(top)
+        ticks_row.pack(fill="x", padx=10, pady=(0, 4))
+
+        def refresh_count():
+            try:
+                count_line.configure(
+                    text="%d of %d ticked for deleting"
+                    % (len(ticked_now()), len(blanks)))
+            except Exception:
+                pass
+
+        def set_all(value):
+            for var in ticks.values():
+                try:
+                    var.set(value)
+                except Exception:
+                    pass
+            refresh_count()
+
+        ttk.Button(ticks_row, text="Tick everything",
+                   command=lambda: set_all(True)).pack(side="left")
+        ttk.Button(ticks_row, text="Untick everything",
+                   command=lambda: set_all(False)).pack(side="left", padx=8)
+
+        holder = ScrollFrame(top)
+        holder.pack(fill="both", expand=True, padx=10, pady=(0, 4))
+        thumbs = photo_thumbs.Thumbnails()
+        keep_pictures = {}                 # Tk frees an unreferenced image
+        for row in photo_thumbs.rows(blanks):
+            line = ttk.Frame(holder.inner)
+            line.pack(anchor="w", pady=4)
+            for path in row:
+                key = str(path)
+                cell = tk.Frame(line, highlightthickness=1,
+                                highlightbackground="#d8dce2")
+                cell.pack(side="left", padx=6)
+                label = ttk.Label(cell, text="(no picture)")
+                picture = photo_thumbs.as_photo(thumbs.get(path))
+                if picture is not None:
+                    keep_pictures[key] = picture
+                    label.configure(image=picture, text="")
+                label.pack(padx=2, pady=(2, 0))
+                ttk.Checkbutton(cell, text=short_file_name(path),
+                                variable=ticks[key],
+                                command=refresh_count).pack(padx=2, pady=(0, 2))
+        refresh_count()
+
+        ttk.Label(top, text="These %s look empty - only the background, no "
+                  "card. They are the ones in %s.\n\n"
+                  "Look at them before you delete: a deleted picture cannot be "
+                  "brought back. Ticked ones are deleted; unticked ones are "
+                  "moved to the image store with the others. The other %s are "
+                  "cards and are moved as they are. Closing this window "
+                  "deletes nothing."
+                  % (image_store.plural(len(blanks), "image"), folder,
+                     image_store.plural(len(files) - len(blanks), "image")),
+                  wraplength=max(500, width - 40), justify="left",
+                  style="Dim.TLabel").pack(anchor="w", padx=10, pady=(0, 8))
+
+        def finish(delete):
+            answer["delete"] = bool(delete)
+            answer["files"] = ticked_now() if delete else []
+            try:
+                top.destroy()
+            except Exception:
+                pass
+
+        try:
+            top.protocol("WM_DELETE_WINDOW", lambda: finish(False))
+        except Exception:
+            pass
+        attach_tooltips(top)
+        self.wait_window(top)
+
+        if not answer["delete"]:
+            self.console_line(
+                "Card images: keeping the %s that look empty - they are moved "
+                "with the rest." % image_store.plural(len(blanks), "image"),
+                "dim")
+            return []
+        chosen = answer["files"]
+        if not chosen:
+            self.console_line("Card images: nothing was ticked, so nothing "
+                              "was deleted.", "dim")
+            return []
+        result = image_store.delete(chosen)
+        for line in image_store.delete_text(result):
+            self.console_line("Card images: " + line,
+                              "warn" if result["failed"] else "ok")
+        return [item["path"] for item in result["deleted"]]
 
     def _choose_browser(self):
         """Ask once, on first use, which installed browser should open URLs."""

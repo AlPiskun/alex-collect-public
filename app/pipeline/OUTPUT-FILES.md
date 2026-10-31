@@ -31,8 +31,11 @@ These are outside the marketplace result rollups and may grow or persist by desi
   and no run deletes from them. They are emptied by the **Older card images go
   to** setting instead: before a new batch writes its first image, the older
   ones are moved into `<setting>/<output|replacements>/<YYYY-MM-DD HH-MM>/`,
-  after a confirmation. Only images move - the CSVs and reports in the same
-  folders are records and stay.
+  after a confirmation. Before that move the tiles that are only background
+  are shown as pictures and the ticked ones are **deleted** instead of being
+  filed - a blank slot still produces a black tile, and a photograph of
+  nothing is not worth keeping. Only images are ever moved or deleted; the
+  CSVs and reports in the same folders are records and stay.
 - `canadianshopper_products/cs-image-cache.json` grows as images are uploaded. It prevents duplicate uploads, so do not delete it casually. The older plugin-side cache is moved here if needed.
 - `facebook_runlog_YYYY-MM-DD.txt` accumulates one run log per day; `feed_debug_response.txt` is only written on feed-fetch failure and is overwritten on the next such failure.
 - `facebook_merchant_products/helper_last_run.log` holds everything a nested Facebook helper printed on its last failure - the traceback the console used to lose. It is overwritten by the next failing helper and written only when one fails.

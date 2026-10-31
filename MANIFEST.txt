@@ -1,4 +1,4 @@
-Alex Collect 3.00 — public core package
+Alex Collect 3.01 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -40,7 +40,8 @@ app/:
   order_pdf.py                    draw an order on the same paper, with a
                                    picture of every card on it
   image_store.py                   move the last batch's card images out of
-                                   the way before a new batch writes its own
+                                   the way before a new batch writes its own,
+                                   and spot the tiles that are only background
   doc_images.py                    the cards' pictures: fetch each once, keep
                                    it, draw it in its box (both documents)
   pdf_writer.py                    write the drawn pages as a PDF, with a

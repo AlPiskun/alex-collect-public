@@ -24,6 +24,11 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
+try:
+    from PIL import Image, ImageStat
+except ImportError:                                  # no Pillow: nothing is
+    Image = ImageStat = None                         # ever called empty
+
 #: What counts as an image. Everything else in these folders belongs to the
 #: batch as a record - a CSV, a report - and is never touched.
 IMAGE_SUFFIXES = frozenset({".webp", ".jpg", ".jpeg", ".png", ".tif", ".tiff",
@@ -31,6 +36,14 @@ IMAGE_SUFFIXES = frozenset({".webp", ".jpg", ".jpeg", ".png", ".tif", ".tiff",
 
 #: The only sub-folder that is part of the work: the split sheets' tiles.
 TILES_DIRNAME = "_tiles"
+
+#: What an empty tile looks like: the scan's background and nothing else. A
+#: tile is called empty only when no part of it is bright and it is all one
+#: shade - a dark card still has white edges, letters and a number on it, and
+#: one bright pixel is enough to keep it.
+BLANK_BRIGHTNESS = 48          # brightest pixel, 0-255, scaled down
+BLANK_SPREAD = 12              # how much the shade varies across the tile
+BLANK_SAMPLE = 96              # the tile is measured at this size, in pixels
 
 
 def plural(count, word):
@@ -142,6 +155,124 @@ def plan(folder, store, keep=(), now=None):
         counter += 1
     return {"folder": folder, "store": store, "target": target,
             "files": files, "stamp": when}
+
+
+def looks_blank(path):
+    """Whether an image is only the background, with no card on it.
+
+    Blank slots on a scan are near-black, so the test is the opposite of a
+    card: nothing bright anywhere and barely any variation. It is measured on
+    a small copy, which is quick and cannot be fooled by one noisy pixel.
+
+    Returns False for anything it cannot read, and for every image when
+    Pillow is missing: this decides what may be deleted, so the answer when
+    unsure is always no.
+    """
+    if Image is None:
+        return False
+    try:
+        with Image.open(path) as opened:
+            image = opened.convert("L")
+            image.thumbnail((BLANK_SAMPLE, BLANK_SAMPLE))
+            stat = ImageStat.Stat(image)
+    except Exception:
+        return False
+    brightest = int(stat.extrema[0][1])
+    spread = float(stat.stddev[0])
+    return brightest <= BLANK_BRIGHTNESS and spread <= BLANK_SPREAD
+
+
+def blank_images(files, on_step=None):
+    """Which of ``files`` look empty, in the order they were given.
+
+    ``on_step`` is called as ``on_step(done, total)`` every so often, so a
+    folder with hundreds of images in it can move a bar instead of looking
+    hung.
+    """
+    files = [Path(path) for path in files or ()]
+    found = []
+    total = len(files)
+    for index, path in enumerate(files, start=1):
+        if looks_blank(path):
+            found.append(path)
+        if on_step is not None and (index % 10 == 0 or index == total):
+            try:
+                on_step(index, total)
+            except Exception:
+                pass
+    return found
+
+
+def forget_missing(plan_result):
+    """``plan_result`` with the files that are no longer there dropped.
+
+    The plan is made before the empty images are looked at, and some of them
+    may be deleted before the move - the move must not then report its own
+    deletions as failures.
+    """
+    plan_result = dict(plan_result or {})
+    plan_result["files"] = [Path(path)
+                            for path in plan_result.get("files") or []
+                            if Path(path).is_file()]
+    return plan_result
+
+
+def size_text(size):
+    """``834 B``, ``12.4 KB``, ``3.1 MB`` - a number a person can picture."""
+    try:
+        size = int(size or 0)
+    except (TypeError, ValueError):
+        size = 0
+    if size < 1024:
+        return "%d B" % size
+    if size < 1024 * 1024:
+        return "%.1f KB" % (size / 1024.0)
+    return "%.1f MB" % (size / (1024.0 * 1024.0))
+
+
+def delete(files):
+    """Delete exactly the images given; name every one that would not go.
+
+    Nothing is ever guessed at: the caller passes the pictures the person
+    left ticked, and a file that cannot be removed stays where it is and is
+    reported. Returns what went, what did not, and how much room it freed.
+    """
+    deleted, failed = [], []
+    for path in files or ():
+        path = Path(path)
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        try:
+            path.unlink()
+        except OSError as exc:
+            failed.append({"name": path.name, "path": path, "why": str(exc)})
+            continue
+        deleted.append({"name": path.name, "path": path, "size": size})
+    return {"deleted": deleted, "failed": failed,
+            "freed": sum(item["size"] for item in deleted)}
+
+
+def delete_text(result):
+    """The console lines for a finished delete."""
+    result = result or {}
+    deleted = result.get("deleted") or []
+    failed = result.get("failed") or []
+    lines = []
+    if deleted:
+        lines.append("Deleted %s that %s only the background (%s freed)."
+                     % (plural(len(deleted), "image"),
+                        "was" if len(deleted) == 1 else "were",
+                        size_text(result.get("freed"))))
+    if failed:
+        lines.append("%s could not be deleted and %s still there: %s."
+                     % (plural(len(failed), "image"),
+                        "is" if len(failed) == 1 else "are",
+                        ", ".join(item["name"] for item in failed[:3])))
+    if not lines:
+        lines.append("No empty images were deleted.")
+    return lines
 
 
 def describe(plan_result):

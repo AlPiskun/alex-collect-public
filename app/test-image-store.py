@@ -8,19 +8,27 @@ scan). This is the rule that keeps them apart, so what matters is that it:
 
   * only ever looks at images - a CSV or a report in those folders is a
     record and is never touched;
-  * never deletes, never overwrites, and never renames what it moves;
+  * never overwrites and never renames what it moves;
   * keeps the ``_tiles`` shape, because that is how a sheet is put back
     together;
+  * deletes **only** the black tiles the person leaves ticked in a window
+    showing them as pictures, and only after agreeing to the move at all;
   * does nothing at all without an answer that says yes - a closed dialog is
     a cancelled run, never a silent move.
 
-tkinter is stubbed, so the app-level half runs without a display.
+Pillow draws the tiles these tests measure; tkinter is stubbed, so the
+app-level half runs without a display.
 """
 import sys
 import tempfile
 import types
 from datetime import datetime
 from pathlib import Path
+
+try:
+    from PIL import Image, ImageDraw
+except ImportError:                                  # pragma: no cover
+    Image = ImageDraw = None
 
 APP = Path(__file__).resolve().parent
 sys.path[:0] = [str(APP), str(APP / "pipeline")]
@@ -40,7 +48,19 @@ def check(name, cond, extra=""):
 
 
 # ------------------------------------------------------------------ Tk stub
+WINDOWS = []          # every Toplevel the app opened, so a test can press it
+
+
 class FakeWidget:
+    """Enough of a widget to build and drive the app's dialogs.
+
+    Anything not written out here answers ``self`` from a call, which is what
+    a Tk widget does for the layout and measuring calls a dialog makes in
+    passing. Each Tk class gets its own subclass below, because "is this a
+    Button or a Label?" decides whether a caption is a button that needs an
+    explanation.
+    """
+
     def __init__(self, *args, **kwargs):
         self._kw = dict(kwargs)
         self.children = []
@@ -48,42 +68,146 @@ class FakeWidget:
         self.parent = args[0] if args else None
         if self.parent is not None and hasattr(self.parent, "children"):
             self.parent.children.append(self)
+        self.destroyed = False
 
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return lambda *a, **k: self
+
+    # -- layout -----------------------------------------------------------
     def pack(self, *a, **k): return self
+    def pack_forget(self, *a, **k): return self
     def grid(self, *a, **k): return self
     def place(self, *a, **k): return self
     def bind(self, *a, **k): return self
+    def bind_all(self, *a, **k): return self
+    def unbind_all(self, *a, **k): return self
     def configure(self, **k): self._kw.update(k)
     def config(self, **k): self._kw.update(k)
     def cget(self, key): return self._kw.get(key, "")
     def winfo_children(self): return list(self.children)
-    def destroy(self): pass
+    def destroy(self): self.destroyed = True
+    def winfo_exists(self): return True
+    def winfo_toplevel(self): return self
+    def winfo_width(self): return 800
+    def winfo_height(self): return 600
+    def update_idletasks(self): return None
+    def update(self): return None
     def focus_set(self): pass
     def yview(self, *a, **k): return (0.0, 1.0)
-    def protocol(self, *a, **k): return None
+    def yview_scroll(self, *a, **k): return None
+    def bbox(self, *a, **k): return (0, 0, 200, 200)
+    def create_window(self, *a, **k): return 1
+    def itemconfigure(self, *a, **k): return None
+    def columnconfigure(self, *a, **k): return None
+    def rowconfigure(self, *a, **k): return None
     def insert(self, *a, **k): pass
     def delete(self, *a, **k): pass
     def get(self, *a, **k): return ""
     def set(self, value): pass
     def curselection(self): return ()
+    def invoke(self):
+        if self.command:
+            return self.command()
+
+    def after(self, delay, callback=None):
+        """Remembered, never fired: a page that re-measures itself would
+        otherwise recurse inside its own measurement."""
+        self.jobs = getattr(self, "jobs", {})
+        self._job_no = getattr(self, "_job_no", 0) + 1
+        job = "job-%d" % self._job_no
+        self.jobs[job] = (delay, callback)
+        return job
+
+    def after_idle(self, callback=None): return self.after(0, callback)
+    def after_cancel(self, job): getattr(self, "jobs", {}).pop(job, None)
+
     def walk(self):
         yield self
         for child in self.children:
             yield from child.walk()
 
 
+class FakeVar:
+    """A Tk variable that really holds its value."""
+
+    def __init__(self, master=None, value=None, **k):
+        self._value = value
+
+    def get(self): return self._value
+    def set(self, value): self._value = value
+    def trace_add(self, *_a, **_k): return "trace"
+    def trace(self, *_a, **_k): return "trace"
+    def trace_remove(self, *_a, **_k): return None
+
+
+class FakeToplevel(FakeWidget):
+    """A dialog window: remembers its geometry and how it was closed."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self._title = ""
+        self._geometry = ""
+        self.protocol_handlers = {}
+        WINDOWS.append(self)
+
+    def title(self, value=None):
+        if value is not None:
+            self._title = value
+        return self._title
+
+    def geometry(self, value=None):
+        if value is not None:
+            self._geometry = value
+        return self._geometry
+
+    def transient(self, *a, **k): return self
+    def resizable(self, *a, **k): return self
+    def grab_set(self, *a, **k): return self
+    def grab_release(self, *a, **k): return self
+    def wait_window(self, *a, **k): return None
+    def protocol(self, name, func=None):
+        if func is not None:
+            self.protocol_handlers[name] = func
+        return self.protocol_handlers.get(name)
+
+    def winfo_screenwidth(self): return 1280
+    def winfo_screenheight(self): return 1024
+
+
+def widget_class(name, base=FakeWidget):
+    """A fake that stands in for one Tk class, so isinstance() is honest."""
+    return type("Fake" + name, (base,), {})
+
+
+def make_checkbutton():
+    """A check box whose invoke() flips its variable, as Tk's does."""
+    class FakeCheckbutton(widget_class("Checkbutton")):
+        def invoke(self):
+            var = self._kw.get("variable")
+            if var is not None and hasattr(var, "get"):
+                var.set(not var.get())
+            return super().invoke()
+    return FakeCheckbutton
+
+
 def install_tk():
     tk = types.ModuleType("tkinter")
-    for name in ("Frame", "Label", "Button", "Entry", "Text", "Listbox",
-                 "Toplevel", "Canvas", "StringVar", "BooleanVar", "IntVar",
-                 "Tk"):
-        setattr(tk, name, FakeWidget)
+    for name, base in dict(Frame=FakeWidget, Label=FakeWidget,
+                           Button=FakeWidget, Entry=FakeWidget, Text=FakeWidget,
+                           Listbox=FakeWidget, Toplevel=FakeToplevel,
+                           Canvas=FakeWidget, StringVar=FakeVar,
+                           BooleanVar=FakeVar, IntVar=FakeVar,
+                           Tk=FakeToplevel).items():
+        setattr(tk, name, widget_class(name, base))
     tk.font = types.SimpleNamespace(nametofont=lambda *a, **k: FakeWidget())
     ttk = types.ModuleType("tkinter.ttk")
-    for name in ("Frame", "Label", "Button", "Entry", "LabelFrame", "Notebook",
-                 "Scrollbar", "Checkbutton", "Radiobutton", "Combobox",
+    for name in ("Frame", "Label", "Button", "Entry", "LabelFrame",
+                 "Notebook", "Scrollbar", "Radiobutton", "Combobox",
                  "Treeview", "Separator", "Progressbar"):
-        setattr(ttk, name, FakeWidget)
+        setattr(ttk, name, widget_class(name))
+    ttk.Checkbutton = make_checkbutton()
     ttk.Style = lambda *a, **k: types.SimpleNamespace(
         configure=lambda *a, **k: None, lookup=lambda *a, **k: "22",
         theme_use=lambda *a, **k: None, map=lambda *a, **k: None)
@@ -143,12 +267,16 @@ def make_folder(root, name, images=3, tiles=1):
 
 
 class FakeApp:
-    """The part of the app these two methods use, and nothing else."""
+    """The part of the app these methods use, and nothing else."""
 
     def __init__(self, settings=None):
         self.settings = dict(settings or {})
         self.lines = []
         self.saved = []
+        self.windows = []
+        #  Set by a test to "be the person": called with the open window,
+        #  it presses whichever button that test is about.
+        self.window_driver = None
 
     def console_line(self, text, tag=None):
         self.lines.append((tag, str(text)))
@@ -156,6 +284,34 @@ class FakeApp:
     def set_setting(self, key, value):
         self.settings[key] = value
         self.saved.append((key, value))
+
+    def winfo_screenwidth(self): return 1280
+    def winfo_screenheight(self): return 1024
+    def update_idletasks(self): return None
+
+    def after(self, delay, callback=None):
+        if callback is not None:
+            callback()
+        return "after-id"
+
+    def wait_window(self, window):
+        """Stand in for Tk: let the test answer, then close what it did not.
+
+        A window nobody pressed anything in is closed the way the X closes
+        it, which runs the window's own handler - so "closed" is tested as
+        the app really meets it.
+        """
+        self.windows.append(window)
+        if self.window_driver is not None:
+            self.window_driver(window, self)
+        if getattr(window, "destroyed", False):
+            return
+        handler = (getattr(window, "protocol_handlers", None) or {}).get(
+            "WM_DELETE_WINDOW")
+        if handler is not None:
+            handler()
+        else:
+            window.destroy()
 
 
 #  The real methods, unbound from Tk: they only ever touch settings, the
@@ -167,7 +323,7 @@ def bind(method_name):
 
 
 for _name in ("prepare_image_folder", "_move_older_images", "ask_image_store",
-              "image_store_dir"):
+              "image_store_dir", "ask_delete_blank_images"):
     setattr(FakeApp, _name, bind(_name))
 
 
@@ -572,6 +728,450 @@ def test_every_place_is_behind_the_question():
 
 
 
+
+
+# ------------------------------------------------------- images on disk
+def blank_image(path, shade=6):
+    """A picture of an empty slot: the scan's background and nothing else."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (120, 160), (shade, shade, shade)).save(path)
+    return path
+
+
+def card_image(path):
+    """A picture of a card: dark table, bright card."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image = Image.new("RGB", (120, 160), (4, 4, 4))
+    ImageDraw.Draw(image).rectangle([8, 10, 112, 150], fill=(232, 226, 214))
+    image.save(path)
+    return path
+
+
+def dark_card_image(path):
+    """A dark card with white lettering: one bright pixel keeps it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image = Image.new("RGB", (120, 160), (4, 4, 4))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle([8, 10, 112, 150], fill=(15, 13, 11))
+    draw.rectangle([20, 60, 46, 66], fill=(245, 245, 245))
+    image.save(path)
+    return path
+
+
+def press(window, caption):
+    """Press the button with this caption; True when it was found."""
+    for widget in window.walk():
+        if (isinstance(widget, (_TTK.Button, _TK.Button)) and
+                widget.cget("text") == caption):
+            widget.invoke()
+            return True
+    return False
+
+
+def checkbuttons(window):
+    return [widget for widget in window.walk()
+            if isinstance(widget, _TTK.Checkbutton)]
+
+
+def label_text(window):
+    return " ".join(str(widget.cget("text")) for widget in window.walk()
+                    if not isinstance(widget, (_TTK.Button, _TTK.Checkbutton)))
+
+
+def driver_press(caption, untick=()):
+    """A window driver: untick these captions, then press that button."""
+    def drive(window, app):
+        for widget in checkbuttons(window):
+            if widget.cget("text") in untick:
+                widget.invoke()
+        press(window, caption)
+    return drive
+
+
+def test_what_looks_empty(root):
+    print()
+    print("== 14. what counts as an empty image ==")
+    empty = blank_image(root / "blanks" / "black.webp")
+    noisy = blank_image(root / "blanks" / "noisy.webp", shade=22)
+    card = card_image(root / "blanks" / "card.webp")
+    dark = dark_card_image(root / "blanks" / "dark-card.webp")
+    grey = blank_image(root / "blanks" / "grey.webp", shade=128)
+    corrupt = root / "blanks" / "corrupt.webp"
+    corrupt.write_bytes(b"not an image at all")
+
+    check("a tile of the background alone is empty",
+          image_store.looks_blank(empty) is True)
+    check("a slightly noisy background is empty too",
+          image_store.looks_blank(noisy) is True)
+    check("a card on that background is not",
+          image_store.looks_blank(card) is False)
+    check("a dark card still is not - its lettering is bright",
+          image_store.looks_blank(dark) is False)
+    check("a grey tile is not empty, because it is not the background",
+          image_store.looks_blank(grey) is False)
+    check("a file that will not open is never called empty",
+          image_store.looks_blank(corrupt) is False)
+    check("a file that is not there is never called empty",
+          image_store.looks_blank(root / "blanks" / "gone.webp") is False)
+
+    found = image_store.blank_images([card, empty, dark, noisy, grey, corrupt])
+    check("only the empty ones are offered, in the order given",
+          found == [empty, noisy], str(found))
+    check("an empty list of files asks nothing",
+          image_store.blank_images([]) == [])
+
+    steps = []
+    image_store.blank_images([card, empty] * 6,
+                             on_step=lambda done, total: steps.append(
+                                 (done, total)))
+    check("a long check reports its progress",
+          steps and steps[-1] == (12, 12), str(steps))
+    check("and the count is the whole list",
+          all(total == 12 for _done, total in steps), str(steps))
+
+
+def test_deleting_only_what_is_ticked(root):
+    print()
+    print("== 15. deleting is a separate, small, reportable act ==")
+    folder = root / "delete-me"
+    folder.mkdir()
+    one = blank_image(folder / "one.webp")
+    two = blank_image(folder / "two.webp")
+    keep = card_image(folder / "keep.webp")
+    result = image_store.delete([one, two, folder / "gone.webp"])
+    check("the images given are gone",
+          not one.exists() and not two.exists())
+    check("the one next to them is untouched", keep.is_file())
+    check("a file that was already gone is reported, not raised",
+          [item["name"] for item in result["failed"]] == ["gone.webp"],
+          str(result["failed"]))
+    check("what went is counted", len(result["deleted"]) == 2)
+    check("and the room it freed is added up",
+          result["freed"] == sum(item["size"] for item in result["deleted"]) > 0)
+    check("it says so in one line",
+          image_store.delete_text(result)[0].startswith(
+              "Deleted 2 images that were only the background"),
+          str(image_store.delete_text(result)))
+
+    stubborn = root / "delete-me" / "a-folder.webp"
+    stubborn.mkdir()
+    failed = image_store.delete([stubborn])
+    check("something that cannot be deleted is named with the reason",
+          failed["deleted"] == [] and failed["failed"] and
+          "director" in failed["failed"][0]["why"].lower(),
+          str(failed["failed"]))
+    check("and nothing claims to have been deleted",
+          not any(line.startswith("Deleted")
+                  for line in image_store.delete_text(failed)),
+          str(image_store.delete_text(failed)))
+
+    single = image_store.delete([blank_image(folder / "only.webp")])
+    check("one image is one image, in English",
+          image_store.delete_text(single)[0] ==
+          "Deleted 1 image that was only the background (%s freed)."
+          % image_store.size_text(single["freed"]),
+          str(image_store.delete_text(single)))
+    check("sizes read as sizes",
+          (image_store.size_text(900), image_store.size_text(1536),
+           image_store.size_text(3 * 1024 * 1024)) ==
+          ("900 B", "1.5 KB", "3.0 MB"), "")
+
+
+def test_the_plan_follows_a_delete(root):
+    print()
+    print("== 16. a file deleted before the move is not a failed move ==")
+    folder, _made = make_folder(root / "plan-after", "output", images=3,
+                                tiles=0)
+    store = root / "plan-after" / "store"
+    store.mkdir()
+    plan = image_store.plan(folder, store, now=datetime(2026, 10, 31, 13, 0))
+    image_store.delete([plan["files"][1]])
+    after = image_store.forget_missing(plan)
+    check("the deleted file is dropped from the plan",
+          len(after["files"]) == 2 and
+          plan["files"][1] not in after["files"], str(after["files"]))
+    check("the rest of the plan is kept",
+          after["target"] == plan["target"] and
+          after["store"] == plan["store"], "")
+    check("the plan it was given was not changed",
+          len(plan["files"]) == 3, str(len(plan["files"])))
+
+
+def make_sitting(root, name, blanks=2, cards=2):
+    """A folder with the last batch's images in it, empty ones included."""
+    folder = root / name / "output"
+    folder.mkdir(parents=True)
+    empties = [blank_image(folder / ("blank_%d.webp" % index))
+               for index in range(blanks)]
+    pictures = [card_image(folder / ("card_%d.webp" % index))
+                for index in range(cards)]
+    return folder, empties, pictures
+
+
+def test_the_window_deletes_what_is_ticked(root):
+    print()
+    print("== 17. the window: every ticked image goes, the cards stay ==")
+    folder, empties, pictures = make_sitting(root, "window-all")
+    store = root / "window-all" / "store"
+    store.mkdir()
+    app = FakeApp({"image_store_dir": str(store)})
+    app.window_driver = driver_press("Delete the ticked images")
+    answers(yes_no_cancel=True)
+    went = app.prepare_image_folder(folder)
+
+    window = app.windows[0] if app.windows else None
+    check("a window opens before anything is moved", window is not None)
+    check("it is called something a person can read",
+          window is not None and "nothing on them" in window.title(),
+          window and window.title())
+    check("it shows one picture per empty image",
+          window is not None and len(checkbuttons(window)) == 2,
+          window and [w.cget("text") for w in checkbuttons(window)])
+    check("each picture says which file it is",
+          window is not None and
+          [w.cget("text") for w in checkbuttons(window)] ==
+          ["blank_0", "blank_1"],
+          window and [w.cget("text") for w in checkbuttons(window)])
+    check("they all start ticked, and the line says so",
+          window is not None and
+          "2 of 2 ticked for deleting" in label_text(window),
+          window and label_text(window)[:120])
+    endings = {w.cget("text") for w in (window.walk() if window else [])
+               if isinstance(w, _TTK.Button)}
+    check("both buttons that end it are there, and the two tick-all ones",
+          endings == {"Delete the ticked images", "Keep them all",
+                      "Tick everything", "Untick everything"}, str(endings))
+    said = label_text(window) if window is not None else ""
+    check("and the explanation sits with the window, not above the buttons",
+          "cannot be brought back" in said, said[:200])
+
+    check("the empty ones were deleted",
+          not any(path.exists() for path in empties))
+    check("the cards were not",
+          all(path.exists() is False for path in pictures), 
+          "(they are moved, so they are no longer in the folder either)")
+    moved = sorted(path.name for path in
+                   (store / "output").rglob("*.webp"))
+    check("only the cards were moved to the store",
+          moved == ["card_0.webp", "card_1.webp"], str(moved))
+    check("the console says what was deleted and what was moved",
+          any("Deleted 2 images" in line for _tag, line in app.lines) and
+          any("Moved 2 older card images" in line for _tag, line in app.lines),
+          str(app.lines))
+    check("and the run carried on", went is True)
+
+    #  A folder with nothing empty in it is not worth a window at all.
+    only_cards = root / "window-all" / "cards-only" / "output"
+    only_cards.mkdir(parents=True)
+    card_image(only_cards / "a.webp")
+    card_image(only_cards / "b.webp")
+    app = FakeApp({"image_store_dir": str(store)})
+    app.window_driver = driver_press("Delete the ticked images")
+    answers(yes_no_cancel=True)
+    app.prepare_image_folder(only_cards)
+    check("a folder of cards opens no window", app.windows == [],
+          str(len(app.windows)))
+    check("and both cards are moved",
+          sorted(path.name for path in (store / "output").rglob("*.webp")).
+          count("a.webp") == 1, "")
+
+
+def test_untick_keeps_one(root):
+    print()
+    print("== 18. a picture that is really a card is unticked and kept ==")
+    folder, empties, _pictures = make_sitting(root, "window-some", blanks=3,
+                                              cards=1)
+    store = root / "window-some" / "store"
+    store.mkdir()
+    app = FakeApp({"image_store_dir": str(store)})
+    app.window_driver = driver_press("Delete the ticked images",
+                                     untick=("blank_1",))
+    answers(yes_no_cancel=True)
+    app.prepare_image_folder(folder)
+    check("the unticked one was not deleted",
+          any(path.name == "blank_1.webp"
+              for path in (store / "output").rglob("*.webp")),
+          str(sorted(path.name for path in (store / "output").rglob("*"))))
+    check("the ticked ones went",
+          not empties[0].exists() and not empties[2].exists())
+    moved = sorted(path.name for path in (store / "output").rglob("*.webp"))
+    check("and the kept one was moved with the rest",
+          moved == ["blank_1.webp", "card_0.webp"], str(moved))
+    check("the count said two of three before it went",
+          any("2 of 3 ticked" in str(w.cget("text"))
+              for w in app.windows[0].walk()), "")
+
+
+def test_keeping_them_all(root):
+    print()
+    print("== 19. nothing is deleted without that answer ==")
+    folder, empties, _pictures = make_sitting(root, "window-none")
+    store = root / "window-none" / "store"
+    store.mkdir()
+
+    app = FakeApp({"image_store_dir": str(store)})
+    app.window_driver = driver_press("Keep them all")
+    answers(yes_no_cancel=True)
+    app.prepare_image_folder(folder)
+    moved = sorted(path.name for path in (store / "output").rglob("*.webp"))
+    check("every image is in the store, empty ones included - so none of "
+          "them was deleted",
+          moved == ["blank_0.webp", "blank_1.webp",
+                    "card_0.webp", "card_1.webp"], str(moved))
+    check("and the console says they were kept",
+          any("keeping the 2 images that look empty" in line
+              for _tag, line in app.lines), str(app.lines))
+
+    print()
+    print("== 20. a window nobody answers deletes nothing ==")
+    folder, empties, _pictures = make_sitting(root, "window-closed")
+    store = root / "window-closed" / "store"
+    store.mkdir()
+    app = FakeApp({"image_store_dir": str(store)})
+    app.window_driver = None                     # nothing is pressed at all
+    answers(yes_no_cancel=True)
+    app.prepare_image_folder(folder)
+    moved = sorted(path.name for path in (store / "output").rglob("*.webp"))
+    check("closing the window deletes nothing",
+          moved == ["blank_0.webp", "blank_1.webp",
+                    "card_0.webp", "card_1.webp"], str(moved))
+    check("and everything was still moved",
+          not any(path.exists() for path in empties))
+
+    print()
+    print("== 21. deleting with nothing ticked says so ==")
+    folder, empties, _pictures = make_sitting(root, "window-empty-ticks")
+    store = root / "window-empty-ticks" / "store"
+    store.mkdir()
+    app = FakeApp({"image_store_dir": str(store)})
+
+    def drive(window, _app):
+        press(window, "Untick everything")
+        press(window, "Delete the ticked images")
+
+    app.window_driver = drive
+    answers(yes_no_cancel=True)
+    app.prepare_image_folder(folder)
+    check("'untick everything' then delete deletes nothing",
+          any("nothing was ticked, so nothing was deleted" in line
+              for _tag, line in app.lines), str(app.lines))
+    moved = sorted(path.name for path in (store / "output").rglob("*.webp"))
+    check("and everything is moved as usual",
+          len(moved) == 4, str(moved))
+
+
+def test_the_window_comes_after_the_yes(root):
+    print()
+    print("== 22. the pictures are only offered once the move is answered ==")
+    folder, empties, pictures = make_sitting(root, "window-order")
+    store = root / "window-order" / "store"
+    store.mkdir()
+
+    app = FakeApp({"image_store_dir": str(store)})
+    app.window_driver = driver_press("Delete the ticked images")
+    asked = answers(yes_no_cancel=False)          # "no, keep them where they are"
+    carried_on = app.prepare_image_folder(folder)
+    check("the move was asked about first", asked["yes_no_cancel"] == 1,
+          str(asked))
+    check("answering no to the move does not open the window",
+          app.windows == [], str(len(app.windows)))
+    check("and deletes nothing", all(path.is_file() for path in empties))
+    check("the run still carries on", carried_on is True)
+
+    app = FakeApp({"image_store_dir": str(store)})
+    app.window_driver = driver_press("Delete the ticked images")
+    answers(yes_no_cancel=None)                   # the window was closed
+    stopped = app.prepare_image_folder(folder)
+    check("cancelling the move cancels the run", stopped is False)
+    check("with no window and no deletion", app.windows == [])
+    check("and every image still where it was",
+          all(path.is_file() for path in empties + pictures))
+
+    app = FakeApp({"image_store_dir": str(store)})
+    seen = []
+
+    def drive(window, _app):
+        seen.append(len(app.windows))
+        press(window, "Delete the ticked images")
+
+    app.window_driver = drive
+    answers(yes_no_cancel=True)
+    app.prepare_image_folder(folder)
+    check("answering yes opens the window before the move",
+          seen == [1] and app.windows, str(seen))
+    kept = sorted(path.name for path in (store / "output").rglob("*.webp"))
+    check("then the empty ones are gone and only the cards are in the store",
+          not any(path.exists() for path in empties) and
+          kept == ["card_0.webp", "card_1.webp"], str(kept))
+
+
+def test_a_long_check_says_it_is_working(root):
+    print()
+    print("== 23. a folder of hundreds is measured with a bar, not a freeze ==")
+    folder = root / "many" / "output"
+    folder.mkdir(parents=True)
+
+    class Recorder:
+        calls = []
+
+        def __init__(self, parent, title="", text="", total=None):
+            self.title, self.text, self.total = title, text, total
+            self.steps, self.closed, self.pumped = [], False, 0
+            Recorder.calls.append(self)
+
+        def step(self, text=None, done=None, total=None):
+            self.steps.append((done, total))
+
+        def pump(self): self.pumped += 1
+        def close(self): self.closed = True
+
+    real = gui.ProgressWindow
+    gui.ProgressWindow = Recorder
+    try:
+        files = []
+        for index in range(26):
+            files.append(blank_image(folder / ("many_%02d.webp" % index)))
+        app = FakeApp()
+        app.window_driver = driver_press("Keep them all")
+        Recorder.calls.clear()
+        deleted = app.ask_delete_blank_images(folder, files)
+    finally:
+        gui.ProgressWindow = real
+    made = Recorder.calls
+    check("a working window is shown while the images are measured",
+          len(made) == 1, str(made))
+    check("it is told how many there are", made and made[0].total == 26,
+          str(made and made[0].total))
+    check("the bar moves as they are read",
+          made and made[0].steps and made[0].steps[-1] == (26, 26),
+          str(made and made[0].steps[-4:]))
+    check("and the window is taken down again", made and made[0].closed)
+    check("keeping them all deleted nothing", deleted == [])
+
+
+def test_the_window_explains_every_button(root):
+    print()
+    print("== 24. every button in the window has its hover explanation ==")
+    folder, _empties, _pictures = make_sitting(root, "window-tips")
+    clear = root / "window-tips" / "store"
+    clear.mkdir()
+    app = FakeApp({"image_store_dir": str(clear)})
+    app.window_driver = driver_press("Keep them all")
+    answers(yes_no_cancel=True)
+    app.prepare_image_folder(folder)
+    window = app.windows[0] if app.windows else None
+    missing = gui.tips_missing(window) if window is not None else ["no window"]
+    check("every button in it explains itself", missing == [], str(missing))
+    captions = [w.cget("text") for w in window.walk()
+                if isinstance(w, (_TTK.Button, _TTK.Checkbutton))]
+    check("and the four actions are the ones expected",
+          set(captions) == {"Delete the ticked images", "Keep them all",
+                            "Tick everything", "Untick everything",
+                            "blank_0", "blank_1"},
+          str(captions))
+
+
+
 def main():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -582,6 +1182,17 @@ def main():
         test_the_setting_when_it_is_not_set(root)
         test_the_terminal_side()
     test_every_place_is_behind_the_question()
+    with tempfile.TemporaryDirectory() as tmp:
+        pictures = Path(tmp)
+        test_what_looks_empty(pictures)
+        test_deleting_only_what_is_ticked(pictures)
+        test_the_plan_follows_a_delete(pictures)
+        test_the_window_deletes_what_is_ticked(pictures)
+        test_untick_keeps_one(pictures)
+        test_keeping_them_all(pictures)
+        test_the_window_comes_after_the_yes(pictures)
+        test_a_long_check_says_it_is_working(pictures)
+        test_the_window_explains_every_button(pictures)
     print()
     print("=" * 60)
     if FAIL:
