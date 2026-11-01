@@ -1183,6 +1183,76 @@ def test_a_stopped_read_is_not_a_failure():
           gui.elapsed_text(3720) == "1 h 2 min", gui.elapsed_text(3720))
 
 
+def test_comparing_the_last_read():
+    print()
+    print("== 8f. comparing the list already on disk, without waiting ==")
+    folder, app, parent = build_panel()
+    button = find(parent, gui.ttk.Button, "Compare the last read instead",
+                  exact=False)
+    check("the panel offers the list it already has", button is not None, "")
+    check("and says in its tooltip that it starts no read",
+          "no read is started" in gui.tip_for(
+              "Compare the last read instead (no new read)"), "")
+
+    def fetch_ok(base, path, params, key, secret):
+        return (200, PRODUCTS) if params["page"] == 1 else (200, [])
+
+    #  Nothing on disk: it says so rather than comparing an empty shop.
+    app.lines[:] = []
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck_a",
+                                         "cs_b")), \
+            patch.object(gui, "woo_get", fetch_ok), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        button.invoke()
+    check("with no earlier read it says there is nothing to compare",
+          any("No earlier CanadianShopper list" in text
+              for _tag, text in app.lines), str(app.lines[-2:]))
+    check("and it starts nothing", not app.runs, str(app.runs))
+
+    #  A list from an hour ago: compared immediately, named as an hour old,
+    #  and still no tool started.
+    out = folder / "cs-stock.json"
+    out.write_text(json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+    an_hour_ago = time_module.time() - 3600
+    os.utime(out, (an_hour_ago, an_hour_ago))
+    app.lines[:] = []
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck_a",
+                                         "cs_b")), \
+            patch.object(gui, "woo_get", fetch_ok), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        button.invoke()
+    check("an earlier list is compared without starting a read",
+          not app.runs, str(app.runs))
+    check("and the console says it is not a fresh read, and how old",
+          any("not a fresh read" in text and "1 hour old" in text
+              for _tag, text in app.lines), str(app.lines[-3:]))
+    check("and the counts are on the list",
+          any("Compared" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    labels = [str(w.cget("text")) for w in parent.walk()
+              if isinstance(w, gui.ttk.Label)]
+    check("and the summary carries the age beside the counts",
+          any("1 hour old" in text and "not a fresh read" in text
+              for text in labels), str(labels[-4:]))
+
+    #  A file that is not a stock list is not compared as one.
+    out.write_text("not a list", encoding="utf-8")
+    app.lines[:] = []
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck_a",
+                                         "cs_b")), \
+            patch.object(gui, "BASE", folder):
+        button.invoke()
+    check("an unreadable file is not compared as an empty shop",
+          any("No earlier CanadianShopper list" in text
+              for _tag, text in app.lines) and not app.runs,
+          str(app.lines[-2:]))
+
+
 def test_one_card():
     print()
     print("== 9. one card, handed over from the sale panel ==")
@@ -4080,6 +4150,7 @@ def main():
     test_read_failure()
     test_the_reader_survives()
     test_a_stopped_read_is_not_a_failure()
+    test_comparing_the_last_read()
     test_held_under_another_product()
     test_a_reader_that_cannot_ask_for_a_fresh_page()
     test_a_listing_that_reports_everything()

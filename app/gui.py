@@ -73,7 +73,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.16"
+VERSION = "3.17"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1922,6 +1922,7 @@ TOOLTIPS = {
     "Sort by:": "Re-read the list below in this order; nothing is compared or written again",
     "Compare this card": "Open the stock panel pointed at the one card this sale is about",
     "Compare the whole catalogue instead": "Drop the one-card filter and compare everything",
+    "Compare the last read instead (no new read)": "Compare now against the CanadianShopper list already on disk from an earlier read - it is named with its age wherever its counts appear, so nothing is mistaken for a fresh count, and no read is started",
     "Compare stock with eBay": "Read your eBay active listings with your session cookie and list only the cards whose numbers disagree",
     "Compare stock with Facebook": "Read your Facebook selling page with your session cookie and list only the cards whose numbers disagree",
     "Set CanadianShopper to the website's counts...": "The usual fix: for every card whose two counts differ, set CanadianShopper's count to the website's count - always shown and confirmed first, write permission only",
@@ -7218,6 +7219,29 @@ def build_stock(parent, app):
         compare_items(previous["items"], "CanadianShopper", "count", creds)
         return True
 
+    def compare_last_read():
+        """Compare against the list an earlier read left on disk - now.
+
+        A whole-shop read can take minutes, and the comparison it produces is
+        worth having before a fresh one lands. Nothing here is passed off as
+        fresh: the list carries the day and the age wherever its counts are
+        shown, and every write still asks its own question first.
+        """
+        previous = stock_compare.previous_read(BASE / "cs-stock.json", None)
+        if previous is None:
+            app.console_line("No earlier CanadianShopper list is on disk yet, "
+                             "so there is nothing to compare.", "err")
+            summary.configure(text="No earlier CanadianShopper read to compare.")
+            return False
+        creds = credentials()
+        if not creds:
+            return False
+        state["stale"] = previous
+        state["label"], state["mode"] = "CanadianShopper", "count"
+        app.console_line(stock_compare.stale_note(previous), "warn")
+        compare_items(previous["items"], "CanadianShopper", "count", creds)
+        return True
+
     def compare_cs():
         action = TOOL_ACTION(CS_STOCK_ACTION)
         if not action:
@@ -7578,6 +7602,14 @@ def build_stock(parent, app):
     ttk.Button(row_saved, text="Choose a saved page...",
                command=lambda: read_saved_page(None, choose=True)).pack(
                    side="left")
+
+    #  A read of a whole shop takes minutes; this compares the list from the
+    #  last one without starting another, and says how old it is. Its own row,
+    #  because the rows above already run the width of the window.
+    row_last = ttk.Frame(box)
+    row_last.pack(anchor="w", pady=(2, 0))
+    ttk.Button(row_last, text="Compare the last read instead (no new read)",
+               command=compare_last_read).pack(side="left")
 
     # -- what the read is doing ---------------------------------------------
     #  Reading a catalogue of a few thousand products takes long enough that
