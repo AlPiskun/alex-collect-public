@@ -1114,6 +1114,44 @@ def test_the_editing_panel_says_what_stopped_a_read():
           len(listing_box(parent).items) == len(LISTINGS),
           str(len(listing_box(parent).items)))
 
+    #  A read the person stopped is not a reader failure there either, and the
+    #  plugin's age is worth saying before the wait rather than after it.
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "plugin_version", lambda *a, **k: "1.0.35"):
+        app.lines[:] = []
+        find(parent, gui.ttk.Button,
+             "Read CanadianShopper's listings").invoke()
+        run = app.runs[-1]
+        check("before a long read with an older plugin, it says so first",
+              said("or newer carries on past it"), str(app.lines[:4]))
+        app.runner = SimpleNamespace(output="", stopped=True)
+        run["on_done"](1)
+    check("a stopped read is said to be stopped, not failed",
+          said("was stopped") and not said("read failed"), str(app.lines[-4:]))
+    check("and nobody is told the reader said nothing it recognises",
+          not said("recognises"), str(app.lines[-5:]))
+    check("and a list that was already on screen is still there",
+          len(listing_box(parent).items) == len(LISTINGS),
+          str(len(listing_box(parent).items)))
+
+    #  A reader that dies without a word: said plainly, with the version.
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "plugin_version", lambda *a, **k: "1.0.36"):
+        app.lines[:] = []
+        find(parent, gui.ttk.Button,
+             "Read CanadianShopper's listings").invoke()
+        check("a plugin new enough warns about nothing before a read",
+              not said("carries on past it"), str(app.lines[:3]))
+        run = app.runs[-1]
+        app.runner = SimpleNamespace(output="")
+        run["on_done"](1)
+    check("a silent death is named as one", said("without printing a single line"),
+          str(app.lines[-5:]))
+    check("and a 1.0.36 read is not told to update anything",
+          not said("1.0.36 or newer"), str(app.lines[-5:]))
+
 
 def test_the_panel_reads_and_lists():
     print()

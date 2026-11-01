@@ -989,19 +989,43 @@ def _failure_line(text):
     return lines[-1] if lines else ""
 
 
-def read_failure(text):
+def read_failure(text, stopped=False):
     """What a failed listing read was, in the reader's own words.
 
     ``{"kind", "line", "advice"}``. The kind is the one thing worth acting on:
-    a refused session (paste a fresh cookie), a rate limit (wait), one
-    listing's own detail lookup (the reader must skip it and carry on), or a
-    connection that never answered (try again). Those are four different
-    jobs, and the run this was written for was told it was probably a stale
-    cookie while the reader had in fact stopped on a single product lookup
-    after reading every listing before it.
+    a read the person stopped (nothing to fix - it was working), a refused
+    session (paste a fresh cookie), a rate limit (wait), a catalogue that
+    could not be read at all, one listing's own detail lookup (the reader must
+    skip it and carry on), a connection that never answered (try again), or a
+    reader that printed nothing at all. Those are different jobs, and the runs
+    this was written for were told they were probably a stale cookie - once
+    while the reader had stopped on a single product lookup, and once while
+    the person had stopped it themselves and the reader had said nothing yet.
     """
     said = str(text or "")
     line = _failure_line(said)
+    if stopped:
+        #  The person did it. Nothing is broken, and blaming the reader for a
+        #  run somebody chose to end is the same mistake in a new place.
+        advice = ["You stopped the read before it finished, so this run has no "
+                  "list: nothing was compared and nothing was changed."]
+        if line:
+            advice.append("The reader's last line before the stop was: %s"
+                          % line)
+        advice.append("A read of a whole shop can take several minutes, and "
+                      "the reader prints nothing until it is done - the list "
+                      "from an earlier read is still on disk if you would "
+                      "rather use it than wait.")
+        return {"kind": "stopped", "line": line, "advice": advice}
+    if not line:
+        #  Exit code but not one word: killed, or dead before it could say
+        #  why. "Its own line is above" was a lie when there was no line.
+        return {"kind": "silent", "line": "", "advice": [
+            "The reader ended without printing a single line, so there is no "
+            "error here to read: it was killed, or it died before it could "
+            "say why.",
+            "Reading again is worth one try. If it happens again, the command "
+            "shown above can be run by hand to see what it says."]}
     flags = {
         "session": bool(_SESSION_WORDS.search(line or said)),
         "rate": bool(_RATE_WORDS.search(line or said)),
@@ -1120,6 +1144,42 @@ def stopped_read_note(plugin="", needed=LOOKUP_SURVIVED_VERSION):
     return ("The read was done by plugin %s, and %s or newer is the version "
             "that leaves a failed lookup's listing without a product id and "
             "carries on - so updating the plugin is the fix."
+            % (plugin, needed))
+
+
+def older_plugin_note(plugin="", needed=LOOKUP_SURVIVED_VERSION):
+    """Name a plugin older than the one that survives a failed lookup.
+
+    For the failures that never got a line of their own - a silent death or a
+    read stopped by hand - there is nothing to classify, but there is still a
+    fact worth saying: which plugin was running, and whether it is the one
+    known to end a read on a single bad request. It never claims that is what
+    happened; it says which version it was and which version carries on.
+    """
+    plugin = str(plugin or "").strip()
+    needed = str(needed or "").strip()
+    if not plugin or not needed or version_at_least(plugin, needed):
+        return ""
+    return ("This read used plugin %s. %s or newer is the version that leaves "
+            "a listing whose own detail lookup fails without a product id and "
+            "carries on, instead of ending the read." % (plugin, needed))
+
+
+def before_read_note(plugin="", needed=LOOKUP_SURVIVED_VERSION):
+    """One line before a whole-shop read, when the plugin is the fragile one.
+
+    Said before the minutes are spent, not after: with an older plugin a single
+    failed detail lookup can end a read that has already taken most of an hour,
+    and the person deserves to know that while they can still do something
+    about it - install the version that carries on. Nothing is blocked and
+    nothing is judged; a plugin new enough says nothing at all.
+    """
+    plugin = str(plugin or "").strip()
+    needed = str(needed or "").strip()
+    if not plugin or not needed or version_at_least(plugin, needed):
+        return ""
+    return ("Reading with plugin %s: one listing's own detail lookup failing "
+            "can end this whole read. %s or newer carries on past it."
             % (plugin, needed))
 
 

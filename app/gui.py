@@ -73,7 +73,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.14"
+VERSION = "3.15"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -820,6 +820,13 @@ class Runner:
         #  is explained instead of looking hung.
         self._publish_watch = None
         self._publish_note_shown = False
+        #  Whether the person ended this run. A stop is not a failure, and a
+        #  panel that calls it one tells the reader to fix a cookie that was
+        #  working for a run the person chose to end.
+        self.stopped = False
+        self.started_at = 0.0
+        self._quiet_watch = None
+        self._quiet_note_index = 0
 
     def busy(self):
         return self.proc is not None and self.proc.poll() is None
@@ -839,6 +846,10 @@ class Runner:
         self.cmd = " ".join(cmd)
         self.title = title
         self.on_done = on_done
+        self.stopped = False
+        self.started_at = time.time()
+        self._quiet_watch = None
+        self._quiet_note_index = 0
         self._dialog_buffer = ""
         self.output = ""
         self._publish_watch = None
@@ -854,6 +865,7 @@ class Runner:
         log("START %s | %s" % (title, self.cmd))
         threading.Thread(target=self._pump, daemon=True).start()
         self.app.on_run_start(title, self.cmd)
+        self._schedule_quiet_note()
         return True
 
     def _pump(self):
@@ -884,11 +896,48 @@ class Runner:
 
     def stop(self):
         if self.busy():
+            #  Recorded before the process is killed, because the panel is
+            #  asked what happened the moment it exits.
+            self.stopped = True
             try:
                 self.proc.terminate()
                 log("user stopped: %s" % self.title)
             except Exception:
                 pass
+
+    #: How long a run may go without printing before the app says it is still
+    #: working, then how long to wait between reminders. A whole-shop read
+    #: legitimately takes minutes and says nothing until it is done, which is
+    #: indistinguishable from a frozen window - a run stopped for looking hung
+    #: costs every minute it had already spent.
+    QUIET_NOTE_SECONDS = (60, 180, 300)
+
+    def _schedule_quiet_note(self):
+        index = min(self._quiet_note_index, len(self.QUIET_NOTE_SECONDS) - 1)
+        try:
+            self._quiet_watch = (len(self.output), self.app.after(
+                self.QUIET_NOTE_SECONDS[index] * 1000, self._still_running))
+        except Exception:
+            pass          # no window to schedule on: the run itself is fine
+
+    def _still_running(self):
+        """Say so, when a run that is still going has printed nothing new."""
+        if not self.busy() or self.stopped:
+            return
+        quiet = self._quiet_watch and len(self.output) == self._quiet_watch[0]
+        if quiet:
+            try:
+                self.app.console_line(
+                    "Still running: %s - %s so far%s." %
+                    (self.title, elapsed_text(time.time() - self.started_at),
+                     ", and nothing has been printed since it started"
+                     if not self.output.strip() else
+                     ", and nothing has been printed since the last line"),
+                    "dim")
+            except Exception:
+                pass
+        self._quiet_note_index += 1
+        self._schedule_quiet_note()
 
     def _consume_dialog_protocol(self, chunk):
         """Hide structured tool requests and answer them with real Tk dialogs.
@@ -1498,6 +1547,18 @@ Everything the GUI and the tools print is kept so a crash is never a
 mystery: gui-log.txt (this window's runs), sold-cards-report.csv
 (every stock change: before/after, order numbers), and the
 image-sync reports from the staging/wiring runs."""
+
+
+def elapsed_text(seconds):
+    """How long a run has been going, short enough for a status line."""
+    seconds = int(max(0.0, float(seconds or 0)))
+    if seconds < 60:
+        return "%d s" % seconds
+    minutes, rest = divmod(seconds, 60)
+    if minutes < 60:
+        return ("%d min %d s" % (minutes, rest)) if rest else "%d min" % minutes
+    hours, minutes = divmod(minutes, 60)
+    return ("%d h %d min" % (hours, minutes)) if minutes else "%d h" % hours
 
 
 def console_lines_for(screen_height):
@@ -2464,14 +2525,25 @@ class App(tk.Tk):
 
     def on_run_end(self, title, rc):
         ok = (rc == 0)
+        by_user = bool(getattr(self.runner, "stopped", False)) and not ok
         self._progress_closed = True
         self.progress_hide()
-        self.console_line(
-            "---- finished (%s, exit code %s) " %
-            ("OK" if ok else "PROBLEM", rc) + "-" * 30,
-            "ok" if ok else "err")
+        if by_user:
+            #  A run the person ended is not a problem with the program, and
+            #  calling it one makes the next dialog sound like a defect.
+            self.console_line(
+                "---- stopped (by you, after %s) " %
+                elapsed_text(time.time() - getattr(self.runner, "started_at",
+                                                    time.time())) + "-" * 20,
+                "warn")
+        else:
+            self.console_line(
+                "---- finished (%s, exit code %s) " %
+                ("OK" if ok else "PROBLEM", rc) + "-" * 30,
+                "ok" if ok else "err")
         self.status.config(
-            text=("Finished: " if ok else "Stopped with a problem: ") + title +
+            text=(("Stopped: " + title) if by_user else
+                  ("Finished: " if ok else "Stopped with a problem: ") + title) +
             ("  -  the log keeps everything: " + LOG_FILE.name))
         self._input_enable(False)
 
@@ -6992,20 +7064,39 @@ def build_stock(parent, app):
             return False
         read_done()
         if rc != 0:
-            app.console_line("The CanadianShopper stock read failed (exit %s); "
-                             "nothing was compared." % rc, "err")
             #  What it was, from the reader's own words rather than a guess:
-            #  a refused session, a rate limit, one listing's own detail
-            #  lookup, or a connection that never answered. The run this was
-            #  written for was told to check its cookie while the reader had in
-            #  fact stopped on a single product lookup after reading every
-            #  listing before it.
-            note = stock_compare.read_failure(last_tool_output(app))
+            #  a run the person stopped, a refused session, a rate limit, a
+            #  catalogue that could not be read, one listing's own detail
+            #  lookup, a connection that never answered - or a reader that
+            #  never printed a line. The runs this was written for were told
+            #  to check their cookie, once while the reader had stopped on a
+            #  single product lookup and once while the person had stopped it.
+            stopped = bool(getattr(getattr(app, "runner", None), "stopped",
+                                   False))
+            version = plugin_version()
+            note = stock_compare.read_failure(last_tool_output(app),
+                                              stopped=stopped)
+            if stopped:
+                app.console_line("The CanadianShopper stock read was stopped; "
+                                 "nothing was compared.", "err")
+            else:
+                app.console_line(
+                    "The CanadianShopper stock read failed (exit %s%s); nothing "
+                    "was compared." %
+                    (rc, ", plugin %s" % version if version else ""), "err")
             for line in note["advice"]:
                 app.console_line(line, "dim")
             if note["kind"] == "detail":
-                app.console_line(stock_compare.stopped_read_note(
-                    plugin_version()), "dim")
+                app.console_line(stock_compare.stopped_read_note(version),
+                                 "dim")
+            elif note["kind"] in ("stopped", "silent", "unknown"):
+                #  Nothing here says WHAT went wrong - so the one thing that
+                #  can be said for certain is which plugin was running, and
+                #  whether it is the version known to end a read on one bad
+                #  request. Never claimed as the cause.
+                older = stock_compare.older_plugin_note(version)
+                if older:
+                    app.console_line(older, "dim")
             if note["kind"] == "session" and CS_COOKIE_FILE.is_file():
                 #  Say exactly what was sent, so a cookie problem is not a
                 #  guessing game: the file, its age, and its size.
@@ -7021,9 +7112,16 @@ def build_stock(parent, app):
                     "the one you just refreshed, the plugin is not reading it; "
                     "if it is old, paste a fresh one in User Settings."
                     % (CS_COOKIE_FILE.name, size, stamp), "dim")
-            summary.configure(text="CanadianShopper could not be read.")
+            summary.configure(text=("CanadianShopper's read was stopped."
+                                    if stopped else
+                                    "CanadianShopper could not be read."))
             clear_list()
-            return offer_previous_read(note, out, creds)
+            #  A stop is the one failure where the previous list is almost
+            #  certainly what the person wants: they gave up waiting.
+            lead = note["line"] or ("The read was stopped before it finished."
+                                    if stopped else
+                                    "The reader printed nothing.")
+            return offer_previous_read({"line": lead}, out, creds)
         items = stock_compare.read_stock_file(out)
         if items is None or not stock_compare.written_since(
                 out, state.get("started")):
@@ -7133,6 +7231,12 @@ def build_stock(parent, app):
             args += ["--cookie-file", str(cookie)]
         summary.configure(text="Reading CanadianShopper's stock...")
         app.console_line("Reading CanadianShopper's stock...", "cmd")
+        #  Before the wait, not after it: with a plugin older than 1.0.36 one
+        #  failed detail lookup can end a read that has already taken most of
+        #  an hour. Said once, and never blocks anything.
+        early = stock_compare.before_read_note(plugin_version())
+        if early:
+            app.console_line(early, "warn")
         #  The plugin is its own program and says nothing this panel can count,
         #  so its bar sweeps: it is still an answer to "is anything happening".
         reading("Reading CanadianShopper's stock...")
@@ -7736,26 +7840,50 @@ def build_csledit(parent, app):
         except Exception:
             pass
         if rc != 0:
-            summary.configure(text="CanadianShopper could not be read (exit %s)."
-                                   % rc)
-            say("The CanadianShopper listing read failed (exit %s); nothing "
-                "was read and nothing was changed." % rc, "err")
             #  The same diagnosis the comparison panel gives: what stopped it,
             #  and - when it was one listing's own lookup - which plugin
-            #  version carries on past that instead of ending the read.
-            note = stock_compare.read_failure(last_tool_output(app))
+            #  version carries on past that instead of ending the read. A run
+            #  the person stopped is not a failure and is not told it is one.
+            stopped = bool(getattr(getattr(app, "runner", None), "stopped",
+                                   False))
+            version = plugin_version()
+            note = stock_compare.read_failure(last_tool_output(app),
+                                              stopped=stopped)
+            summary.configure(
+                text=("CanadianShopper's read was stopped." if stopped
+                      else "CanadianShopper could not be read (exit %s)."
+                      % rc))
+            if stopped:
+                say("The CanadianShopper listing read was stopped; nothing was "
+                    "read and nothing was changed.", "err")
+            else:
+                say("The CanadianShopper listing read failed (exit %s%s); "
+                    "nothing was read and nothing was changed." %
+                    (rc, ", plugin %s" % version if version else ""), "err")
             for line in note["advice"]:
                 say(line, "dim")
             if note["kind"] == "detail":
-                say(stock_compare.stopped_read_note(plugin_version()), "dim")
+                say(stock_compare.stopped_read_note(version), "dim")
+            elif note["kind"] in ("stopped", "silent", "unknown"):
+                older = stock_compare.older_plugin_note(version)
+                if older:
+                    say(older, "dim")
             return False
-        items = stock_compare.read_stock_file(out) if out.is_file() else None
+        fresh = stock_compare.written_since(out, state.get("started"))
+        items = stock_compare.read_stock_file(out) if fresh else None
         if items is None:
-            summary.configure(text="CanadianShopper wrote no list to read.")
+            #  Exit 0 with no new list is not a list: what is on disk is the
+            #  read from before this run, and showing it as this run's answer
+            #  would report yesterday's rows as today's.
+            why = ("The plugin finished but left no list to read."
+                   if not out.is_file() else
+                   "The plugin finished without writing a new list, so the "
+                   "one on disk is from an earlier read.")
+            summary.configure(text="CanadianShopper wrote no new list.")
+            say(why + " Nothing was read and nothing was changed.", "err")
             messagebox.showerror(
                 "Could not read CanadianShopper's listings",
-                "The plugin finished but left no list to read.\n\nNothing "
-                "was changed.", parent=box.winfo_toplevel())
+                why + "\n\nNothing was changed.", parent=box.winfo_toplevel())
             return False
         write_meta(len(items))
         state["read"] = "live"
@@ -7808,15 +7936,20 @@ def build_csledit(parent, app):
             return
         state["then"] = then
         out = BASE / "cs-stock.json"
-        try:
-            out.unlink()
-        except FileNotFoundError:
-            pass
+        #  The last read stays on disk when this one starts, for the same
+        #  reason as in the comparison panel: a read that fails then has an
+        #  earlier list to fall back on instead of leaving nothing. Which file
+        #  is this run's answer is decided by when the run started, never by
+        #  the file merely existing.
+        state["started"] = time.time()
         args = ["--stock-out", str(out)]
         if CS_COOKIE_FILE.is_file():
             args += ["--cookie-file", str(CS_COOKIE_FILE)]
         say("Reading CanadianShopper's listings...", "cmd")
         summary.configure(text="Reading CanadianShopper's listings...")
+        early = stock_compare.before_read_note(plugin_version())
+        if early:
+            say(early, "warn")
         try:
             read_btn.configure(state="disabled")
         except Exception:

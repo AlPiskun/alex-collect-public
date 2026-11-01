@@ -735,12 +735,16 @@ def test_read_failure():
             ("! Could not list CanadianShopper stock: timed out", "network"),
             ("! URLError: [Errno -2] Name or service not known", "network"),
             ("! Something the reader has never said before", "unknown"),
-            ("", "unknown")):
+            ("", "silent")):
         got = stock_compare.read_failure(text)["kind"]
         check("%r is read as %s" % (text[:48], kind), got == kind, got)
 
     check("a failure with no words still says something useful",
           bool(stock_compare.read_failure("")["advice"]), "")
+    check("and it does not claim a line is above when there is none",
+          not any("own line is above" in line.lower()
+                  for line in stock_compare.read_failure("")["advice"]),
+          str(stock_compare.read_failure("")["advice"]))
 
     # ---- ages are said the way a person would say them
     check("thirty seconds is just now",
@@ -944,6 +948,225 @@ def test_the_reader_survives():
           said("could not read the catalogue itself") and
           not any("bytes" in text and "saved" in text
                   for _tag, text in app.lines), str(app.lines[-5:]))
+
+
+def test_a_stopped_read_is_not_a_failure():
+    print()
+    print("== 8e. a read stopped by hand, and one that died without a word ==")
+    stopped = stock_compare.read_failure("", stopped=True)
+    check("a stopped read is its own kind", stopped["kind"] == "stopped",
+          str(stopped))
+    check("and it says the person ended it, not that it broke",
+          "You stopped the read" in stopped["advice"][0], str(stopped["advice"]))
+    check("and that nothing was compared or changed",
+          "nothing was compared and nothing was changed" in
+          stopped["advice"][0], str(stopped["advice"]))
+    check("and it mentions waiting or using the earlier list",
+          any("earlier read" in line for line in stopped["advice"]),
+          str(stopped["advice"]))
+    check("a stop is never blamed on the cookie",
+          not any("cookie" in line.lower() for line in stopped["advice"]),
+          str(stopped["advice"]))
+    check("nor called a reader that said nothing it recognises",
+          not any("recognises" in line for line in stopped["advice"]),
+          str(stopped["advice"]))
+
+    with_words = stock_compare.read_failure(
+        "! Could not list CanadianShopper stock: rate limited", stopped=True)
+    check("a stop still reports what the reader had said",
+          with_words["kind"] == "stopped" and
+          any("rate limited" in line for line in with_words["advice"]),
+          str(with_words["advice"]))
+
+    silent = stock_compare.read_failure("")
+    check("a failure with no words at all is its own kind",
+          silent["kind"] == "silent", str(silent))
+    check("and it does not pretend the reader said something",
+          not any("own line is above" in line for line in silent["advice"]),
+          str(silent["advice"]))
+    check("and it names the one thing worth trying",
+          any("Reading again" in line for line in silent["advice"]),
+          str(silent["advice"]))
+
+    # ---- which plugin was running, when there is no line to classify
+    check("an older plugin is named, and the version that carries on",
+          "1.0.35" in stock_compare.older_plugin_note("1.0.35") and
+          "1.0.36" in stock_compare.older_plugin_note("1.0.35"),
+          stock_compare.older_plugin_note("1.0.35"))
+    check("a plugin that already carries on is not told to update",
+          stock_compare.older_plugin_note("1.0.36") == "",
+          stock_compare.older_plugin_note("1.0.36"))
+    check("and an unreadable version is not guessed at",
+          stock_compare.older_plugin_note("") == "",
+          stock_compare.older_plugin_note(""))
+    check("it never claims the version is what went wrong",
+          "is what happened" not in stock_compare.older_plugin_note("1.0.35"),
+          stock_compare.older_plugin_note("1.0.35"))
+
+    # ---- the panel: a run stopped by hand, with a list from before it
+    folder, app, parent = build_panel()
+    compare = find(parent, gui.ttk.Button, "Compare stock", exact=False)
+    out = folder / "cs-stock.json"
+    out.write_text(json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+    old_time = time_module.time() - 3600
+    os.utime(out, (old_time, old_time))
+
+    def fetch_ok(base, path, params, key, secret):
+        return (200, PRODUCTS) if params["page"] == 1 else (200, [])
+
+    def said(prefix):
+        return [text for _tag, text in app.lines if prefix in text]
+
+    asked = []
+
+    def run_then_stop(answer):
+        asked[:] = []
+        app.runs.clear()
+        app.lines[:] = []
+
+        def ask(title, message, **kwargs):
+            asked.append((title, message))
+            return answer
+
+        harness._BOX.askyesno = ask
+        with patch.object(gui, "TOOL_ACTION",
+                          lambda action: "/plugins/cs/stock.py"), \
+                patch.object(gui, "read_woo_credentials",
+                             lambda path=None: ("https://shop.example", "ck_a",
+                                                "cs_b")), \
+                patch.object(gui, "CS_COOKIE_FILE", folder / "cookie.txt"), \
+                patch.object(gui, "plugin_version",
+                             lambda *a, **k: "1.0.35"), \
+                patch.object(gui, "woo_get", fetch_ok), \
+                patch.object(gui, "in_background", sync_background), \
+                patch.object(gui, "BASE", folder):
+            compare.invoke()
+            app.runner = FakeRunner("")
+            app.runner.stopped = True
+            return app.runs[0]["on_done"](1)
+
+    answer = run_then_stop(False)
+    check("a stopped read says it was stopped, not that it failed",
+          said("was stopped"), str(app.lines[:4]))
+    check("and never says the reader failed",
+          not said("stock read failed"), str(app.lines[:4]))
+    check("and does not claim it said nothing this app recognises",
+          not said("recognises"), str(app.lines[:5]))
+    check("and offers the list from the last read instead",
+          asked and "Compare your website against that list?" in asked[-1][1]
+          and "1 hour old" in asked[-1][1], str(asked[-1:]))
+    check("saying no to it compares nothing",
+          answer is False and not any("Compared" in text
+                                      for _tag, text in app.lines),
+          str(app.lines[-3:]))
+
+    app.lines[:] = []
+    answer = run_then_stop(True)
+    check("saying yes to it compares the earlier list", answer is True,
+          str(app.lines[-3:]))
+    check("and that list is named as not fresh",
+          said("not a fresh read") and said("1 hour old"), str(app.lines[-4:]))
+
+    # ---- a reader that dies without a word, on an older plugin
+    app.lines[:] = []
+    harness._BOX.askyesno = lambda *a, **k: False
+    out.unlink(missing_ok=True)
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "CS_COOKIE_FILE", folder / "cookie.txt"), \
+            patch.object(gui, "plugin_version", lambda *a, **k: "1.0.35"), \
+            patch.object(gui, "BASE", folder):
+        compare.invoke()
+        app.runner = FakeRunner("")
+        app.runs[0]["on_done"](1)
+    check("a read that died silently is named as that, not as unrecognised",
+          said("without printing a single line"), str(app.lines[-5:]))
+    check("and the failure line says which plugin was running",
+          said("plugin 1.0.35"), str(app.lines[:4]))
+    check("and it is told which version carries on past a bad lookup",
+          said("1.0.36 or newer"), str(app.lines[-5:]))
+
+    # ---- the runner knows a stop for what it is
+    class FakeProc:
+        def __init__(self):
+            self.killed = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.killed = True
+
+    quiet_app = SimpleNamespace(after=lambda *a, **k: "after-id",
+                               console_line=lambda *a, **k: None,
+                               status=SimpleNamespace(config=lambda **k: None))
+    runner = gui.Runner(quiet_app)
+    runner.proc = FakeProc()
+    check("a running tool is not stopped until somebody stops it",
+          runner.stopped is False, str(runner.stopped))
+    with patch.object(gui, "log", lambda *a, **k: None):
+        runner.stop()
+    check("stopping records it on the runner itself", runner.stopped is True, "")
+    check("and actually ends the process", runner.proc.killed, "")
+
+    # ---- a run that is still going says so, instead of looking frozen
+    lines = []
+
+    def fake_app():
+        return SimpleNamespace(
+            after=lambda *a, **k: "after-id",
+            console_line=lambda text, tag="": lines.append((tag, text)),
+            status=SimpleNamespace(config=lambda **k: None))
+
+    slow = gui.Runner(fake_app())
+    slow.proc = FakeProc()
+    slow.title = "CanadianShopper stock"
+    slow.started_at = time_module.time() - 252
+    slow.output = ""
+    slow._quiet_watch = (0, None)
+    lines[:] = []
+    slow._still_running()
+    check("a silent run that is still going says how long it has been",
+          lines and "5 min" not in lines[-1][1] and
+          "4 min 12 s so far" in lines[-1][1], str(lines))
+    check("and says the reader has printed nothing, so it is not a hang",
+          "nothing has been printed since it started" in lines[-1][1], str(lines))
+    check("and it is only a note, not an error", lines[-1][0] == "dim",
+          str(lines))
+
+    lines[:] = []
+    slow.output = "some output\n"
+    slow._quiet_watch = (0, None)
+    slow._still_running()
+    check("a run that is talking is not nagged about",
+          not lines, str(lines))
+
+    lines[:] = []
+    slow.output = ""
+    slow._quiet_watch = (0, None)
+    slow.stopped = True
+    slow._still_running()
+    check("and a run that was stopped says nothing more",
+          not lines, str(lines))
+
+    lines[:] = []
+    slow.stopped = False
+    slow.proc = None                 # not running any more
+    slow._still_running()
+    check("nor does a run that has finished", not lines, str(lines))
+
+    # ---- the clock, for a read that is slow but alive
+    check("seconds are said as seconds", gui.elapsed_text(45) == "45 s",
+          gui.elapsed_text(45))
+    check("minutes as minutes and seconds",
+          gui.elapsed_text(252) == "4 min 12 s", gui.elapsed_text(252))
+    check("a whole minute keeps no seconds",
+          gui.elapsed_text(3600) == "1 h", gui.elapsed_text(3600))
+    check("and an hour is hours and minutes",
+          gui.elapsed_text(3720) == "1 h 2 min", gui.elapsed_text(3720))
 
 
 def test_one_card():
@@ -3840,6 +4063,7 @@ def main():
     test_what_the_reader_claimed()
     test_read_failure()
     test_the_reader_survives()
+    test_a_stopped_read_is_not_a_failure()
     test_held_under_another_product()
     test_a_reader_that_cannot_ask_for_a_fresh_page()
     test_a_listing_that_reports_everything()
