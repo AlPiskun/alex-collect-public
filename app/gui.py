@@ -73,7 +73,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.12"
+VERSION = "3.13"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -5501,7 +5501,8 @@ def build_stock(parent, app):
         saved_sort = stock_compare.DEFAULT_SORT
     state = {"card": focus, "rows": [], "pairs": [], "only_woo": [],
              "only_other": [], "label": "CanadianShopper", "mode": "count",
-             "skipped": 0, "catalog": {}, "items": [], "sort": saved_sort}
+             "skipped": 0, "catalog": {}, "items": [], "sort": saved_sort,
+             "stale": None, "started": None}
     statuses = {}
 
     def credentials():
@@ -5643,6 +5644,13 @@ def build_stock(parent, app):
             text += "  %d ignored." % hidden
         if state["card"]:
             text = "%s  (only this card)" % text.rstrip(".")
+        if state.get("stale"):
+            #  Said with the counts, not only in the console: a comparison of
+            #  yesterday's list is still useful, and must never read as though
+            #  it were today's.
+            text = ("%s  %s list read %s (%s) - not a fresh read."
+                    % (text.rstrip("."), state["label"],
+                       state["stale"]["stamp"], state["stale"]["age"]))
         summary.configure(text=text)
         return rows
 
@@ -5737,6 +5745,9 @@ def build_stock(parent, app):
                     "nothing is added, removed or repriced. Write them now?" %
                     (state["label"],
                      stock_compare.plan_summary(plan, state["label"]), body))
+        if state.get("stale"):
+            question = "%s\n\n%s" % (stock_compare.stale_note(
+                state["stale"], state["label"]), question)
         if not messagebox.askyesno("Set CanadianShopper to these counts?",
                                    question, parent=box.winfo_toplevel()):
             app.console_line("The stock change was not confirmed; nothing was "
@@ -6983,7 +6994,16 @@ def build_stock(parent, app):
         if rc != 0:
             app.console_line("The CanadianShopper stock read failed (exit %s); "
                              "nothing was compared." % rc, "err")
-            if CS_COOKIE_FILE.is_file():
+            #  What it was, from the reader's own words rather than a guess:
+            #  a refused session, a rate limit, one listing's own detail
+            #  lookup, or a connection that never answered. The run this was
+            #  written for was told to check its cookie while the reader had in
+            #  fact stopped on a single product lookup after reading every
+            #  listing before it.
+            note = stock_compare.read_failure(last_tool_output(app))
+            for line in note["advice"]:
+                app.console_line(line, "dim")
+            if note["kind"] == "session" and CS_COOKIE_FILE.is_file():
                 #  Say exactly what was sent, so a cookie problem is not a
                 #  guessing game: the file, its age, and its size.
                 try:
@@ -7000,20 +7020,30 @@ def build_stock(parent, app):
                     % (CS_COOKIE_FILE.name, size, stamp), "dim")
             summary.configure(text="CanadianShopper could not be read.")
             clear_list()
-            return False
+            return offer_previous_read(note, out, creds)
         items = stock_compare.read_stock_file(out)
-        if items is None:
-            messagebox.showerror(
-                "Could not read CanadianShopper's stock",
-                "The plugin finished but left no stock list to read.\n\n"
-                "Nothing was compared and nothing was changed.",
-                parent=box.winfo_toplevel())
-            app.console_line("No CanadianShopper stock list was written, so "
-                             "nothing was compared.", "err")
-            summary.configure(text="CanadianShopper wrote no stock list.")
+        if items is None or not stock_compare.written_since(
+                out, state.get("started")):
+            #  Exit 0 with no list written is not a list: the file on disk is
+            #  the one from before, and comparing it as though it were this
+            #  run's answer would report yesterday's counts as today's.
+            previous = stock_compare.previous_read(out, state.get("started"))
+            why = ("The plugin finished but left no stock list to read."
+                   if items is None else
+                   "The plugin finished without writing a new stock list, so "
+                   "the one on disk is from an earlier read.")
+            app.console_line(why + " Nothing was compared.", "err")
+            summary.configure(text="CanadianShopper wrote no new stock list.")
             clear_list()
-            return False
+            if previous is None:
+                messagebox.showerror(
+                    "Could not read CanadianShopper's stock",
+                    why + "\n\nNothing was compared and nothing was changed.",
+                    parent=box.winfo_toplevel())
+                return False
+            return offer_previous_read({"line": why}, out, creds)
         state["label"], state["mode"] = "CanadianShopper", "count"
+        state["stale"] = None            # this list is this run's own answer
         #  The states the reader claims, in its own words: if a listing was
         #  moved in the dashboard and this still shows the old state, the
         #  reading is stale - and that is worth knowing before acting on it.
@@ -7028,6 +7058,35 @@ def build_stock(parent, app):
         app.console_line("What the reader returned%s - %s."
                          % (who, stock_compare.tally_line(items)), "dim")
         compare_items(items, "CanadianShopper", "count", creds)
+        return True
+
+    def offer_previous_read(note, out, creds):
+        """Offer the list from an earlier read, with its age said out loud.
+
+        Not a substitute for a fresh read and never silent: the panel would
+        rather show yesterday's counts - named as yesterday's, with every
+        change still confirmed card by card - than show nothing at all after a
+        read that took minutes and then failed on its last listing.
+        """
+        previous = stock_compare.previous_read(out, state.get("started"))
+        if previous is None:
+            return False
+        body = ("%s\n\nA CanadianShopper list read on %s (%s) holds %d "
+                "listing(s). It is not a fresh read: a count may have moved "
+                "since, and a card listed or delisted since is not in it. "
+                "Every change is still shown and confirmed card by card.\n\n"
+                "Compare your website against that list?"
+                % (note.get("line") or "CanadianShopper could not be read.",
+                   previous["stamp"], previous["age"], len(previous["items"])))
+        if not messagebox.askyesno("Compare against the last read?",
+                                   body, parent=box.winfo_toplevel()):
+            app.console_line("The list from %s was not used; nothing was "
+                             "compared." % previous["stamp"], "dim")
+            return False
+        state["stale"] = previous
+        app.console_line(stock_compare.stale_note(previous), "warn")
+        state["label"], state["mode"] = "CanadianShopper", "count"
+        compare_items(previous["items"], "CanadianShopper", "count", creds)
         return True
 
     def compare_cs():
@@ -7048,10 +7107,12 @@ def build_stock(parent, app):
         if not creds:
             return
         out = BASE / "cs-stock.json"
-        try:
-            out.unlink()
-        except FileNotFoundError:
-            pass
+        #  The last read is left on disk rather than deleted: if this one
+        #  fails, the list from before can still be offered - named with its
+        #  age - instead of leaving nothing to compare at all. A stale file is
+        #  never mistaken for a fresh one, because the run records when it
+        #  started and only a file written after that counts as its answer.
+        state["started"] = time.time()
         cookie = CS_COOKIE_FILE if CS_COOKIE_FILE.is_file() else None
         args = ["--stock-out", str(out)]
         if cookie is not None:

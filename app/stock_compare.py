@@ -22,6 +22,7 @@ a disagreement.
 
 import re
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 
 import woo_orders
@@ -948,6 +949,152 @@ def status_tally(items):
         counts[key] = counts.get(key, 0) + 1
         spelled.setdefault(key, word)
     return {spelled[key]: counts[key] for key in counts}
+
+
+#: The request a reader makes for ONE listing's own record. Since plugin
+#: 1.0.35 this is the step that resolves a missing product id, and a read of a
+#: whole shop makes one of them per listing - which is the step a run this was
+#: written for stopped on, after many minutes and after reading the catalogue.
+_DETAIL_REQUEST = re.compile(r"/api/data/product/[0-9A-Za-z_-]+")
+
+_SESSION_WORDS = re.compile(
+    r"\b(?:401|403)\b|unauthori|forbidden|not signed in|signed out|sign in|"
+    r"log in|login|session (?:expired|invalid)|cookie", re.IGNORECASE)
+_RATE_WORDS = re.compile(r"\b429\b|rate.?limit|too many requests",
+                         re.IGNORECASE)
+_NETWORK_WORDS = re.compile(
+    r"urlerror|timed? ?out|timeout|connection (?:refused|reset|aborted)|"
+    r"getaddrinfo|name or service|temporary failure|network is unreachable|"
+    r"ssl|certificate", re.IGNORECASE)
+
+
+def _failure_line(text):
+    """The reader's own complaint: its ``!`` line, or the last line it printed."""
+    lines = [line.strip() for line in str(text or "").splitlines()
+             if line.strip()]
+    for line in lines:
+        if line.startswith("!"):
+            return line.lstrip("! ").strip()
+    for line in reversed(lines):
+        if re.search(r"fail|error|refus|could not|unable", line, re.IGNORECASE):
+            return line
+    return lines[-1] if lines else ""
+
+
+def read_failure(text):
+    """What a failed listing read was, in the reader's own words.
+
+    ``{"kind", "line", "advice"}``. The kind is the one thing worth acting on:
+    a refused session (paste a fresh cookie), a rate limit (wait), one
+    listing's own detail lookup (the reader must skip it and carry on), or a
+    connection that never answered (try again). Those are four different
+    jobs, and the run this was written for was told it was probably a stale
+    cookie while the reader had in fact stopped on a single product lookup
+    after reading every listing before it.
+    """
+    said = str(text or "")
+    line = _failure_line(said)
+    flags = {
+        "session": bool(_SESSION_WORDS.search(line or said)),
+        "rate": bool(_RATE_WORDS.search(line or said)),
+        "detail": bool(_DETAIL_REQUEST.search(line or said)),
+        "network": bool(_NETWORK_WORDS.search(line or said)),
+    }
+    kind = next((name for name in ("session", "rate", "detail", "network")
+                 if flags[name]), "unknown")
+    advice = []
+    if flags["session"]:
+        advice.append("The session the reader was given was refused: "
+                      "CanadianShopper answered as if nobody were signed in. "
+                      "Paste a fresh CanadianShopper cookie in User Settings "
+                      "and read again.")
+    if flags["rate"]:
+        advice.append("The site answered with a rate limit rather than with an "
+                      "error: wait a few minutes and read again.")
+    if flags["detail"]:
+        advice.append("The read stopped inside ONE listing's own detail lookup "
+                      "(%s), not on the catalogue - the listings before it "
+                      "were read, so the cookie was working."
+                      % _DETAIL_REQUEST.search(line or said).group(0))
+        advice.append("A read of a whole shop makes one of those requests per "
+                      "listing, and one of them failing must not lose the "
+                      "rest: the reader should leave that listing without a "
+                      "product id and carry on, not stop the run.")
+    if flags["network"]:
+        advice.append("The request never got an answer - a connection error, "
+                      "not a refusal - so the site stopped responding or this "
+                      "machine lost its connection.")
+    if not advice:
+        advice.append("The reader stopped without saying anything this app "
+                      "recognises; its own line is above.")
+    return {"kind": kind, "line": line, "advice": advice}
+
+
+def describe_age(seconds):
+    """How old a saved read is, in words a person uses."""
+    minutes = int(max(0.0, float(seconds or 0)) // 60)
+    if minutes < 2:
+        return "just now"
+    if minutes < 60:
+        return "%d minutes old" % minutes
+    hours = minutes // 60
+    if hours < 24:
+        return "%d hour%s old" % (hours, "" if hours == 1 else "s")
+    days = hours // 24
+    return "%d day%s old" % (days, "" if days == 1 else "s")
+
+
+def written_since(path, started):
+    """Whether ``path`` was written by a run that started at ``started``.
+
+    Two seconds of slack, because a file written in the same second a run began
+    is this run's answer and a clock that rounds must not say otherwise.
+    """
+    if started is None:
+        return True
+    try:
+        written = Path(path).stat().st_mtime
+    except OSError:
+        return False
+    return written >= float(started) - 2.0
+
+
+def previous_read(path, started=None, now=None):
+    """The list an earlier read left on disk, when this run did not replace it.
+
+    ``None`` unless there is a readable list that this run did not write - so a
+    comparison can offer the list from before rather than nothing at all, and
+    can never mistake a stale file for the fresh one it asked for.
+    """
+    path = Path(path)
+    items = read_stock_file(path)
+    if items is None:
+        return None
+    if started is not None and written_since(path, started):
+        return None                      # this run wrote it: not a last read
+    try:
+        written = path.stat().st_mtime
+    except OSError:
+        return None
+    when = datetime.fromtimestamp(written)
+    if now is None:
+        now = datetime.now()
+    elif not isinstance(now, datetime):
+        now = datetime.fromtimestamp(float(now))
+    seconds = max(0.0, (now - when).total_seconds())
+    return {"items": items, "when": when, "seconds": seconds,
+            "age": describe_age(seconds),
+            "stamp": when.strftime("%Y-%m-%d %H:%M")}
+
+
+def stale_note(previous, label="CanadianShopper"):
+    """The sentence that must travel with a comparison built from an old read."""
+    if not previous:
+        return ""
+    return ("This comparison uses the %s list read on %s (%s), not a fresh "
+            "read: a count may have moved since, and a card listed or "
+            "delisted since is not in it."
+            % (label, previous["stamp"], previous["age"]))
 
 
 def tally_line(items):

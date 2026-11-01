@@ -7,8 +7,10 @@ wrong pair accuses a card that is fine.
 """
 import importlib.util
 import json
+import os
 import sys
 import tempfile
+import time as time_module
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -54,6 +56,20 @@ PRODUCTS = [
     {"id": 4, "name": "Variable card", "sku": "", "manage_stock": True,
      "stock_quantity": None, "type": "variable"},
 ]
+
+class FakeRunner:
+    """The runner's log, which is where the tool's own words live."""
+
+    def __init__(self, output):
+        self.output = output
+
+
+#  The exact line a real run ended on: one listing's detail lookup, after
+#  every listing before it had already been read.
+DETAIL_FAILED = (
+    "! Could not list CanadianShopper stock: CanadianShopper request failed "
+    "(GET /api/data/product/94b93f6040f5401daabaa9c936efa5a7): URLError")
+
 
 CS_ITEMS = [
     {"id": 101, "title": "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6",
@@ -563,30 +579,112 @@ def test_the_cookies_canadian_shopper_is_told_about():
               app.runs[1]["on_done"](2) is False and len(app.runs) == 2,
               str(len(app.runs)))
 
-    # ---- a failure says which cookie was sent
-    app.runs.clear()
-    app.lines[:] = []
-    with patch.object(gui, "TOOL_ACTION",
-                      lambda action: "/plugins/cs/stock.py"), \
-            patch.object(gui, "read_woo_credentials",
-                         lambda path=None: ("https://shop.example", "ck_a",
-                                            "cs_b")), \
-            patch.object(gui, "CS_COOKIE_FILE", cookie), \
-            patch.object(gui, "BASE", folder):
-        compare.invoke()
-        app.runs[0]["on_done"](1)
-    check("a failed read names the file, its size and when it was saved",
-          any("cookie.txt" in text and "bytes" in text and "saved" in text
-              for _tag, text in app.lines), str(app.lines[-3:]))
+    # ---- a failure is explained by the reader's own last words, not by the
+    #      cookie it happened to carry. The run this was written for stopped
+    #      inside one listing's detail lookup after reading everything before
+    #      it, and the panel told the seller to check the cookie.
+    def failing_read(text, answer=False):
+        app.runs.clear()
+        app.lines[:] = []
+        harness._BOX.askyesno = lambda *a, **k: answer
+        with patch.object(gui, "TOOL_ACTION",
+                          lambda action: "/plugins/cs/stock.py"), \
+                patch.object(gui, "read_woo_credentials",
+                             lambda path=None: ("https://shop.example", "ck_a",
+                                                "cs_b")), \
+                patch.object(gui, "CS_COOKIE_FILE", cookie), \
+                patch.object(gui, "BASE", folder):
+            compare.invoke()
+            app.runner = FakeRunner(text)
+            app.runs[0]["on_done"](1)
 
-    # ---- a failed read must never fall back to a list from an earlier run,
-    #      which is the shape a cached answer takes once it is on disk.
-    #      (1.0.26 refuses to write a partial list; this proves the app does
-    #      not compare one either.)
-    app.runs.clear()
-    app.lines[:] = []
+    def said(prefix):
+        return [text for _tag, text in app.lines if prefix in text]
+
+    failing_read(DETAIL_FAILED)
+    check("one listing's own lookup failing is named as that", said(
+        "ONE listing's own detail lookup"), str(app.lines[-4:]))
+    check("and the cookie is not blamed for it, and not even mentioned",
+          not any("cookie.txt" in text and "bytes" in text
+                  for _tag, text in app.lines), str(app.lines[-4:]))
+    check("the seller is told the listings before it were read",
+          said("the listings before it were read"), str(app.lines[-4:]))
+    check("and that one lookup must not stop a whole read",
+          said("must not lose the rest"), str(app.lines[-4:]))
+    check("the failure line itself is quoted, so it can be searched for",
+          said("94b93f6040f5401daabaa9c936efa5a7"), str(app.lines[-6:]))
+
+    # ---- the cookie is only ever blamed when the session really was refused
+    failing_read("! Could not list CanadianShopper stock: the request was "
+                 "refused, the session is no longer signed in (HTTP 401)")
+    check("a refused session names the file, its size and when it was saved",
+          any("cookie.txt" in text and "bytes" in text and "saved" in text
+              for _tag, text in app.lines), str(app.lines[-4:]))
+    check("and a refused session is not described as a lookup failure",
+          not said("ONE listing's own detail lookup"), str(app.lines[-4:]))
+
+    # ---- a failed read cannot be rescued by a list from before it, but that
+    #      list may be offered: named with its age, and only if the seller
+    #      says yes. (1.0.26 refuses to write a partial list; this proves the
+    #      app does not quietly compare one either.)
     out = folder / "cs-stock.json"
     out.write_text(json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+    three_hours = time_module.time() - 3 * 3600
+    os.utime(out, (three_hours, three_hours))
+
+    def compare_against_old(answer):
+        app.runs.clear()
+        app.lines[:] = []
+        harness._BOX.askyesno = lambda *a, **k: answer
+        harness._BOX.showerror = lambda *a, **k: None
+        with patch.object(gui, "TOOL_ACTION",
+                          lambda action: "/plugins/cs/stock.py"), \
+                patch.object(gui, "read_woo_credentials",
+                             lambda path=None: ("https://shop.example", "ck_a",
+                                                "cs_b")), \
+                patch.object(gui, "CS_COOKIE_FILE", cookie), \
+                patch.object(gui, "woo_get", fetch_ok), \
+                patch.object(gui, "in_background", sync_background), \
+                patch.object(gui, "BASE", folder):
+            compare.invoke()
+            app.runner = FakeRunner(DETAIL_FAILED)
+            return app.runs[0]["on_done"](1)
+
+    def fetch_ok(base, path, params, key, secret):
+        return (200, PRODUCTS) if params["page"] == 1 else (200, [])
+
+    answer = compare_against_old(False)
+    check("the last read is left on disk, so it can be offered at all",
+          out.exists(), str(out))
+    check("a failed read says nothing was compared", any(
+        "nothing was compared" in text for _tag, text in app.lines),
+        str(app.lines[-4:]))
+    check("saying no to the last read compares nothing and says so",
+          answer is False and not any("Compared" in text
+                                      for _tag, text in app.lines),
+          str(app.lines[-4:]))
+
+    app.lines[:] = []
+    answer = compare_against_old(True)
+    check("saying yes compares the last read", answer is True, str(app.lines[-4:]))
+    labels = [str(w.cget("text")) for w in parent.walk()
+              if isinstance(w, harness.gui.ttk.Label)]
+    check("and the counts carry the age of that read, in the summary",
+          any("3 hours old" in text and "not a fresh read" in text
+              for text in labels), str(labels[-4:]))
+    check("and the console says it is not a fresh read",
+          said("not a fresh read") and said("3 hours old"),
+          str(app.lines[-4:]))
+    check("the comparison really happened against that list",
+          any("Compared" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+
+    # ---- a read that exits cleanly but writes nothing is not a fresh read
+    #      either: the file on disk is still the old one, and comparing it
+    #      silently would report yesterday's counts as today's.
+    app.runs.clear()
+    app.lines[:] = []
+    harness._BOX.askyesno = lambda *a, **k: False
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/stock.py"), \
             patch.object(gui, "read_woo_credentials",
@@ -595,16 +693,116 @@ def test_the_cookies_canadian_shopper_is_told_about():
             patch.object(gui, "CS_COOKIE_FILE", cookie), \
             patch.object(gui, "BASE", folder):
         compare.invoke()
-        check("the old stock list is thrown away before the read, so a failed "
-              "read cannot compare it",
-              not out.exists(), str(out))
-        app.runs[0]["on_done"](1)
-    check("a failed read says nothing was compared",
-          any("nothing was compared" in text for _tag, text in app.lines),
-          str(app.lines[-2:]))
-    check("and it does not claim a comparison happened",
-          not any("Compared" in text for _tag, text in app.lines),
-          str(app.lines[-2:]))
+        app.runner = FakeRunner("wrote nothing")
+        app.runs[0]["on_done"](0)
+    check("a clean exit with no new list is not compared as a fresh read",
+          said("without writing a new stock list"), str(app.lines[-4:]))
+    check("and it says nothing was compared",
+          any("Nothing was compared" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+
+
+def test_read_failure():
+    print()
+    print("== 8c. a failed read says what stopped it ==")
+    note = stock_compare.read_failure(DETAIL_FAILED)
+    check("one listing's lookup is told apart from everything else",
+          note["kind"] == "detail", str(note))
+    check("the line quoted is the reader's own, whole",
+          note["line"] == DETAIL_FAILED.lstrip("! "), str(note["line"]))
+    check("and the advice says the cookie was working, because it was",
+          any("the cookie was working" in line for line in note["advice"]),
+          str(note["advice"]))
+    check("and it says one lookup must not end a read",
+          any("carry on, not stop the run" in line for line in note["advice"]),
+          str(note["advice"]))
+
+    refused = stock_compare.read_failure(
+        "! Could not list CanadianShopper stock: the request was refused, the "
+        "session is no longer signed in (HTTP 401)")
+    check("a refused session is a session problem", refused["kind"] == "session",
+          str(refused))
+    check("and it is the only kind blamed on the cookie",
+          any("cookie" in line.lower() for line in refused["advice"]),
+          str(refused["advice"]))
+    check("a detail failure never mentions the cookie as the cause",
+          not any("paste a fresh" in line.lower() for line in note["advice"]),
+          str(note["advice"]))
+
+    for text, kind in (
+            ("! Could not list CanadianShopper stock: rate limited (429)",
+             "rate"),
+            ("! Could not list CanadianShopper stock: timed out", "network"),
+            ("! URLError: [Errno -2] Name or service not known", "network"),
+            ("! Something the reader has never said before", "unknown"),
+            ("", "unknown")):
+        got = stock_compare.read_failure(text)["kind"]
+        check("%r is read as %s" % (text[:48], kind), got == kind, got)
+
+    check("a failure with no words still says something useful",
+          bool(stock_compare.read_failure("")["advice"]), "")
+
+    # ---- ages are said the way a person would say them
+    check("thirty seconds is just now",
+          stock_compare.describe_age(30) == "just now",
+          stock_compare.describe_age(30))
+    check("ten minutes is ten minutes old",
+          stock_compare.describe_age(600) == "10 minutes old",
+          stock_compare.describe_age(600))
+    check("two hours is two hours old",
+          stock_compare.describe_age(7200) == "2 hours old",
+          stock_compare.describe_age(7200))
+    check("two days is two days old",
+          stock_compare.describe_age(200000) == "2 days old",
+          stock_compare.describe_age(200000))
+    check("under two minutes is still just now",
+          stock_compare.describe_age(60) == "just now",
+          stock_compare.describe_age(60))
+    check("and two minutes is two minutes, not 2 minute",
+          stock_compare.describe_age(120) == "2 minutes old",
+          stock_compare.describe_age(120))
+    check("an hour is one hour, not 1 hours",
+          stock_compare.describe_age(3600) == "1 hour old",
+          stock_compare.describe_age(3600))
+
+    # ---- the list from before this run, and never this run's own answer
+    folder = Path(tempfile.mkdtemp())
+    old = folder / "cs-stock.json"
+    old.write_text(json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+    now = time_module.time()
+    os.utime(old, (now - 7200, now - 7200))
+    seen = stock_compare.previous_read(old, now - 60, now)
+    check("an older list is offered", seen is not None, str(seen))
+    check("with its age said", seen["age"] == "2 hours old", str(seen))
+    check("and its listings, ready to compare", len(seen["items"]) == 2,
+          str(seen))
+    fresh = folder / "fresh.json"
+    fresh.write_text(json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+    check("a file this run wrote is not a last read",
+          stock_compare.previous_read(fresh, now - 30, now) is None, "")
+    check("and a file written as the run began is this run's answer too",
+          stock_compare.previous_read(old, now - 7201, now) is None, "")
+    check("a file written a clear margin before the run began is a last read",
+          stock_compare.previous_read(old, now - 60, now) is not None, "")
+    check("and two seconds of slack covers a clock that rounds",
+          stock_compare.written_since(old, now - 7201) is True and
+          stock_compare.written_since(old, now - 7000) is False,
+          "%s %s" % (stock_compare.written_since(old, now - 7201),
+                     stock_compare.written_since(old, now - 7000)))
+    check("a list that cannot be read is not offered",
+          stock_compare.previous_read(folder / "missing.json", now - 60,
+                                      now) is None, "")
+    bare = folder / "bare.json"
+    bare.write_text("not a list", encoding="utf-8")
+    os.utime(bare, (now - 7200, now - 7200))
+    check("a file that is not a stock list is not offered",
+          stock_compare.previous_read(bare, now - 60, now) is None, "")
+
+    stale = stock_compare.stale_note(seen, "CanadianShopper")
+    check("the age is in the note, so a count is never read as fresh",
+          "2 hours old" in stale, stale)
+    check("and the note says what a stale list cannot know",
+          "listed or delisted since is not in it" in stale, stale)
 
 
 def test_one_card():
@@ -3499,6 +3697,7 @@ def main():
     test_nearest_title_diagnosis()
     test_a_duplicate_on_the_website()
     test_what_the_reader_claimed()
+    test_read_failure()
     test_held_under_another_product()
     test_a_reader_that_cannot_ask_for_a_fresh_page()
     test_a_listing_that_reports_everything()
