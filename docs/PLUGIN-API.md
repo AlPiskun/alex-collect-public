@@ -574,6 +574,35 @@ says updating the plugin is the fix, and from **1.0.34 or newer** it says the
 read is a defect in the reader worth reporting, because by then it is one.
 Nothing about a listing is changed either way.
 
+**When the vendor's data carries no product reference at all.** The reader can
+be perfectly correct and still deliver no product ids: 1.0.34's own console
+line reported *2,587 listings, 0 with a real product id, 2,587 without the key,
+0 reported as 0* - so those listings are being read from somewhere that does
+not name the product. That is not a row the core can write, and it will not
+guess one, but it is also not a dead end, because the reader is reading the
+listings themselves:
+
+- **The core now counts what the read did carry** and prints it once, after the
+  version sentence: *What the read did carry: 2587 listing ids, 2587 SKUs,
+  2587 listing addresses (of 2587 listings), so the reader has what resolving a
+  listing to its product takes; it is only the product id itself that never
+  arrived.* If a read has no SKU on any row it says that instead, because then
+  the product has to come from the vendor's own data rather than from a lookup.
+- **Resolving the listing is the reader's job, and it has the material.**
+  `stock.set` already addresses a listing by `id`, then `sku`, then `title`, so
+  the same catalogue entry can be turned into the product it belongs to. The
+  update action may do that - find the product from the listing it was given,
+  and refuse rather than guess when the answer is not unique.
+- **The core will accept an answer keyed by the listing's own id.** A result
+  entry naming `id`, `sku`, `title`, `card` or `name` confirms the change just
+  as a product id does, so a writer that resolves internally and reports what
+  it resolved needs no change here.
+- **Stock counts are not blocked by any of this.** The comparison panel's
+  **Set CanadianShopper to the website's counts...** writes through `stock.set`,
+  which addresses the listing rather than a product, so a shop whose reader
+  reports no product ids can still have its stock corrected - only title, price
+  and state need the listing panel.
+
 Two rules follow for a reader:
 
 - **Never emit `0`, `"0"`, `"0.0"` or any other empty stand-in for a missing

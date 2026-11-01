@@ -466,8 +466,10 @@ def zero_product_id_note(count, total):
     return ("the plugin reported product_id 0 for %s listing%s, and 0 is not "
             "an id: no product has one, so nothing from this read can be "
             "written, and reading again will return the same zeros. Stock "
-            "counts can still be written from the comparison panel, whose "
-            "writer (%s) addresses the listing itself rather than a product."
+            "counts can still be written from **Compare Woo vs CS** with "
+            "**Set CanadianShopper to the website's counts...** (or **Fix the "
+            "selected cards...** for one row), whose writer (%s) addresses the "
+            "listing itself rather than a product."
             % ("all %d" % total if count == total else "%d of %d" % (count, total),
                "" if total == 1 else "s", "stock.set"))
 
@@ -543,6 +545,71 @@ def needed_version_note(plugin="", needed=PRODUCT_ID_VERSION):
             "plugin is the fix." % (plugin, needed))
 
 
+#: The identifiers a row can be recognised by, and what each is called in
+#: words. The product id is the only one a write can be addressed with, but the
+#: others are what a reader could resolve one *from*, so a read that has them
+#: and no product id is a reader with something to work with rather than an
+#: empty list.
+IDENTIFIERS = (("product_id", "product id", "product ids"),
+               ("id", "listing id", "listing ids"),
+               ("sku", "SKU", "SKUs"),
+               ("url", "listing address", "listing addresses"))
+
+
+def identity_counts(items):
+    """How many rows carry each identifier, in :data:`IDENTIFIERS` order."""
+    counts = {key: 0 for key, _word, _words in IDENTIFIERS}
+    for row in list(items or []):
+        if not isinstance(row, dict):
+            continue
+        if product_id(row):
+            counts["product_id"] += 1
+        if is_id(row.get("id")):
+            counts["id"] += 1
+        if str(row.get("sku") or "").strip():
+            counts["sku"] += 1
+        if link(row):
+            counts["url"] += 1
+    return counts
+
+
+def identity_note(items):
+    """One line saying which identifiers a read did carry, and what that means.
+
+    Written for the person who has to take it to the plugin's author: a reader
+    that emitted 2,541 rows with no product id is a different problem depending
+    on whether it had a listing id, an SKU and an address for each one. With
+    those, resolving each listing to its product is something the reader can
+    do; with none of them, the reader is not reading the listing at all.
+    """
+    rows = list(items or [])
+    if not rows:
+        return ""
+    counts = identity_counts(rows)
+    total = len(rows)
+    said = ", ".join("%d %s" % (counts[key], word if counts[key] == 1
+                                 else words)
+                     for key, word, words in IDENTIFIERS if counts[key])
+    if not said:
+        return ("Not one row carried a listing id, an SKU or an address "
+                "either, so the reader is not reading the listings' own "
+                "identifiers at all.")
+    line = "What the read did carry: %s (of %d listing%s)" % (
+        said, total, "" if total == 1 else "s")
+    if counts["sku"] == total or counts["id"] == total:
+        line += (", so the reader has what resolving a listing to its product "
+                 "takes; it is only the product id itself that never arrived.")
+    elif counts["sku"]:
+        line += (", but not for every row: resolving by SKU would leave %d "
+                 "listing%s behind." % (total - counts["sku"],
+                                        "" if total - counts["sku"] == 1
+                                        else "s"))
+    else:
+        line += (", and no SKU on any row, so the product each listing belongs "
+                 "to has to come from the vendor's own data.")
+    return line
+
+
 def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True):
     """The whole sentence for a read nothing can be written from, or "".
 
@@ -561,7 +628,7 @@ def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True):
         said = ("No listing in that read carried a product id, so the edit "
                 "buttons cannot send anything: the plugin's reader is not "
                 "reporting one.")
-    parts = [said, needed_version_note(plugin, needed)]
+    parts = [said, needed_version_note(plugin, needed), identity_note(rows)]
     if works:
         parts.append("Searching, opening a listing and editing in the vendor "
                      "dashboard all still work.")

@@ -686,8 +686,10 @@ def test_a_reader_that_says_zero():
           "product_id 0" in note and "0 is not an id" in note, note)
     check("it does not send anyone to the dashboard for 2,541 listings",
           "vendor dashboard" not in note, note)
-    check("and it names what still works",
-          "stock.set" in note and "comparison panel" in note, note)
+    check("and it names the buttons that still do work, not just a panel",
+          "stock.set" in note and
+          "Set CanadianShopper to the website's counts..." in note and
+          "Fix the selected cards..." in note, note)
     check("a read with no zeros has nothing to say",
           cs_edit.zero_product_id_note(0, 5) == "", "")
 
@@ -839,6 +841,74 @@ def test_the_version_that_reports_product_ids():
         {"items": [dict(strings[0])]})[0], inventory=9)
     check("the id the plugin sent is the id the write carries, unchanged",
           plan.get("product_id") == "1101", str(plan))
+
+
+def test_what_the_read_did_carry():
+    """2,587 listings, 0 with a real product id, 2,587 without the key.
+
+    Plugin 1.0.34's own console said exactly that, which means the reader is
+    reading listings that carry no product reference at all. Nothing the core
+    can do invents one - but what the read *did* carry decides whether the
+    reader could resolve one, so the console counts it instead of only saying
+    what is missing.
+    """
+    print()
+    print("== 5d3. what the read did carry ==")
+    full = [{"id": "a%04d" % n, "sku": "OPC73-%d" % n,
+             "url": "https://canadianshopper.ca/l/%d" % n,
+             "title": "card %d" % n} for n in range(2587)]
+    counts = cs_edit.identity_counts(full)
+    check("every identifier a row carries is counted",
+          counts == {"product_id": 0, "id": 2587, "sku": 2587, "url": 2587},
+          str(counts))
+    note = cs_edit.identity_note(full)
+    check("the line says what the read did carry, with the counts",
+          "2587 listing ids" in note and "2587 SKUs" in note and
+          "2587 listing addresses" in note and "(of 2587 listings)" in note,
+          note)
+    check("and that resolving is therefore possible for the reader",
+          "resolving a listing to its product takes" in note and
+          "it is only the product id itself that never arrived" in note, note)
+    check("a product id appears in the counts only when one is there",
+          cs_edit.identity_counts(items())["product_id"] == len(LISTINGS), "")
+
+    partial = [{"id": "a", "sku": "S1"}, {"id": "b"}, {"id": "c"}]
+    note = cs_edit.identity_note(partial)
+    check("a read where only some rows have an SKU says how many would be left",
+          "resolving by SKU would leave 0 listings behind" not in note and
+          "3 listing ids" in note, note)
+    note = cs_edit.identity_note([{"id": "a"}, {"id": "b"}, {"title": "x"}])
+    check("a read with no SKU on any row says the product has to come from "
+          "the vendor's data",
+          "no SKU on any row" in note and "vendor's own data" in note, note)
+    check("a read with no identifier at all is said plainly",
+          "not reading the listings' own identifiers" in
+          cs_edit.identity_note([{"title": "x"}, {"title": "y"}]), "")
+    check("and an empty read says nothing at all",
+          cs_edit.identity_note([]) == "", "")
+
+    #  ---- it is part of the sentence the panel prints, not a second one
+    gap = cs_edit.product_id_gap(full, plugin="1.0.34")
+    check("the gap sentence carries the identity line",
+          "What the read did carry" in gap, gap)
+    check("in the right place: after the version, before what still works",
+          gap.index("1.0.34") < gap.index("What the read did carry") <
+          gap.index("still work"), gap)
+
+    #  ---- and the panel prints it when a read cannot be written
+    folder, app, parent = build_panel()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app, folder, parent, full)
+    said = " ".join(text for _tag, text in app.lines[-3:])
+    check("the console names what the read did carry",
+          "2587 SKUs" in said and "2587 listing addresses" in said, said)
+    check("the read itself keeps every listing, so the count is the read's",
+          any("2587 listings read" in text for _tag, text in app.lines),
+          str(app.lines[-4:]))
+    check("and the list shows as many as it has ever shown, not fewer",
+          len(listing_box(parent).items) == cs_edit.SEARCH_LIMIT == 200,
+          str(len(listing_box(parent).items)))
 
 
 def test_the_list_says_which_plugin_read_it():
@@ -1385,6 +1455,7 @@ def main():
     test_a_read_with_no_product_ids_at_all()
     test_a_reader_that_says_zero()
     test_the_version_that_reports_product_ids()
+    test_what_the_read_did_carry()
     test_the_list_says_which_plugin_read_it()
     test_the_panel_reads_and_lists()
     test_the_edit_form()
