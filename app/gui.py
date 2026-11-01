@@ -73,7 +73,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.17"
+VERSION = "3.18"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -270,6 +270,11 @@ PROGRESS_WORDS = {
     "pace": "waiting a moment for the website",
     "publish": "putting it on sale",
     "done": "created and read back",
+    #  A CanadianShopper stock read (plugin 1.0.38 reports these): the pages
+    #  of the catalogue, then each listing's own product, which the list-only
+    #  read skips entirely.
+    "read": "reading the catalogue",
+    "ids": "resolving product ids",
 }
 
 
@@ -7076,7 +7081,7 @@ def build_stock(parent, app):
                 app.console_line(
                     "So this is the slower read: the reader looks up every "
                     "listing's product as it goes, which is where the minutes "
-                    "go. Plugin 1.0.37 accepts the flag and skips them.",
+                    "go. Plugin 1.0.38 accepts the flag and skips them.",
                     "dim")
             start_stock_read(TOOL_ACTION(CS_STOCK_ACTION), out, creds, rest)
             return False
@@ -7285,9 +7290,19 @@ def build_stock(parent, app):
         #  Before the wait, not after it: with a plugin older than 1.0.36 one
         #  failed detail lookup can end a read that has already taken most of
         #  an hour. Said once, and never blocks anything.
-        early = stock_compare.before_read_note(plugin_version())
+        version = plugin_version()
+        early = stock_compare.before_read_note(version)
         if early:
             app.console_line(early, "warn")
+        elif version and version_at_least(version, "1.0.38"):
+            #  The reader takes --no-product-lookups (1.0.38), so this is the
+            #  read that costs one request per page instead of one per
+            #  listing. Named here because it is the difference, and because
+            #  silence would leave the speed unexplained either way.
+            app.console_line(
+                "Reading the catalogue without product lookups (plugin %s): a "
+                "comparison needs none of them, so this is the read measured "
+                "in seconds rather than minutes." % version, "dim")
         #  The plugin is its own program and says nothing this panel can count,
         #  so its bar sweeps: it is still an answer to "is anything happening".
         reading("Reading CanadianShopper's stock...")

@@ -125,7 +125,7 @@ version as well as the action:
 | importing a written CSV into the vendor dashboard (`marketplace.import_csv`) | plugin **1.0.23** or newer |
 | editing one listing from the app (`marketplace.listing_update`) | plugin **1.0.28** or newer |
 | an address, price and state on every `stock.list` row | plugin **1.0.28** or newer |
-| a whole-shop comparison that skips product lookups (`--no-product-lookups`) | plugin **1.0.37** or newer |
+| a whole-shop comparison that skips product lookups (`--no-product-lookups`) | plugin **1.0.38** or newer |
 
 `--back` was additive before 1.0.16 - it added the new back beside the old one
 - so sending it to 1.0.15 would leave the previous back photo on the listing.

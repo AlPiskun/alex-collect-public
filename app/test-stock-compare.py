@@ -44,6 +44,7 @@ def load_harness():
 harness = load_harness()
 gui = harness.gui
 import stock_compare                                   # noqa: E402
+import cs_edit                                        # noqa: E402
 
 PRODUCTS = [
     {"id": 1, "name": "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6",
@@ -1181,6 +1182,104 @@ def test_a_stopped_read_is_not_a_failure():
           gui.elapsed_text(3600) == "1 h", gui.elapsed_text(3600))
     check("and an hour is hours and minutes",
           gui.elapsed_text(3720) == "1 h 2 min", gui.elapsed_text(3720))
+
+
+def test_the_fast_read_from_plugin_1038():
+    print()
+    print("== 8g. plugin 1.0.38's list-only read, end to end ==")
+    #  2,600 rows exactly as 1.0.38 writes them for a comparison: every
+    #  catalogue field, and no product id anywhere.
+    rows = [{"id": "%032x" % (900000 + n),
+             "title": "1989 O-Pee-Chee Card #%d" % n,
+             "sku": "OPC1989-%d-Name-EX-5" % n,
+             "inventory": n % 4, "status": "active", "price": "CA$8.50",
+             "url": "https://cs.example/p/%d" % n}
+            for n in range(1, 2601)]
+    items = stock_compare.plugin_items({"items": rows})
+    check("every row of the fast read is kept", len(items) == 2600,
+          str(len(items)))
+    check("and not one carries a product id",
+          not any(cs_edit.product_id(row) for row in items), "")
+    woo = [{"id": n, "name": "1989 O-Pee-Chee Card #%d" % n,
+            "sku": "OPC1989-%d-Name-EX-5" % n, "manage_stock": True,
+            "stock_quantity": 9, "type": "simple"} for n in range(1, 2601)]
+    pairs, only_woo, only_other = stock_compare.pair(woo, items)
+    check("a read with no product ids still pairs every card",
+          len(pairs) == 2600 and not only_woo and not only_other,
+          "%d/%d/%d" % (len(pairs), len(only_woo), len(only_other)))
+    check("and it says nothing about shared products it cannot see",
+          stock_compare.id_key("1") is not None and
+          cs_edit.shared_product_note(items) == "", "")
+
+    def fetch_ok(base, path, params, key, secret):
+        return (200, woo) if params["page"] == 1 else (200, [])
+
+    folder, app, parent = build_panel()
+    compare = find(parent, gui.ttk.Button, "Compare stock", exact=False)
+    app.lines[:] = []
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "CS_COOKIE_FILE", folder / "cookie.txt"), \
+            patch.object(gui, "plugin_version", lambda *a, **k: "1.0.38"), \
+            patch.object(gui, "woo_get", fetch_ok), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        compare.invoke()
+        check("the comparison asks for the list-only read",
+              "--no-product-lookups" in app.runs[-1]["args"],
+              str(app.runs[-1]["args"]))
+        check("and says which read it is running, and why it is the fast one",
+              any("without product lookups" in text and "measured in seconds"
+                  in text for _tag, text in app.lines), str(app.lines[:4]))
+        (folder / "cs-stock.json").write_text(json.dumps({"items": rows}),
+                                              encoding="utf-8")
+        app.runner = FakeRunner("")
+        app.runs[-1]["on_done"](0)
+    check("the fast read is compared like any other",
+          any("Compared" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and nothing complains about the product ids it does not have",
+          not any("product id" in text for _tag, text in app.lines),
+          str(app.lines[-4:]))
+    labels = [str(w.cget("text")) for w in parent.walk()
+              if isinstance(w, gui.ttk.Label)]
+    check("and nothing is called stale",
+          not any("not a fresh read" in text for text in labels),
+          str(labels[-3:]))
+
+    # ---- the same panel on a plugin that cannot do it: the slow read, said
+    app2_folder, app2, parent2 = build_panel()
+    compare2 = find(parent2, gui.ttk.Button, "Compare stock", exact=False)
+    app2.lines[:] = []
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "CS_COOKIE_FILE", app2_folder / "cookie.txt"), \
+            patch.object(gui, "plugin_version", lambda *a, **k: "1.0.36"), \
+            patch.object(gui, "BASE", app2_folder):
+        compare2.invoke()
+    check("an older plugin is not promised the fast read",
+          not any("measured in seconds" in text for _tag, text in app2.lines),
+          str(app2.lines[:4]))
+    check("and it is still asked, and still falls back",
+          "--no-product-lookups" in app2.runs[-1]["args"], str(app2.runs[-1]))
+    app2.runs[-1]["on_done"](2)
+    check("dropping the flag says the read will be the slow one",
+          any("slower read" in text for _tag, text in app2.lines),
+          str(app2.lines[-3:]))
+
+    # ---- the reader's own stages, in the person's words
+    check("a catalogue stage is called reading the catalogue",
+          gui.PROGRESS_WORDS.get("read") == "reading the catalogue",
+          str(gui.PROGRESS_WORDS.get("read")))
+    check("and a lookup stage is called resolving product ids",
+          gui.PROGRESS_WORDS.get("ids") == "resolving product ids",
+          str(gui.PROGRESS_WORDS.get("ids")))
 
 
 def test_comparing_the_last_read():
@@ -4150,6 +4249,7 @@ def main():
     test_read_failure()
     test_the_reader_survives()
     test_a_stopped_read_is_not_a_failure()
+    test_the_fast_read_from_plugin_1038()
     test_comparing_the_last_read()
     test_held_under_another_product()
     test_a_reader_that_cannot_ask_for_a_fresh_page()
