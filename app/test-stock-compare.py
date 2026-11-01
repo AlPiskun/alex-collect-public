@@ -1153,6 +1153,20 @@ def test_a_stopped_read_is_not_a_failure():
           str(lines))
 
     lines[:] = []
+    slow.app._saw_dangling_prompt = True
+    slow.output = ""
+    slow._quiet_watch = (0, None)
+    slow._still_running()
+    check("a run holding at a question says it is waiting for an answer",
+          lines and "Waiting for your answer" in lines[-1][1] and
+          "question" in lines[-1][1], str(lines))
+    check("and does not call that a run that printed nothing",
+          "nothing has been printed" not in lines[-1][1], str(lines))
+    check("and it is a warning, not a quiet note", lines[-1][0] == "warn",
+          str(lines))
+    slow.app._saw_dangling_prompt = False
+
+    lines[:] = []
     slow.output = "some output\n"
     slow._quiet_watch = (0, None)
     slow._still_running()
@@ -1350,6 +1364,233 @@ def test_comparing_the_last_read():
           any("No earlier CanadianShopper list" in text
               for _tag, text in app.lines) and not app.runs,
           str(app.lines[-2:]))
+
+
+def test_the_sku_audit():
+    print()
+    print("== 8h. the website's SKUs, and the cards they hold back ==")
+    folder = Path(tempfile.mkdtemp())
+    app = harness.FakeApp(folder)
+    parent = harness.FakeWidget()
+    with patch.object(gui, "BASE", folder):
+        gui.build_pipeline(parent, app)
+    button = find(parent, gui.ttk.Button, "Check the website's SKUs")
+    check("the pipeline panel offers the SKU check", button is not None, "")
+    check("and its tooltip says nothing changes on its own",
+          "nothing is changed until" in gui.tip_for(
+              "Check the website's SKUs"), "")
+
+    plain = "1973-74 O-Pee-Chee Jim Pappin #112 Chicago Black Hawks"
+    dark = plain + " Dark Back"
+    plain_sku = "OPC1973-74-112-Pappin-VG-EX-4"
+    products = [{"id": 14120, "name": dark, "sku": plain_sku,
+                 "status": "publish"},
+                {"id": 14121, "name": plain, "sku": "OPC1973-74-72-Lafleur",
+                 "status": "publish"}]
+    changed = []
+
+    def fake_read_all(site, key, secret, **kwargs):
+        return products
+
+    def fake_set_sku(site, key, secret, product_id, sku, **kwargs):
+        changed.append((product_id, sku))
+        return {"id": product_id, "sku": sku}
+
+    #  Without keys it says so and reads nothing.
+    app.lines[:] = []
+    said = []
+    harness._BOX.showinfo = lambda *a, **k: said.append(a)
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("", "", "")):
+        button.invoke()
+    check("without keys it says what is missing, and reads nothing",
+          any("No WooCommerce keys saved" in text for _tag, text in app.lines)
+          and any("woo-keys.txt" in str(payload) for payload in said),
+          str(app.lines[-2:]) + str(said[-1:]))
+    check("and it writes nothing", not changed, str(changed))
+
+    #  With keys: it lists what it found, and a No changes nothing.
+    app.lines[:] = []
+    harness._BOX.askyesno = lambda *a, **k: False
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck_a",
+                                         "cs_b")), \
+            patch.object(gui.woo_create, "read_all_products", fake_read_all), \
+            patch.object(gui.woo_create, "set_sku", fake_set_sku), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        button.invoke()
+    check("the product whose SKU does not name its printing is named",
+          any(plain_sku in text and "Dark Back" in text
+              for _tag, text in app.lines), str(app.lines[-4:]))
+    check("with the SKU it should have",
+          any(plain_sku + "-DB" in text for _tag, text in app.lines),
+          str(app.lines[-4:]))
+    check("and nothing is changed on a No",
+          not changed, str(changed))
+    check("the console says they were left alone",
+          any("left as they are" in text for _tag, text in app.lines),
+          str(app.lines[-2:]))
+
+    #  A Yes changes exactly that one product's SKU, and nothing else.
+    app.lines[:] = []
+    harness._BOX.askyesno = lambda *a, **k: True
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck_a",
+                                         "cs_b")), \
+            patch.object(gui.woo_create, "read_all_products", fake_read_all), \
+            patch.object(gui.woo_create, "set_sku", fake_set_sku), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        button.invoke()
+    check("a Yes changes that product's SKU, once",
+          changed == [(14120, plain_sku + "-DB")], str(changed))
+    check("and says the answer was read back",
+          any("read back" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and points at the batch that can now finish",
+          any("Run the batch again" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+
+    #  Nothing to fix: said plainly, and no question asked.
+    asked = []
+    harness._BOX.askyesno = lambda *a, **k: asked.append(a) or True
+
+    def clean_read(site, key, secret, **kwargs):
+        return [{"id": 1, "name": plain, "sku": plain_sku, "status": "publish"}]
+
+    app.lines[:] = []
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck_a",
+                                         "cs_b")), \
+            patch.object(gui.woo_create, "read_all_products", clean_read), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        button.invoke()
+    check("a shop with nothing wrong says so",
+          any("Every one of the 1 products" in text
+              for _tag, text in app.lines), str(app.lines[-2:]))
+    check("and asks nothing", not asked, str(asked))
+
+
+def test_the_sku_audit_shows_where_it_is():
+    print()
+    print("== 8i. the SKU check says how far it has got ==")
+    folder = Path(tempfile.mkdtemp())
+    app = harness.FakeApp(folder)
+    parent = harness.FakeWidget()
+    with patch.object(gui, "BASE", folder):
+        gui.build_pipeline(parent, app)
+    button = find(parent, gui.ttk.Button, "Check the website's SKUs")
+    bars = [widget for widget in parent.walk()
+            if type(widget).__name__ == "FakeProgressbar"]
+    check("the panel has one bar of its own for the check",
+          len(bars) == 1, str(len(bars)))
+    bar = bars[0]
+    label = [child for child in bar.parent.children if child is not bar][0]
+    check("and it is not on screen before anything is checked",
+          not bar.packed and not str(label.cget("text")), "")
+
+    plain = "1973-74 O-Pee-Chee Jim Pappin #112 Chicago Black Hawks"
+    dark = plain + " Dark Back"
+    plain_sku = "OPC1973-74-112-Pappin-VG-EX-4"
+    products = [{"id": 14120, "name": dark, "sku": plain_sku,
+                 "status": "publish"},
+                {"id": 14121, "name": "Hextall #115 Corrected Bio",
+                 "sku": "C-115", "status": "publish"}]
+    seen = []
+
+    def seen_now(where):
+        seen.append({"where": where, "packed": bool(bar.packed),
+                     "text": str(label.cget("text")),
+                     "value": bar._kw.get("value"),
+                     "maximum": bar._kw.get("maximum"),
+                     "mode": bar._kw.get("mode"),
+                     "sweeping": bar._kw.get("sweeping")})
+
+    def fake_read_all(site, key, secret, progress=None, **kwargs):
+        #  The reader reports each page as it lands; the bar is read after
+        #  the second one, which is the state a person would be looking at.
+        progress(1, None, 100)
+        seen_now("first page, no page count from the site")
+        progress(2, 3, 200)
+        seen_now("second page of three")
+        return products
+
+    def fake_set_sku(site, key, secret, product_id, sku, **kwargs):
+        seen_now("writing %s" % sku)
+        return {"id": product_id, "sku": sku}
+
+    harness._BOX.askyesno = lambda *a, **k: True
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck_a",
+                                         "cs_b")), \
+            patch.object(gui.woo_create, "read_all_products", fake_read_all), \
+            patch.object(gui.woo_create, "set_sku", fake_set_sku), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        button.invoke()
+
+    first, second = seen[0], seen[1]
+    check("while reading, the bar is on screen", first["packed"], str(first))
+    check("and with no page count it sweeps rather than sits still",
+          first["mode"] == "indeterminate" and first["sweeping"], str(first))
+    check("and it says which page it is on",
+          "page 1" in first["text"] and "100 products" in first["text"],
+          first["text"])
+    check("a page count from the website turns it into a fraction",
+          second["mode"] == "determinate" and second["maximum"] == 3 and
+          second["value"] == 2, str(second))
+    check("and stops sweeping once it knows where it ends",
+          second["sweeping"] is False, str(second))
+    check("the text names both the page and the count",
+          "page 2 of 3" in second["text"] and "200 products" in second["text"],
+          second["text"])
+    middle = [state for state in seen if state["where"].startswith("writing")]
+    first_fix, second_fix = middle[0], middle[1]
+    check("fixing is drawn as a fraction of the products found",
+          first_fix["packed"] and first_fix["mode"] == "determinate" and
+          first_fix["maximum"] == 2, str(first_fix))
+    check("the bar sits one short of the product being written, and names it",
+          first_fix["value"] == 0 and "1 of 2" in first_fix["text"] and
+          "Pappin" in first_fix["text"], first_fix["text"])
+    check("and moves on to the next product as each one is written",
+          second_fix["value"] == 1 and "2 of 2" in second_fix["text"] and
+          "Hextall" in second_fix["text"], second_fix["text"])
+    check("the bar is gone when the check ends",
+          not bar.packed and not str(label.cget("text")), "")
+
+    #  An error takes the bar down too: a bar left sweeping over a failure is
+    #  a window that looks busy forever.
+    def broken_read(site, key, secret, progress=None, **kwargs):
+        progress(1, 4, 100)
+        raise gui.woo_create.ProductError("the site did not answer")
+
+    app.lines[:] = []
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck_a",
+                                         "cs_b")), \
+            patch.object(gui.woo_create, "read_all_products", broken_read), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        button.invoke()
+    check("a read that fails takes the bar down",
+          not bar.packed and not bar._kw.get("sweeping"), str(bar._kw))
+    check("and says what went wrong",
+          any("did not answer" in text for _tag, text in app.lines),
+          str(app.lines[-2:]))
+    app.lines[:] = []
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck_a",
+                                         "cs_b")), \
+            patch.object(gui.woo_create, "read_all_products", fake_read_all), \
+            patch.object(gui.woo_create, "set_sku", fake_set_sku), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        button.invoke()
+    check("so a second check reads the shop again",
+          any("Reading every product" in text for _tag, text in app.lines),
+          str(app.lines[:2]))
 
 
 def test_one_card():
@@ -4251,6 +4492,8 @@ def main():
     test_a_stopped_read_is_not_a_failure()
     test_the_fast_read_from_plugin_1038()
     test_comparing_the_last_read()
+    test_the_sku_audit()
+    test_the_sku_audit_shows_where_it_is()
     test_held_under_another_product()
     test_a_reader_that_cannot_ask_for_a_fresh_page()
     test_a_listing_that_reports_everything()

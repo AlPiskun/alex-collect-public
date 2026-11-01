@@ -218,6 +218,18 @@ class FakeSite:
                                     "post": (body or {}).get("post")}
                                    ).encode("utf-8")
 
+        if "/products" in url and "per_page=" in url and method == "GET":
+            #  The whole catalogue, a page at a time - what the SKU audit
+            #  reads. A page past the end answers with an empty list.
+            params = dict(part.split("=", 1) for part in
+                          url.split("?", 1)[-1].split("&") if "=" in part)
+            page = int(params.get("page") or 1)
+            per_page = int(params.get("per_page") or 100)
+            rows = sorted(self.products.values(), key=lambda product:
+                          str(product.get("id")))
+            start = (page - 1) * per_page
+            return 200, json.dumps(rows[start:start + per_page]).encode()
+
         if "/products" in url and method == "POST":
             if self.slow_create:
                 #  A slow host answering with its error page, with nothing
@@ -241,7 +253,18 @@ class FakeSite:
         if "/products/" in url and method == "PUT":
             pid = int(url.split("/products/")[1].split("?")[0])
             product = self.products.get(pid, {})
-            product["status"] = self.publish_status
+            if "sku" in (body or {}):
+                #  One field: the SKU. The shop refuses a SKU another product
+                #  already holds, exactly as the real one does.
+                taken = self.by_sku.get(body["sku"])
+                if taken is not None and taken != pid:
+                    return 400, json.dumps(
+                        {"message": "sku already in use"}).encode("utf-8")
+                self.by_sku.pop(product.get("sku"), None)
+                product["sku"] = body["sku"]
+                self.by_sku[body["sku"]] = pid
+            if "status" in (body or {}):
+                product["status"] = self.publish_status
             self.products[pid] = product
             return 200, json.dumps(product).encode("utf-8")
 
@@ -259,6 +282,135 @@ def build(tmp, rows, exist=(), refuse=None, images=True):
     csv_path = write_csv(Path(tmp) / "woocommerce_products", rows)
     read = woo_create.read_rows(csv_path)
     return read, woo_create.plan(read["rows"], [folder])
+
+
+def test_skus_that_name_their_printing():
+    print()
+    print("== a SKU that names the printing, and the ones that do not ==")
+    plain = "1973-74 O-Pee-Chee Jim Pappin #112 Chicago Black Hawks"
+    dark = plain + " Dark Back"
+    plain_sku = "OPC1973-74-112-Pappin-VG-EX-4"
+    check("a dark back title calls for the DB token",
+          woo_create.printing_tokens(dark) == ["DB"],
+          str(woo_create.printing_tokens(dark)))
+    check("a title naming no printing calls for none",
+          woo_create.printing_tokens(plain) == [],
+          str(woo_create.printing_tokens(plain)))
+    check("a SKU that is already right is left exactly as it is",
+          woo_create.sku_with_printing(plain_sku + "-DB", dark) ==
+          plain_sku + "-DB", woo_create.sku_with_printing(plain_sku + "-DB",
+                                                          dark))
+    check("a SKU missing its printing gains it",
+          woo_create.sku_with_printing(plain_sku, dark) == plain_sku + "-DB",
+          woo_create.sku_with_printing(plain_sku, dark))
+    check("a card with no printing keeps the SKU it has",
+          woo_create.sku_with_printing(plain_sku, plain) == plain_sku, "")
+    check("two printings gain two tokens, in the app's order",
+          woo_create.sku_with_printing(
+              plain_sku, "A card Uncorrected Bio Light Back") ==
+          plain_sku + "-LB-UNCORR",
+          woo_create.sku_with_printing(plain_sku,
+                                       "A card Uncorrected Bio Light Back"))
+    check("grey and gray call for the same token",
+          woo_create.printing_tokens("A card Grey Back") ==
+          woo_create.printing_tokens("A card Gray Back") == ["GB"], "")
+
+    # ---- the shop-wide audit: read-only, and it never invents a product
+    site = FakeSite(exist=[("P-73", 14120), ("C-1", 14121),
+                           ("OPC1973-74-72-Lafleur-VG-EX-4", 14122)])
+    site.products[14120]["name"] = "Pit Martin #73 Dark Back"
+    site.products[14121]["name"] = "Hextall #115 Corrected Bio"
+    site.products[14122]["name"] = "1973-74 O-Pee-Chee Guy Lafleur #72"
+    products = woo_create.read_all_products("https://shop.example", "ck_a",
+                                            "cs_b", opener=site)
+    check("the whole catalogue is read, every page",
+          len(products) == 3, str(len(products)))
+    check("and it asks for drafts as well as published products",
+          any("status=any" in call["url"] for call in site.calls),
+          str([call["url"] for call in site.calls][:1]))
+    stale = woo_create.stale_printing_skus([
+        {"id": 1, "name": plain, "sku": plain_sku},
+        {"id": 2, "name": dark, "sku": plain_sku + "-DB"},
+        {"id": 3, "name": "Pit Martin #73 Dark Back", "sku": "P-73"},
+        {"id": 4, "name": plain, "sku": ""},
+        {"id": 5, "name": "Corrected Bio", "sku": "C-1"},
+    ])
+    check("only the products whose SKU is short a token are named",
+          [entry["id"] for entry in stale] == [3, 5], str(stale))
+    check("and each carries the SKU it should have",
+          stale[0]["should_be"] == "P-73-DB" and
+          stale[1]["should_be"] == "C-1-CORR", str(stale))
+    check("with the printing named, so it can be checked by eye",
+          stale[0]["printing"] == "DB", str(stale[0]))
+    check("a product with no SKU is left alone, not given one",
+          not any(entry.get("id") == 4 for entry in stale), str(stale))
+
+    # ---- and it says where it has got to while it reads
+    nudges = []
+    woo_create.read_all_products(
+        "https://shop.example", "ck_a", "cs_b", opener=site, per_page=1,
+        progress=lambda page, pages, count: nudges.append((page, pages, count)))
+    check("a page is reported as it lands, with how many products are in",
+          nudges[:3] == [(1, None, 1), (2, None, 2), (3, None, 3)],
+          str(nudges[:4]))
+    check("with no page count when the site states none",
+          all(pages is None for _page, pages, _count in nudges), str(nudges))
+
+    check("the site's own page count is read from its headers",
+          woo_create._total_pages({"X-WP-TotalPages": "3"}) == 3 and
+          woo_create._total_pages({"x_wp_totalpages": "7"}) == 7, "")
+    check("and a missing or unreadable one is None, not a guess",
+          woo_create._total_pages({}) is None and
+          woo_create._total_pages({"X-WP-TotalPages": "many"}) is None, "")
+
+    #  The headers the default opener collects are what turns the bar into a
+    #  fraction, so that plumbing is checked with a stand-in for the HTTP call
+    #  itself rather than trusted.
+    real_http = woo_create._http
+    asked = []
+
+    def http_with_headers(request, timeout, opener=None, headers_out=None):
+        asked.append(dict(headers_out or {}))
+        if headers_out is not None:
+            headers_out["X-WP-TotalPages"] = "2"
+        return 200, json.dumps([{"id": len(asked), "name": "A card",
+                                 "sku": "A-%d" % len(asked)}]).encode()
+
+    woo_create._http = http_with_headers
+    try:
+        nudges = []
+        woo_create.read_all_products(
+            "https://shop.example", "ck_a", "cs_b", per_page=1, limit=2,
+            progress=lambda page, pages, count:
+            nudges.append((page, pages, count)))
+    finally:
+        woo_create._http = real_http
+    check("the page count reaches the caller with the first page",
+          nudges == [(1, 2, 1), (2, 2, 2)], str(nudges))
+    check("and the read asked the HTTP call to hand its headers back",
+          asked and isinstance(asked[0], dict), str(asked[:1]))
+
+    check("the audit finds the two that are short a token",
+          sorted(entry["id"] for entry in
+                 woo_create.stale_printing_skus(products)) == [14120, 14121],
+          str(woo_create.stale_printing_skus(products)))
+
+    # ---- one SKU changed, and read back
+    changed = woo_create.set_sku("https://shop.example", "ck_a", "cs_b", 14120,
+                                 "P-73-DB", opener=site)
+    check("the SKU is changed on that one product",
+          changed.get("sku") == "P-73-DB", str(changed))
+    check("and the audit no longer lists it",
+          not any(entry["id"] == 14120 for entry in
+                  woo_create.stale_printing_skus(list(site.products.values()))),
+          str(woo_create.stale_printing_skus(list(site.products.values()))))
+    try:
+        woo_create.set_sku("https://shop.example", "ck_a", "cs_b", 14120,
+                           "C-1", opener=site)
+        check("a SKU another product holds is refused", False, "")
+    except woo_create.ProductError as exc:
+        check("a SKU another product holds is refused",
+              "already" in (exc.message + exc.hint).lower(), exc.message)
 
 
 def test_reading():
@@ -1449,7 +1601,11 @@ def test_one_sku_per_card():
           len(report["created"]) == 1 and report["created"][0]["sku"] ==
           light_sku and not report["failed"], str(report))
 
-    # ---- the SKU is taken by a different card: said, not skipped quietly
+    # ---- the plain SKU is held by ANOTHER PRINTING of the same card: this
+    #      card is the printed one, so its own SKU is the one that is short a
+    #      token. It is created under the SKU its title calls for instead of
+    #      being refused for a SKU it never needed. (A dark back silently not
+    #      being created is what this is here to stop.)
     tmp = tempfile.mkdtemp()
     read, planned = build(tmp, [row(1, SKU=old_sku, Name=dark),
                                 row(2, SKU="OPC1973-74-80-Harper-VG-EX-4",
@@ -1459,18 +1615,59 @@ def test_one_sku_per_card():
     report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
                             username="owner", app_password="pw", opener=site)
     text = "\n".join(woo_create.report_text(report, "https://shop.example"))
-    check("a SKU held by a different card is not called already there",
+    check("a variant card is not refused because the plain SKU is taken",
+          len(report["created"]) == 2 and not report["failed"], str(report))
+    made = [entry for entry in report["created"] if entry["name"] == dark]
+    check("and it is created under the SKU its own title calls for",
+          made and made[0]["sku"] == old_sku + "-DB", str(report["created"]))
+    check("with the SKU the CSV carried named beside it",
+          made and made[0].get("corrected_from") == old_sku, str(made))
+
+    # ---- the other way round, which is the shape a real run hit: the plain
+    #      card is refused because the DARK BACK holds the plain SKU, and the
+    #      dark back is the product whose SKU is out of date
+    plain = "1973-74 O-Pee-Chee Jim Pappin #112 Chicago Black Hawks"
+    plain_sku = "OPC1973-74-112-Pappin-VG-EX-4"
+    dark_title = plain + " Dark Back"
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1, SKU=plain_sku, Name=plain)])
+    site = FakeSite(categories=categories, exist=[(plain_sku, 14120)],
+                    existing={plain_sku: {"name": dark_title,
+                                          "status": "publish"}})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    text = "\n".join(woo_create.report_text(report, "https://shop.example"))
+    clash = (report["failed"] or [{}])[0]
+    check("the plain card is not created over the dark back's SKU",
+          len(report["failed"]) == 1 and clash.get("state") ==
+          "sku-clash-printing", str(report["failed"]))
+    check("the reason says it is the dark back of the same card",
+          "dark back printing" in text, text)
+    check("and it names the SKU the dark back should carry",
+          (clash.get("fix") or {}).get("should_be") == plain_sku + "-DB", text)
+    check("and says running it again changes nothing",
+          "fails the same way" in text, text)
+    check("the product whose SKU is wrong is named with its id",
+          (clash.get("fix") or {}).get("id") == 14120, str(clash.get("fix")))
+
+    # ---- a SKU held by a card that is nothing to do with this one: refused,
+    #      and told to give this card a SKU of its own
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(2, SKU="OPC1973-74-80-Harper-VG-EX-4",
+                                    Name="1973-74 O-Pee-Chee Terry Harper #80")])
+    site = FakeSite(categories=categories,
+                    exist=[("OPC1973-74-80-Harper-VG-EX-4", 15000)],
+                    existing={"OPC1973-74-80-Harper-VG-EX-4": {
+                        "name": "1966-67 Topps Bobby Orr #35",
+                        "status": "publish"}})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    text = "\n".join(woo_create.report_text(report, "https://shop.example"))
+    check("a SKU held by an unrelated card is refused, not skipped",
           len(report["skipped"]) == 0 and len(report["failed"]) == 1,
           str(report))
-    check("the card is named as not created, with the reason",
-          report["failed"][0]["state"] == "sku-clash" and
-          "Not created: %s" % dark in text, text)
-    check("both titles are shown, so the mix-up is visible",
-          dark in text and light in text and old_sku in text, text)
-    check("and the way out is one edit to one cell",
-          "SKU column" in text, text)
-    check("the rest of the batch still happens",
-          len(report["created"]) == 1, str(report))
+    check("with the ordinary way out: a SKU of its own",
+          "SKU of its own" in text, text)
 
     # ---- the same card with a slightly different title is the same card
     tmp = tempfile.mkdtemp()
@@ -1517,6 +1714,7 @@ def test_a_report_is_said_once():
 
 
 def main():
+    test_skus_that_name_their_printing()
     test_reading()
     test_payload()
     test_creation()

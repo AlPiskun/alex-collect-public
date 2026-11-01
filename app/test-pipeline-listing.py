@@ -489,6 +489,31 @@ def test_runs_without_the_other_features(tmp_path):
           str(decoded))
 
 
+def test_a_sku_block_is_not_told_to_run_again(root):
+    """The tail must not promise what a re-run cannot do."""
+    print()
+    print("== what a blocked card means in the NOT EVERY STEP FINISHED line == ")
+    base = {"created": [{"name": "a card", "sku": "A-1"}]}
+    blocked = {"name": "1973-74 O-Pee-Chee Jim Pappin #112 Chicago Black Hawks",
+               "state": "sku-clash-printing", "why": "held by the dark back",
+               "hint": "give it the DB token"}
+    retry = {"name": "another card", "state": "create", "why": "site 500"}
+    one = card_pipeline.creation_failure_note(dict(base, failed=[blocked]))
+    check("a SKU that another product holds is not called a re-run away",
+          "fix the SKU named above" in one and
+          "run the batch again to finish" not in one, one)
+    check("and the card is still named", "Pappin" in one, one)
+    mixed = card_pipeline.creation_failure_note(
+        dict(base, failed=[blocked, retry]))
+    check("with a retryable failure too, the re-run is not promised for the "
+          "blocked card",
+          "SKU-blocked card" in mixed and
+          "run the batch again to finish" not in mixed, mixed)
+    plain = card_pipeline.creation_failure_note(dict(base, failed=[retry]))
+    check("a site that was slow is still just a re-run away",
+          "run the batch again to finish it" in plain, plain)
+
+
 def test_plugin_version_reading(root):
     """What the pipeline is allowed to say about the plugin it found.
 
@@ -610,6 +635,7 @@ def main():
         test_shipped_script_runs_end_to_end(root)
         test_runs_without_the_other_features(root)
 
+        test_a_sku_block_is_not_told_to_run_again(root)
         test_plugin_version_reading(root / "version-check")
 
         helper_root = root / "helper"
