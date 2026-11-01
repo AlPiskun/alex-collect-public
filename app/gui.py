@@ -73,7 +73,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.15"
+VERSION = "3.16"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -7048,19 +7048,36 @@ def build_stock(parent, app):
             arrived)
 
     # ------------------------------------------------------- CanadianShopper
-    def plugin_arrived(rc, out, creds, sent_cookie=False):
-        if rc == 2 and sent_cookie:      # still reading: the bar keeps sweeping
+    def start_stock_read(action, out, creds, groups):
+        """Run the reader with the flags it can take, most useful first."""
+        args = ["--stock-out", str(out)]
+        for group in groups:
+            args += list(group)
+        app.run_tool(action, args, "CanadianShopper stock",
+                     cwd=app.settings.get("pipeline_dir", str(WORK)),
+                     on_done=lambda rc: plugin_arrived(rc, out, creds, groups))
+
+    def plugin_arrived(rc, out, creds, groups=None):
+        groups = list(groups or [])
+        if rc == 2 and groups:           # still reading: the bar keeps sweeping
             #  Exit 2 from a Python tool is a usage error: this plugin's reader
-            #  predates --cookie-file. Ask again without it rather than telling
-            #  the person to do something about a flag.
+            #  does not know one of the flags it was given. Drop that one and
+            #  ask again, rather than telling the person to do something about
+            #  a flag - and keep the flags that were not the problem.
+            dropped = list(groups[0])
+            rest = groups[1:]
             app.console_line(
-                "This plugin's stock reader does not take --cookie-file; "
-                "asking it again without one.", "dim")
-            app.run_tool(TOOL_ACTION(CS_STOCK_ACTION),
-                         ["--stock-out", str(out)], "CanadianShopper stock",
-                         cwd=app.settings.get("pipeline_dir", str(WORK)),
-                         on_done=lambda code: plugin_arrived(code, out, creds,
-                                                             False))
+                "This plugin's stock reader does not take %s%s; asking it "
+                "again without it." % (dropped[0],
+                                       "" if len(dropped) == 1 else
+                                       " " + dropped[1]), "dim")
+            if dropped[0] == "--no-product-lookups":
+                app.console_line(
+                    "So this is the slower read: the reader looks up every "
+                    "listing's product as it goes, which is where the minutes "
+                    "go. Plugin 1.0.37 accepts the flag and skips them.",
+                    "dim")
+            start_stock_read(TOOL_ACTION(CS_STOCK_ACTION), out, creds, rest)
             return False
         read_done()
         if rc != 0:
@@ -7156,8 +7173,11 @@ def build_stock(parent, app):
             who = " (plugin %s%s)" % (
                 version, ", cache-checked" if version_at_least(
                     version, CS_STOCK_CACHE_VERSION) else "")
-        app.console_line("What the reader returned%s - %s."
-                         % (who, stock_compare.tally_line(items)), "dim")
+        began = state.get("started")
+        took = (" in %s" % elapsed_text(time.time() - began)) if began else ""
+        app.console_line("What the reader returned%s%s - %s."
+                         % (who, took, stock_compare.tally_line(items)),
+                         "dim")
         #  Plugin 1.0.36 finishes a read whose per-listing lookup failed and
         #  says how many: those listings are real, were read, and are compared
         #  like any other. Said here rather than left in the log, because a row
@@ -7223,12 +7243,19 @@ def build_stock(parent, app):
         #  started and only a file written after that counts as its answer.
         state["started"] = time.time()
         cookie = CS_COOKIE_FILE if CS_COOKIE_FILE.is_file() else None
-        args = ["--stock-out", str(out)]
+        #  A comparison needs no product ids at all: a count is written to a
+        #  listing, matched by its id, then SKU, then title, and nothing here
+        #  reads the product a listing belongs to. So the reader is asked to
+        #  skip its per-listing product lookups - the part that costs one
+        #  request per listing - and that flag is dropped like any other the
+        #  installed reader does not know (an unknown flag makes Python's
+        #  argparse exit 2), leaving the slow read it would have done anyway.
+        groups = [["--no-product-lookups"]]
         if cookie is not None:
             #  The same cookie the sale tools already use. Without this the
             #  reader falls back to whatever session the plugin itself last
             #  saw - which is why refreshing the app's cookie changed nothing.
-            args += ["--cookie-file", str(cookie)]
+            groups.append(["--cookie-file", str(cookie)])
         summary.configure(text="Reading CanadianShopper's stock...")
         app.console_line("Reading CanadianShopper's stock...", "cmd")
         #  Before the wait, not after it: with a plugin older than 1.0.36 one
@@ -7244,10 +7271,7 @@ def build_stock(parent, app):
             app.console_line(
                 "No %s yet: paste a CanadianShopper cookie in User Settings "
                 "first." % CS_COOKIE_FILE.name, "dim")
-        app.run_tool(action, args, "CanadianShopper stock",
-                     cwd=app.settings.get("pipeline_dir", str(WORK)),
-                     on_done=lambda rc: plugin_arrived(rc, out, creds,
-                                                       cookie is not None))
+        start_stock_read(action, out, creds, groups)
 
     # ------------------------------------------------------- eBay / Facebook
     #  Neither site offers a list this app can ask for, so the page the seller

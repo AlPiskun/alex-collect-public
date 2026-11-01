@@ -571,12 +571,26 @@ def test_the_cookies_canadian_shopper_is_told_about():
         compare.invoke()
         check("the first attempt carries the cookie", len(app.runs) == 1 and
               "--cookie-file" in app.runs[0]["args"], str(app.runs))
+        check("and it asks the reader to skip the product lookups it does "
+              "not need",
+              "--no-product-lookups" in app.runs[0]["args"], str(app.runs[0]))
         app.runs[0]["on_done"](2)        # argparse usage error
-        check("a reader that rejects the flag is asked again without it",
-              len(app.runs) == 2 and "--cookie-file" not in app.runs[1]["args"],
+        check("a reader that rejects a flag is asked again without it",
+              len(app.runs) == 2 and
+              "--no-product-lookups" not in app.runs[1]["args"],
               str([r["args"] for r in app.runs]))
-        check("and it is not asked a third time",
-              app.runs[1]["on_done"](2) is False and len(app.runs) == 2,
+        check("and the flag that was not the problem is kept",
+              "--cookie-file" in app.runs[1]["args"], str(app.runs[1]["args"]))
+        check("and it says the read will be the slow one",
+              any("slower read" in text for _tag, text in app.lines),
+              str(app.lines[-3:]))
+        app.runs[1]["on_done"](2)        # argparse usage error again
+        check("a reader that rejects the cookie flag too is asked without that "
+              "one as well",
+              len(app.runs) == 3 and
+              "--cookie-file" not in app.runs[2]["args"], str(app.runs[-1]))
+        check("and it is not asked a fourth time",
+              app.runs[2]["on_done"](2) is False and len(app.runs) == 3,
               str(len(app.runs)))
 
     # ---- a failure is explained by the reader's own last words, not by the
@@ -3152,7 +3166,9 @@ def test_a_reader_that_cannot_ask_for_a_fresh_page():
 
     lines = compare("")
     check("an unreadable plugin version is not guessed at",
-          any(text.startswith("What the reader returned - ")
+          any(text.startswith("What the reader returned - ") or
+              (text.startswith("What the reader returned in ") and
+               " - " in text and "(plugin " not in text)
               for _tag, text in lines), str(lines[:3]))
     check("and no cache warning is invented for it",
           not any("serve from its cache" in text for _tag, text in lines),

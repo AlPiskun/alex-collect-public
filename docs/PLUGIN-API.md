@@ -125,6 +125,7 @@ version as well as the action:
 | importing a written CSV into the vendor dashboard (`marketplace.import_csv`) | plugin **1.0.23** or newer |
 | editing one listing from the app (`marketplace.listing_update`) | plugin **1.0.28** or newer |
 | an address, price and state on every `stock.list` row | plugin **1.0.28** or newer |
+| a whole-shop comparison that skips product lookups (`--no-product-lookups`) | plugin **1.0.37** or newer |
 
 `--back` was additive before 1.0.16 - it added the new back beside the old one
 - so sending it to 1.0.15 would leave the previous back photo on the listing.
@@ -494,6 +495,59 @@ and then **how the plan named the listing** - `The plan named it: id
 what it is: the reader and the endpoint the plugin writes to are naming the
 listing by different keys, nothing on the site was changed, and the fix is in
 the plugin, not in the app.
+
+### Reading to compare, and reading to edit
+
+`stock.list` is called for two different jobs, and they do not need the same
+work done:
+
+| Job | What the core does with the rows |
+| --- | --- |
+| Compare stock (and list the catalogue) | pairs each listing with a website product by id, then SKU, then title, and writes a count to the listing it matched. **It never reads `product_id`.** |
+| Edit a listing | addresses the vendor's own update endpoint with the listing's `product_id`, so every row needs one |
+
+Because a comparison needs no product ids, the core asks the reader to skip
+them:
+
+```
+cs-stock.py --stock-out "<cs-stock.json>" --no-product-lookups [--cookie-file "<cookie.txt>"]
+```
+
+`--no-product-lookups` means: read the catalogue, and do **not** fetch each
+listing's own product record. Every other field is unchanged - title, SKU,
+inventory, status, price, address, images - and rows simply carry no
+`product_id`. The point is cost: a reader that resolves product ids makes one
+request per listing, and on a 2,600-listing shop that is the difference between
+a read that takes seconds and one that takes half an hour.
+
+It is **optional**, and a reader that does not implement it must keep failing
+the way any unknown argument does - Python's argparse exits **2**. The core
+treats exit 2 as "this reader does not take that flag", drops it and asks again,
+keeping the flags that were not the problem; the person sees one line saying the
+read will be the slow one. No version check decides this, so a reader that
+implements the flag starts benefiting immediately, whatever version it
+declares.
+
+The edit panel never passes it: a listing without a product id cannot be
+written from there.
+
+#### Progress while reading
+
+A read may take minutes, and a console that shows one line and then nothing is
+indistinguishable from a frozen window. A reader that can say where it is
+should emit the progress marker documented under "Dialog channel" - the same
+`\x1eALEX_COLLECT_PROGRESS:{...}\x1f` channel every tool uses:
+
+```
+\x1eALEX_COLLECT_PROGRESS:{"stage": "read", "index": 850, "total": 2587, "note": "reading listings"}\x1f
+```
+
+`stage` is any short word, `index`/`total` drive a real bar (both must be
+positive), and `note` is the phrase shown to the person. Emit it during the
+catalogue read and during any lookup phase (e.g. `{"stage": "ids", "index":
+412, "total": 2587, "note": "resolving product ids"}`), at least every few
+seconds. The markers are only read when `ALEX_COLLECT_NESTED` is set, so a
+reader run by hand prints nothing odd.
 
 ### What a `stock.list` row carries (since plugin 1.0.28)
 
