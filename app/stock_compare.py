@@ -1108,6 +1108,44 @@ def _first(entry, *keys):
     return ""
 
 
+def id_key(value):
+    """One identifier as the string another identifier is compared with.
+
+    The same id arrives spelled differently depending on who is holding it: a
+    reader that reports ``"product_id": "4321"`` (plugin 1.0.35 does, because a
+    JSON number and a string are different things in some vendor APIs), a
+    result file that answers with the number ``4321``, a form that padded it
+    with a space, and a source that wrote it as ``4321.0``. They are one id, and
+    comparing them as raw strings is how a write that happened is reported as
+    *unknown* - the panel then leaves the row on the screen and the person
+    writes it a second time.
+
+    Only a plain whole number is folded: an opaque id such as
+    ``14effcaceb8a4b66`` is kept exactly as it was given, case and all, because
+    nothing here knows whether a vendor's ids are case-sensitive. So is a
+    number-shaped code with a leading zero (``"0012"``): it may be somebody's
+    own identifier, and two different listings are worse than one *unknown*.
+    """
+    if value is None or isinstance(value, (dict, list, tuple, bool)):
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    try:
+        number = float(text)
+    except ValueError:
+        return text
+    if number != number or number in (float("inf"), float("-inf")):
+        return text
+    if number != int(number):
+        return text
+    whole = str(int(number))
+    #  "0012" is somebody's code, not twelve; a negative id is not an id.
+    if text.lstrip("-").startswith("0") and len(text.lstrip("-")) > 1:
+        return text
+    return whole
+
+
 def _matches(row, entry):
     """Whether a result entry is about this plan row.
 
@@ -1118,20 +1156,20 @@ def _matches(row, entry):
     title are the fallback only when one side has no id at all, which is what a
     plugin that does not report ids, or a plan built without them, looks like.
     """
-    entry_id = str(_first(entry, "id", "product_id", "listing_id",
-                          "productId", "listingId") or "")
+    entry_id = id_key(_first(entry, "id", "product_id", "listing_id",
+                             "productId", "listingId"))
     #  Every id the row carries counts, not only the one it is listed under:
     #  a writer that answers with the product id of a listing it knows by its
     #  page id has still written *that* listing, and calling it unknown would
     #  report a change that happened as a change that did not.
-    row_ids = {str(row.get("id") or "")}
-    row_ids |= {str(value) for value in (row.get("ids") or {}).values()}
+    row_ids = {id_key(row.get("id"))}
+    row_ids |= {id_key(value) for value in (row.get("ids") or {}).values()}
     #  A plan carries those ids at its top level (``product_id`` beside ``id``)
     #  because that is what the writer is handed, so both shapes are read.
     for key, value in (row or {}).items():
         if _bare_name(key) in _ID_NAME_SHAPES and not isinstance(
                 value, (dict, list, tuple)):
-            row_ids.add(str(value or ""))
+            row_ids.add(id_key(value))
     row_ids.discard("")
     if entry_id and row_ids:
         return entry_id in row_ids

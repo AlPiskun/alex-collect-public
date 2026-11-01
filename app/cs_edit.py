@@ -610,6 +610,60 @@ def identity_note(items):
     return line
 
 
+def shared_product_ids(items):
+    """Product ids that more than one listing in a read claims.
+
+    ``[(product_id, [listing names])]``, emptiest first is not a rule here -
+    the order is the order the ids were first met, so the console reads in the
+    order the catalogue does.
+
+    Since plugin 1.0.35 resolves a missing product id through each listing's
+    own detail - the same SKU matching ``stock.set`` uses - two listings can
+    legitimately resolve to one product: a duplicate listing, or two SKUs the
+    vendor maps onto the same product. That is worth saying *before* a write,
+    because an edit addressed by that product id changes what both listings
+    show, and the panel's confirmation names one.
+    """
+    order, seen = [], {}
+    for item in list(items or []):
+        if not isinstance(item, dict):
+            continue
+        found = product_id(item)
+        if not found:
+            continue
+        key = str(found).strip()
+        if key not in seen:
+            seen[key] = []
+            order.append(key)
+        seen[key].append(str(item.get("name") or item.get("title")
+                             or item.get("sku") or "a listing"))
+    return [(key, seen[key]) for key in order if len(seen[key]) > 1]
+
+
+def shared_product_note(items, limit=3):
+    """One line naming the products two listings share, or "" when none do.
+
+    Not a refusal: the panel still edits, because one of the two listings is
+    usually the one the person means. But a write to a product both listings
+    show is a change to both, and that is not something a count of edits makes
+    visible.
+    """
+    shared = shared_product_ids(items)
+    if not shared:
+        return ""
+    said = "; ".join("product %s is claimed by %s" % (key, " and ".join(
+        repr(name) for name in names))
+        for key, names in shared[:limit])
+    more = len(shared) - limit
+    line = ("%d product id%s in that read %s claimed by more than one "
+            "listing: %s%s. An edit addressed by one of them changes what "
+            "every listing sharing it shows."
+            % (len(shared), "" if len(shared) == 1 else "s",
+               "is" if len(shared) == 1 else "are", said,
+               "; and %d more" % more if more > 0 else ""))
+    return line
+
+
 def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True):
     """The whole sentence for a read nothing can be written from, or "".
 

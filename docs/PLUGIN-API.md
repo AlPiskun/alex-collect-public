@@ -568,11 +568,34 @@ listing id, the slug, the title or the URL, and refuses a zero-product update
 before `/api/products/0/` is ever called. Its console reports measured totals -
 listings, real ids, absent keys - so a regression is visible in the log.
 
-The core names that version. A read with no usable product id is now told apart
-by which plugin produced it: from anything older than **1.0.34** the console
-says updating the plugin is the fix, and from **1.0.34 or newer** it says the
-read is a defect in the reader worth reporting, because by then it is one.
-Nothing about a listing is changed either way.
+**Plugin 1.0.35 is the version that fills the gap.** When a listing's own
+payload carries no product reference, 1.0.35 resolves one through the
+single-listing endpoint, reusing `stock.set`'s exact SKU matching: an
+unambiguous SKU becomes a product id, an ambiguous one stays without one, and
+only the resolved id is copied from the detail data - every other field still
+comes from the stock read. The lookups are cached per listing for the run. Its
+own line for the 2,587-row fixture is
+`2587 listings, 2587 with a real product id, 0 without the key, 0 reported as 0`.
+
+Two consequences the core handles, and a reader should know about:
+
+- **An id is an id however it is written.** `"4321"`, `4321`, `" 4321 "` and
+  `4321.0` are compared as one id, so a result file that answers with a number
+  after a plan that carried a string still confirms the change instead of
+  reading as *unknown*. An opaque id (`14effcaceb8a4b66`) and a number-shaped
+  code with a leading zero (`0012`) are compared exactly as given.
+- **Two listings can now resolve to one product.** A duplicate listing, or two
+  SKUs the vendor maps onto the same product, gives the same `product_id` to
+  more than one row - and an edit addressed by that id changes what every
+  listing sharing it shows. The core counts this after every read and prints
+  one line naming the product and the listings, rather than letting a
+  single-row confirmation stand for both.
+
+The core names the version. A read with no usable product id is told apart by
+which plugin produced it: from anything older than **1.0.34** the console says
+updating the plugin is the fix, and from **1.0.34 or newer** it says the read is
+a defect in the reader worth reporting, because by then it is one. Nothing about
+a listing is changed either way.
 
 **When the vendor's data carries no product reference at all.** The reader can
 be perfectly correct and still deliver no product ids: 1.0.34's own console

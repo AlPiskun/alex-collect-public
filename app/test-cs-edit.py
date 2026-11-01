@@ -911,6 +911,118 @@ def test_what_the_read_did_carry():
           str(len(listing_box(parent).items)))
 
 
+def test_plugin_1_0_35():
+    """2,587 listings, every one with a string product id, resolved by the reader.
+
+    1.0.35 resolves a missing id through each listing's own detail, using the
+    same SKU matching stock.set does, and emits it as a string. Two things
+    follow for the core: an id is an id whether it arrives as "4321", 4321 or
+    4321.0 - otherwise a write that happened reads as *unknown* - and two
+    listings can now resolve to one product, which no count of edits shows.
+    """
+    print()
+    print("== 5d4. plugin 1.0.35: string ids, and one product two listings share ==")
+    rows = [{"id": "a%04d" % n, "product_id": str(40000 + n),
+             "sku": "OPC73-%d" % n, "inventory": 1, "status": "active",
+             "price": "8.50", "url": "https://canadianshopper.ca/l/%d" % n,
+             "title": "1973-74 O-Pee-Chee Card #%d" % n} for n in range(2587)]
+    items_ = stock_compare.plugin_items({"items": rows})
+    editable, total = cs_edit.product_id_counts(items_)
+    check("every one of the 2587 is editable",
+          (editable, total) == (2587, 2587), "%s %s" % (editable, total))
+    check("nothing is said against a read that is complete",
+          cs_edit.product_id_gap(items_, plugin="1.0.35") == "" and
+          cs_edit.zero_product_id_counts(items_) == (0, 2587) and
+          not cs_edit.shared_product_ids(items_), "")
+    plan = cs_edit.plan(items_[7], inventory=4)
+    check("the string id the reader sent is the id the write carries",
+          plan.get("product_id") == "40007", str(plan))
+    check("and it is not renumbered on the way",
+          isinstance(plan.get("product_id"), str), repr(plan.get("product_id")))
+
+    #  ---- one id, spelled four ways
+    check("a string id, a number id, a padded one and a float are one id",
+          {stock_compare.id_key("4321"), stock_compare.id_key(4321),
+           stock_compare.id_key(" 4321 "), stock_compare.id_key(4321.0),
+           stock_compare.id_key("4321.00")} == {"4321"}, "")
+    check("an opaque id is kept exactly as it was given",
+          stock_compare.id_key("14effcaceb8a4b66") == "14effcaceb8a4b66" and
+          stock_compare.id_key("14EFFCACEb8a4b66") == "14EFFCACEb8a4b66", "")
+    check("a leading zero is somebody's code, not twelve",
+          stock_compare.id_key("0012") == "0012", "")
+    check("nothing at all is the empty string",
+          stock_compare.id_key(None) == "" and stock_compare.id_key("") == ""
+          and stock_compare.id_key(True) == "", "")
+
+    plan_row = {"id": "a1", "product_id": "4321", "sku": "OPC73-1",
+                "title": "1973-74 O-Pee-Chee Card #1"}
+
+    def outcome(answer):
+        result = stock_compare.plugin_write_report([plan_row], answer)
+        return ("changed" if result["changed"] else
+                "failed" if result["failed"] else "unknown")
+
+    check("an answer naming the id as a number confirms the write",
+          outcome({"updated": [{"product_id": 4321}]}) == "changed", "")
+    check("an answer naming it as a string confirms it too",
+          outcome({"updated": [{"product_id": "4321"}]}) == "changed", "")
+    check("an answer naming the listing id still confirms it",
+          outcome({"updated": [{"id": "a1"}]}) == "changed", "")
+    check("and another product's id does not",
+          outcome({"updated": [{"product_id": 4322}]}) == "unknown", "")
+
+    #  ---- two listings on one product
+    shared = [dict(row) for row in rows[:3]]
+    shared[1]["product_id"] = shared[0]["product_id"]
+    shared_items = stock_compare.plugin_items({"items": shared})
+    found = cs_edit.shared_product_ids(shared_items)
+    check("two listings resolving to one product are found",
+          len(found) == 1 and found[0][0] == "40000" and
+          len(found[0][1]) == 2, str(found))
+    note = cs_edit.shared_product_note(shared_items)
+    check("and named, with both listings",
+          "product 40000" in note and "Card #0" in note and "Card #1" in note,
+          note)
+    check("with what it means for a write",
+          "changes what every listing sharing it shows" in note, note)
+    check("a read where every id is its own has nothing to say",
+          cs_edit.shared_product_note(items_) == "", "")
+
+    #  ---- the panel, with 1.0.35's read
+    folder = Path(tempfile.mkdtemp())
+    harness.install_plugin("1.0.35", folder / "plugin")
+    gui.BASE = folder
+    app = harness.FakeApp(folder)
+    parent = harness.FakeWidget()
+    gui.build_csledit(parent, app)
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app, folder, parent, rows)
+    said = str(app.lines[-1][1])
+    check("the panel says every listing can be edited, with nothing against it",
+          "every one with a product id" in said and "defect" not in said,
+          said)
+    check("no shared-id warning on a clean read",
+          not any("claimed by more than one listing" in text
+                  for _tag, text in app.lines), str(app.lines[-3:]))
+
+    folder2 = Path(tempfile.mkdtemp())
+    harness.install_plugin("1.0.35", folder2 / "plugin")
+    gui.BASE = folder2
+    app2 = harness.FakeApp(folder2)
+    parent2 = harness.FakeWidget()
+    gui.build_csledit(parent2, app2)
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app2, folder2, parent2, shared)
+    check("the panel warns when two listings share a product",
+          any("claimed by more than one listing" in text
+              for _tag, text in app2.lines), str(app2.lines[-3:]))
+    check("and still lists both",
+          len(listing_box(parent2).items) == 3,
+          str(len(listing_box(parent2).items)))
+
+
 def test_the_list_says_which_plugin_read_it():
     print()
     print("== 5d. the list on screen says which plugin read it ==")
@@ -1456,6 +1568,7 @@ def main():
     test_a_reader_that_says_zero()
     test_the_version_that_reports_product_ids()
     test_what_the_read_did_carry()
+    test_plugin_1_0_35()
     test_the_list_says_which_plugin_read_it()
     test_the_panel_reads_and_lists()
     test_the_edit_form()

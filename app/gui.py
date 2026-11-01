@@ -73,7 +73,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.11"
+VERSION = "3.12"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -7685,6 +7685,13 @@ def build_csledit(parent, app):
         say("CanadianShopper: %d listings read; %s. Type a card's name to "
             "find one." % (total, cs_edit.editable_note(editable, total)),
             "ok")
+        shared = cs_edit.shared_product_note(items)
+        if shared:
+            #  Said after every read, not before a write: plugin 1.0.35 resolves
+            #  a missing id through each listing's own detail, so two listings
+            #  can land on one product, and an edit addressed by that product
+            #  changes what both of them show.
+            say(shared[:1].upper() + shared[1:], "err")
         if cs_edit.nothing_editable(items):
             #  Nothing in the whole list can be written, which is not 2,541
             #  listings to edit by hand - it is a reading that does not carry
