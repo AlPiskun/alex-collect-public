@@ -46,6 +46,7 @@ import subprocess
 import sys
 import textwrap
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 from urllib.parse import quote, urlsplit
@@ -894,29 +895,61 @@ def sanitize_filename_component(text):
     return text
 
 
-#  Some vintage sets printed a card with two different backs, and a title
-#  that names one - "Dark Back", "Light Back" - is a different card: a
-#  different printing, a different price, a different product. The SKU is
-#  what the website, the CSV and the comparison use to tell two products
-#  apart, so the printing goes into the SKU. Two cards that are otherwise
-#  identical (same year, number, player and grade) no longer share one SKU -
-#  which is how the light back of a card came to be skipped as "already on
-#  the website" the moment the dark back had been created.
-BACK_VARIETY_TOKENS = (("dark back", "DB"), ("light back", "LB"))
+#  Some vintage sets printed one card more than one way, and a title that
+#  names the printing - "Dark Back", "Light Back", "Corrected Bio" - is a
+#  different card: a different printing, a different price, a different
+#  product. The SKU is what the website, the CSV and the comparison use to
+#  tell two products apart, so the printing goes into the SKU. Two cards that
+#  are otherwise identical (same year, number, player and grade) then no
+#  longer share one SKU - which is how the light back of a card came to be
+#  skipped as "already on the website" the moment the dark back existed.
+#
+#  The order matters twice over: the phrases are matched as whole words, so
+#  "uncorrected" never matches "corrected", and the tokens come out in this
+#  order, so one title always produces one SKU. ``woo_create`` keeps the same
+#  list of phrases to decide whether a product found by SKU is really the card
+#  it is looking for - a check in the suite keeps the two from drifting.
+VARIETY_TOKENS = (
+    ("dark back", "DB"),
+    ("light back", "LB"),
+    ("white back", "WB"),
+    ("grey back", "GB"),
+    ("gray back", "GB"),
+    ("uncorrected", "UNCORR"),
+    ("corrected", "CORR"),
+)
 
 
-def back_variety(title):
-    """``"DB"``/``"LB"`` when the title names a back printing, else ``""``.
+def variety_tokens(title):
+    """The SKU tokens a title's printing earns, in a stable order.
 
-    Only the words decide, so "Dark Back", "Dark-Back" and "dark back" are the
-    same printing. A title naming neither keeps the SKU it has always had.
+    Only the words decide, so "Dark Back", "Dark-Back" and "dark back" are one
+    printing, and a title that names two ("Corrected Bio Light Back") gets both
+    tokens. A title naming no printing returns an empty list and keeps the SKU
+    a card has always had.
     """
     words = re.sub(r"[^a-z0-9]+", " ", str(title or "").lower())
     words = " %s " % re.sub(r"\s+", " ", words).strip()
-    for phrase, token in BACK_VARIETY_TOKENS:
-        if " %s " % phrase in words:
-            return token
-    return ""
+    found = []
+    for phrase, token in VARIETY_TOKENS:
+        if " %s " % phrase in words and token not in found:
+            found.append(token)
+    return found
+
+
+def sku_component(text):
+    """One piece of a SKU: letters, digits and single dashes, nothing else.
+
+    A SKU travels through a CSV, an Excel sheet, a URL and a shop's own
+    search box, so an accent, a space, a slash or a full stop in one is a way
+    for the same card to be written two different ways - or for an import to
+    refuse the row. Accents are folded to their plain letters ("Jérôme" is
+    "Jerome") rather than dropped, so two cards do not become one.
+    """
+    text = unicodedata.normalize("NFKD", str(text or ""))
+    text = text.encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"[^A-Za-z0-9]+", "-", text).strip("-")
+    return text
 
 
 def duplicate_skus(rows):
@@ -1212,12 +1245,13 @@ def build_rows(cards_parsed, default_quantity=1):
     for c in cards_parsed:
         code = brand_code(c["brand"])
         grade_component = grade_slug(c["grade"])  # e.g. "EX-5", "VG-3"
-        #  The back printing is part of the SKU (see BACK_VARIETY_TOKENS): a
-        #  dark back and a light back of one card are two products, and one
-        #  SKU for both meant the second was skipped as already there.
-        sku_bits = [code + c["year"], c["card_num"], c["last"], grade_component,
-                    back_variety(c["seo_title"])]
-        sku = "-".join(b for b in sku_bits if b)
+        #  The printing is part of the SKU (see VARIETY_TOKENS): a dark back
+        #  and a light back of one card are two products, and one SKU for both
+        #  meant the second was skipped as already there.
+        sku_bits = ([code + c["year"], c["card_num"], c["last"],
+                     grade_component] + variety_tokens(c["seo_title"]))
+        sku = "-".join(bit for bit in (sku_component(piece)
+                                       for piece in sku_bits) if bit)
 
         price = math.ceil(c["price"]) if c["price"] else ""
         images = ", ".join(x for x in (c["front_img"], c["back_img"]) if x)

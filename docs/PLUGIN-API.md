@@ -125,6 +125,7 @@ version as well as the action:
 | importing a written CSV into the vendor dashboard (`marketplace.import_csv`) | plugin **1.0.23** or newer |
 | editing one listing from the app (`marketplace.listing_update`) | plugin **1.0.28** or newer |
 | an address, price and state on every `stock.list` row | plugin **1.0.28** or newer |
+| a whole-shop comparison that skips product lookups (`--no-product-lookups`) | plugin **1.0.38** or newer |
 
 `--back` was additive before 1.0.16 - it added the new back beside the old one
 - so sending it to 1.0.15 would leave the previous back photo on the listing.
@@ -495,6 +496,59 @@ what it is: the reader and the endpoint the plugin writes to are naming the
 listing by different keys, nothing on the site was changed, and the fix is in
 the plugin, not in the app.
 
+### Reading to compare, and reading to edit
+
+`stock.list` is called for two different jobs, and they do not need the same
+work done:
+
+| Job | What the core does with the rows |
+| --- | --- |
+| Compare stock (and list the catalogue) | pairs each listing with a website product by id, then SKU, then title, and writes a count to the listing it matched. **It never reads `product_id`.** |
+| Edit a listing | addresses the vendor's own update endpoint with the listing's `product_id`, so every row needs one |
+
+Because a comparison needs no product ids, the core asks the reader to skip
+them:
+
+```
+cs-stock.py --stock-out "<cs-stock.json>" --no-product-lookups [--cookie-file "<cookie.txt>"]
+```
+
+`--no-product-lookups` means: read the catalogue, and do **not** fetch each
+listing's own product record. Every other field is unchanged - title, SKU,
+inventory, status, price, address, images - and rows simply carry no
+`product_id`. The point is cost: a reader that resolves product ids makes one
+request per listing, and on a 2,600-listing shop that is the difference between
+a read that takes seconds and one that takes half an hour.
+
+It is **optional**, and a reader that does not implement it must keep failing
+the way any unknown argument does - Python's argparse exits **2**. The core
+treats exit 2 as "this reader does not take that flag", drops it and asks again,
+keeping the flags that were not the problem; the person sees one line saying the
+read will be the slow one. No version check decides this, so a reader that
+implements the flag starts benefiting immediately, whatever version it
+declares.
+
+The edit panel never passes it: a listing without a product id cannot be
+written from there.
+
+#### Progress while reading
+
+A read may take minutes, and a console that shows one line and then nothing is
+indistinguishable from a frozen window. A reader that can say where it is
+should emit the progress marker documented under "Dialog channel" - the same
+`\x1eALEX_COLLECT_PROGRESS:{...}\x1f` channel every tool uses:
+
+```
+\x1eALEX_COLLECT_PROGRESS:{"stage": "read", "index": 850, "total": 2587, "note": "reading listings"}\x1f
+```
+
+`stage` is any short word, `index`/`total` drive a real bar (both must be
+positive), and `note` is the phrase shown to the person. Emit it during the
+catalogue read and during any lookup phase (e.g. `{"stage": "ids", "index":
+412, "total": 2587, "note": "resolving product ids"}`), at least every few
+seconds. The markers are only read when `ALEX_COLLECT_NESTED` is set, so a
+reader run by hand prints nothing odd.
+
 ### What a `stock.list` row carries (since plugin 1.0.28)
 
 The listing panel shows a numbered row as **card - state - stock - price -
@@ -505,7 +559,7 @@ SKU**, and links to the listing's own page. A row already has `title`/`name`, `s
 | --- | --- |
 | `price` | the listing's price, as the vendor shows it (`"CA$8.50"` and `"8.50"` are both read) |
 | `url` | the listing's own page address |
-| `product_id` | the id the update action patches, when the vendor supplies one and it differs from `id` |
+| `product_id` | the id the update action patches, when the vendor supplies one and it differs from `id` - a string, exactly as the vendor gives it (since 1.0.34). Never `0` - a listing whose vendor data carries none has no key at all |
 | `images` | since 1.0.32: the listing's pictures, absolute `http(s)` addresses, the primary picture first and then the gallery in the vendor's own order |
 
 Reported since plugin **1.0.33**, when the vendor's product response already
@@ -547,6 +601,97 @@ advice that costs them an evening. Nothing on either site is changed by any of
 this, and the panel still searches, opens and links each listing. The fix
 belongs in the reader: emit `product_id` for each row the vendor's data gives
 one for.
+
+**`0` is not an id, and since core 3.09 it is not treated as one.** A row that
+says `"product_id": 0` is a row without a product id: no product has id 0 on
+any of these sites. So the core counts it as missing rather than as editable,
+never puts it in a plan, never sends `PATCH /api/products/0/`, and never
+explains a failure with "product id 0" - the sentence would send someone
+looking for a product that cannot exist. It also tells the two apart on the
+console: *no listing in that read carried a product id* is a reader with the
+key missing, while *the plugin reported product_id 0 for all 2,541 listings* is
+a reader emitting a placeholder, and the second one is a defect in the reader
+even if the first is not.
+
+**Plugin 1.0.34 is the version that reports them properly** - it was released
+for exactly this. It emits each listing's real product id as a string
+(`4321` becomes `"4321"`, and an opaque id such as `"14effcaceb8a4b66"` is left
+alone), omits `product_id` entirely when the vendor's data has none (missing,
+null, empty and zero-like references all take that path), never substitutes the
+listing id, the slug, the title or the URL, and refuses a zero-product update
+before `/api/products/0/` is ever called. Its console reports measured totals -
+listings, real ids, absent keys - so a regression is visible in the log.
+
+**Plugin 1.0.35 is the version that fills the gap.** When a listing's own
+payload carries no product reference, 1.0.35 resolves one through the
+single-listing endpoint, reusing `stock.set`'s exact SKU matching: an
+unambiguous SKU becomes a product id, an ambiguous one stays without one, and
+only the resolved id is copied from the detail data - every other field still
+comes from the stock read. The lookups are cached per listing for the run. Its
+own line for the 2,587-row fixture is
+`2587 listings, 2587 with a real product id, 0 without the key, 0 reported as 0`.
+
+Two consequences the core handles, and a reader should know about:
+
+- **An id is an id however it is written.** `"4321"`, `4321`, `" 4321 "` and
+  `4321.0` are compared as one id, so a result file that answers with a number
+  after a plan that carried a string still confirms the change instead of
+  reading as *unknown*. An opaque id (`14effcaceb8a4b66`) and a number-shaped
+  code with a leading zero (`0012`) are compared exactly as given.
+- **Two listings can now resolve to one product.** A duplicate listing, or two
+  SKUs the vendor maps onto the same product, gives the same `product_id` to
+  more than one row - and an edit addressed by that id changes what every
+  listing sharing it shows. The core counts this after every read and prints
+  one line naming the product and the listings, rather than letting a
+  single-row confirmation stand for both.
+
+The core names the version. A read with no usable product id is told apart by
+which plugin produced it: from anything older than **1.0.34** the console says
+updating the plugin is the fix, and from **1.0.34 or newer** it says the read is
+a defect in the reader worth reporting, because by then it is one. Nothing about
+a listing is changed either way.
+
+**When the vendor's data carries no product reference at all.** The reader can
+be perfectly correct and still deliver no product ids: 1.0.34's own console
+line reported *2,587 listings, 0 with a real product id, 2,587 without the key,
+0 reported as 0* - so those listings are being read from somewhere that does
+not name the product. That is not a row the core can write, and it will not
+guess one, but it is also not a dead end, because the reader is reading the
+listings themselves:
+
+- **The core now counts what the read did carry** and prints it once, after the
+  version sentence: *What the read did carry: 2587 listing ids, 2587 SKUs,
+  2587 listing addresses (of 2587 listings), so the reader has what resolving a
+  listing to its product takes; it is only the product id itself that never
+  arrived.* If a read has no SKU on any row it says that instead, because then
+  the product has to come from the vendor's own data rather than from a lookup.
+- **Resolving the listing is the reader's job, and it has the material.**
+  `stock.set` already addresses a listing by `id`, then `sku`, then `title`, so
+  the same catalogue entry can be turned into the product it belongs to. The
+  update action may do that - find the product from the listing it was given,
+  and refuse rather than guess when the answer is not unique.
+- **The core will accept an answer keyed by the listing's own id.** A result
+  entry naming `id`, `sku`, `title`, `card` or `name` confirms the change just
+  as a product id does, so a writer that resolves internally and reports what
+  it resolved needs no change here.
+- **Stock counts are not blocked by any of this.** The comparison panel's
+  **Set CanadianShopper to the website's counts...** writes through `stock.set`,
+  which addresses the listing rather than a product, so a shop whose reader
+  reports no product ids can still have its stock corrected - only title, price
+  and state need the listing panel.
+
+Two rules follow for a reader:
+
+- **Never emit `0`, `"0"`, `"0.0"` or any other empty stand-in for a missing
+  product id.** Omit the key. The core's whole handling of "this listing cannot
+  be written from here" is built on the key being absent, and a placeholder
+  breaks the count it prints and the promise it makes about the rows it can
+  edit.
+- **Emit the real id the write endpoint patches**, exactly as the vendor gives
+  it, as a number or a string - the core never renumbers it. If the vendor's
+  listing data has no product id at all, the listing has no product id: leave
+  the key out and let the core say so once, rather than filling the gap with a
+  zero that reads as if every listing were editable.
 
 Both are display-only and are used by the **Find and edit a CanadianShopper
 listing** panel, which shows the price in its row and opens the address behind

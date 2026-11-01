@@ -7,8 +7,10 @@ wrong pair accuses a card that is fine.
 """
 import importlib.util
 import json
+import os
 import sys
 import tempfile
+import time as time_module
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -42,6 +44,7 @@ def load_harness():
 harness = load_harness()
 gui = harness.gui
 import stock_compare                                   # noqa: E402
+import cs_edit                                        # noqa: E402
 
 PRODUCTS = [
     {"id": 1, "name": "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6",
@@ -54,6 +57,20 @@ PRODUCTS = [
     {"id": 4, "name": "Variable card", "sku": "", "manage_stock": True,
      "stock_quantity": None, "type": "variable"},
 ]
+
+class FakeRunner:
+    """The runner's log, which is where the tool's own words live."""
+
+    def __init__(self, output):
+        self.output = output
+
+
+#  The exact line a real run ended on: one listing's detail lookup, after
+#  every listing before it had already been read.
+DETAIL_FAILED = (
+    "! Could not list CanadianShopper stock: CanadianShopper request failed "
+    "(GET /api/data/product/94b93f6040f5401daabaa9c936efa5a7): URLError")
+
 
 CS_ITEMS = [
     {"id": 101, "title": "1989 O-Pee-Chee Wayne Gretzky #1 EX-MT 6",
@@ -555,38 +572,134 @@ def test_the_cookies_canadian_shopper_is_told_about():
         compare.invoke()
         check("the first attempt carries the cookie", len(app.runs) == 1 and
               "--cookie-file" in app.runs[0]["args"], str(app.runs))
+        check("and it asks the reader to skip the product lookups it does "
+              "not need",
+              "--no-product-lookups" in app.runs[0]["args"], str(app.runs[0]))
         app.runs[0]["on_done"](2)        # argparse usage error
-        check("a reader that rejects the flag is asked again without it",
-              len(app.runs) == 2 and "--cookie-file" not in app.runs[1]["args"],
+        check("a reader that rejects a flag is asked again without it",
+              len(app.runs) == 2 and
+              "--no-product-lookups" not in app.runs[1]["args"],
               str([r["args"] for r in app.runs]))
-        check("and it is not asked a third time",
-              app.runs[1]["on_done"](2) is False and len(app.runs) == 2,
+        check("and the flag that was not the problem is kept",
+              "--cookie-file" in app.runs[1]["args"], str(app.runs[1]["args"]))
+        check("and it says the read will be the slow one",
+              any("slower read" in text for _tag, text in app.lines),
+              str(app.lines[-3:]))
+        app.runs[1]["on_done"](2)        # argparse usage error again
+        check("a reader that rejects the cookie flag too is asked without that "
+              "one as well",
+              len(app.runs) == 3 and
+              "--cookie-file" not in app.runs[2]["args"], str(app.runs[-1]))
+        check("and it is not asked a fourth time",
+              app.runs[2]["on_done"](2) is False and len(app.runs) == 3,
               str(len(app.runs)))
 
-    # ---- a failure says which cookie was sent
-    app.runs.clear()
-    app.lines[:] = []
-    with patch.object(gui, "TOOL_ACTION",
-                      lambda action: "/plugins/cs/stock.py"), \
-            patch.object(gui, "read_woo_credentials",
-                         lambda path=None: ("https://shop.example", "ck_a",
-                                            "cs_b")), \
-            patch.object(gui, "CS_COOKIE_FILE", cookie), \
-            patch.object(gui, "BASE", folder):
-        compare.invoke()
-        app.runs[0]["on_done"](1)
-    check("a failed read names the file, its size and when it was saved",
-          any("cookie.txt" in text and "bytes" in text and "saved" in text
-              for _tag, text in app.lines), str(app.lines[-3:]))
+    # ---- a failure is explained by the reader's own last words, not by the
+    #      cookie it happened to carry. The run this was written for stopped
+    #      inside one listing's detail lookup after reading everything before
+    #      it, and the panel told the seller to check the cookie.
+    def failing_read(text, answer=False):
+        app.runs.clear()
+        app.lines[:] = []
+        harness._BOX.askyesno = lambda *a, **k: answer
+        with patch.object(gui, "TOOL_ACTION",
+                          lambda action: "/plugins/cs/stock.py"), \
+                patch.object(gui, "read_woo_credentials",
+                             lambda path=None: ("https://shop.example", "ck_a",
+                                                "cs_b")), \
+                patch.object(gui, "CS_COOKIE_FILE", cookie), \
+                patch.object(gui, "BASE", folder):
+            compare.invoke()
+            app.runner = FakeRunner(text)
+            app.runs[0]["on_done"](1)
 
-    # ---- a failed read must never fall back to a list from an earlier run,
-    #      which is the shape a cached answer takes once it is on disk.
-    #      (1.0.26 refuses to write a partial list; this proves the app does
-    #      not compare one either.)
-    app.runs.clear()
-    app.lines[:] = []
+    def said(prefix):
+        return [text for _tag, text in app.lines if prefix in text]
+
+    failing_read(DETAIL_FAILED)
+    check("one listing's own lookup failing is named as that", said(
+        "ONE listing's own detail lookup"), str(app.lines[-4:]))
+    check("and the cookie is not blamed for it, and not even mentioned",
+          not any("cookie.txt" in text and "bytes" in text
+                  for _tag, text in app.lines), str(app.lines[-4:]))
+    check("the seller is told the listings before it were read",
+          said("the listings before it were read"), str(app.lines[-4:]))
+    check("and that one lookup must not stop a whole read",
+          said("must not lose the rest"), str(app.lines[-4:]))
+    check("the failure line itself is quoted, so it can be searched for",
+          said("94b93f6040f5401daabaa9c936efa5a7"), str(app.lines[-6:]))
+
+    # ---- the cookie is only ever blamed when the session really was refused
+    failing_read("! Could not list CanadianShopper stock: the request was "
+                 "refused, the session is no longer signed in (HTTP 401)")
+    check("a refused session names the file, its size and when it was saved",
+          any("cookie.txt" in text and "bytes" in text and "saved" in text
+              for _tag, text in app.lines), str(app.lines[-4:]))
+    check("and a refused session is not described as a lookup failure",
+          not said("ONE listing's own detail lookup"), str(app.lines[-4:]))
+
+    # ---- a failed read cannot be rescued by a list from before it, but that
+    #      list may be offered: named with its age, and only if the seller
+    #      says yes. (1.0.26 refuses to write a partial list; this proves the
+    #      app does not quietly compare one either.)
     out = folder / "cs-stock.json"
     out.write_text(json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+    three_hours = time_module.time() - 3 * 3600
+    os.utime(out, (three_hours, three_hours))
+
+    def compare_against_old(answer):
+        app.runs.clear()
+        app.lines[:] = []
+        harness._BOX.askyesno = lambda *a, **k: answer
+        harness._BOX.showerror = lambda *a, **k: None
+        with patch.object(gui, "TOOL_ACTION",
+                          lambda action: "/plugins/cs/stock.py"), \
+                patch.object(gui, "read_woo_credentials",
+                             lambda path=None: ("https://shop.example", "ck_a",
+                                                "cs_b")), \
+                patch.object(gui, "CS_COOKIE_FILE", cookie), \
+                patch.object(gui, "woo_get", fetch_ok), \
+                patch.object(gui, "in_background", sync_background), \
+                patch.object(gui, "BASE", folder):
+            compare.invoke()
+            app.runner = FakeRunner(DETAIL_FAILED)
+            return app.runs[0]["on_done"](1)
+
+    def fetch_ok(base, path, params, key, secret):
+        return (200, PRODUCTS) if params["page"] == 1 else (200, [])
+
+    answer = compare_against_old(False)
+    check("the last read is left on disk, so it can be offered at all",
+          out.exists(), str(out))
+    check("a failed read says nothing was compared", any(
+        "nothing was compared" in text for _tag, text in app.lines),
+        str(app.lines[-4:]))
+    check("saying no to the last read compares nothing and says so",
+          answer is False and not any("Compared" in text
+                                      for _tag, text in app.lines),
+          str(app.lines[-4:]))
+
+    app.lines[:] = []
+    answer = compare_against_old(True)
+    check("saying yes compares the last read", answer is True, str(app.lines[-4:]))
+    labels = [str(w.cget("text")) for w in parent.walk()
+              if isinstance(w, harness.gui.ttk.Label)]
+    check("and the counts carry the age of that read, in the summary",
+          any("3 hours old" in text and "not a fresh read" in text
+              for text in labels), str(labels[-4:]))
+    check("and the console says it is not a fresh read",
+          said("not a fresh read") and said("3 hours old"),
+          str(app.lines[-4:]))
+    check("the comparison really happened against that list",
+          any("Compared" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+
+    # ---- a read that exits cleanly but writes nothing is not a fresh read
+    #      either: the file on disk is still the old one, and comparing it
+    #      silently would report yesterday's counts as today's.
+    app.runs.clear()
+    app.lines[:] = []
+    harness._BOX.askyesno = lambda *a, **k: False
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/stock.py"), \
             patch.object(gui, "read_woo_credentials",
@@ -595,15 +708,647 @@ def test_the_cookies_canadian_shopper_is_told_about():
             patch.object(gui, "CS_COOKIE_FILE", cookie), \
             patch.object(gui, "BASE", folder):
         compare.invoke()
-        check("the old stock list is thrown away before the read, so a failed "
-              "read cannot compare it",
-              not out.exists(), str(out))
+        app.runner = FakeRunner("wrote nothing")
+        app.runs[0]["on_done"](0)
+    check("a clean exit with no new list is not compared as a fresh read",
+          said("without writing a new stock list"), str(app.lines[-4:]))
+    check("and it says nothing was compared",
+          any("Nothing was compared" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+
+
+def test_read_failure():
+    print()
+    print("== 8c. a failed read says what stopped it ==")
+    note = stock_compare.read_failure(DETAIL_FAILED)
+    check("one listing's lookup is told apart from everything else",
+          note["kind"] == "detail", str(note))
+    check("the line quoted is the reader's own, whole",
+          note["line"] == DETAIL_FAILED.lstrip("! "), str(note["line"]))
+    check("and the advice says the cookie was working, because it was",
+          any("the cookie was working" in line for line in note["advice"]),
+          str(note["advice"]))
+    check("and it says one lookup must not end a read",
+          any("carry on, not stop the run" in line for line in note["advice"]),
+          str(note["advice"]))
+
+    refused = stock_compare.read_failure(
+        "! Could not list CanadianShopper stock: the request was refused, the "
+        "session is no longer signed in (HTTP 401)")
+    check("a refused session is a session problem", refused["kind"] == "session",
+          str(refused))
+    check("and it is the only kind blamed on the cookie",
+          any("cookie" in line.lower() for line in refused["advice"]),
+          str(refused["advice"]))
+    check("a detail failure never mentions the cookie as the cause",
+          not any("paste a fresh" in line.lower() for line in note["advice"]),
+          str(note["advice"]))
+
+    for text, kind in (
+            ("! Could not list CanadianShopper stock: rate limited (429)",
+             "rate"),
+            ("! Could not list CanadianShopper stock: timed out", "network"),
+            ("! URLError: [Errno -2] Name or service not known", "network"),
+            ("! Something the reader has never said before", "unknown"),
+            ("", "silent")):
+        got = stock_compare.read_failure(text)["kind"]
+        check("%r is read as %s" % (text[:48], kind), got == kind, got)
+
+    check("a failure with no words still says something useful",
+          bool(stock_compare.read_failure("")["advice"]), "")
+    check("and it does not claim a line is above when there is none",
+          not any("own line is above" in line.lower()
+                  for line in stock_compare.read_failure("")["advice"]),
+          str(stock_compare.read_failure("")["advice"]))
+
+    # ---- ages are said the way a person would say them
+    check("thirty seconds is just now",
+          stock_compare.describe_age(30) == "just now",
+          stock_compare.describe_age(30))
+    check("ten minutes is ten minutes old",
+          stock_compare.describe_age(600) == "10 minutes old",
+          stock_compare.describe_age(600))
+    check("two hours is two hours old",
+          stock_compare.describe_age(7200) == "2 hours old",
+          stock_compare.describe_age(7200))
+    check("two days is two days old",
+          stock_compare.describe_age(200000) == "2 days old",
+          stock_compare.describe_age(200000))
+    check("under two minutes is still just now",
+          stock_compare.describe_age(60) == "just now",
+          stock_compare.describe_age(60))
+    check("and two minutes is two minutes, not 2 minute",
+          stock_compare.describe_age(120) == "2 minutes old",
+          stock_compare.describe_age(120))
+    check("an hour is one hour, not 1 hours",
+          stock_compare.describe_age(3600) == "1 hour old",
+          stock_compare.describe_age(3600))
+
+    # ---- the list from before this run, and never this run's own answer
+    folder = Path(tempfile.mkdtemp())
+    old = folder / "cs-stock.json"
+    old.write_text(json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+    now = time_module.time()
+    os.utime(old, (now - 7200, now - 7200))
+    seen = stock_compare.previous_read(old, now - 60, now)
+    check("an older list is offered", seen is not None, str(seen))
+    check("with its age said", seen["age"] == "2 hours old", str(seen))
+    check("and its listings, ready to compare", len(seen["items"]) == 2,
+          str(seen))
+    fresh = folder / "fresh.json"
+    fresh.write_text(json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+    check("a file this run wrote is not a last read",
+          stock_compare.previous_read(fresh, now - 30, now) is None, "")
+    check("and a file written as the run began is this run's answer too",
+          stock_compare.previous_read(old, now - 7201, now) is None, "")
+    check("a file written a clear margin before the run began is a last read",
+          stock_compare.previous_read(old, now - 60, now) is not None, "")
+    check("and two seconds of slack covers a clock that rounds",
+          stock_compare.written_since(old, now - 7201) is True and
+          stock_compare.written_since(old, now - 7000) is False,
+          "%s %s" % (stock_compare.written_since(old, now - 7201),
+                     stock_compare.written_since(old, now - 7000)))
+    check("a list that cannot be read is not offered",
+          stock_compare.previous_read(folder / "missing.json", now - 60,
+                                      now) is None, "")
+    bare = folder / "bare.json"
+    bare.write_text("not a list", encoding="utf-8")
+    os.utime(bare, (now - 7200, now - 7200))
+    check("a file that is not a stock list is not offered",
+          stock_compare.previous_read(bare, now - 60, now) is None, "")
+
+    stale = stock_compare.stale_note(seen, "CanadianShopper")
+    check("the age is in the note, so a count is never read as fresh",
+          "2 hours old" in stale, stale)
+    check("and the note says what a stale list cannot know",
+          "listed or delisted since is not in it" in stale, stale)
+
+
+#  What plugin 1.0.36 says on a read it finished after losing some lookups,
+#  and what it says when it could not read the catalogue at all.
+SURVIVED = ("Stock read: 2587 listings, 2581 with a real product id, "
+            "6 lookups failed")
+NO_CATALOGUE = ("! Could not list CanadianShopper stock: the catalogue page "
+                "itself could not be read")
+
+
+def test_the_reader_survives():
+    print()
+    print("== 8d. a read that lost some lookups, and one that lost everything ==")
+    note = stock_compare.read_failure(NO_CATALOGUE)
+    check("a catalogue that could not be read is its own kind",
+          note["kind"] == "catalogue", str(note))
+    check("and it says nothing at all was read",
+          any("nothing was read at all" in line for line in note["advice"]),
+          str(note["advice"]))
+    check("and it is not blamed on the cookie",
+          not any("cookie in User Settings" in line for line in note["advice"]),
+          str(note["advice"]))
+    check("and it is not described as one listing's lookup",
+          not any("ONE listing" in line for line in note["advice"]),
+          str(note["advice"]))
+
+    check("the reader's own count of failed lookups is read",
+          stock_compare.failed_lookups(SURVIVED) == 6, SURVIVED)
+    check("a reader that mentions no failures reports none",
+          stock_compare.failed_lookups("2587 listings, 2587 with a real "
+                                       "product id") == 0, "")
+    check("a single failure is read too",
+          stock_compare.failed_lookups("Stock read: 2 listings, 1 lookup "
+                                       "failed") == 1, "")
+    check("and a line that never mentions lookups is not guessed at",
+          stock_compare.failed_lookups(DETAIL_FAILED) == 0, DETAIL_FAILED)
+
+    line = stock_compare.lookup_note(6, 2587)
+    check("the count and the read's own total are both named",
+          "6 of the 2587" in line, line)
+    check("and the listings are called real, read and compared",
+          "read and compared like every other listing" in line, line)
+    check("and it says how a write to one is addressed",
+          "SKU or title" in line, line)
+    one = stock_compare.lookup_note(1, 2587)
+    check("one failed lookup reads as one listing, in the singular",
+          one.startswith("1 listing was left") and " It was read" in one, one)
+    check("with nothing to keep quiet about, nothing is said",
+          stock_compare.lookup_note(0) == "", stock_compare.lookup_note(0))
+    edited = stock_compare.lookup_note(6, 2587, panel="edit")
+    check("the editing panel says those rows cannot be edited there",
+          "cannot be edited here" in edited and "product id" in edited, edited)
+    check("and says reading again may resolve them",
+          "reading again may resolve them" in edited, edited)
+    check("while the comparison panel asks for no such thing",
+          "cannot be edited here" not in line, line)
+
+    check("before 1.0.36, updating the plugin is the fix",
+          "updating the plugin is the fix" in
+          stock_compare.stopped_read_note("1.0.35"),
+          stock_compare.stopped_read_note("1.0.35"))
+    check("from 1.0.36 on, a stopped read is a defect worth reporting",
+          "defect in the reader" in stock_compare.stopped_read_note("1.0.36"),
+          stock_compare.stopped_read_note("1.0.36"))
+    check("an unreadable version is told the version, and nothing more",
+          stock_compare.stopped_read_note("") ==
+          "Plugin 1.0.36 or newer leaves that listing without a product id "
+          "and carries on.", stock_compare.stopped_read_note(""))
+
+    # ---- the comparison panel says it, where the counts are
+    folder, app, parent = build_panel()
+    compare = find(parent, gui.ttk.Button, "Compare stock", exact=False)
+    out = folder / "cs-stock.json"
+
+    def fetch_ok(base, path, params, key, secret):
+        return (200, PRODUCTS) if params["page"] == 1 else (200, [])
+
+    def said(prefix):
+        return [text for _tag, text in app.lines if prefix in text]
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "CS_COOKIE_FILE", folder / "cookie.txt"), \
+            patch.object(gui, "woo_get", fetch_ok), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        compare.invoke()
+        out.write_text(json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+        app.runner = FakeRunner(SURVIVED)
+        app.runs[0]["on_done"](0)
+    check("a read that survived lost lookups says so in the console",
+          said("6 of the 2 listings were left without a product id")
+          or said("were left without a product id"), str(app.lines[-6:]))
+    check("and the comparison still happened",
+          any("Compared" in text for _tag, text in app.lines),
+          str(app.lines[-4:]))
+
+    # ---- a read that stopped on one lookup, by whichever plugin did it
+    def stopped_on_a_lookup(version):
+        app.runs.clear()
+        app.lines[:] = []
+        harness._BOX.askyesno = lambda *a, **k: False
+        with patch.object(gui, "TOOL_ACTION",
+                          lambda action: "/plugins/cs/stock.py"), \
+                patch.object(gui, "read_woo_credentials",
+                             lambda path=None: ("https://shop.example", "ck_a",
+                                                "cs_b")), \
+                patch.object(gui, "CS_COOKIE_FILE", folder / "cookie.txt"), \
+                patch.object(gui, "plugin_version",
+                             lambda *a, **k: version), \
+                patch.object(gui, "BASE", folder):
+            compare.invoke()
+            app.runner = FakeRunner(DETAIL_FAILED)
+            app.runs[0]["on_done"](1)
+
+    stopped_on_a_lookup("1.0.35")
+    check("a stopped lookup names the version that carries on",
+          said("updating the plugin is the fix"), str(app.lines[-5:]))
+    stopped_on_a_lookup("1.0.36")
+    check("and a plugin that should have carried on is a defect",
+          said("defect in the reader"), str(app.lines[-5:]))
+
+    app.lines[:] = []
+    harness._BOX.askyesno = lambda *a, **k: False
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "CS_COOKIE_FILE", folder / "cookie.txt"), \
+            patch.object(gui, "BASE", folder):
+        compare.invoke()
+        app.runner = FakeRunner(NO_CATALOGUE)
         app.runs[0]["on_done"](1)
-    check("a failed read says nothing was compared",
-          any("nothing was compared" in text for _tag, text in app.lines),
-          str(app.lines[-2:]))
-    check("and it does not claim a comparison happened",
-          not any("Compared" in text for _tag, text in app.lines),
+    check("a catalogue that could not be read says the site, not the cookie",
+          said("could not read the catalogue itself") and
+          not any("bytes" in text and "saved" in text
+                  for _tag, text in app.lines), str(app.lines[-5:]))
+
+
+def test_a_stopped_read_is_not_a_failure():
+    print()
+    print("== 8e. a read stopped by hand, and one that died without a word ==")
+    stopped = stock_compare.read_failure("", stopped=True)
+    check("a stopped read is its own kind", stopped["kind"] == "stopped",
+          str(stopped))
+    check("and it says the person ended it, not that it broke",
+          "You stopped the read" in stopped["advice"][0], str(stopped["advice"]))
+    check("and that nothing was compared or changed",
+          "nothing was compared and nothing was changed" in
+          stopped["advice"][0], str(stopped["advice"]))
+    check("and it mentions waiting or using the earlier list",
+          any("earlier read" in line for line in stopped["advice"]),
+          str(stopped["advice"]))
+    check("a stop is never blamed on the cookie",
+          not any("cookie" in line.lower() for line in stopped["advice"]),
+          str(stopped["advice"]))
+    check("nor called a reader that said nothing it recognises",
+          not any("recognises" in line for line in stopped["advice"]),
+          str(stopped["advice"]))
+
+    with_words = stock_compare.read_failure(
+        "! Could not list CanadianShopper stock: rate limited", stopped=True)
+    check("a stop still reports what the reader had said",
+          with_words["kind"] == "stopped" and
+          any("rate limited" in line for line in with_words["advice"]),
+          str(with_words["advice"]))
+
+    silent = stock_compare.read_failure("")
+    check("a failure with no words at all is its own kind",
+          silent["kind"] == "silent", str(silent))
+    check("and it does not pretend the reader said something",
+          not any("own line is above" in line for line in silent["advice"]),
+          str(silent["advice"]))
+    check("and it names the one thing worth trying",
+          any("Reading again" in line for line in silent["advice"]),
+          str(silent["advice"]))
+
+    # ---- which plugin was running, when there is no line to classify
+    check("an older plugin is named, and the version that carries on",
+          "1.0.35" in stock_compare.older_plugin_note("1.0.35") and
+          "1.0.36" in stock_compare.older_plugin_note("1.0.35"),
+          stock_compare.older_plugin_note("1.0.35"))
+    check("a plugin that already carries on is not told to update",
+          stock_compare.older_plugin_note("1.0.36") == "",
+          stock_compare.older_plugin_note("1.0.36"))
+    check("and an unreadable version is not guessed at",
+          stock_compare.older_plugin_note("") == "",
+          stock_compare.older_plugin_note(""))
+    check("it never claims the version is what went wrong",
+          "is what happened" not in stock_compare.older_plugin_note("1.0.35"),
+          stock_compare.older_plugin_note("1.0.35"))
+
+    # ---- the panel: a run stopped by hand, with a list from before it
+    folder, app, parent = build_panel()
+    compare = find(parent, gui.ttk.Button, "Compare stock", exact=False)
+    out = folder / "cs-stock.json"
+    out.write_text(json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+    old_time = time_module.time() - 3600
+    os.utime(out, (old_time, old_time))
+
+    def fetch_ok(base, path, params, key, secret):
+        return (200, PRODUCTS) if params["page"] == 1 else (200, [])
+
+    def said(prefix):
+        return [text for _tag, text in app.lines if prefix in text]
+
+    asked = []
+
+    def run_then_stop(answer):
+        asked[:] = []
+        app.runs.clear()
+        app.lines[:] = []
+
+        def ask(title, message, **kwargs):
+            asked.append((title, message))
+            return answer
+
+        harness._BOX.askyesno = ask
+        with patch.object(gui, "TOOL_ACTION",
+                          lambda action: "/plugins/cs/stock.py"), \
+                patch.object(gui, "read_woo_credentials",
+                             lambda path=None: ("https://shop.example", "ck_a",
+                                                "cs_b")), \
+                patch.object(gui, "CS_COOKIE_FILE", folder / "cookie.txt"), \
+                patch.object(gui, "plugin_version",
+                             lambda *a, **k: "1.0.35"), \
+                patch.object(gui, "woo_get", fetch_ok), \
+                patch.object(gui, "in_background", sync_background), \
+                patch.object(gui, "BASE", folder):
+            compare.invoke()
+            app.runner = FakeRunner("")
+            app.runner.stopped = True
+            return app.runs[0]["on_done"](1)
+
+    answer = run_then_stop(False)
+    check("a stopped read says it was stopped, not that it failed",
+          said("was stopped"), str(app.lines[:4]))
+    check("and never says the reader failed",
+          not said("stock read failed"), str(app.lines[:4]))
+    check("and does not claim it said nothing this app recognises",
+          not said("recognises"), str(app.lines[:5]))
+    check("and offers the list from the last read instead",
+          asked and "Compare your website against that list?" in asked[-1][1]
+          and "1 hour old" in asked[-1][1], str(asked[-1:]))
+    check("saying no to it compares nothing",
+          answer is False and not any("Compared" in text
+                                      for _tag, text in app.lines),
+          str(app.lines[-3:]))
+
+    app.lines[:] = []
+    answer = run_then_stop(True)
+    check("saying yes to it compares the earlier list", answer is True,
+          str(app.lines[-3:]))
+    check("and that list is named as not fresh",
+          said("not a fresh read") and said("1 hour old"), str(app.lines[-4:]))
+
+    # ---- a reader that dies without a word, on an older plugin
+    app.lines[:] = []
+    harness._BOX.askyesno = lambda *a, **k: False
+    out.unlink(missing_ok=True)
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "CS_COOKIE_FILE", folder / "cookie.txt"), \
+            patch.object(gui, "plugin_version", lambda *a, **k: "1.0.35"), \
+            patch.object(gui, "BASE", folder):
+        compare.invoke()
+        app.runner = FakeRunner("")
+        app.runs[0]["on_done"](1)
+    check("a read that died silently is named as that, not as unrecognised",
+          said("without printing a single line"), str(app.lines[-5:]))
+    check("and the failure line says which plugin was running",
+          said("plugin 1.0.35"), str(app.lines[:4]))
+    check("and it is told which version carries on past a bad lookup",
+          said("1.0.36 or newer"), str(app.lines[-5:]))
+
+    # ---- the runner knows a stop for what it is
+    class FakeProc:
+        def __init__(self):
+            self.killed = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.killed = True
+
+    quiet_app = SimpleNamespace(after=lambda *a, **k: "after-id",
+                               console_line=lambda *a, **k: None,
+                               status=SimpleNamespace(config=lambda **k: None))
+    runner = gui.Runner(quiet_app)
+    runner.proc = FakeProc()
+    check("a running tool is not stopped until somebody stops it",
+          runner.stopped is False, str(runner.stopped))
+    with patch.object(gui, "log", lambda *a, **k: None):
+        runner.stop()
+    check("stopping records it on the runner itself", runner.stopped is True, "")
+    check("and actually ends the process", runner.proc.killed, "")
+
+    # ---- a run that is still going says so, instead of looking frozen
+    lines = []
+
+    def fake_app():
+        return SimpleNamespace(
+            after=lambda *a, **k: "after-id",
+            console_line=lambda text, tag="": lines.append((tag, text)),
+            status=SimpleNamespace(config=lambda **k: None))
+
+    slow = gui.Runner(fake_app())
+    slow.proc = FakeProc()
+    slow.title = "CanadianShopper stock"
+    slow.started_at = time_module.time() - 252
+    slow.output = ""
+    slow._quiet_watch = (0, None)
+    lines[:] = []
+    slow._still_running()
+    check("a silent run that is still going says how long it has been",
+          lines and "5 min" not in lines[-1][1] and
+          "4 min 12 s so far" in lines[-1][1], str(lines))
+    check("and says the reader has printed nothing, so it is not a hang",
+          "nothing has been printed since it started" in lines[-1][1], str(lines))
+    check("and it is only a note, not an error", lines[-1][0] == "dim",
+          str(lines))
+
+    lines[:] = []
+    slow.output = "some output\n"
+    slow._quiet_watch = (0, None)
+    slow._still_running()
+    check("a run that is talking is not nagged about",
+          not lines, str(lines))
+
+    lines[:] = []
+    slow.output = ""
+    slow._quiet_watch = (0, None)
+    slow.stopped = True
+    slow._still_running()
+    check("and a run that was stopped says nothing more",
+          not lines, str(lines))
+
+    lines[:] = []
+    slow.stopped = False
+    slow.proc = None                 # not running any more
+    slow._still_running()
+    check("nor does a run that has finished", not lines, str(lines))
+
+    # ---- the clock, for a read that is slow but alive
+    check("seconds are said as seconds", gui.elapsed_text(45) == "45 s",
+          gui.elapsed_text(45))
+    check("minutes as minutes and seconds",
+          gui.elapsed_text(252) == "4 min 12 s", gui.elapsed_text(252))
+    check("a whole minute keeps no seconds",
+          gui.elapsed_text(3600) == "1 h", gui.elapsed_text(3600))
+    check("and an hour is hours and minutes",
+          gui.elapsed_text(3720) == "1 h 2 min", gui.elapsed_text(3720))
+
+
+def test_the_fast_read_from_plugin_1038():
+    print()
+    print("== 8g. plugin 1.0.38's list-only read, end to end ==")
+    #  2,600 rows exactly as 1.0.38 writes them for a comparison: every
+    #  catalogue field, and no product id anywhere.
+    rows = [{"id": "%032x" % (900000 + n),
+             "title": "1989 O-Pee-Chee Card #%d" % n,
+             "sku": "OPC1989-%d-Name-EX-5" % n,
+             "inventory": n % 4, "status": "active", "price": "CA$8.50",
+             "url": "https://cs.example/p/%d" % n}
+            for n in range(1, 2601)]
+    items = stock_compare.plugin_items({"items": rows})
+    check("every row of the fast read is kept", len(items) == 2600,
+          str(len(items)))
+    check("and not one carries a product id",
+          not any(cs_edit.product_id(row) for row in items), "")
+    woo = [{"id": n, "name": "1989 O-Pee-Chee Card #%d" % n,
+            "sku": "OPC1989-%d-Name-EX-5" % n, "manage_stock": True,
+            "stock_quantity": 9, "type": "simple"} for n in range(1, 2601)]
+    pairs, only_woo, only_other = stock_compare.pair(woo, items)
+    check("a read with no product ids still pairs every card",
+          len(pairs) == 2600 and not only_woo and not only_other,
+          "%d/%d/%d" % (len(pairs), len(only_woo), len(only_other)))
+    check("and it says nothing about shared products it cannot see",
+          stock_compare.id_key("1") is not None and
+          cs_edit.shared_product_note(items) == "", "")
+
+    def fetch_ok(base, path, params, key, secret):
+        return (200, woo) if params["page"] == 1 else (200, [])
+
+    folder, app, parent = build_panel()
+    compare = find(parent, gui.ttk.Button, "Compare stock", exact=False)
+    app.lines[:] = []
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "CS_COOKIE_FILE", folder / "cookie.txt"), \
+            patch.object(gui, "plugin_version", lambda *a, **k: "1.0.38"), \
+            patch.object(gui, "woo_get", fetch_ok), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        compare.invoke()
+        check("the comparison asks for the list-only read",
+              "--no-product-lookups" in app.runs[-1]["args"],
+              str(app.runs[-1]["args"]))
+        check("and says which read it is running, and why it is the fast one",
+              any("without product lookups" in text and "measured in seconds"
+                  in text for _tag, text in app.lines), str(app.lines[:4]))
+        (folder / "cs-stock.json").write_text(json.dumps({"items": rows}),
+                                              encoding="utf-8")
+        app.runner = FakeRunner("")
+        app.runs[-1]["on_done"](0)
+    check("the fast read is compared like any other",
+          any("Compared" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and nothing complains about the product ids it does not have",
+          not any("product id" in text for _tag, text in app.lines),
+          str(app.lines[-4:]))
+    labels = [str(w.cget("text")) for w in parent.walk()
+              if isinstance(w, gui.ttk.Label)]
+    check("and nothing is called stale",
+          not any("not a fresh read" in text for text in labels),
+          str(labels[-3:]))
+
+    # ---- the same panel on a plugin that cannot do it: the slow read, said
+    app2_folder, app2, parent2 = build_panel()
+    compare2 = find(parent2, gui.ttk.Button, "Compare stock", exact=False)
+    app2.lines[:] = []
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "CS_COOKIE_FILE", app2_folder / "cookie.txt"), \
+            patch.object(gui, "plugin_version", lambda *a, **k: "1.0.36"), \
+            patch.object(gui, "BASE", app2_folder):
+        compare2.invoke()
+    check("an older plugin is not promised the fast read",
+          not any("measured in seconds" in text for _tag, text in app2.lines),
+          str(app2.lines[:4]))
+    check("and it is still asked, and still falls back",
+          "--no-product-lookups" in app2.runs[-1]["args"], str(app2.runs[-1]))
+    app2.runs[-1]["on_done"](2)
+    check("dropping the flag says the read will be the slow one",
+          any("slower read" in text for _tag, text in app2.lines),
+          str(app2.lines[-3:]))
+
+    # ---- the reader's own stages, in the person's words
+    check("a catalogue stage is called reading the catalogue",
+          gui.PROGRESS_WORDS.get("read") == "reading the catalogue",
+          str(gui.PROGRESS_WORDS.get("read")))
+    check("and a lookup stage is called resolving product ids",
+          gui.PROGRESS_WORDS.get("ids") == "resolving product ids",
+          str(gui.PROGRESS_WORDS.get("ids")))
+
+
+def test_comparing_the_last_read():
+    print()
+    print("== 8f. comparing the list already on disk, without waiting ==")
+    folder, app, parent = build_panel()
+    button = find(parent, gui.ttk.Button, "Compare the last read instead",
+                  exact=False)
+    check("the panel offers the list it already has", button is not None, "")
+    check("and says in its tooltip that it starts no read",
+          "no read is started" in gui.tip_for(
+              "Compare the last read instead (no new read)"), "")
+
+    def fetch_ok(base, path, params, key, secret):
+        return (200, PRODUCTS) if params["page"] == 1 else (200, [])
+
+    #  Nothing on disk: it says so rather than comparing an empty shop.
+    app.lines[:] = []
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck_a",
+                                         "cs_b")), \
+            patch.object(gui, "woo_get", fetch_ok), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        button.invoke()
+    check("with no earlier read it says there is nothing to compare",
+          any("No earlier CanadianShopper list" in text
+              for _tag, text in app.lines), str(app.lines[-2:]))
+    check("and it starts nothing", not app.runs, str(app.runs))
+
+    #  A list from an hour ago: compared immediately, named as an hour old,
+    #  and still no tool started.
+    out = folder / "cs-stock.json"
+    out.write_text(json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+    an_hour_ago = time_module.time() - 3600
+    os.utime(out, (an_hour_ago, an_hour_ago))
+    app.lines[:] = []
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck_a",
+                                         "cs_b")), \
+            patch.object(gui, "woo_get", fetch_ok), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        button.invoke()
+    check("an earlier list is compared without starting a read",
+          not app.runs, str(app.runs))
+    check("and the console says it is not a fresh read, and how old",
+          any("not a fresh read" in text and "1 hour old" in text
+              for _tag, text in app.lines), str(app.lines[-3:]))
+    check("and the counts are on the list",
+          any("Compared" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    labels = [str(w.cget("text")) for w in parent.walk()
+              if isinstance(w, gui.ttk.Label)]
+    check("and the summary carries the age beside the counts",
+          any("1 hour old" in text and "not a fresh read" in text
+              for text in labels), str(labels[-4:]))
+
+    #  A file that is not a stock list is not compared as one.
+    out.write_text("not a list", encoding="utf-8")
+    app.lines[:] = []
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck_a",
+                                         "cs_b")), \
+            patch.object(gui, "BASE", folder):
+        button.invoke()
+    check("an unreadable file is not compared as an empty shop",
+          any("No earlier CanadianShopper list" in text
+              for _tag, text in app.lines) and not app.runs,
           str(app.lines[-2:]))
 
 
@@ -2590,7 +3335,9 @@ def test_a_reader_that_cannot_ask_for_a_fresh_page():
 
     lines = compare("")
     check("an unreadable plugin version is not guessed at",
-          any(text.startswith("What the reader returned - ")
+          any(text.startswith("What the reader returned - ") or
+              (text.startswith("What the reader returned in ") and
+               " - " in text and "(plugin " not in text)
               for _tag, text in lines), str(lines[:3]))
     check("and no cache warning is invented for it",
           not any("serve from its cache" in text for _tag, text in lines),
@@ -3499,6 +4246,11 @@ def main():
     test_nearest_title_diagnosis()
     test_a_duplicate_on_the_website()
     test_what_the_reader_claimed()
+    test_read_failure()
+    test_the_reader_survives()
+    test_a_stopped_read_is_not_a_failure()
+    test_the_fast_read_from_plugin_1038()
+    test_comparing_the_last_read()
     test_held_under_another_product()
     test_a_reader_that_cannot_ask_for_a_fresh_page()
     test_a_listing_that_reports_everything()

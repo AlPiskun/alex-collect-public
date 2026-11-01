@@ -12,6 +12,7 @@ import json
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 APP = Path(__file__).resolve().parent
@@ -649,6 +650,380 @@ def test_a_read_with_no_product_ids_at_all():
               for _tag, text in app.lines), str(app.lines[-3:]))
 
 
+def test_a_reader_that_says_zero():
+    """The other shape of "no product ids": every row says 0.
+
+    Plugin 1.0.31 emitted ``"product_id": 0`` for all 2,541 listings. A zero
+    is not an id - no product has one - so the panel must not count it as
+    editable, must not put it in a write, and must not explain a failure by it.
+    """
+    print()
+    print("== 5d1. a reader that reports 0 for every listing ==")
+    zeroed = [dict(row, product_id=0) for row in LISTINGS]
+    check("a zero is not an id",
+          cs_edit.product_id({"product_id": 0}) == "" and
+          cs_edit.product_id({"product_id": "0"}) == "" and
+          cs_edit.product_id({"product_id": " 0.0 "}) == "" and
+          cs_edit.product_id({"ids": {"productId": 0}}) == "", "")
+    check("a real id still is one, whatever shape the vendor uses",
+          cs_edit.product_id({"product_id": " 4321 "}) == "4321" and
+          cs_edit.product_id({"product_id": 4321}) == "4321" and
+          cs_edit.product_id({"ids": {"product_id": "14effcaceb8a4b66"}}) ==
+          "14effcaceb8a4b66", "")
+    check("a zero beside a real id loses to the real one",
+          cs_edit.product_id({"product_id": 0, "productId": 4321}) == "4321"
+          and cs_edit.product_id({"product_id": 4321,
+                                  "ids": {"productId": 0}}) == "4321", "")
+    check("every row of that read counts as having no product id",
+          cs_edit.product_id_counts(zeroed) == (0, len(zeroed)) and
+          cs_edit.nothing_editable(zeroed), "")
+
+    zeros, total = cs_edit.zero_product_id_counts(zeroed)
+    check("and the reader's zeros are counted as zeros, not as missing keys",
+          (zeros, total) == (len(zeroed), len(zeroed)) and
+          cs_edit.zero_product_id_counts(items()) == (0, len(LISTINGS)), "")
+    note = cs_edit.zero_product_id_note(zeros, total)
+    check("the note says what the plugin did, and that 0 is not an id",
+          "product_id 0" in note and "0 is not an id" in note, note)
+    check("it does not send anyone to the dashboard for 2,541 listings",
+          "vendor dashboard" not in note, note)
+    check("and it names the buttons that still do work, not just a panel",
+          "stock.set" in note and
+          "Set CanadianShopper to the website's counts..." in note and
+          "Fix the selected cards..." in note, note)
+    check("a read with no zeros has nothing to say",
+          cs_edit.zero_product_id_note(0, 5) == "", "")
+
+    #  A write must never carry a zero: it addresses a product that cannot
+    #  exist, so the answer could only be another failure.
+    entry = cs_edit.plan(stock_compare.plugin_items(
+        {"items": [dict(LISTINGS[0], product_id=0)]})[0], inventory=9)
+    check("the plan carries the listing id and no product id at all",
+          entry.get("id") == 101 and "product_id" not in entry,
+          str(entry))
+    entry = cs_edit.plan(items()[0], inventory=9)
+    check("a real product id still travels with the change",
+          entry.get("product_id") == 1101, str(entry))
+    check("and a failure is not explained by 'product id 0'",
+          "product id" not in cs_edit.identified_by(
+              {"id": 101, "product_id": 0, "sku": "OPC73-25"}),
+          cs_edit.identified_by({"id": 101, "product_id": 0,
+                                 "sku": "OPC73-25"}))
+
+    #  ---- the panel, with a plugin that reports zeros
+    folder, app, parent = build_panel()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app, folder, parent, zeroed)
+    check("the read still lists every listing",
+          len(listing_box(parent).items) == len(LISTINGS), "")
+    check("the console names the plugin's zeros, not a missing key",
+          any("product_id 0" in text and "0 is not an id" in text
+              for _tag, text in app.lines), str(app.lines[-3:]))
+    check("and it does not promise the edits can be made",
+          not any("every one with a product id" in text
+                  for _tag, text in app.lines), str(app.lines[-4:]))
+
+    find(parent, gui.ttk.Button, "Search").invoke()
+    select(parent, "Watson")
+    harness._BOX.shown.clear()
+    answers = []
+    runs_before = len(app.runs)
+    harness._BOX.askyesno = lambda title, *a, **k: (answers.append(title),
+                                                   True)[1]
+    app.opened[:] = []
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/edit.py"):
+        find(parent, gui.ttk.Button,
+             "Put the selected listing on sale").invoke()
+    check("an edit is never sent to /api/products/0/",
+          len(app.runs) == runs_before, str(app.runs[-1:]))
+    check("the panel does not offer to read the same zeros again",
+          answers == ["That listing has to be changed on the site"],
+          str(answers))
+    check("it opens the listing so it can be changed there",
+          app.opened == ["https://cs.example/l/102"], str(app.opened))
+    check("and says the zero out loud",
+          any("product_id 0" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+
+
+def test_the_version_that_reports_product_ids():
+    """Which plugin version reports real ids, and what a read without them gets.
+
+    Plugin 1.0.34 emits each listing's real product id as a string and leaves
+    the key out when there is none. So a read with no usable id is two
+    different things depending on the plugin: an old one that needs updating,
+    or a current one with a defect - and the console has to say which.
+    """
+    print()
+    print("== 5d2. the plugin version that reports real product ids ==")
+    check("the core and the edit panel name the same version",
+          gui.CS_PRODUCT_ID_VERSION == cs_edit.PRODUCT_ID_VERSION and
+          cs_edit.PRODUCT_ID_VERSION == "1.0.34",
+          "%r %r" % (gui.CS_PRODUCT_ID_VERSION, cs_edit.PRODUCT_ID_VERSION))
+
+    older = cs_edit.needed_version_note("1.0.31", "1.0.34")
+    check("an older plugin is told which version fixes it",
+          "1.0.31" in older and "1.0.34" in older and
+          "updating the plugin is the fix" in older, older)
+    current = cs_edit.needed_version_note("1.0.34", "1.0.34")
+    check("the version that reports them is not told to update",
+          "updating the plugin" not in current and "defect" in current,
+          current)
+    newer = cs_edit.needed_version_note("1.0.35", "1.0.34")
+    check("and neither is a newer one",
+          "defect" in newer and "updating the plugin" not in newer, newer)
+    unknown = cs_edit.needed_version_note("", "1.0.34")
+    check("an unreadable version only names the version",
+          "1.0.34" in unknown and "defect" not in unknown and
+          "updating the plugin" not in unknown, unknown)
+    check("with nothing to compare against it says nothing",
+          cs_edit.needed_version_note("1.0.31", "") == "", "")
+    check("a version that is not a number is never treated as new enough",
+          "updating the plugin is the fix" in
+          cs_edit.needed_version_note("unknown", "1.0.34"), "")
+
+    zeroed = [dict(row, product_id=0) for row in LISTINGS]
+    said = cs_edit.product_id_gap(zeroed, plugin="1.0.31")
+    check("the whole sentence carries the zeros and the version that fixes it",
+          "product_id 0" in said and "1.0.31" in said and "1.0.34" in said and
+          "updating the plugin is the fix" in said, said)
+    check("and ends with what still works",
+          said.endswith("all still work."), said[-80:])
+    quiet = cs_edit.product_id_gap(zeroed, plugin="1.0.31", works=False)
+    check("a refusal that names the card does not repeat that tail",
+          "still work" not in quiet, quiet)
+    check("a read that can be written says nothing at all",
+          cs_edit.product_id_gap(items(), plugin="1.0.34") == "", "")
+    check("an empty read says nothing either",
+          cs_edit.product_id_gap([], plugin="1.0.34") == "", "")
+
+    #  ---- the panel, with an older plugin behind it
+    folder, app, parent = build_panel()          # installs 1.0.19
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app, folder, parent, zeroed)
+    said = " ".join(text for _tag, text in app.lines[-3:])
+    check("the console names the plugin that read it and the version needed",
+          "read by plugin 1.0.19" in said and "1.0.34" in said and
+          "updating the plugin is the fix" in said, said)
+
+    #  ---- and with the version that does report them
+    folder2 = Path(tempfile.mkdtemp())
+    harness.install_plugin("1.0.34", folder2 / "plugin")
+    gui.BASE = folder2
+    app2 = harness.FakeApp(folder2)
+    parent2 = harness.FakeWidget()
+    gui.build_csledit(parent2, app2)
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app2, folder2, parent2, zeroed)
+    said = " ".join(text for _tag, text in app2.lines[-3:])
+    check("a current plugin reporting zeros is called a defect, not an update",
+          "is a defect in the reader" in said and
+          "updating the plugin" not in said, said)
+    check("and it still lists everything that was read",
+          len(listing_box(parent2).items) == len(LISTINGS), "")
+
+    #  ---- 1.0.34's real shape: ids as strings, key omitted when absent
+    strings = [dict(row, product_id=str(row["product_id"])) for row in LISTINGS]
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app2, folder2, parent2, strings)
+    said = str(app2.lines[-1][1])
+    check("string ids from 1.0.34 are editable, with nothing said against it",
+          "every one with a product id" in said and "defect" not in said,
+          said)
+    check("and the read is listed like any other",
+          len(listing_box(parent2).items) == len(LISTINGS),
+          str(listing_box(parent2).items))
+    plan = cs_edit.plan(stock_compare.plugin_items(
+        {"items": [dict(strings[0])]})[0], inventory=9)
+    check("the id the plugin sent is the id the write carries, unchanged",
+          plan.get("product_id") == "1101", str(plan))
+
+
+def test_what_the_read_did_carry():
+    """2,587 listings, 0 with a real product id, 2,587 without the key.
+
+    Plugin 1.0.34's own console said exactly that, which means the reader is
+    reading listings that carry no product reference at all. Nothing the core
+    can do invents one - but what the read *did* carry decides whether the
+    reader could resolve one, so the console counts it instead of only saying
+    what is missing.
+    """
+    print()
+    print("== 5d3. what the read did carry ==")
+    full = [{"id": "a%04d" % n, "sku": "OPC73-%d" % n,
+             "url": "https://canadianshopper.ca/l/%d" % n,
+             "title": "card %d" % n} for n in range(2587)]
+    counts = cs_edit.identity_counts(full)
+    check("every identifier a row carries is counted",
+          counts == {"product_id": 0, "id": 2587, "sku": 2587, "url": 2587},
+          str(counts))
+    note = cs_edit.identity_note(full)
+    check("the line says what the read did carry, with the counts",
+          "2587 listing ids" in note and "2587 SKUs" in note and
+          "2587 listing addresses" in note and "(of 2587 listings)" in note,
+          note)
+    check("and that resolving is therefore possible for the reader",
+          "resolving a listing to its product takes" in note and
+          "it is only the product id itself that never arrived" in note, note)
+    check("a product id appears in the counts only when one is there",
+          cs_edit.identity_counts(items())["product_id"] == len(LISTINGS), "")
+
+    partial = [{"id": "a", "sku": "S1"}, {"id": "b"}, {"id": "c"}]
+    note = cs_edit.identity_note(partial)
+    check("a read where only some rows have an SKU says how many would be left",
+          "resolving by SKU would leave 0 listings behind" not in note and
+          "3 listing ids" in note, note)
+    note = cs_edit.identity_note([{"id": "a"}, {"id": "b"}, {"title": "x"}])
+    check("a read with no SKU on any row says the product has to come from "
+          "the vendor's data",
+          "no SKU on any row" in note and "vendor's own data" in note, note)
+    check("a read with no identifier at all is said plainly",
+          "not reading the listings' own identifiers" in
+          cs_edit.identity_note([{"title": "x"}, {"title": "y"}]), "")
+    check("and an empty read says nothing at all",
+          cs_edit.identity_note([]) == "", "")
+
+    #  ---- it is part of the sentence the panel prints, not a second one
+    gap = cs_edit.product_id_gap(full, plugin="1.0.34")
+    check("the gap sentence carries the identity line",
+          "What the read did carry" in gap, gap)
+    check("in the right place: after the version, before what still works",
+          gap.index("1.0.34") < gap.index("What the read did carry") <
+          gap.index("still work"), gap)
+
+    #  ---- and the panel prints it when a read cannot be written
+    folder, app, parent = build_panel()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app, folder, parent, full)
+    said = " ".join(text for _tag, text in app.lines[-3:])
+    check("the console names what the read did carry",
+          "2587 SKUs" in said and "2587 listing addresses" in said, said)
+    check("the read itself keeps every listing, so the count is the read's",
+          any("2587 listings read" in text for _tag, text in app.lines),
+          str(app.lines[-4:]))
+    check("and the list shows as many as it has ever shown, not fewer",
+          len(listing_box(parent).items) == cs_edit.SEARCH_LIMIT == 200,
+          str(len(listing_box(parent).items)))
+
+
+def test_plugin_1_0_35():
+    """2,587 listings, every one with a string product id, resolved by the reader.
+
+    1.0.35 resolves a missing id through each listing's own detail, using the
+    same SKU matching stock.set does, and emits it as a string. Two things
+    follow for the core: an id is an id whether it arrives as "4321", 4321 or
+    4321.0 - otherwise a write that happened reads as *unknown* - and two
+    listings can now resolve to one product, which no count of edits shows.
+    """
+    print()
+    print("== 5d4. plugin 1.0.35: string ids, and one product two listings share ==")
+    rows = [{"id": "a%04d" % n, "product_id": str(40000 + n),
+             "sku": "OPC73-%d" % n, "inventory": 1, "status": "active",
+             "price": "8.50", "url": "https://canadianshopper.ca/l/%d" % n,
+             "title": "1973-74 O-Pee-Chee Card #%d" % n} for n in range(2587)]
+    items_ = stock_compare.plugin_items({"items": rows})
+    editable, total = cs_edit.product_id_counts(items_)
+    check("every one of the 2587 is editable",
+          (editable, total) == (2587, 2587), "%s %s" % (editable, total))
+    check("nothing is said against a read that is complete",
+          cs_edit.product_id_gap(items_, plugin="1.0.35") == "" and
+          cs_edit.zero_product_id_counts(items_) == (0, 2587) and
+          not cs_edit.shared_product_ids(items_), "")
+    plan = cs_edit.plan(items_[7], inventory=4)
+    check("the string id the reader sent is the id the write carries",
+          plan.get("product_id") == "40007", str(plan))
+    check("and it is not renumbered on the way",
+          isinstance(plan.get("product_id"), str), repr(plan.get("product_id")))
+
+    #  ---- one id, spelled four ways
+    check("a string id, a number id, a padded one and a float are one id",
+          {stock_compare.id_key("4321"), stock_compare.id_key(4321),
+           stock_compare.id_key(" 4321 "), stock_compare.id_key(4321.0),
+           stock_compare.id_key("4321.00")} == {"4321"}, "")
+    check("an opaque id is kept exactly as it was given",
+          stock_compare.id_key("14effcaceb8a4b66") == "14effcaceb8a4b66" and
+          stock_compare.id_key("14EFFCACEb8a4b66") == "14EFFCACEb8a4b66", "")
+    check("a leading zero is somebody's code, not twelve",
+          stock_compare.id_key("0012") == "0012", "")
+    check("nothing at all is the empty string",
+          stock_compare.id_key(None) == "" and stock_compare.id_key("") == ""
+          and stock_compare.id_key(True) == "", "")
+
+    plan_row = {"id": "a1", "product_id": "4321", "sku": "OPC73-1",
+                "title": "1973-74 O-Pee-Chee Card #1"}
+
+    def outcome(answer):
+        result = stock_compare.plugin_write_report([plan_row], answer)
+        return ("changed" if result["changed"] else
+                "failed" if result["failed"] else "unknown")
+
+    check("an answer naming the id as a number confirms the write",
+          outcome({"updated": [{"product_id": 4321}]}) == "changed", "")
+    check("an answer naming it as a string confirms it too",
+          outcome({"updated": [{"product_id": "4321"}]}) == "changed", "")
+    check("an answer naming the listing id still confirms it",
+          outcome({"updated": [{"id": "a1"}]}) == "changed", "")
+    check("and another product's id does not",
+          outcome({"updated": [{"product_id": 4322}]}) == "unknown", "")
+
+    #  ---- two listings on one product
+    shared = [dict(row) for row in rows[:3]]
+    shared[1]["product_id"] = shared[0]["product_id"]
+    shared_items = stock_compare.plugin_items({"items": shared})
+    found = cs_edit.shared_product_ids(shared_items)
+    check("two listings resolving to one product are found",
+          len(found) == 1 and found[0][0] == "40000" and
+          len(found[0][1]) == 2, str(found))
+    note = cs_edit.shared_product_note(shared_items)
+    check("and named, with both listings",
+          "product 40000" in note and "Card #0" in note and "Card #1" in note,
+          note)
+    check("with what it means for a write",
+          "changes what every listing sharing it shows" in note, note)
+    check("a read where every id is its own has nothing to say",
+          cs_edit.shared_product_note(items_) == "", "")
+
+    #  ---- the panel, with 1.0.35's read
+    folder = Path(tempfile.mkdtemp())
+    harness.install_plugin("1.0.35", folder / "plugin")
+    gui.BASE = folder
+    app = harness.FakeApp(folder)
+    parent = harness.FakeWidget()
+    gui.build_csledit(parent, app)
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app, folder, parent, rows)
+    said = str(app.lines[-1][1])
+    check("the panel says every listing can be edited, with nothing against it",
+          "every one with a product id" in said and "defect" not in said,
+          said)
+    check("no shared-id warning on a clean read",
+          not any("claimed by more than one listing" in text
+                  for _tag, text in app.lines), str(app.lines[-3:]))
+
+    folder2 = Path(tempfile.mkdtemp())
+    harness.install_plugin("1.0.35", folder2 / "plugin")
+    gui.BASE = folder2
+    app2 = harness.FakeApp(folder2)
+    parent2 = harness.FakeWidget()
+    gui.build_csledit(parent2, app2)
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app2, folder2, parent2, shared)
+    check("the panel warns when two listings share a product",
+          any("claimed by more than one listing" in text
+              for _tag, text in app2.lines), str(app2.lines[-3:]))
+    check("and still lists both",
+          len(listing_box(parent2).items) == 3,
+          str(len(listing_box(parent2).items)))
+
+
 def test_the_list_says_which_plugin_read_it():
     print()
     print("== 5d. the list on screen says which plugin read it ==")
@@ -683,6 +1058,99 @@ def test_the_list_says_which_plugin_read_it():
               if isinstance(w, gui.ttk.Label)]
     check("a list read by the installed plugin is not",
           not any("read by plugin" in note for note in notes2), str(notes2[-3:]))
+
+
+def test_the_editing_panel_says_what_stopped_a_read():
+    print()
+    print("== 5g. a read that stopped, and one that lost a lookup ==")
+    folder, app, parent = build_panel()
+
+    def said(prefix):
+        return [text for _tag, text in app.lines if prefix in text]
+
+    #  The reader stopped on ONE listing's own detail lookup. The panel used to
+    #  say only that the read failed, which tells nobody what to do about it.
+    run = None
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "plugin_version", lambda *a, **k: "1.0.35"):
+        find(parent, gui.ttk.Button,
+             "Read CanadianShopper's listings").invoke()
+        run = app.runs[-1]
+        app.runner = SimpleNamespace(
+            output="! Could not list CanadianShopper stock: CanadianShopper "
+                   "request failed (GET /api/data/product/94b93f6040f5401daa"
+                   "baa9c936efa5a7): URLError")
+        run["on_done"](1)
+    check("the panel names the listing lookup that stopped the read",
+          said("ONE listing's own detail lookup"), str(app.lines[-5:]))
+    check("and names the plugin version that carries on past it",
+          said("updating the plugin is the fix"), str(app.lines[-5:]))
+    check("and does not blame the cookie",
+          not any("bytes" in text and "saved" in text
+                  for _tag, text in app.lines), str(app.lines[-5:]))
+
+    #  A read that finished after losing some lookups: those rows are real but
+    #  this panel cannot edit them, which is worth saying before it is tried.
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        app.runs.clear()
+        app.lines[:] = []
+        find(parent, gui.ttk.Button,
+             "Read CanadianShopper's listings").invoke()
+        run = app.runs[-1]
+        Path(run["args"][1]).write_text(
+            json.dumps({"items": LISTINGS}), encoding="utf-8")
+        app.runner = SimpleNamespace(
+            output="Stock read: %d listings, %d with a real product id, "
+                   "1 lookup failed" % (len(LISTINGS), len(LISTINGS) - 1))
+        run["on_done"](0)
+    check("a read that lost a lookup says which rows cannot be edited here",
+          said("cannot be edited here"), str(app.lines[-5:]))
+    check("and says how many, and that reading again may fix it",
+          said("1 listing was left without a product id") and
+          said("reading again may resolve it"), str(app.lines[-5:]))
+    check("while the rest of the list is still there to edit",
+          len(listing_box(parent).items) == len(LISTINGS),
+          str(len(listing_box(parent).items)))
+
+    #  A read the person stopped is not a reader failure there either, and the
+    #  plugin's age is worth saying before the wait rather than after it.
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "plugin_version", lambda *a, **k: "1.0.35"):
+        app.lines[:] = []
+        find(parent, gui.ttk.Button,
+             "Read CanadianShopper's listings").invoke()
+        run = app.runs[-1]
+        check("before a long read with an older plugin, it says so first",
+              said("or newer carries on past it"), str(app.lines[:4]))
+        app.runner = SimpleNamespace(output="", stopped=True)
+        run["on_done"](1)
+    check("a stopped read is said to be stopped, not failed",
+          said("was stopped") and not said("read failed"), str(app.lines[-4:]))
+    check("and nobody is told the reader said nothing it recognises",
+          not said("recognises"), str(app.lines[-5:]))
+    check("and a list that was already on screen is still there",
+          len(listing_box(parent).items) == len(LISTINGS),
+          str(len(listing_box(parent).items)))
+
+    #  A reader that dies without a word: said plainly, with the version.
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "plugin_version", lambda *a, **k: "1.0.36"):
+        app.lines[:] = []
+        find(parent, gui.ttk.Button,
+             "Read CanadianShopper's listings").invoke()
+        check("a plugin new enough warns about nothing before a read",
+              not said("carries on past it"), str(app.lines[:3]))
+        run = app.runs[-1]
+        app.runner = SimpleNamespace(output="")
+        run["on_done"](1)
+    check("a silent death is named as one", said("without printing a single line"),
+          str(app.lines[-5:]))
+    check("and a 1.0.36 read is not told to update anything",
+          not said("1.0.36 or newer"), str(app.lines[-5:]))
 
 
 def test_the_panel_reads_and_lists():
@@ -1191,7 +1659,12 @@ def main():
     test_the_12030_reproduction()
     test_a_list_read_before_product_ids()
     test_a_read_with_no_product_ids_at_all()
+    test_a_reader_that_says_zero()
+    test_the_version_that_reports_product_ids()
+    test_what_the_read_did_carry()
+    test_plugin_1_0_35()
     test_the_list_says_which_plugin_read_it()
+    test_the_editing_panel_says_what_stopped_a_read()
     test_the_panel_reads_and_lists()
     test_the_edit_form()
     test_the_panel_refuses_what_it_cannot_do()

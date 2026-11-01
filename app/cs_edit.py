@@ -29,6 +29,7 @@ from pathlib import Path
 
 import stock_compare
 import woo_orders
+from plugin_manager import version_at_least
 
 #: The states the chooser offers. The keys are the words the core already uses
 #: for a listing's state, so the filter and the comparison agree.
@@ -346,7 +347,10 @@ def plan(item, **changes):
     #  being changed; they are how the writer finds the listing at all, and a
     #  writer left holding the wrong one answers 404 and changes nothing.
     for key, value in (item.get("ids") or {}).items():
-        if key not in entry and value not in (None, ""):
+        #  A zero is not an id (see is_id): sending it would give the writer a
+        #  resource that cannot exist, and the answer would be another
+        #  failure instead of the one read that actually helps.
+        if key not in entry and is_id(value):
             entry[key] = value
     page = link(item)
     if page:
@@ -380,20 +384,94 @@ def plan(item, **changes):
 PRODUCT_KEYS = ("product_id", "productId", "productid")
 
 
-def product_id(entry):
-    """The product id a mapping carries, as text, or "" when it carries none."""
-    entry = entry or {}
-    for key in PRODUCT_KEYS:
-        value = entry.get(key) if isinstance(entry, dict) else None
-        if value not in (None, ""):
-            return str(value)
-    ids = entry.get("ids") if isinstance(entry, dict) else None
-    if isinstance(ids, dict):
+def is_id(value):
+    """Whether a reader's value is an identifier at all.
+
+    ``0`` is not an id. No product on any of these sites has one, so a reader
+    that emits ``"product_id": 0`` for every listing is saying it does not have
+    the id, not that the product is zero. The difference matters: counting a
+    zero as an id makes the panel promise an edit it cannot make and sends a
+    write to ``/api/products/0/`` that can only fail. A missing key and a zero
+    take the same path here - the row cannot be written from this panel, and
+    the console says which of the two the reader did.
+
+    Anything else travels exactly as it was given. The core never renumbers an
+    id and never learns what shape a vendor's id is, so a twelve-character
+    catalogue key is as good an identifier as ``4321``.
+    """
+    if value is None or isinstance(value, (dict, list, tuple, bool)):
+        return False
+    text = str(value).strip()
+    if not text:
+        return False
+    try:
+        return float(text) != 0.0
+    except ValueError:
+        return True
+
+
+def _id_values(entry):
+    """Every value the entry carries under a product-id name, in order."""
+    entry = entry if isinstance(entry, dict) else {}
+    found = []
+    for source in (entry, entry.get("ids") or {}):
+        if not isinstance(source, dict):
+            continue
         for key in PRODUCT_KEYS:
-            value = ids.get(key)
+            value = source.get(key)
             if value not in (None, ""):
-                return str(value)
+                found.append(value)
+    return found
+
+
+def product_id(entry):
+    """The product id a mapping carries, as text, or "" when it carries none.
+
+    A zero is "carries none": see :func:`is_id`.
+    """
+    for value in _id_values(entry):
+        if is_id(value):
+            return str(value).strip()
     return ""
+
+
+def zero_product_id(entry):
+    """Whether the reader said ``0`` rather than saying nothing at all.
+
+    Not a failure of the listing and not a missing key: a reader emitting
+    zeros is a reader that is not reporting product ids, which is the plugin's
+    job, not the person's. The two are told apart so the console can name the
+    one that is happening.
+    """
+    values = _id_values(entry)
+    return bool(values) and not any(is_id(value) for value in values)
+
+
+def zero_product_id_counts(items):
+    """How many rows a reader reported as ``0``, and how many rows there are."""
+    rows = list(items or [])
+    return len([row for row in rows if zero_product_id(row)]), len(rows)
+
+
+def zero_product_id_note(count, total):
+    """The sentence for a read whose product ids are all zeros.
+
+    Says what the plugin did, that reading again changes nothing, and what
+    still works from here - because "0" is a bug report about the reader, and
+    the person cannot fix a plugin from this panel.
+    """
+    count, total = int(count or 0), int(total or 0)
+    if not count:
+        return ""
+    return ("the plugin reported product_id 0 for %s listing%s, and 0 is not "
+            "an id: no product has one, so nothing from this read can be "
+            "written, and reading again will return the same zeros. Stock "
+            "counts can still be written from **Compare Woo vs CS** with "
+            "**Set CanadianShopper to the website's counts...** (or **Fix the "
+            "selected cards...** for one row), whose writer (%s) addresses the "
+            "listing itself rather than a product."
+            % ("all %d" % total if count == total else "%d of %d" % (count, total),
+               "" if total == 1 else "s", "stock.set"))
 
 
 def product_id_counts(items):
@@ -430,6 +508,185 @@ def editable_note(editable, total):
                 "reading them again will not change that")
     return ("%d with a product id, so %d can be edited here; the rest have "
             "to be changed in the vendor dashboard" % (editable, editable))
+
+
+#: The plugin version that reports each listing's real product id, as the
+#: vendor gives it and never as 0. Before it a whole read could come back with
+#: ``"product_id": 0`` on every row, which is not an id and was why nothing in
+#: such a list could be written - so the version decides which sentence a read
+#: like that gets: *update the plugin* or *this one is a defect*.
+PRODUCT_ID_VERSION = "1.0.34"
+
+
+def needed_version_note(plugin="", needed=PRODUCT_ID_VERSION):
+    """Which plugin version reports real product ids, given what is installed.
+
+    Three different situations and they must not read alike: an installed
+    plugin older than the version that reports ids (the fix is one update), an
+    installed plugin that *does* report them (then a read with none is a
+    defect worth reporting, not an old list), and a version nobody could read
+    (name the version and leave it there - an unreadable manifest is not
+    evidence of anything).
+    """
+    needed = str(needed or "").strip()
+    plugin = str(plugin or "").strip()
+    if not needed:
+        return ""
+    if not plugin:
+        return ("Plugin %s or newer reports each listing's real product id."
+                % needed)
+    if version_at_least(plugin, needed):
+        return ("The list was read by plugin %s, which does report real "
+                "product ids, so a read without them is a defect in the "
+                "reader rather than a list that needs reading again - worth "
+                "reporting with the plugin's own console line." % plugin)
+    return ("The list was read by plugin %s, and %s or newer is the version "
+            "that reports each listing's real product id - so updating the "
+            "plugin is the fix." % (plugin, needed))
+
+
+#: The identifiers a row can be recognised by, and what each is called in
+#: words. The product id is the only one a write can be addressed with, but the
+#: others are what a reader could resolve one *from*, so a read that has them
+#: and no product id is a reader with something to work with rather than an
+#: empty list.
+IDENTIFIERS = (("product_id", "product id", "product ids"),
+               ("id", "listing id", "listing ids"),
+               ("sku", "SKU", "SKUs"),
+               ("url", "listing address", "listing addresses"))
+
+
+def identity_counts(items):
+    """How many rows carry each identifier, in :data:`IDENTIFIERS` order."""
+    counts = {key: 0 for key, _word, _words in IDENTIFIERS}
+    for row in list(items or []):
+        if not isinstance(row, dict):
+            continue
+        if product_id(row):
+            counts["product_id"] += 1
+        if is_id(row.get("id")):
+            counts["id"] += 1
+        if str(row.get("sku") or "").strip():
+            counts["sku"] += 1
+        if link(row):
+            counts["url"] += 1
+    return counts
+
+
+def identity_note(items):
+    """One line saying which identifiers a read did carry, and what that means.
+
+    Written for the person who has to take it to the plugin's author: a reader
+    that emitted 2,541 rows with no product id is a different problem depending
+    on whether it had a listing id, an SKU and an address for each one. With
+    those, resolving each listing to its product is something the reader can
+    do; with none of them, the reader is not reading the listing at all.
+    """
+    rows = list(items or [])
+    if not rows:
+        return ""
+    counts = identity_counts(rows)
+    total = len(rows)
+    said = ", ".join("%d %s" % (counts[key], word if counts[key] == 1
+                                 else words)
+                     for key, word, words in IDENTIFIERS if counts[key])
+    if not said:
+        return ("Not one row carried a listing id, an SKU or an address "
+                "either, so the reader is not reading the listings' own "
+                "identifiers at all.")
+    line = "What the read did carry: %s (of %d listing%s)" % (
+        said, total, "" if total == 1 else "s")
+    if counts["sku"] == total or counts["id"] == total:
+        line += (", so the reader has what resolving a listing to its product "
+                 "takes; it is only the product id itself that never arrived.")
+    elif counts["sku"]:
+        line += (", but not for every row: resolving by SKU would leave %d "
+                 "listing%s behind." % (total - counts["sku"],
+                                        "" if total - counts["sku"] == 1
+                                        else "s"))
+    else:
+        line += (", and no SKU on any row, so the product each listing belongs "
+                 "to has to come from the vendor's own data.")
+    return line
+
+
+def shared_product_ids(items):
+    """Product ids that more than one listing in a read claims.
+
+    ``[(product_id, [listing names])]``, emptiest first is not a rule here -
+    the order is the order the ids were first met, so the console reads in the
+    order the catalogue does.
+
+    Since plugin 1.0.35 resolves a missing product id through each listing's
+    own detail - the same SKU matching ``stock.set`` uses - two listings can
+    legitimately resolve to one product: a duplicate listing, or two SKUs the
+    vendor maps onto the same product. That is worth saying *before* a write,
+    because an edit addressed by that product id changes what both listings
+    show, and the panel's confirmation names one.
+    """
+    order, seen = [], {}
+    for item in list(items or []):
+        if not isinstance(item, dict):
+            continue
+        found = product_id(item)
+        if not found:
+            continue
+        key = str(found).strip()
+        if key not in seen:
+            seen[key] = []
+            order.append(key)
+        seen[key].append(str(item.get("name") or item.get("title")
+                             or item.get("sku") or "a listing"))
+    return [(key, seen[key]) for key in order if len(seen[key]) > 1]
+
+
+def shared_product_note(items, limit=3):
+    """One line naming the products two listings share, or "" when none do.
+
+    Not a refusal: the panel still edits, because one of the two listings is
+    usually the one the person means. But a write to a product both listings
+    show is a change to both, and that is not something a count of edits makes
+    visible.
+    """
+    shared = shared_product_ids(items)
+    if not shared:
+        return ""
+    said = "; ".join("product %s is claimed by %s" % (key, " and ".join(
+        repr(name) for name in names))
+        for key, names in shared[:limit])
+    more = len(shared) - limit
+    line = ("%d product id%s in that read %s claimed by more than one "
+            "listing: %s%s. An edit addressed by one of them changes what "
+            "every listing sharing it shows."
+            % (len(shared), "" if len(shared) == 1 else "s",
+               "is" if len(shared) == 1 else "are", said,
+               "; and %d more" % more if more > 0 else ""))
+    return line
+
+
+def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True):
+    """The whole sentence for a read nothing can be written from, or "".
+
+    Said once, where it can be read, instead of three paragraphs in three
+    places: what the reader did (a key holding 0, or no key at all), which
+    plugin version fixes it, and - for the console - what still works from
+    here. A read that can be written returns "" and says nothing.
+    """
+    rows = list(items or [])
+    if not rows or not nothing_editable(rows):
+        return ""
+    zeros, total = zero_product_id_counts(rows)
+    if zeros:
+        said = zero_product_id_note(zeros, total)
+    else:
+        said = ("No listing in that read carried a product id, so the edit "
+                "buttons cannot send anything: the plugin's reader is not "
+                "reporting one.")
+    parts = [said, needed_version_note(plugin, needed), identity_note(rows)]
+    if works:
+        parts.append("Searching, opening a listing and editing in the vendor "
+                     "dashboard all still work.")
+    return " ".join(part for part in parts if part)
 
 
 def nothing_editable(items):
@@ -487,7 +744,7 @@ def identified_by(entry):
     for key in ("id", "product_id", "productId", "listing_id", "listingId",
                 "post_id"):
         value = (entry or {}).get(key)
-        if value not in (None, ""):
+        if value not in (None, "") and (key == "id" or is_id(value)):
             parts.append("%s %s" % (key.replace("_", " "), value))
     sku = str((entry or {}).get("sku") or "").strip()
     if sku:

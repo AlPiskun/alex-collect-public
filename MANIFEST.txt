@@ -1,4 +1,4 @@
-Alex Collect 3.08 — public core package
+Alex Collect 3.18 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -34,7 +34,9 @@ app/:
                                    never twice (the CSV stays the record),
                                    four tries on a slow site before a card
                                    is given up on, and one card per SKU
-                                   rather than one SKU for two cards
+                                   rather than one SKU for two cards;
+                                   a product is only this card if year,
+                                   number, name and printing agree
   woo_orders.py                   turn a pasted card list into an order
   quote.py                        price a batch for a customer: the cards, the
                                    customer, the discount, the sums, the saved

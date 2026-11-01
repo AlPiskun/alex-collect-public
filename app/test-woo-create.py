@@ -1353,12 +1353,46 @@ def test_one_sku_per_card():
     check("and nothing is claimed about a title the site did not send",
           not woo_create.same_card("", "Card #1"), "")
 
+    #  The shop's title is written by whoever typed it into the shop: the team
+    #  may be there where the CSV's is not, and the wording may differ. What
+    #  cannot differ is which card it is.
+    check("a title with the team added is still the same card",
+          woo_create.same_card(dark, dark + " Los Angeles Kings"), "")
+    check("a title shortened the other way is the same card too",
+          woo_create.same_card(
+              "1973-74 O-Pee-Chee Neil Komadoski #16 Rookie Card Dark Back "
+              "Los Angeles Kings",
+              "1973-74 O-Pee-Chee Neil Komadoski #16 Dark Back"), "")
+    check("but the two printings of one card are never the same card",
+          not woo_create.same_card(dark, light), "")
+    check("and neither are two different cards that share a set",
+          not woo_create.same_card(
+              dark, "1973-74 O-Pee-Chee Terry Harper #80 Dark Back Los "
+                    "Angeles Kings"), "")
+    check("a title that says nothing about the card is not this card",
+          not woo_create.same_card(dark, "Hockey card for sale"), "")
+    check("'corrected' and 'uncorrected' are told apart",
+          not woo_create.same_card(
+              "1973-74 O-Pee-Chee Dennis Hextall #115 Corrected Bio",
+              "1973-74 O-Pee-Chee Dennis Hextall #115 Uncorrected Bio"), "")
+    check("and the words a reader uses are the pipeline's own",
+          woo_create.PRINTING_WORDS == tuple(
+              phrase for phrase, _token in pipeline.VARIETY_TOKENS), "")
+
     check("a card's older SKU is the one without the printing",
           woo_create.older_skus(light_sku) == [old_sku],
           str(woo_create.older_skus(light_sku)))
     check("a card with no printing in its SKU has no older one",
           woo_create.older_skus(old_sku) == [],
           str(woo_create.older_skus(old_sku)))
+    check("a card with two printings in its SKU loses both",
+          woo_create.older_skus("OPC1973-74-115-Hextall-EX-5-LB-CORR") ==
+          ["OPC1973-74-115-Hextall-EX-5"],
+          str(woo_create.older_skus("OPC1973-74-115-Hextall-EX-5-LB-CORR")))
+    check("a SKU that only looks like a token is left alone",
+          woo_create.older_skus("OPC1973-74-16-Komadoski-EX-5") == [] and
+          woo_create.older_skus("DK-1-DB") == ["DK-1"],
+          str(woo_create.older_skus("DK-1-DB")))
 
     # ---- the pipeline's two SKUs are two products
     tmp = tempfile.mkdtemp()
@@ -1373,6 +1407,19 @@ def test_one_sku_per_card():
     check("with the SKUs the CSV carries",
           sorted(entry["sku"] for entry in report["created"]) ==
           [dark_sku, light_sku], str(report["created"]))
+
+    # ---- two printings of a card, neither the back: still two products
+    corr = "1973-74 O-Pee-Chee Dennis Hextall #115 Corrected Bio"
+    uncorr = "1973-74 O-Pee-Chee Dennis Hextall #115 Uncorrected Bio"
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [
+        row(1, SKU="OPC1973-74-115-Hextall-EX-5-CORR", Name=corr),
+        row(2, SKU="OPC1973-74-115-Hextall-EX-5-UNCORR", Name=uncorr)])
+    site = FakeSite(categories=categories)
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    check("a corrected and an uncorrected card are two products",
+          len(report["created"]) == 2 and not report["failed"], str(report))
 
     # ---- a card created before the printing joined the SKU is still found
     tmp = tempfile.mkdtemp()

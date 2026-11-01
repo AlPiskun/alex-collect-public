@@ -22,9 +22,11 @@ a disagreement.
 
 import re
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 
 import woo_orders
+from plugin_manager import version_at_least
 
 #  Below this the two titles are not the same card. Higher than the order
 #  panel's search threshold on purpose: that list is a suggestion a person
@@ -950,6 +952,304 @@ def status_tally(items):
     return {spelled[key]: counts[key] for key in counts}
 
 
+#: The request a reader makes for ONE listing's own record. Since plugin
+#: 1.0.35 this is the step that resolves a missing product id, and a read of a
+#: whole shop makes one of them per listing - which is the step a run this was
+#: written for stopped on, after many minutes and after reading the catalogue.
+_DETAIL_REQUEST = re.compile(r"/api/data/product/[0-9A-Za-z_-]+")
+
+_SESSION_WORDS = re.compile(
+    r"\b(?:401|403)\b|unauthori|forbidden|not signed in|signed out|sign in|"
+    r"log in|login|session (?:expired|invalid)|cookie", re.IGNORECASE)
+_RATE_WORDS = re.compile(r"\b429\b|rate.?limit|too many requests",
+                         re.IGNORECASE)
+#: A whole-catalogue failure is not one listing's problem: the reader could not
+#: read the shop's own listing page, so nothing was read. Plugin 1.0.36 says so
+#: in exactly these words, and it must not read as "something unrecognised".
+_CATALOGUE_WORDS = re.compile(
+    r"catalogue (?:page|request|itself)|whole catalogue|"
+    r"could not read the catalogue|catalogue could not be read", re.IGNORECASE)
+
+_NETWORK_WORDS = re.compile(
+    r"urlerror|timed? ?out|timeout|connection (?:refused|reset|aborted)|"
+    r"getaddrinfo|name or service|temporary failure|network is unreachable|"
+    r"ssl|certificate", re.IGNORECASE)
+
+
+def _failure_line(text):
+    """The reader's own complaint: its ``!`` line, or the last line it printed."""
+    lines = [line.strip() for line in str(text or "").splitlines()
+             if line.strip()]
+    for line in lines:
+        if line.startswith("!"):
+            return line.lstrip("! ").strip()
+    for line in reversed(lines):
+        if re.search(r"fail|error|refus|could not|unable", line, re.IGNORECASE):
+            return line
+    return lines[-1] if lines else ""
+
+
+def read_failure(text, stopped=False):
+    """What a failed listing read was, in the reader's own words.
+
+    ``{"kind", "line", "advice"}``. The kind is the one thing worth acting on:
+    a read the person stopped (nothing to fix - it was working), a refused
+    session (paste a fresh cookie), a rate limit (wait), a catalogue that
+    could not be read at all, one listing's own detail lookup (the reader must
+    skip it and carry on), a connection that never answered (try again), or a
+    reader that printed nothing at all. Those are different jobs, and the runs
+    this was written for were told they were probably a stale cookie - once
+    while the reader had stopped on a single product lookup, and once while
+    the person had stopped it themselves and the reader had said nothing yet.
+    """
+    said = str(text or "")
+    line = _failure_line(said)
+    if stopped:
+        #  The person did it. Nothing is broken, and blaming the reader for a
+        #  run somebody chose to end is the same mistake in a new place.
+        advice = ["You stopped the read before it finished, so this run has no "
+                  "list: nothing was compared and nothing was changed."]
+        if line:
+            advice.append("The reader's last line before the stop was: %s"
+                          % line)
+        advice.append("A read of a whole shop can take several minutes, and "
+                      "the reader prints nothing until it is done - the list "
+                      "from an earlier read is still on disk if you would "
+                      "rather use it than wait.")
+        return {"kind": "stopped", "line": line, "advice": advice}
+    if not line:
+        #  Exit code but not one word: killed, or dead before it could say
+        #  why. "Its own line is above" was a lie when there was no line.
+        return {"kind": "silent", "line": "", "advice": [
+            "The reader ended without printing a single line, so there is no "
+            "error here to read: it was killed, or it died before it could "
+            "say why.",
+            "Reading again is worth one try. If it happens again, the command "
+            "shown above can be run by hand to see what it says."]}
+    flags = {
+        "session": bool(_SESSION_WORDS.search(line or said)),
+        "rate": bool(_RATE_WORDS.search(line or said)),
+        "catalogue": bool(_CATALOGUE_WORDS.search(line or said)),
+        "detail": bool(_DETAIL_REQUEST.search(line or said)),
+        "network": bool(_NETWORK_WORDS.search(line or said)),
+    }
+    kind = next((name for name in ("session", "rate", "catalogue", "detail",
+                                   "network") if flags[name]), "unknown")
+    advice = []
+    if flags["session"]:
+        advice.append("The session the reader was given was refused: "
+                      "CanadianShopper answered as if nobody were signed in. "
+                      "Paste a fresh CanadianShopper cookie in User Settings "
+                      "and read again.")
+    if flags["rate"]:
+        advice.append("The site answered with a rate limit rather than with an "
+                      "error: wait a few minutes and read again.")
+    if flags["catalogue"]:
+        advice.append("The reader could not read the catalogue itself - the "
+                      "shop's own listing page - so nothing was read at all. "
+                      "That is the site, not one bad listing and not the "
+                      "cookie: read again in a minute, and if it keeps "
+                      "happening the vendor site is down or refusing this "
+                      "machine.")
+    if flags["detail"]:
+        advice.append("The read stopped inside ONE listing's own detail lookup "
+                      "(%s), not on the catalogue - the listings before it "
+                      "were read, so the cookie was working."
+                      % _DETAIL_REQUEST.search(line or said).group(0))
+        advice.append("A read of a whole shop makes one of those requests per "
+                      "listing, and one of them failing must not lose the "
+                      "rest: the reader should leave that listing without a "
+                      "product id and carry on, not stop the run.")
+    if flags["network"]:
+        advice.append("The request never got an answer - a connection error, "
+                      "not a refusal - so the site stopped responding or this "
+                      "machine lost its connection.")
+    if not advice:
+        advice.append("The reader stopped without saying anything this app "
+                      "recognises; its own line is above.")
+    return {"kind": kind, "line": line, "advice": advice}
+
+
+#: The plugin version that leaves a listing without a product id when its own
+#: detail lookup fails, instead of ending the whole read. Before it, one bad
+#: request per listing could cost a read that had taken minutes.
+LOOKUP_SURVIVED_VERSION = "1.0.36"
+
+_LOOKUPS_FAILED = re.compile(r"(\d+)\s+lookups?\s+failed", re.IGNORECASE)
+
+
+def failed_lookups(text):
+    """How many detail lookups the reader says failed, or 0 when it says none.
+
+    Plugin 1.0.36 finishes such a read and adds its own line -
+    ``Stock read: 2587 listings, 2581 with a real product id, 6 lookups
+    failed`` - so the count is the reader's, not one this app works out for
+    itself. A reader that says nothing gets nothing.
+    """
+    found = _LOOKUPS_FAILED.findall(str(text or ""))
+    return int(found[-1]) if found else 0
+
+
+def lookup_note(count, total=0, panel="compare"):
+    """What a read that survived some failed lookups still means.
+
+    Those listings are real and were read like any other: they simply have no
+    product id. In the comparison that costs nothing - a count is written to a
+    listing, matched by id, then SKU, then title - but the editing panel
+    addresses a listing by its product id, so those rows cannot be edited
+    there until a later read resolves them.
+    """
+    count = int(count or 0)
+    if count <= 0:
+        return ""
+    if count == 1:
+        head = ("1 listing was left without a product id because its own "
+                "detail lookup failed")
+        subject, verb = "It", "was"
+    else:
+        of = " of the %d" % int(total) if total else ""
+        head = ("%d%s listings were left without a product id because their "
+                "own detail lookup failed" % (count, of))
+        subject, verb = "They", "were"
+    if panel == "edit":
+        return head + (". %s cannot be edited here, which addresses a listing "
+                       "by its product id; reading again may resolve %s. "
+                       "Everything else in the list can."
+                       % (subject, "it" if count == 1 else "them"))
+    return head + (". %s %s read and compared like every other listing, and a "
+                   "count written to one is matched by its SKU or title "
+                   "instead of its product id." % (subject, verb))
+
+
+def stopped_read_note(plugin="", needed=LOOKUP_SURVIVED_VERSION):
+    """Which plugin version carries on past a failed lookup, given what is installed.
+
+    The same three situations as a read with no product ids, for the same
+    reason: an older plugin (the fix is one update), a plugin new enough to
+    survive this (then a stopped read is a defect worth reporting), and a
+    version nobody could read (name the version and claim nothing).
+    """
+    needed = str(needed or "").strip()
+    plugin = str(plugin or "").strip()
+    if not needed:
+        return ""
+    if not plugin:
+        return ("Plugin %s or newer leaves that listing without a product id "
+                "and carries on." % needed)
+    if version_at_least(plugin, needed):
+        return ("The read was done by plugin %s, which does carry on past a "
+                "failed lookup, so a read that stopped on one is a defect in "
+                "the reader - worth reporting with its own console line."
+                % plugin)
+    return ("The read was done by plugin %s, and %s or newer is the version "
+            "that leaves a failed lookup's listing without a product id and "
+            "carries on - so updating the plugin is the fix."
+            % (plugin, needed))
+
+
+def older_plugin_note(plugin="", needed=LOOKUP_SURVIVED_VERSION):
+    """Name a plugin older than the one that survives a failed lookup.
+
+    For the failures that never got a line of their own - a silent death or a
+    read stopped by hand - there is nothing to classify, but there is still a
+    fact worth saying: which plugin was running, and whether it is the one
+    known to end a read on a single bad request. It never claims that is what
+    happened; it says which version it was and which version carries on.
+    """
+    plugin = str(plugin or "").strip()
+    needed = str(needed or "").strip()
+    if not plugin or not needed or version_at_least(plugin, needed):
+        return ""
+    return ("This read used plugin %s. %s or newer is the version that leaves "
+            "a listing whose own detail lookup fails without a product id and "
+            "carries on, instead of ending the read." % (plugin, needed))
+
+
+def before_read_note(plugin="", needed=LOOKUP_SURVIVED_VERSION):
+    """One line before a whole-shop read, when the plugin is the fragile one.
+
+    Said before the minutes are spent, not after: with an older plugin a single
+    failed detail lookup can end a read that has already taken most of an hour,
+    and the person deserves to know that while they can still do something
+    about it - install the version that carries on. Nothing is blocked and
+    nothing is judged; a plugin new enough says nothing at all.
+    """
+    plugin = str(plugin or "").strip()
+    needed = str(needed or "").strip()
+    if not plugin or not needed or version_at_least(plugin, needed):
+        return ""
+    return ("Reading with plugin %s: one listing's own detail lookup failing "
+            "can end this whole read. %s or newer carries on past it."
+            % (plugin, needed))
+
+
+def describe_age(seconds):
+    """How old a saved read is, in words a person uses."""
+    minutes = int(max(0.0, float(seconds or 0)) // 60)
+    if minutes < 2:
+        return "just now"
+    if minutes < 60:
+        return "%d minutes old" % minutes
+    hours = minutes // 60
+    if hours < 24:
+        return "%d hour%s old" % (hours, "" if hours == 1 else "s")
+    days = hours // 24
+    return "%d day%s old" % (days, "" if days == 1 else "s")
+
+
+def written_since(path, started):
+    """Whether ``path`` was written by a run that started at ``started``.
+
+    Two seconds of slack, because a file written in the same second a run began
+    is this run's answer and a clock that rounds must not say otherwise.
+    """
+    if started is None:
+        return True
+    try:
+        written = Path(path).stat().st_mtime
+    except OSError:
+        return False
+    return written >= float(started) - 2.0
+
+
+def previous_read(path, started=None, now=None):
+    """The list an earlier read left on disk, when this run did not replace it.
+
+    ``None`` unless there is a readable list that this run did not write - so a
+    comparison can offer the list from before rather than nothing at all, and
+    can never mistake a stale file for the fresh one it asked for.
+    """
+    path = Path(path)
+    items = read_stock_file(path)
+    if items is None:
+        return None
+    if started is not None and written_since(path, started):
+        return None                      # this run wrote it: not a last read
+    try:
+        written = path.stat().st_mtime
+    except OSError:
+        return None
+    when = datetime.fromtimestamp(written)
+    if now is None:
+        now = datetime.now()
+    elif not isinstance(now, datetime):
+        now = datetime.fromtimestamp(float(now))
+    seconds = max(0.0, (now - when).total_seconds())
+    return {"items": items, "when": when, "seconds": seconds,
+            "age": describe_age(seconds),
+            "stamp": when.strftime("%Y-%m-%d %H:%M")}
+
+
+def stale_note(previous, label="CanadianShopper"):
+    """The sentence that must travel with a comparison built from an old read."""
+    if not previous:
+        return ""
+    return ("This comparison uses the %s list read on %s (%s), not a fresh "
+            "read: a count may have moved since, and a card listed or "
+            "delisted since is not in it."
+            % (label, previous["stamp"], previous["age"]))
+
+
 def tally_line(items):
     """One sentence saying what states the reader reported."""
     tally = status_tally(items)
@@ -1108,6 +1408,44 @@ def _first(entry, *keys):
     return ""
 
 
+def id_key(value):
+    """One identifier as the string another identifier is compared with.
+
+    The same id arrives spelled differently depending on who is holding it: a
+    reader that reports ``"product_id": "4321"`` (plugin 1.0.35 does, because a
+    JSON number and a string are different things in some vendor APIs), a
+    result file that answers with the number ``4321``, a form that padded it
+    with a space, and a source that wrote it as ``4321.0``. They are one id, and
+    comparing them as raw strings is how a write that happened is reported as
+    *unknown* - the panel then leaves the row on the screen and the person
+    writes it a second time.
+
+    Only a plain whole number is folded: an opaque id such as
+    ``14effcaceb8a4b66`` is kept exactly as it was given, case and all, because
+    nothing here knows whether a vendor's ids are case-sensitive. So is a
+    number-shaped code with a leading zero (``"0012"``): it may be somebody's
+    own identifier, and two different listings are worse than one *unknown*.
+    """
+    if value is None or isinstance(value, (dict, list, tuple, bool)):
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    try:
+        number = float(text)
+    except ValueError:
+        return text
+    if number != number or number in (float("inf"), float("-inf")):
+        return text
+    if number != int(number):
+        return text
+    whole = str(int(number))
+    #  "0012" is somebody's code, not twelve; a negative id is not an id.
+    if text.lstrip("-").startswith("0") and len(text.lstrip("-")) > 1:
+        return text
+    return whole
+
+
 def _matches(row, entry):
     """Whether a result entry is about this plan row.
 
@@ -1118,20 +1456,20 @@ def _matches(row, entry):
     title are the fallback only when one side has no id at all, which is what a
     plugin that does not report ids, or a plan built without them, looks like.
     """
-    entry_id = str(_first(entry, "id", "product_id", "listing_id",
-                          "productId", "listingId") or "")
+    entry_id = id_key(_first(entry, "id", "product_id", "listing_id",
+                             "productId", "listingId"))
     #  Every id the row carries counts, not only the one it is listed under:
     #  a writer that answers with the product id of a listing it knows by its
     #  page id has still written *that* listing, and calling it unknown would
     #  report a change that happened as a change that did not.
-    row_ids = {str(row.get("id") or "")}
-    row_ids |= {str(value) for value in (row.get("ids") or {}).values()}
+    row_ids = {id_key(row.get("id"))}
+    row_ids |= {id_key(value) for value in (row.get("ids") or {}).values()}
     #  A plan carries those ids at its top level (``product_id`` beside ``id``)
     #  because that is what the writer is handed, so both shapes are read.
     for key, value in (row or {}).items():
         if _bare_name(key) in _ID_NAME_SHAPES and not isinstance(
                 value, (dict, list, tuple)):
-            row_ids.add(str(value or ""))
+            row_ids.add(id_key(value))
     row_ids.discard("")
     if entry_id and row_ids:
         return entry_id in row_ids
