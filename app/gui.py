@@ -73,7 +73,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.18"
+VERSION = "3.19"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -931,14 +931,29 @@ class Runner:
             return
         quiet = self._quiet_watch and len(self.output) == self._quiet_watch[0]
         if quiet:
+            waiting = bool(getattr(self.app, "_saw_dangling_prompt", False))
             try:
-                self.app.console_line(
-                    "Still running: %s - %s so far%s." %
-                    (self.title, elapsed_text(time.time() - self.started_at),
-                     ", and nothing has been printed since it started"
-                     if not self.output.strip() else
-                     ", and nothing has been printed since the last line"),
-                    "dim")
+                if waiting:
+                    #  The tool is not thinking, it is asking - and the answer
+                    #  box is the only thing standing in the way. Saying
+                    #  "nothing has been printed" over a question somebody has
+                    #  not answered reads as a hang, which is exactly what a
+                    #  run in a real batch did for eleven minutes.
+                    self.app.console_line(
+                        "Waiting for your answer: %s - %s so far, and the tool "
+                        "is holding at a question (type the answer below and "
+                        "press Send)." %
+                        (self.title,
+                         elapsed_text(time.time() - self.started_at)), "warn")
+                else:
+                    self.app.console_line(
+                        "Still running: %s - %s so far%s." %
+                        (self.title,
+                         elapsed_text(time.time() - self.started_at),
+                         ", and nothing has been printed since it started"
+                         if not self.output.strip() else
+                         ", and nothing has been printed since the last line"),
+                        "dim")
             except Exception:
                 pass
         self._quiet_note_index += 1
@@ -1927,6 +1942,7 @@ TOOLTIPS = {
     "Sort by:": "Re-read the list below in this order; nothing is compared or written again",
     "Compare this card": "Open the stock panel pointed at the one card this sale is about",
     "Compare the whole catalogue instead": "Drop the one-card filter and compare everything",
+    "Check the website's SKUs": "Read every product on the website and name the ones whose SKU does not say which printing the title is - the products that keep a card of the same name from being created; nothing is changed until the fixes are shown and agreed to",
     "Compare the last read instead (no new read)": "Compare now against the CanadianShopper list already on disk from an earlier read - it is named with its age wherever its counts appear, so nothing is mistaken for a fresh count, and no read is started",
     "Compare stock with eBay": "Read your eBay active listings with your session cookie and list only the cards whose numbers disagree",
     "Compare stock with Facebook": "Read your Facebook selling page with your session cookie and list only the cards whose numbers disagree",
@@ -4586,6 +4602,125 @@ def build_pipeline(parent, app):
 
     ttk.Button(box, text="Run the card pipeline", style="Task.TButton",
                command=run_pipeline).pack(anchor="w", pady=4)
+
+    #  A product made before the printing joined its SKU holds the SKU of the
+    #  card sold without that printing, and the website allows one product per
+    #  SKU - so the other card can never be created. This finds them all, and
+    #  changes nothing until the fixes have been shown and agreed to.
+    sku_state = {"found": []}
+
+    def check_skus():
+        site, key, secret = read_woo_credentials(BASE / "woo-keys.txt")
+        if not (site and key and secret):
+            messagebox.showinfo(
+                "Check the website's SKUs",
+                "This reads your website's products, so it needs the "
+                "WooCommerce keys in woo-keys.txt (lines 1-3).")
+            app.console_line("No WooCommerce keys saved, so the website's "
+                             "SKUs cannot be read.", "dim")
+            return
+        app.console_line("Reading every product on %s to check its SKU..."
+                         % site, "cmd")
+
+        def reading():
+            return woo_create.read_all_products(site, key, secret)
+
+        def read(products, error):
+            if error is not None:
+                message = getattr(error, "message", str(error))
+                app.console_line("Could not read the website's products: %s"
+                                 % message, "err")
+                return
+            found = woo_create.stale_printing_skus(products)
+            sku_state["found"] = found
+            if not found:
+                app.console_line(
+                    "Every one of the %d products on the website has a SKU "
+                    "that names its printing." % len(products), "ok")
+                return
+            app.console_line(
+                "%d of %d products have a title that names a printing their "
+                "SKU does not, so the same card without that printing cannot "
+                "be created until they are fixed:"
+                % (len(found), len(products)), "warn")
+            for entry in found[:20]:
+                app.console_line(
+                    "  %s  ->  %s   %s" % (entry["sku"], entry["should_be"],
+                                           entry["name"]), "dim")
+            if len(found) > 20:
+                app.console_line("  ... and %d more." % (len(found) - 20),
+                                 "dim")
+            report = BASE / ("sku-audit-%s.csv" % datetime.now().strftime(
+                "%Y%m%d-%H%M"))
+            try:
+                report.write_text(
+                    "\n".join(["id,title,current SKU,SKU it should have"] +
+                               ['%s,"%s","%s","%s"' % (
+                                   entry["id"],
+                                   str(entry["name"]).replace('"', "'"),
+                                   entry["sku"], entry["should_be"])
+                                for entry in found]),
+                    encoding="utf-8")
+                app.console_line("Written: %s" % report, "dim")
+            except OSError as exc:
+                app.console_line("Could not write the list: %s" % exc, "dim")
+            body = "\n".join("%s  ->  %s\n      %s" % (
+                entry["sku"], entry["should_be"], entry["name"])
+                for entry in found[:10])
+            if len(found) > 10:
+                body += "\n... and %d more (see the console)." % (
+                    len(found) - 10)
+            if not messagebox.askyesno(
+                    "Give these products the SKU their printing calls for?",
+                    "%d product%s on your website: the title names a printing "
+                    "their SKU does not, so the otherwise identical card "
+                    "cannot be created - the website holds one product per "
+                    "SKU.\n\n%s\n\nOnly the SKU field of each product is "
+                    "changed: title, price, stock, photos and state are "
+                    "untouched, and nothing is added or removed."
+                    % (len(found), "" if len(found) == 1 else "s", body),
+                    parent=box.winfo_toplevel()):
+                app.console_line("The SKUs were left as they are.", "dim")
+                return
+
+            def fixing():
+                changed, refused = [], []
+                for entry in found:
+                    try:
+                        woo_create.set_sku(site, key, secret, entry["id"],
+                                           entry["should_be"])
+                    except Exception as exc:
+                        refused.append((entry,
+                                        getattr(exc, "message", str(exc))))
+                        continue
+                    changed.append(entry)
+                return changed, refused
+
+            def fixed(result, error):
+                if error is not None:
+                    app.console_line("The SKU fix stopped: %s" % error, "err")
+                    return
+                changed, refused = result
+                app.console_line("%d SKU%s changed; the website's answer was "
+                                 "read back for each." %
+                                 (len(changed), "" if len(changed) == 1
+                                  else "s"), "ok")
+                for entry, why in refused:
+                    app.console_line("  %s was not changed: %s"
+                                     % (entry["sku"], why), "err")
+                if changed:
+                    app.console_line(
+                        "Run the batch again and the cards those SKUs were "
+                        "holding back are created.", "dim")
+
+            in_background(app, fixing, fixed)
+
+        in_background(app, reading, read)
+
+    row_sku = ttk.Frame(box)
+    row_sku.pack(anchor="w", pady=(2, 0))
+    ttk.Button(row_sku, text="Check the website's SKUs",
+               command=check_skus).pack(side="left")
     if app.cs_addon:
         ttk.Label(box, text="CanadianShopper drafts", style="H2.TLabel").pack(
             anchor="w", pady=(6, 1))

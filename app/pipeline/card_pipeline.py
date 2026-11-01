@@ -2167,6 +2167,23 @@ def creation_failure_note(report):
                      % (len(waiting), total, "" if total == 1 else "s",
                         "was" if len(waiting) == 1 else "were",
                         "it" if len(waiting) == 1 else "them"))
+    #  A card blocked by a SKU another product holds is not finished by
+    #  running the batch again - it fails identically until that SKU is fixed -
+    #  so the line must not promise otherwise. Everything else (a site that
+    #  was slow, a photo that did not land) genuinely is.
+    blocked = [entry for entry in failed
+               if str(entry.get("state") or "") in ("sku-clash",
+                                                   "sku-clash-printing")]
+    if blocked and len(blocked) == len(failed):
+        return ("WooCommerce (%s - fix the SKU named above on the website, "
+                "then run the batch again)" % "; ".join(parts))
+    if blocked:
+        return ("WooCommerce (%s - the SKU-blocked card%s %s before a re-run "
+                "can create %s)"
+                % ("; ".join(parts), "" if len(blocked) == 1 else "s",
+                   "needs that SKU fixed" if len(blocked) == 1
+                   else "need those SKUs fixed",
+                   "it" if len(blocked) == 1 else "them"))
     return ("WooCommerce (%s - run the batch again to finish %s)"
             % ("; ".join(parts),
                "it" if len(failed) == 1 else "them"))

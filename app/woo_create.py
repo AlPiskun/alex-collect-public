@@ -39,7 +39,7 @@ import woo_media
 
 PRODUCTS_PATH = "/wp-json/wc/v3/products"
 CATEGORIES_PATH = "/wp-json/wc/v3/products/categories"
-USER_AGENT = "AlexCollect/3.18"
+USER_AGENT = "AlexCollect/3.19"
 
 #  A read is safe to repeat, so a site answering with its own error page gets
 #  asked again before a card is called missing: two of the three failures in
@@ -501,6 +501,203 @@ VARIETY_TOKENS = ("DB", "LB", "WB", "GB", "UNCORR", "CORR")
 #: SKU is only this card if it agrees about what it was printed as.
 PRINTING_WORDS = ("dark back", "light back", "white back", "grey back",
                   "gray back", "uncorrected", "corrected")
+
+
+#: The token the app writes for each printing, in the order card_pipeline
+#: joins them. Two spellings of grey share one token, as they must: a SKU
+#: cannot say which spelling the title used.
+PRINTING_TOKENS = (("dark back", "DB"), ("light back", "LB"),
+                   ("white back", "WB"), ("grey back", "GB"),
+                   ("gray back", "GB"), ("uncorrected", "UNCORR"),
+                   ("corrected", "CORR"))
+
+
+def strip_printing(title):
+    """A title with its printing words taken out.
+
+    What is left names the card and nothing about how it was printed, so two
+    titles that agree on it are one card in two printings.
+    """
+    text = " %s " % re.sub(r"\s+", " ", str(title or ""))
+    for phrase, _token in PRINTING_TOKENS:
+        text = re.sub(r"(?i)\s+%s\s+" % re.escape(phrase), " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def printing_tokens(title):
+    """The tokens a title's printing words call for, in the app's own order."""
+    words = printing_words(title)
+    order = []
+    for phrase, token in PRINTING_TOKENS:
+        if phrase in words and token not in order:
+            order.append(token)
+    return order
+
+
+def sku_tokens(sku):
+    """The printing tokens a SKU already ends with."""
+    parts = [part for part in str(sku or "").strip().split("-") if part]
+    tokens = []
+    while parts and parts[-1].upper() in VARIETY_TOKENS:
+        tokens.insert(0, parts.pop().upper())
+    return tokens
+
+
+def sku_with_printing(sku, title):
+    """The SKU this title's printing calls for, given the SKU it has now.
+
+    Only ever *adds* the tokens a title names and the SKU is missing: a SKU
+    that already says ``-DB`` is left exactly as it is, and one whose tokens
+    disagree with its title is corrected to the title's own, because the title
+    is what a person reads.
+    """
+    sku = str(sku or "").strip()
+    if not sku:
+        return ""
+    parts = sku.split("-")
+    base = list(parts)
+    while base and base[-1].upper() in VARIETY_TOKENS:
+        base.pop()
+    wanted = printing_tokens(title)
+    if not wanted:
+        return sku
+    if [part.upper() for part in parts[len(base):]] == wanted:
+        return sku
+    return "-".join(base + wanted)
+
+
+def stale_printing_skus(products):
+    """Products whose title names a printing their SKU does not carry.
+
+    The website holds one product per SKU, so a product created before the
+    printing joined the SKU can hold the plain SKU of a card that is also sold
+    without that printing - and then the other one cannot be created at all.
+    Read-only: nothing here changes a product, it only names the ones whose
+    SKU would be written differently today.
+    """
+    found = []
+    for product in products or []:
+        if not isinstance(product, dict):
+            continue
+        name = str(product.get("name") or "").strip()
+        sku = str(product.get("sku") or "").strip()
+        if not name or not sku:
+            continue
+        wanted = sku_with_printing(sku, name)
+        if wanted and wanted != sku:
+            found.append({"id": product.get("id"), "name": name, "sku": sku,
+                          "should_be": wanted,
+                          "printing": ", ".join(printing_tokens(name)),
+                          "status": product.get("status") or ""})
+    return found
+
+
+def read_all_products(site, key, secret, timeout=60, opener=None,
+                      per_page=100, limit=40):
+    """Every product the shop has, a page at a time.
+
+    ``status=any`` on purpose: a stale SKU on a draft blocks a creation just
+    as surely as one on a published product, and a draft is exactly where an
+    older batch's leftovers live.
+    """
+    rows = []
+    for page in range(1, int(limit) + 1):
+        url = api_url(site, PRODUCTS_PATH, key, secret,
+                      {"per_page": int(per_page), "page": page,
+                       "status": "any"})
+        if not url:
+            raise ProductError("No website address or keys are available.")
+        status, payload = _send(url, "GET", None, timeout, opener)
+        if status in (401, 403) or status != 200:
+            raise _explain(status, payload, "read the product list")
+        page_rows = payload if isinstance(payload, list) else []
+        rows.extend(row for row in page_rows if isinstance(row, dict))
+        if len(page_rows) < int(per_page):
+            break
+    return rows
+
+
+def set_sku(site, key, secret, product_id, sku, timeout=60, opener=None):
+    """Give one product a SKU, and read it back.
+
+    One field, one product. The answer is read back because a 200 that quietly
+    kept the old SKU would leave the collision exactly where it was.
+    """
+    product_id = str(product_id or "").strip()
+    sku = str(sku or "").strip()
+    if not product_id or not sku:
+        raise ProductError("No product or SKU to set.")
+    url = api_url(site, "%s/%s" % (PRODUCTS_PATH, product_id), key, secret)
+    if not url:
+        raise ProductError("No website address or keys are available.")
+    status, payload = _send(url, "PUT", {"sku": sku}, timeout, opener)
+    if status in (401, 403) or status >= 400:
+        raise _explain(status, payload, "change a product's SKU")
+    answer = payload if isinstance(payload, dict) else {}
+    got = str(answer.get("sku") or "").strip()
+    if got and got != sku:
+        raise ProductError(
+            "The website answered but still shows the SKU %r, so nothing was "
+            "changed." % got,
+            hint="Another product may hold that SKU already.")
+    return answer
+
+
+def sku_clash(item_name, item_sku, site_name, site_sku="", site_id=None):
+    """What it means when this card's SKU is already another product's.
+
+    Two very different situations, and one of them is not the card's fault:
+    the blocking product can be the *same card in another printing* - the dark
+    back of the card sold without it - holding a SKU written before the
+    printing joined the SKU. Then the blocking product is the one whose SKU is
+    out of date, and no amount of running the batch again will create this
+    card.
+    """
+    item_name = str(item_name or "").strip()
+    site_name = str(site_name or "").strip()
+    site_sku = str(site_sku or "").strip()
+    same = bool(site_name) and same_card(strip_printing(site_name),
+                                         strip_printing(item_name))
+    mine = printing_tokens(item_name)
+    theirs = printing_tokens(site_name)
+    should_be = sku_with_printing(site_sku, site_name)
+    if same and theirs and theirs != mine and should_be != site_sku:
+        words = []
+        for phrase, token in PRINTING_TOKENS:
+            if token in theirs and phrase not in words:
+                words.append(phrase)
+        said = " and ".join(words)
+        had = sku_tokens(site_sku)
+        what = ("says %s but its title says %s" % ("/".join(had), said)
+                if had else "does not say %s" % said)
+        return {
+            "state": "sku-clash-printing",
+            "why": ("The SKU %s is held by %r - the same card, but the %s "
+                    "printing of it - and that product's SKU %s."
+                    % (item_sku, site_name, said, what)),
+            "hint": ("The website holds one product per SKU and this card has "
+                     "no printing in its title, so the plain SKU is the one it "
+                     "needs. Give that product the SKU its own title calls "
+                     "for - %s - then run this batch again and this card is "
+                     "created under the plain one. Running it again without "
+                     "that change fails the same way. Every other product in "
+                     "the shop with the same problem can be found at once "
+                     "with \"Check the website's SKUs\" on the pipeline "
+                     "panel." % should_be),
+            "fix": {"id": site_id, "name": site_name, "sku": site_sku,
+                    "should_be": should_be},
+        }
+    return {
+        "state": "sku-clash",
+        "why": ("The SKU %s is already used on the website by a product "
+                "called %r, which is not this card's title, so this card was "
+                "not created." % (item_sku, site_name)),
+        "hint": ("A website holds one product per SKU. If that product is a "
+                 "different card, give this card a SKU of its own in the SKU "
+                 "column of the CSV and run the creation again; if it is this "
+                 "card under another title, nothing needs doing."),
+        "fix": None,
+    }
 
 
 def older_skus(sku):
@@ -997,25 +1194,59 @@ def run(plan_result, site, key, secret, username="", app_password="",
                         existing, older = found, written_before
                         break
             site_name = str((existing or {}).get("name") or "").strip()
+            if existing is not None and older and not same_card(site_name,
+                                                                item["name"]):
+                #  Found under the SKU this card had before its printing
+                #  joined it, and that product is a DIFFERENT printing - so
+                #  the product is the other card, it holds its own SKU, and
+                #  this card's SKU is free. Refusing here is how a dark back
+                #  silently kept the plain card from ever being created.
+                existing = None
+                site_name = ""
+            if existing is not None and site_name \
+                    and not same_card(site_name, item["name"]) \
+                    and same_card(strip_printing(site_name),
+                                  strip_printing(item["name"])):
+                #  The same card in another printing, holding this card's
+                #  plain SKU. If *this* card is the printed one, its SKU is
+                #  the one that is short a token - so it is given the SKU its
+                #  own title calls for, and created under that. A SKU is not
+                #  a place to lose a card.
+                corrected = sku_with_printing(item["sku"], item["name"])
+                if printing_tokens(item["name"]) and corrected != item["sku"]:
+                    taken = find_by_sku(site, key, secret, corrected,
+                                        timeout=timeout, opener=opener)
+                    if taken is None:
+                        original = item["sku"]
+                        item = dict(item, sku=corrected)
+                        entry.update({"sku": corrected,
+                                      "corrected_from": original})
+                        existing, site_name = None, ""
             if existing is not None and site_name and not same_card(site_name,
                                                                     item["name"]):
                 #  Two cards were given one SKU. The website can only hold one
                 #  product per SKU, so this card cannot be created under it -
                 #  and calling the other card "already there" is how a card
                 #  that is missing looks like a card that was done.
+                #  Two cards were given one SKU, and only one of those
+                #  situations is the card's own fault: the blocking product
+                #  can be the same card in another printing, holding a SKU
+                #  written before the printing joined it. That one is
+                #  diagnosed rather than guessed at, because "give this card a
+                #  SKU of its own" is wrong when the other product is the one
+                #  whose SKU is out of date.
+                clash = sku_clash(item["name"], item["sku"], site_name,
+                                  str(existing.get("sku") or ""),
+                                  existing.get("id"))
                 entry.update({
                     "id": existing.get("id"),
-                    "why": ("The SKU %s is already used on the website by a "
-                            "product called %r, which is not this card's "
-                            "title, so this card was not created."
-                            % (item["sku"], site_name)),
-                    "hint": ("A website holds one product per SKU. If that "
-                             "product is a different card, give this card a "
-                             "SKU of its own in the SKU column of the CSV and "
-                             "run the creation again; if it is this card "
-                             "under another title, nothing needs doing."),
+                    "why": clash["why"] + " This card was not created.",
+                    "hint": clash["hint"],
                     "status": existing.get("status") or "",
-                    "state": "sku-clash"})
+                    "state": clash["state"]})
+                if clash.get("fix"):
+                    entry["fix"] = dict(clash["fix"])
+                    entry["fix"]["name"] = site_name
                 failed.append(entry)
                 streak[0] = 0
                 continue
@@ -1286,6 +1517,13 @@ def report_text(report, site=""):
     return lines
 
 
+#: Failures a second run cannot fix on its own: the SKU the card needs is
+#: held by another product, and the website holds one product per SKU. Running
+#: the batch again is the right advice for a site that was slow and the wrong
+#: advice for these - the card would fail identically, forever.
+SKU_BLOCKED_STATES = ("sku-clash", "sku-clash-printing")
+
+
 def recovery_text(report):
     """What to do next, said once, without inviting a second copy.
 
@@ -1312,12 +1550,40 @@ def recovery_text(report):
                      "%s publishing."
                      % (len(waiting), "is" if len(waiting) == 1 else "are",
                         "needs" if len(waiting) == 1 else "need"))
-    if on_site:
+    blocked = [entry for entry in failed
+               if str(entry.get("state") or "") in SKU_BLOCKED_STATES]
+    retryable = [entry for entry in failed if entry not in blocked]
+    if blocked:
+        #  Said plainly, because the alternative is what a real run did: tell
+        #  somebody to run the batch again and watch the same card fail the
+        #  same way, with no hint that the SKU is the thing standing in the
+        #  way.
+        names = ", ".join("%r" % entry.get("name") for entry in blocked[:3])
+        if len(blocked) > 3:
+            names += " and %d more" % (len(blocked) - 3)
+        if len(blocked) == 1:
+            lines.append(
+                "That card cannot be created by running this again: the SKU "
+                "it needs is held by another product. Fix that product's SKU "
+                "on the website as the reason above says, then run the batch "
+                "again and the card is created.")
+        else:
+            lines.append(
+                "Those %d cards cannot be created by running this again: the "
+                "SKUs they need are held by other products. Fix those "
+                "products' SKUs on the website as the reasons above say, then "
+                "run the batch again and the cards are created."
+                % len(blocked))
+        lines.append("The card%s: %s." % ("" if len(blocked) == 1 else "s",
+                                          names))
+    if on_site and retryable:
         lines.append("Run the same batch again once the website is "
                      "answering: it finds every card by its SKU first, "
                      "publishes the drafts whose photos landed, and creates "
                      "only the ones that are missing. Nothing is created "
                      "twice, so do not import the CSV as well.")
+    elif on_site and not retryable:
+        lines.append("Everything else in this batch is on the website.")
     else:
         lines.append("Nothing was written to the website, so the CSV is "
                      "unchanged and can still be imported the old way - or "
