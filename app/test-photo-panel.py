@@ -274,6 +274,17 @@ def install_tk():
                  "Scrollbar", "Combobox",
                  "Treeview", "Separator", "Progressbar"):
         setattr(ttk, name, widget_class(name))
+    #  A progress bar is asked to sweep and to stop sweeping; the real one
+    #  has start/stop and so must the stand-in, or a panel that sweeps an
+    #  unknown page count would look like one that draws nothing at all.
+    class FakeProgressbar(widget_class("Progressbar")):
+        def start(self, interval=None):
+            self._kw["sweeping"] = True
+
+        def stop(self):
+            self._kw["sweeping"] = False
+
+    ttk.Progressbar = FakeProgressbar
     ttk.Radiobutton = radio_class()
     ttk.Checkbutton = check_class()
     ttk.Style = lambda *a, **k: types.SimpleNamespace(

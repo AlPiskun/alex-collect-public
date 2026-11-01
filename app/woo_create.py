@@ -392,10 +392,23 @@ def _try_again(attempt, attempts, on_retry=None, why=""):
     return True
 
 
-def _http(request, timeout, opener=None):
+def _http(request, timeout, opener=None, headers_out=None):
+    """One request, and the answer's body.
+
+    ``headers_out`` is filled with the response's headers when the caller
+    asked for them - WooCommerce states its page count there, which is what
+    turns a sweeping progress bar into a fraction. An injected ``opener``
+    (the checks use one) gives no headers unless it wants to, so this stays a
+    two-argument call for every opener written before it existed.
+    """
     if opener is None:
         def opener(req, timeout):
             with urllib.request.urlopen(req, timeout=timeout) as response:
+                if headers_out is not None:
+                    try:
+                        headers_out.update(dict(response.headers))
+                    except Exception:
+                        pass          # a bar that cannot be drawn is no read
                 return response.status, response.read()
     try:
         return opener(request, timeout)
@@ -460,13 +473,17 @@ def _explain(status, payload, what):
         ("WordPress said: %s" % said) if said else "", status)
 
 
-def _send(url, method, payload=None, timeout=60, opener=None):
+def _send(url, method, payload=None, timeout=60, opener=None,
+          headers_out=None):
     """One call to the site, and a second try when a read came back broken.
 
     Only a GET is repeated: asking for a product list twice cannot change
     anything, while a POST that answered with a fatal error may already have
     been written - that one is settled by looking the SKU up afterwards, in
     ``create_product``, not by sending it again.
+
+    ``headers_out`` is optional and holds the last answer's headers, for the
+    one caller that draws a progress bar from the site's page count.
     """
     data = None
     headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
@@ -477,7 +494,7 @@ def _send(url, method, payload=None, timeout=60, opener=None):
     for attempt in range(max(1, attempts)):
         request = urllib.request.Request(url, data=data, method=method,
                                          headers=headers)
-        status, raw = _http(request, timeout, opener)
+        status, raw = _http(request, timeout, opener, headers_out)
         if not 500 <= status < 600 or attempt == attempts - 1:
             return status, _json(raw)
         if SITE_RETRY_PAUSE:
@@ -592,26 +609,52 @@ def stale_printing_skus(products):
     return found
 
 
+def _total_pages(headers):
+    """The page count WooCommerce states in its own headers, or ``None``."""
+    for key, value in (headers or {}).items():
+        if str(key).strip().lower().replace("_", "-") == "x-wp-totalpages":
+            try:
+                return max(1, int(str(value).strip()))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def read_all_products(site, key, secret, timeout=60, opener=None,
-                      per_page=100, limit=40):
+                      per_page=100, limit=40, progress=None):
     """Every product the shop has, a page at a time.
 
     ``status=any`` on purpose: a stale SKU on a draft blocks a creation just
     as surely as one on a published product, and a draft is exactly where an
     older batch's leftovers live.
+
+    ``progress(page_done, total_pages, products_read)`` is called after each
+    page lands, so the caller can say how far into a catalogue of a few
+    thousand products the read has got; ``total_pages`` is ``None`` until (or
+    unless) the site's own ``X-WP-TotalPages`` header says how many there
+    are. A display that raises is ignored - a bar must never fail a read.
     """
     rows = []
+    total_pages = None
     for page in range(1, int(limit) + 1):
         url = api_url(site, PRODUCTS_PATH, key, secret,
                       {"per_page": int(per_page), "page": page,
                        "status": "any"})
         if not url:
             raise ProductError("No website address or keys are available.")
-        status, payload = _send(url, "GET", None, timeout, opener)
+        headers = {}
+        status, payload = _send(url, "GET", None, timeout, opener, headers)
         if status in (401, 403) or status != 200:
             raise _explain(status, payload, "read the product list")
         page_rows = payload if isinstance(payload, list) else []
         rows.extend(row for row in page_rows if isinstance(row, dict))
+        if total_pages is None:
+            total_pages = _total_pages(headers)
+        if progress is not None:
+            try:
+                progress(page, total_pages, len(rows))
+            except Exception:
+                pass
         if len(page_rows) < int(per_page):
             break
     return rows

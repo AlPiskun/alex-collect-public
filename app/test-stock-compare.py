@@ -1473,6 +1473,126 @@ def test_the_sku_audit():
     check("and asks nothing", not asked, str(asked))
 
 
+def test_the_sku_audit_shows_where_it_is():
+    print()
+    print("== 8i. the SKU check says how far it has got ==")
+    folder = Path(tempfile.mkdtemp())
+    app = harness.FakeApp(folder)
+    parent = harness.FakeWidget()
+    with patch.object(gui, "BASE", folder):
+        gui.build_pipeline(parent, app)
+    button = find(parent, gui.ttk.Button, "Check the website's SKUs")
+    bars = [widget for widget in parent.walk()
+            if type(widget).__name__ == "FakeProgressbar"]
+    check("the panel has one bar of its own for the check",
+          len(bars) == 1, str(len(bars)))
+    bar = bars[0]
+    label = [child for child in bar.parent.children if child is not bar][0]
+    check("and it is not on screen before anything is checked",
+          not bar.packed and not str(label.cget("text")), "")
+
+    plain = "1973-74 O-Pee-Chee Jim Pappin #112 Chicago Black Hawks"
+    dark = plain + " Dark Back"
+    plain_sku = "OPC1973-74-112-Pappin-VG-EX-4"
+    products = [{"id": 14120, "name": dark, "sku": plain_sku,
+                 "status": "publish"},
+                {"id": 14121, "name": "Hextall #115 Corrected Bio",
+                 "sku": "C-115", "status": "publish"}]
+    seen = []
+
+    def seen_now(where):
+        seen.append({"where": where, "packed": bool(bar.packed),
+                     "text": str(label.cget("text")),
+                     "value": bar._kw.get("value"),
+                     "maximum": bar._kw.get("maximum"),
+                     "mode": bar._kw.get("mode"),
+                     "sweeping": bar._kw.get("sweeping")})
+
+    def fake_read_all(site, key, secret, progress=None, **kwargs):
+        #  The reader reports each page as it lands; the bar is read after
+        #  the second one, which is the state a person would be looking at.
+        progress(1, None, 100)
+        seen_now("first page, no page count from the site")
+        progress(2, 3, 200)
+        seen_now("second page of three")
+        return products
+
+    def fake_set_sku(site, key, secret, product_id, sku, **kwargs):
+        seen_now("writing %s" % sku)
+        return {"id": product_id, "sku": sku}
+
+    harness._BOX.askyesno = lambda *a, **k: True
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck_a",
+                                         "cs_b")), \
+            patch.object(gui.woo_create, "read_all_products", fake_read_all), \
+            patch.object(gui.woo_create, "set_sku", fake_set_sku), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        button.invoke()
+
+    first, second = seen[0], seen[1]
+    check("while reading, the bar is on screen", first["packed"], str(first))
+    check("and with no page count it sweeps rather than sits still",
+          first["mode"] == "indeterminate" and first["sweeping"], str(first))
+    check("and it says which page it is on",
+          "page 1" in first["text"] and "100 products" in first["text"],
+          first["text"])
+    check("a page count from the website turns it into a fraction",
+          second["mode"] == "determinate" and second["maximum"] == 3 and
+          second["value"] == 2, str(second))
+    check("and stops sweeping once it knows where it ends",
+          second["sweeping"] is False, str(second))
+    check("the text names both the page and the count",
+          "page 2 of 3" in second["text"] and "200 products" in second["text"],
+          second["text"])
+    middle = [state for state in seen if state["where"].startswith("writing")]
+    first_fix, second_fix = middle[0], middle[1]
+    check("fixing is drawn as a fraction of the products found",
+          first_fix["packed"] and first_fix["mode"] == "determinate" and
+          first_fix["maximum"] == 2, str(first_fix))
+    check("the bar sits one short of the product being written, and names it",
+          first_fix["value"] == 0 and "1 of 2" in first_fix["text"] and
+          "Pappin" in first_fix["text"], first_fix["text"])
+    check("and moves on to the next product as each one is written",
+          second_fix["value"] == 1 and "2 of 2" in second_fix["text"] and
+          "Hextall" in second_fix["text"], second_fix["text"])
+    check("the bar is gone when the check ends",
+          not bar.packed and not str(label.cget("text")), "")
+
+    #  An error takes the bar down too: a bar left sweeping over a failure is
+    #  a window that looks busy forever.
+    def broken_read(site, key, secret, progress=None, **kwargs):
+        progress(1, 4, 100)
+        raise gui.woo_create.ProductError("the site did not answer")
+
+    app.lines[:] = []
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck_a",
+                                         "cs_b")), \
+            patch.object(gui.woo_create, "read_all_products", broken_read), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        button.invoke()
+    check("a read that fails takes the bar down",
+          not bar.packed and not bar._kw.get("sweeping"), str(bar._kw))
+    check("and says what went wrong",
+          any("did not answer" in text for _tag, text in app.lines),
+          str(app.lines[-2:]))
+    app.lines[:] = []
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck_a",
+                                         "cs_b")), \
+            patch.object(gui.woo_create, "read_all_products", fake_read_all), \
+            patch.object(gui.woo_create, "set_sku", fake_set_sku), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        button.invoke()
+    check("so a second check reads the shop again",
+          any("Reading every product" in text for _tag, text in app.lines),
+          str(app.lines[:2]))
+
+
 def test_one_card():
     print()
     print("== 9. one card, handed over from the sale panel ==")
@@ -4373,6 +4493,7 @@ def main():
     test_the_fast_read_from_plugin_1038()
     test_comparing_the_last_read()
     test_the_sku_audit()
+    test_the_sku_audit_shows_where_it_is()
     test_held_under_another_product()
     test_a_reader_that_cannot_ask_for_a_fresh_page()
     test_a_listing_that_reports_everything()

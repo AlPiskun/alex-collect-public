@@ -345,6 +345,51 @@ def test_skus_that_name_their_printing():
     check("a product with no SKU is left alone, not given one",
           not any(entry.get("id") == 4 for entry in stale), str(stale))
 
+    # ---- and it says where it has got to while it reads
+    nudges = []
+    woo_create.read_all_products(
+        "https://shop.example", "ck_a", "cs_b", opener=site, per_page=1,
+        progress=lambda page, pages, count: nudges.append((page, pages, count)))
+    check("a page is reported as it lands, with how many products are in",
+          nudges[:3] == [(1, None, 1), (2, None, 2), (3, None, 3)],
+          str(nudges[:4]))
+    check("with no page count when the site states none",
+          all(pages is None for _page, pages, _count in nudges), str(nudges))
+
+    check("the site's own page count is read from its headers",
+          woo_create._total_pages({"X-WP-TotalPages": "3"}) == 3 and
+          woo_create._total_pages({"x_wp_totalpages": "7"}) == 7, "")
+    check("and a missing or unreadable one is None, not a guess",
+          woo_create._total_pages({}) is None and
+          woo_create._total_pages({"X-WP-TotalPages": "many"}) is None, "")
+
+    #  The headers the default opener collects are what turns the bar into a
+    #  fraction, so that plumbing is checked with a stand-in for the HTTP call
+    #  itself rather than trusted.
+    real_http = woo_create._http
+    asked = []
+
+    def http_with_headers(request, timeout, opener=None, headers_out=None):
+        asked.append(dict(headers_out or {}))
+        if headers_out is not None:
+            headers_out["X-WP-TotalPages"] = "2"
+        return 200, json.dumps([{"id": len(asked), "name": "A card",
+                                 "sku": "A-%d" % len(asked)}]).encode()
+
+    woo_create._http = http_with_headers
+    try:
+        nudges = []
+        woo_create.read_all_products(
+            "https://shop.example", "ck_a", "cs_b", per_page=1, limit=2,
+            progress=lambda page, pages, count:
+            nudges.append((page, pages, count)))
+    finally:
+        woo_create._http = real_http
+    check("the page count reaches the caller with the first page",
+          nudges == [(1, 2, 1), (2, 2, 2)], str(nudges))
+    check("and the read asked the HTTP call to hand its headers back",
+          asked and isinstance(asked[0], dict), str(asked[:1]))
+
     check("the audit finds the two that are short a token",
           sorted(entry["id"] for entry in
                  woo_create.stale_printing_skus(products)) == [14120, 14121],

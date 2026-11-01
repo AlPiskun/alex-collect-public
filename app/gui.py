@@ -1942,7 +1942,7 @@ TOOLTIPS = {
     "Sort by:": "Re-read the list below in this order; nothing is compared or written again",
     "Compare this card": "Open the stock panel pointed at the one card this sale is about",
     "Compare the whole catalogue instead": "Drop the one-card filter and compare everything",
-    "Check the website's SKUs": "Read every product on the website and name the ones whose SKU does not say which printing the title is - the products that keep a card of the same name from being created; nothing is changed until the fixes are shown and agreed to",
+    "Check the website's SKUs": "Read every product on the website and name the ones whose SKU does not say which printing the title is - the products that keep a card of the same name from being created; a bar says which page it is reading and which product it is fixing; nothing is changed until the fixes are shown and agreed to",
     "Compare the last read instead (no new read)": "Compare now against the CanadianShopper list already on disk from an earlier read - it is named with its age wherever its counts appear, so nothing is mistaken for a fresh count, and no read is started",
     "Compare stock with eBay": "Read your eBay active listings with your session cookie and list only the cards whose numbers disagree",
     "Compare stock with Facebook": "Read your Facebook selling page with your session cookie and list only the cards whose numbers disagree",
@@ -4610,6 +4610,10 @@ def build_pipeline(parent, app):
     sku_state = {"found": []}
 
     def check_skus():
+        if sku_state.get("running"):
+            app.console_line("A SKU check is already running; letting that "
+                             "one finish.", "dim")
+            return
         site, key, secret = read_woo_credentials(BASE / "woo-keys.txt")
         if not (site and key and secret):
             messagebox.showinfo(
@@ -4619,14 +4623,37 @@ def build_pipeline(parent, app):
             app.console_line("No WooCommerce keys saved, so the website's "
                              "SKUs cannot be read.", "dim")
             return
+        sku_state["running"] = True
         app.console_line("Reading every product on %s to check its SKU..."
                          % site, "cmd")
+        #  A whole catalogue is 25 pages, and the fixes are one call each on
+        #  top of that, so the check says where it is the whole way: a page
+        #  count while reading, a product count while fixing. Both drawn from
+        #  whichever thread is asking, and neither able to fail the work.
+        sku_progress("Reading every product on %s..." % site)
+
+        def page_read(page_done, total_pages, products):
+            if total_pages:
+                text = ("Checking the website's SKUs: page %d of %d, %d "
+                        "products read..." %
+                        (page_done, total_pages, products))
+            else:
+                text = ("Checking the website's SKUs: page %d, %d products "
+                        "read so far..." % (page_done, products))
+            try:
+                app.after(0, lambda: sku_progress(text, page_done,
+                                                  total_pages))
+            except Exception:
+                pass          # the window went away; the read still finishes
 
         def reading():
-            return woo_create.read_all_products(site, key, secret)
+            return woo_create.read_all_products(site, key, secret,
+                                                progress=page_read)
 
         def read(products, error):
+            sku_progress_hide()
             if error is not None:
+                sku_state["running"] = False
                 message = getattr(error, "message", str(error))
                 app.console_line("Could not read the website's products: %s"
                                  % message, "err")
@@ -4634,6 +4661,7 @@ def build_pipeline(parent, app):
             found = woo_create.stale_printing_skus(products)
             sku_state["found"] = found
             if not found:
+                sku_state["running"] = False
                 app.console_line(
                     "Every one of the %d products on the website has a SKU "
                     "that names its printing." % len(products), "ok")
@@ -4680,23 +4708,44 @@ def build_pipeline(parent, app):
                     "untouched, and nothing is added or removed."
                     % (len(found), "" if len(found) == 1 else "s", body),
                     parent=box.winfo_toplevel()):
+                sku_state["running"] = False
                 app.console_line("The SKUs were left as they are.", "dim")
                 return
 
+            #  One call per product, on a shop that takes a moment each: the
+            #  bar counts them, and the product being written is named so a
+            #  slow one is visibly slow rather than apparently stuck.
+            total = len(found)
+            sku_progress("Giving %d product%s the SKU its printing calls "
+                         "for..." % (total, "" if total == 1 else "s"),
+                         0, total)
+
             def fixing():
                 changed, refused = [], []
-                for entry in found:
+                for index, entry in enumerate(found, start=1):
+                    #  Said before the call, not after it: the product being
+                    #  written is what a slow shop is slow at, and naming it
+                    #  while it waits is the point of the bar.
+                    text = ("Changing SKU %d of %d: %s" %
+                            (index, total, str(entry.get("name") or "")[:60]))
+                    try:
+                        app.after(0, lambda t=text, i=index:
+                                  sku_progress(t, i - 1, total))
+                    except Exception:
+                        pass       # the window went away; the fix carries on
                     try:
                         woo_create.set_sku(site, key, secret, entry["id"],
                                            entry["should_be"])
                     except Exception as exc:
                         refused.append((entry,
                                         getattr(exc, "message", str(exc))))
-                        continue
-                    changed.append(entry)
+                    else:
+                        changed.append(entry)
                 return changed, refused
 
             def fixed(result, error):
+                sku_progress_hide()
+                sku_state["running"] = False
                 if error is not None:
                     app.console_line("The SKU fix stopped: %s" % error, "err")
                     return
@@ -4721,6 +4770,62 @@ def build_pipeline(parent, app):
     row_sku.pack(anchor="w", pady=(2, 0))
     ttk.Button(row_sku, text="Check the website's SKUs",
                command=check_skus).pack(side="left")
+
+    #  -- what the check is doing -------------------------------------------
+    #  Reading a whole catalogue is a minute or two of a window that otherwise
+    #  looks idle, and the fixes are one call each on top of it. The row is
+    #  always in the layout and holds nothing until a check starts, so nothing
+    #  below it moves when it fills, and it is taken down by the same function
+    #  that put it up - an error path included.
+    sku_row = ttk.Frame(box)
+    sku_row.pack(anchor="w", pady=(3, 0))
+    sku_bar = ttk.Progressbar(sku_row, length=240, maximum=100)
+    sku_text = ttk.Label(sku_row, text="", style="Dim.TLabel",
+                         wraplength=420, justify="left")
+    sku_drawn = {"shown": False, "sweeping": False}
+
+    def sku_progress(text, done=None, total=None):
+        """Show how far the SKU check has got; never raise.
+
+        A page count the site stated is drawn as a fraction, an unknown one
+        sweeps - a bar parked at 100% while it waits says less than one still
+        moving. Called from the window thread and from the reading thread, so
+        it touches nothing but its own widgets.
+        """
+        try:
+            if not sku_drawn["shown"]:
+                sku_bar.pack(side="left", padx=(0, 8))
+                sku_text.pack(side="left")
+                sku_drawn["shown"] = True
+            if total:
+                if sku_drawn["sweeping"]:
+                    sku_bar.stop()
+                    sku_drawn["sweeping"] = False
+                sku_bar.configure(mode="determinate",
+                                  maximum=max(1, int(total)),
+                                  value=min(int(done or 0), int(total)))
+            else:
+                sku_bar.configure(mode="indeterminate", value=0)
+                if not sku_drawn["sweeping"]:
+                    sku_bar.start(12)      # sweeps until a count arrives
+                    sku_drawn["sweeping"] = True
+            sku_text.configure(text=text)
+        except Exception:
+            pass
+
+    def sku_progress_hide():
+        """Take the bar down; whatever it said, the console says next."""
+        try:
+            if sku_drawn["sweeping"]:
+                sku_bar.stop()
+            sku_drawn["sweeping"] = False
+            if sku_drawn["shown"]:
+                sku_bar.pack_forget()
+                sku_text.pack_forget()
+                sku_drawn["shown"] = False
+            sku_text.configure(text="")
+        except Exception:
+            pass
     if app.cs_addon:
         ttk.Label(box, text="CanadianShopper drafts", style="H2.TLabel").pack(
             anchor="w", pady=(6, 1))
