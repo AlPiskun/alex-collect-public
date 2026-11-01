@@ -73,7 +73,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.13"
+VERSION = "3.14"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -7003,6 +7003,9 @@ def build_stock(parent, app):
             note = stock_compare.read_failure(last_tool_output(app))
             for line in note["advice"]:
                 app.console_line(line, "dim")
+            if note["kind"] == "detail":
+                app.console_line(stock_compare.stopped_read_note(
+                    plugin_version()), "dim")
             if note["kind"] == "session" and CS_COOKIE_FILE.is_file():
                 #  Say exactly what was sent, so a cookie problem is not a
                 #  guessing game: the file, its age, and its size.
@@ -7057,6 +7060,14 @@ def build_stock(parent, app):
                     version, CS_STOCK_CACHE_VERSION) else "")
         app.console_line("What the reader returned%s - %s."
                          % (who, stock_compare.tally_line(items)), "dim")
+        #  Plugin 1.0.36 finishes a read whose per-listing lookup failed and
+        #  says how many: those listings are real, were read, and are compared
+        #  like any other. Said here rather than left in the log, because a row
+        #  with no product id otherwise looks like a listing that is missing.
+        missed = stock_compare.failed_lookups(last_tool_output(app))
+        if missed:
+            app.console_line(stock_compare.lookup_note(missed, len(items)),
+                             "warn")
         compare_items(items, "CanadianShopper", "count", creds)
         return True
 
@@ -7729,6 +7740,14 @@ def build_csledit(parent, app):
                                    % rc)
             say("The CanadianShopper listing read failed (exit %s); nothing "
                 "was read and nothing was changed." % rc, "err")
+            #  The same diagnosis the comparison panel gives: what stopped it,
+            #  and - when it was one listing's own lookup - which plugin
+            #  version carries on past that instead of ending the read.
+            note = stock_compare.read_failure(last_tool_output(app))
+            for line in note["advice"]:
+                say(line, "dim")
+            if note["kind"] == "detail":
+                say(stock_compare.stopped_read_note(plugin_version()), "dim")
             return False
         items = stock_compare.read_stock_file(out) if out.is_file() else None
         if items is None:
@@ -7746,6 +7765,12 @@ def build_csledit(parent, app):
         say("CanadianShopper: %d listings read; %s. Type a card's name to "
             "find one." % (total, cs_edit.editable_note(editable, total)),
             "ok")
+        missed = stock_compare.failed_lookups(last_tool_output(app))
+        if missed:
+            #  Those listings are in the list, but this panel addresses a
+            #  listing by its product id, so they are the rows that cannot be
+            #  edited until another read resolves them.
+            say(stock_compare.lookup_note(missed, total, panel="edit"), "warn")
         shared = cs_edit.shared_product_note(items)
         if shared:
             #  Said after every read, not before a write: plugin 1.0.35 resolves

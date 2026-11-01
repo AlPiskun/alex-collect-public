@@ -26,6 +26,7 @@ from datetime import datetime
 from pathlib import Path
 
 import woo_orders
+from plugin_manager import version_at_least
 
 #  Below this the two titles are not the same card. Higher than the order
 #  panel's search threshold on purpose: that list is a suggestion a person
@@ -962,6 +963,13 @@ _SESSION_WORDS = re.compile(
     r"log in|login|session (?:expired|invalid)|cookie", re.IGNORECASE)
 _RATE_WORDS = re.compile(r"\b429\b|rate.?limit|too many requests",
                          re.IGNORECASE)
+#: A whole-catalogue failure is not one listing's problem: the reader could not
+#: read the shop's own listing page, so nothing was read. Plugin 1.0.36 says so
+#: in exactly these words, and it must not read as "something unrecognised".
+_CATALOGUE_WORDS = re.compile(
+    r"catalogue (?:page|request|itself)|whole catalogue|"
+    r"could not read the catalogue|catalogue could not be read", re.IGNORECASE)
+
 _NETWORK_WORDS = re.compile(
     r"urlerror|timed? ?out|timeout|connection (?:refused|reset|aborted)|"
     r"getaddrinfo|name or service|temporary failure|network is unreachable|"
@@ -997,11 +1005,12 @@ def read_failure(text):
     flags = {
         "session": bool(_SESSION_WORDS.search(line or said)),
         "rate": bool(_RATE_WORDS.search(line or said)),
+        "catalogue": bool(_CATALOGUE_WORDS.search(line or said)),
         "detail": bool(_DETAIL_REQUEST.search(line or said)),
         "network": bool(_NETWORK_WORDS.search(line or said)),
     }
-    kind = next((name for name in ("session", "rate", "detail", "network")
-                 if flags[name]), "unknown")
+    kind = next((name for name in ("session", "rate", "catalogue", "detail",
+                                   "network") if flags[name]), "unknown")
     advice = []
     if flags["session"]:
         advice.append("The session the reader was given was refused: "
@@ -1011,6 +1020,13 @@ def read_failure(text):
     if flags["rate"]:
         advice.append("The site answered with a rate limit rather than with an "
                       "error: wait a few minutes and read again.")
+    if flags["catalogue"]:
+        advice.append("The reader could not read the catalogue itself - the "
+                      "shop's own listing page - so nothing was read at all. "
+                      "That is the site, not one bad listing and not the "
+                      "cookie: read again in a minute, and if it keeps "
+                      "happening the vendor site is down or refusing this "
+                      "machine.")
     if flags["detail"]:
         advice.append("The read stopped inside ONE listing's own detail lookup "
                       "(%s), not on the catalogue - the listings before it "
@@ -1028,6 +1044,83 @@ def read_failure(text):
         advice.append("The reader stopped without saying anything this app "
                       "recognises; its own line is above.")
     return {"kind": kind, "line": line, "advice": advice}
+
+
+#: The plugin version that leaves a listing without a product id when its own
+#: detail lookup fails, instead of ending the whole read. Before it, one bad
+#: request per listing could cost a read that had taken minutes.
+LOOKUP_SURVIVED_VERSION = "1.0.36"
+
+_LOOKUPS_FAILED = re.compile(r"(\d+)\s+lookups?\s+failed", re.IGNORECASE)
+
+
+def failed_lookups(text):
+    """How many detail lookups the reader says failed, or 0 when it says none.
+
+    Plugin 1.0.36 finishes such a read and adds its own line -
+    ``Stock read: 2587 listings, 2581 with a real product id, 6 lookups
+    failed`` - so the count is the reader's, not one this app works out for
+    itself. A reader that says nothing gets nothing.
+    """
+    found = _LOOKUPS_FAILED.findall(str(text or ""))
+    return int(found[-1]) if found else 0
+
+
+def lookup_note(count, total=0, panel="compare"):
+    """What a read that survived some failed lookups still means.
+
+    Those listings are real and were read like any other: they simply have no
+    product id. In the comparison that costs nothing - a count is written to a
+    listing, matched by id, then SKU, then title - but the editing panel
+    addresses a listing by its product id, so those rows cannot be edited
+    there until a later read resolves them.
+    """
+    count = int(count or 0)
+    if count <= 0:
+        return ""
+    if count == 1:
+        head = ("1 listing was left without a product id because its own "
+                "detail lookup failed")
+        subject, verb = "It", "was"
+    else:
+        of = " of the %d" % int(total) if total else ""
+        head = ("%d%s listings were left without a product id because their "
+                "own detail lookup failed" % (count, of))
+        subject, verb = "They", "were"
+    if panel == "edit":
+        return head + (". %s cannot be edited here, which addresses a listing "
+                       "by its product id; reading again may resolve %s. "
+                       "Everything else in the list can."
+                       % (subject, "it" if count == 1 else "them"))
+    return head + (". %s %s read and compared like every other listing, and a "
+                   "count written to one is matched by its SKU or title "
+                   "instead of its product id." % (subject, verb))
+
+
+def stopped_read_note(plugin="", needed=LOOKUP_SURVIVED_VERSION):
+    """Which plugin version carries on past a failed lookup, given what is installed.
+
+    The same three situations as a read with no product ids, for the same
+    reason: an older plugin (the fix is one update), a plugin new enough to
+    survive this (then a stopped read is a defect worth reporting), and a
+    version nobody could read (name the version and claim nothing).
+    """
+    needed = str(needed or "").strip()
+    plugin = str(plugin or "").strip()
+    if not needed:
+        return ""
+    if not plugin:
+        return ("Plugin %s or newer leaves that listing without a product id "
+                "and carries on." % needed)
+    if version_at_least(plugin, needed):
+        return ("The read was done by plugin %s, which does carry on past a "
+                "failed lookup, so a read that stopped on one is a defect in "
+                "the reader - worth reporting with its own console line."
+                % plugin)
+    return ("The read was done by plugin %s, and %s or newer is the version "
+            "that leaves a failed lookup's listing without a product id and "
+            "carries on - so updating the plugin is the fix."
+            % (plugin, needed))
 
 
 def describe_age(seconds):

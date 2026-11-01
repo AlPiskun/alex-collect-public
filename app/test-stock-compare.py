@@ -805,6 +805,147 @@ def test_read_failure():
           "listed or delisted since is not in it" in stale, stale)
 
 
+#  What plugin 1.0.36 says on a read it finished after losing some lookups,
+#  and what it says when it could not read the catalogue at all.
+SURVIVED = ("Stock read: 2587 listings, 2581 with a real product id, "
+            "6 lookups failed")
+NO_CATALOGUE = ("! Could not list CanadianShopper stock: the catalogue page "
+                "itself could not be read")
+
+
+def test_the_reader_survives():
+    print()
+    print("== 8d. a read that lost some lookups, and one that lost everything ==")
+    note = stock_compare.read_failure(NO_CATALOGUE)
+    check("a catalogue that could not be read is its own kind",
+          note["kind"] == "catalogue", str(note))
+    check("and it says nothing at all was read",
+          any("nothing was read at all" in line for line in note["advice"]),
+          str(note["advice"]))
+    check("and it is not blamed on the cookie",
+          not any("cookie in User Settings" in line for line in note["advice"]),
+          str(note["advice"]))
+    check("and it is not described as one listing's lookup",
+          not any("ONE listing" in line for line in note["advice"]),
+          str(note["advice"]))
+
+    check("the reader's own count of failed lookups is read",
+          stock_compare.failed_lookups(SURVIVED) == 6, SURVIVED)
+    check("a reader that mentions no failures reports none",
+          stock_compare.failed_lookups("2587 listings, 2587 with a real "
+                                       "product id") == 0, "")
+    check("a single failure is read too",
+          stock_compare.failed_lookups("Stock read: 2 listings, 1 lookup "
+                                       "failed") == 1, "")
+    check("and a line that never mentions lookups is not guessed at",
+          stock_compare.failed_lookups(DETAIL_FAILED) == 0, DETAIL_FAILED)
+
+    line = stock_compare.lookup_note(6, 2587)
+    check("the count and the read's own total are both named",
+          "6 of the 2587" in line, line)
+    check("and the listings are called real, read and compared",
+          "read and compared like every other listing" in line, line)
+    check("and it says how a write to one is addressed",
+          "SKU or title" in line, line)
+    one = stock_compare.lookup_note(1, 2587)
+    check("one failed lookup reads as one listing, in the singular",
+          one.startswith("1 listing was left") and " It was read" in one, one)
+    check("with nothing to keep quiet about, nothing is said",
+          stock_compare.lookup_note(0) == "", stock_compare.lookup_note(0))
+    edited = stock_compare.lookup_note(6, 2587, panel="edit")
+    check("the editing panel says those rows cannot be edited there",
+          "cannot be edited here" in edited and "product id" in edited, edited)
+    check("and says reading again may resolve them",
+          "reading again may resolve them" in edited, edited)
+    check("while the comparison panel asks for no such thing",
+          "cannot be edited here" not in line, line)
+
+    check("before 1.0.36, updating the plugin is the fix",
+          "updating the plugin is the fix" in
+          stock_compare.stopped_read_note("1.0.35"),
+          stock_compare.stopped_read_note("1.0.35"))
+    check("from 1.0.36 on, a stopped read is a defect worth reporting",
+          "defect in the reader" in stock_compare.stopped_read_note("1.0.36"),
+          stock_compare.stopped_read_note("1.0.36"))
+    check("an unreadable version is told the version, and nothing more",
+          stock_compare.stopped_read_note("") ==
+          "Plugin 1.0.36 or newer leaves that listing without a product id "
+          "and carries on.", stock_compare.stopped_read_note(""))
+
+    # ---- the comparison panel says it, where the counts are
+    folder, app, parent = build_panel()
+    compare = find(parent, gui.ttk.Button, "Compare stock", exact=False)
+    out = folder / "cs-stock.json"
+
+    def fetch_ok(base, path, params, key, secret):
+        return (200, PRODUCTS) if params["page"] == 1 else (200, [])
+
+    def said(prefix):
+        return [text for _tag, text in app.lines if prefix in text]
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "CS_COOKIE_FILE", folder / "cookie.txt"), \
+            patch.object(gui, "woo_get", fetch_ok), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        compare.invoke()
+        out.write_text(json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+        app.runner = FakeRunner(SURVIVED)
+        app.runs[0]["on_done"](0)
+    check("a read that survived lost lookups says so in the console",
+          said("6 of the 2 listings were left without a product id")
+          or said("were left without a product id"), str(app.lines[-6:]))
+    check("and the comparison still happened",
+          any("Compared" in text for _tag, text in app.lines),
+          str(app.lines[-4:]))
+
+    # ---- a read that stopped on one lookup, by whichever plugin did it
+    def stopped_on_a_lookup(version):
+        app.runs.clear()
+        app.lines[:] = []
+        harness._BOX.askyesno = lambda *a, **k: False
+        with patch.object(gui, "TOOL_ACTION",
+                          lambda action: "/plugins/cs/stock.py"), \
+                patch.object(gui, "read_woo_credentials",
+                             lambda path=None: ("https://shop.example", "ck_a",
+                                                "cs_b")), \
+                patch.object(gui, "CS_COOKIE_FILE", folder / "cookie.txt"), \
+                patch.object(gui, "plugin_version",
+                             lambda *a, **k: version), \
+                patch.object(gui, "BASE", folder):
+            compare.invoke()
+            app.runner = FakeRunner(DETAIL_FAILED)
+            app.runs[0]["on_done"](1)
+
+    stopped_on_a_lookup("1.0.35")
+    check("a stopped lookup names the version that carries on",
+          said("updating the plugin is the fix"), str(app.lines[-5:]))
+    stopped_on_a_lookup("1.0.36")
+    check("and a plugin that should have carried on is a defect",
+          said("defect in the reader"), str(app.lines[-5:]))
+
+    app.lines[:] = []
+    harness._BOX.askyesno = lambda *a, **k: False
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "CS_COOKIE_FILE", folder / "cookie.txt"), \
+            patch.object(gui, "BASE", folder):
+        compare.invoke()
+        app.runner = FakeRunner(NO_CATALOGUE)
+        app.runs[0]["on_done"](1)
+    check("a catalogue that could not be read says the site, not the cookie",
+          said("could not read the catalogue itself") and
+          not any("bytes" in text and "saved" in text
+                  for _tag, text in app.lines), str(app.lines[-5:]))
+
+
 def test_one_card():
     print()
     print("== 9. one card, handed over from the sale panel ==")
@@ -3698,6 +3839,7 @@ def main():
     test_a_duplicate_on_the_website()
     test_what_the_reader_claimed()
     test_read_failure()
+    test_the_reader_survives()
     test_held_under_another_product()
     test_a_reader_that_cannot_ask_for_a_fresh_page()
     test_a_listing_that_reports_everything()

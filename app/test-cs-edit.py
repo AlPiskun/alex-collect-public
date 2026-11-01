@@ -12,6 +12,7 @@ import json
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 APP = Path(__file__).resolve().parent
@@ -1059,6 +1060,61 @@ def test_the_list_says_which_plugin_read_it():
           not any("read by plugin" in note for note in notes2), str(notes2[-3:]))
 
 
+def test_the_editing_panel_says_what_stopped_a_read():
+    print()
+    print("== 5g. a read that stopped, and one that lost a lookup ==")
+    folder, app, parent = build_panel()
+
+    def said(prefix):
+        return [text for _tag, text in app.lines if prefix in text]
+
+    #  The reader stopped on ONE listing's own detail lookup. The panel used to
+    #  say only that the read failed, which tells nobody what to do about it.
+    run = None
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "plugin_version", lambda *a, **k: "1.0.35"):
+        find(parent, gui.ttk.Button,
+             "Read CanadianShopper's listings").invoke()
+        run = app.runs[-1]
+        app.runner = SimpleNamespace(
+            output="! Could not list CanadianShopper stock: CanadianShopper "
+                   "request failed (GET /api/data/product/94b93f6040f5401daa"
+                   "baa9c936efa5a7): URLError")
+        run["on_done"](1)
+    check("the panel names the listing lookup that stopped the read",
+          said("ONE listing's own detail lookup"), str(app.lines[-5:]))
+    check("and names the plugin version that carries on past it",
+          said("updating the plugin is the fix"), str(app.lines[-5:]))
+    check("and does not blame the cookie",
+          not any("bytes" in text and "saved" in text
+                  for _tag, text in app.lines), str(app.lines[-5:]))
+
+    #  A read that finished after losing some lookups: those rows are real but
+    #  this panel cannot edit them, which is worth saying before it is tried.
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        app.runs.clear()
+        app.lines[:] = []
+        find(parent, gui.ttk.Button,
+             "Read CanadianShopper's listings").invoke()
+        run = app.runs[-1]
+        Path(run["args"][1]).write_text(
+            json.dumps({"items": LISTINGS}), encoding="utf-8")
+        app.runner = SimpleNamespace(
+            output="Stock read: %d listings, %d with a real product id, "
+                   "1 lookup failed" % (len(LISTINGS), len(LISTINGS) - 1))
+        run["on_done"](0)
+    check("a read that lost a lookup says which rows cannot be edited here",
+          said("cannot be edited here"), str(app.lines[-5:]))
+    check("and says how many, and that reading again may fix it",
+          said("1 listing was left without a product id") and
+          said("reading again may resolve it"), str(app.lines[-5:]))
+    check("while the rest of the list is still there to edit",
+          len(listing_box(parent).items) == len(LISTINGS),
+          str(len(listing_box(parent).items)))
+
+
 def test_the_panel_reads_and_lists():
     print()
     print("== 6. the panel lists the catalogue and searches it ==")
@@ -1570,6 +1626,7 @@ def main():
     test_what_the_read_did_carry()
     test_plugin_1_0_35()
     test_the_list_says_which_plugin_read_it()
+    test_the_editing_panel_says_what_stopped_a_read()
     test_the_panel_reads_and_lists()
     test_the_edit_form()
     test_the_panel_refuses_what_it_cannot_do()
