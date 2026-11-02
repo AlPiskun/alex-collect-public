@@ -10144,8 +10144,13 @@ def build_csledit(parent, app):
             #  write: it is this card, already prepared for the site, so the
             #  seconds the listing shows it are seconds it shows the same card.
             staged = cs_proof.staged_photo(
-                app.settings.get("pipeline_dir", str(WORK)),
+                canadianshopper_results_dir(app),
                 str(item.get("name") or ""))
+            if staged.startswith("/"):
+                #  An older staging run wrote the address without the site on
+                #  the front; the record wants a web address, and this is the
+                #  same file on the same site.
+                staged = CS_HOME + staged
             if staged:
                 say("The staged photo for this card is %s." % staged, "dim")
             staged_url = str(simpledialog.askstring(

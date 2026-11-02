@@ -2128,10 +2128,37 @@ def test_the_panel_writes_a_proof():
     check("the image staging step's own photo is what the proof offers first",
           opened.get("initialvalue") ==
           "https://cs.example/api/file/staged.webp", str(opened))
+
     check("and it is the address written, on the same one field",
           asked[-1]["field"] == "primaryImageUrl" and
           asked[-1]["staged"] == "https://cs.example/api/file/staged.webp",
           str(asked[-1]))
+    #  The staging step is handed the batch folder - `canadianshopper_products`
+    #  beside cs-ready - because that is where the CSVs it rewrote are. An
+    #  address written without the site on the front (the older staging run)
+    #  is completed here: the record needs a web address, and it is the same
+    #  file on the same site.
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(gui, "simpledialog") as dialog, \
+            patch.object(cs_proof, "prove", fake_prove):
+        dialog.askstring = fake_askstring
+        looked = {}
+
+        def eyes(folder, title):
+            looked["folder"] = str(folder)
+            return "/api/file/staged.webp"
+        with patch.object(cs_proof, "staged_photo", eyes):
+            find(parent, gui.ttk.Button, "Write the proof").invoke()
+    check("the staging lookup is given the batch folder, not the app's",
+          looked.get("folder") == str(folder / "canadianshopper_products"),
+          str(looked))
+    check("and an address with no site on the front is completed",
+          opened.get("initialvalue") ==
+          "https://canadianshopper.ca/api/file/staged.webp", str(opened))
 
     #  Nothing read: a proof of nothing is worse than a word.
     folder2, app2, parent2 = build_panel()

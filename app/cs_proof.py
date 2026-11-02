@@ -263,9 +263,20 @@ def staged_photo(folder, title=""):
     if not wanted:
         return ""
     folder = Path(folder or ".")
+    #  The staging step of plugin 1.0.40 writes its rewritten CSVs into
+    #  ``cs-ready`` beside the batch, while the batch itself sits one level
+    #  above it - and the older command wrote them beside the batch. Both are
+    #  searched, newest first across the two, because the newest staged row is
+    #  the one that matches the photo the site is holding today.
+    found = []
+    for where in (folder, folder / "cs-ready"):
+        try:
+            found.extend(where.glob(STAGED_PATTERN))
+        except OSError:
+            continue
     try:
-        files = sorted(folder.glob(STAGED_PATTERN),
-                       key=lambda path: path.stat().st_mtime, reverse=True)
+        files = sorted(found, key=lambda path: path.stat().st_mtime,
+                       reverse=True)
     except OSError:
         return ""
     for path in files[:8]:

@@ -330,6 +330,26 @@ def test_the_photo_comes_from_the_staging_step():
         check("no title is no answer, not the first row",
               cs_proof.staged_photo(folder, "") == "", "")
 
+        #  Plugin 1.0.40 writes the rewritten CSVs into cs-ready beside the
+        #  batch, while the batch itself sits one level above - and the panel
+        #  is handed the batch, not the folder inside it.
+        ready = folder / "cs-ready"
+        ready.mkdir()
+        write(ready, "canadianshopper_import_20260401_01_of_01.csv",
+              [{"title": RECORD["title"],
+                "image_url": "https://cs.example/api/file/new.webp",
+                "price_cad": "1250.00"}])
+        check("a staged CSV in the cs-ready folder is found from the batch",
+              cs_proof.staged_photo(folder, RECORD["title"]) ==
+              "https://cs.example/api/file/new.webp",
+              cs_proof.staged_photo(folder, RECORD["title"]))
+        check("and the newest staged row wins across the two folders",
+              cs_proof.staged_photo(ready, RECORD["title"]) ==
+              "https://cs.example/api/file/new.webp", "")
+        check("while a card only the older batch staged keeps its own photo",
+              cs_proof.staged_photo(folder, "Another card") ==
+              "https://cs.example/api/file/other.webp", "")
+
 
 def test_the_report():
     print()
