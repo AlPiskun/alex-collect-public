@@ -830,6 +830,14 @@ def resolution_note(counts, total=0):
                    empty, "" if not failed else
                    ", plus %d hard %s" % (failed, "failure" if failed == 1
                                           else "failures")))
+        if failed:
+            #  Those listings are a different case: their records were never
+            #  read, so "the site names nothing" is not yet known about them.
+            said += (" The %d failed %s a separate matter - %s record was "
+                     "never read, so a later read may still resolve %s."
+                     % (failed, "lookup is" if failed == 1 else "lookups are",
+                        "that listing's" if failed == 1 else "those listings'",
+                        "it" if failed == 1 else "them"))
     elif usable:
         said = ("The reader's own resolution line says it made %d detail "
                 "%s and turned %d into %s."
@@ -1003,6 +1011,23 @@ def productish_keys(row):
     return found
 
 
+#: The fields this record would have to carry for the vendor's own record to
+#: be the thing an edit writes. Named because a record that carries all of them
+#: is one the write path could address directly, which is a different (and much
+#: shorter) road than resolving a second identifier out of it.
+EDITABLE_FIELDS = ("title", "priceCad", "inventory", "status", "description",
+                   "primaryImageUrl", "category", "sku")
+
+
+def editable_shape(record):
+    """Which editable fields a detail record carries, in the vendor's spelling."""
+    if not isinstance(record, dict):
+        return []
+    folded = {str(key).casefold(): key for key in record}
+    return [folded[name.casefold()] for name in EDITABLE_FIELDS
+            if name.casefold() in folded]
+
+
 def listing_id(item):
     """The listing's *own* id - the key the vendor's detail endpoint takes.
 
@@ -1077,6 +1102,25 @@ def fetch_detail(url, cookie="", timeout=25, opener=None):
         return exc.code, str(getattr(exc, "headers", "") or ""), body
     except Exception as exc:
         return 0, "", str(exc)
+
+
+def without_progress(text):
+    """``(spoken, omitted)`` for a tool's output with its progress markers cut.
+
+    A reader that emits the progress channel leaves those markers in the text
+    the app keeps, because the app keeps what the tool printed. They are the
+    window's progress bar, not the reader's words - 250 lines of
+    ``ALEX_COLLECT_PROGRESS:{"stage": "ids", ...}`` is what a diagnosis file
+    looks like with them left in, and the three lines that matter are lost
+    inside it. The count is returned so the file can say what it did not print.
+    """
+    kept, omitted = [], 0
+    for line in str(text or "").splitlines():
+        if "ALEX_COLLECT_PROGRESS:" in line:
+            omitted += 1
+            continue
+        kept.append(line.replace("\x1e", "").replace("\x1f", ""))
+    return "\n".join(kept).strip("\n"), omitted
 
 
 def parsed_body(body):
@@ -1156,11 +1200,17 @@ def diagnosis_text(row=None, output="", stages=(), plugin="", command="",
         if resolution["usable"] == 0 and resolution["empty"]:
             #  The file is what somebody reads next month, so it carries the
             #  consequence and not only the cause.
-            lines.append(uneditable_note())
+            lines.append(uneditable_note(resolution["failed"]))
     lines.append("")
-    lines.append("--- the reader's complete output " + "-" * 20)
-    lines.append(str(output or "(no console output was kept for this list - "
-                              "see where it came from, above)").rstrip())
+    lines.append("--- the reader's output, as it read on the console " + "-" * 6)
+    spoken, progress_lines = without_progress(output)
+    lines.append(spoken or "(no console output was kept for this list - see "
+                           "where it came from, above)")
+    if progress_lines:
+        lines.append("")
+        lines.append("(%d progress-marker line(s) omitted: they are the "
+                     "window's progress bar, not the reader's words. The "
+                     "phases they carried are listed above.)" % progress_lines)
     lines.append("")
     if row is not None:
         lines.append("--- one catalogue row, sanitised " + "-" * 18)
@@ -1199,28 +1249,56 @@ def diagnosis_text(row=None, output="", stages=(), plugin="", command="",
                                       "(no content type)"))
         lines.append(_body_for_diagnosis(detail.get("body")))
         named = productish_keys(parsed_body(detail.get("body")))
+        #  A key that *mentions* a product is not a key that holds one: this
+        #  vendor's record has isDemoProduct and productOptions, both null.
+        holds = [key for key, state in named
+                 if state.startswith(("str(", "int ", "float ")) and
+                 not state.startswith("zero")]
         if named:
-            lines.append("Keys in that response that name a product: " +
+            lines.append("Keys in that response that mention a product: " +
                          "; ".join("%s (%s)" % (key, state)
-                                   for key, state in named))
+                                   for key, state in named) +
+                         (" - and %s holds an id: %s" %
+                          ("one of them" if len(holds) == 1
+                           else "%d of them" % len(holds), ", ".join(holds))
+                          if holds else
+                          " - none of them holds an id"))
         else:
             lines.append("No key in that response names a product - not "
                          "product, not productId, not any spelling of one - so "
                          "a reader cannot resolve this listing's product from "
                          "this endpoint at all: the reference lives somewhere "
                          "the stock reader never asks.")
+        shape = editable_shape(parsed_body(detail.get("body")))
+        if not holds and len(shape) >= 3:
+            #  Not a conclusion, a question worth putting in front of the
+            #  vendor: the record the reader already reads is keyed by the
+            #  listing id and holds the very fields an edit changes - while the
+            #  update action writes a different path, /api/products/<id>/.
+            lines.append("This endpoint's record carries %s - the fields an "
+                         "edit changes - and it is keyed by the listing's own "
+                         "id, while the plugin's update action writes "
+                         "/api/products/<product_id>/. Whether the vendor's "
+                         "own record is meant to be written directly is the "
+                         "one question this file cannot answer; it is worth "
+                         "asking before the shop is written off as uneditable."
+                         % ", ".join(shape))
         if resolution and resolution["usable"] == 0 and resolution["empty"]:
             lines.append("That is the same answer as the reader's own "
                          "resolution line: %d lookups, %d answers and none "
-                         "naming a product."
-                         % (resolution["requested"], resolution["empty"]))
+                         "naming a product. This is the closing condition "
+                         "both sides agreed on - the vendor's data carries no "
+                         "product reference for these listings, so there is "
+                         "nothing for a reader to resolve and no further "
+                         "report to make." % (resolution["requested"],
+                                              resolution["empty"]))
         lines.append("")
     lines.append("Nothing in this file is a cookie, a token or a password: "
                  "values under those names are hidden, and long text is cut.")
     return "\n".join(lines)
 
 
-def uneditable_note():
+def uneditable_note(failures=0):
     """What a shop whose records name no product means for the edit buttons.
 
     Confirmed by the plugin's author for 1.0.39: ``marketplace.listing_update``
@@ -1230,12 +1308,21 @@ def uneditable_note():
     read fixes - those listings cannot have their title, price or state changed
     from here at all, and saying "read again" would be advice that cannot work.
     """
-    return ("Editing one of these is not something reading again can fix: the "
+    said = ("Editing one of these is not something reading again can fix: the "
             "plugin's update action finds the listing but refuses to write "
             "without an explicit product reference, and these records carry "
             "none. Title, price and state have to be changed in the vendor "
             "dashboard; stock counts are the exception, because the comparison "
             "panel writes those to the listing itself.")
+    failures = int(failures or 0)
+    if failures:
+        said += (" %d %s not covered by that: %s lookup did not answer at "
+                 "all, so read once more before giving up on %s."
+                 % (failures, "listing is" if failures == 1
+                    else "listings are",
+                    "its" if failures == 1 else "their",
+                    "it" if failures == 1 else "them"))
+    return said
 
 
 def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True,

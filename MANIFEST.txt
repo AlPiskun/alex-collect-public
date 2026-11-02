@@ -87,7 +87,9 @@ app/:
                                    with a line naming any product key it has or
                                    saying it has none; and what a read with no
                                    product reference at all means - those rows
-                                   can be read and opened, not edited
+                                   can be read and opened, not edited, with the
+                                   record's editable shape named as the one
+                                   question left for the vendor
   photo_unsquare.py                crop a square, padded listing photo back to
                                    the card's own shape before uploading it
   sold-everywhere.py              sale checklist workflow

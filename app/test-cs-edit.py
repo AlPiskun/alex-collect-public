@@ -1166,9 +1166,10 @@ def test_the_diagnosis_file():
         row={"id": "a", "sku": "OPC-1"},
         detail={"url": "u", "status": 200,
                 "body": json.dumps({"id": "a", "productId": "9"})})
-    check("and one that does names the key and what is in it",
-          "Keys in that response that name a product: productId" in named,
-          named)
+    check("and one that does names the key, what is in it, and that it holds "
+          "an id",
+          "Keys in that response that mention a product: productId" in named and
+          "one of them holds an id: productId" in named, named)
 
     nested = cs_edit.diagnosis_text(
         row={"id": "a", "product": {"id": 1}, "product_id": 0})
@@ -1179,6 +1180,19 @@ def test_the_diagnosis_file():
           "Also naming a product: product_id" not in nested, nested)
     check("a row with no such key gets no extra line",
           "Also naming a product" not in named, named)
+
+    #  The real 38-key record from this shop: two keys mention a product, both
+    #  null. Saying "names a product" about them would read as a lead.
+    cart = {"id": "a2304e72dbca", "title": "Wurmple", "sku": "",
+            "isDemoProduct": None, "productOptions": None,
+            "availableSizes": [], "tags": None}
+    cart_text = cs_edit.diagnosis_text(
+        row={"id": "a2304e72dbca", "sku": ""},
+        detail={"url": "u", "status": 200, "body": json.dumps(cart)})
+    check("a key like isDemoProduct is reported, but not as holding an id",
+          "isDemoProduct (empty)" in cart_text and
+          "productOptions (empty)" in cart_text and
+          "none of them holds an id" in cart_text, cart_text[-600:])
 
     #  ---- the row's SKU is what a reader resolves by: empty is a fact
     check("an empty SKU on the row is said to be empty - and not blamed",
@@ -1353,6 +1367,117 @@ def test_the_readers_own_resolution_counts():
           stock_compare.failed_lookups("Stock read: 2 listings, 0 with a real "
                                        "product id, 2 lookups failed") == 2 and
           stock_compare.failed_lookups(line) == 0, "")
+
+
+def test_the_real_diagnosis_from_the_shop():
+    """The 1.0.39 file this shop produced, and what it exposed in the app.
+
+    Two things were wrong with the app's own file and one with its wording:
+    250 ``ALEX_COLLECT_PROGRESS:`` lines buried the three lines that matter,
+    eight failed lookups were folded into "the site names nothing" as though
+    their records had been read, and two keys that merely mention a product
+    (both null) were listed as though they were a lead. All three are fixed
+    here, against the exact counts and record the shop sent.
+    """
+    print()
+    print("== 5d7. the shop's real 1.0.39 diagnosis ==")
+    markers = "\n".join(
+        'ALEX_COLLECT_PROGRESS:{"stage": "ids", "index": %d, "total": 2596}'
+        % n for n in range(1, 251))
+    output = (markers + "\nstock.list: 2596 listings, 0 with a real product "
+              "id, 2596 without the key, 0 reported as 0\n"
+              "stock     : 2596 listing(s) written to cs-stock.json\n"
+              "Stock resolution: 2596 detail requests, 0 usable references, "
+              "2588 HTTP 200s without a usable reference, 0 ambiguous SKUs, "
+              "8 hard failures\n"
+              "Stock read: 2596 listings, 0 with a real product id, 8 lookups "
+              "failed")
+
+    spoken, omitted = cs_edit.without_progress(output)
+    check("the progress channel is cut out of what a person reads",
+          omitted == 250 and "ALEX_COLLECT_PROGRESS" not in spoken, str(omitted))
+    check("and every line the reader actually said is kept, and nothing else",
+          spoken.splitlines() == [
+              "stock.list: 2596 listings, 0 with a real product id, 2596 "
+              "without the key, 0 reported as 0",
+              "stock     : 2596 listing(s) written to cs-stock.json",
+              "Stock resolution: 2596 detail requests, 0 usable references, "
+              "2588 HTTP 200s without a usable reference, 0 ambiguous SKUs, "
+              "8 hard failures",
+              "Stock read: 2596 listings, 0 with a real product id, 8 lookups "
+              "failed"], spoken)
+
+    #  The record the shop's own site returned, key and all - 38 keys, and
+    #  every one of them about the listing rather than about a product.
+    record = {"id": "a2304e72dbca4e678e7111d011ade22d",
+              "createdAt": "2026-10-15T16:42:16Z",
+              "updatedAt": "2026-10-16T11:16:38.234Z",
+              "vendor": "fc5c0fd1fb80c161b529b0bb287dfd30",
+              "title": "#006/196 Wurmple SWSH11", "slug": "006-196-wurmple",
+              "description": "SWSH11: Lost Origin #006/196 Wurmple",
+              "primaryImageUrl": "https://cs/api/file/006.jpg",
+              "priceCad": 1, "inventory": 1, "status": "active",
+              "category": "f78bf500fcdc7507e4d32b8cb5b2b698",
+              "shipFromProvince": "ON", "shippingFlatCad": 4,
+              "freeShipping": False, "handlingDays": 2, "transitDays": 5,
+              "isFeatured": False, "featuredOrder": None, "isFlagged": False,
+              "titleFr": "Chenipotte", "descriptionFr": "Origine Perdue",
+              "rating2Count": None, "rating3Count": None, "totalReviews": None,
+              "rating5Count": None, "averageRating": None, "rating4Count": None,
+              "rating1Count": None, "isDemoProduct": None, "availableSizes": [],
+              "availableColors": [], "canadianOriginConfirmed": False,
+              "isMadeToOrder": False, "localPickup": False,
+              "productOptions": None, "shippingSettings": None, "tags": None}
+    row = {"name": "#006/196 Wurmple SWSH11", "sku": "", "qty": 1,
+           "id": "a2304e72dbca4e678e7111d011ade22d", "status": "active",
+           "price": "1.00", "images": ["https://cs/api/file/006.jpg"]}
+    text = cs_edit.diagnosis_text(
+        row=row, output=output, stages=["read", "ids"], plugin="1.0.39",
+        command="pythonw.exe -u cs-stock.py --stock-out cs-stock.json "
+                "--cookie-file cookie.txt",
+        detail={"url": cs_edit.detail_url(row["id"]), "status": 200,
+                "content_type": "application/json", "body": json.dumps(record)},
+        total=2596, editable=0, app_version="3.20",
+        source="the read this window made at 2026-11-02 13:03:59")
+
+    check("the file no longer carries the progress markers",
+          "ALEX_COLLECT_PROGRESS" not in text, "")
+    check("but says how many lines it left out, and why",
+          "250 progress-marker line(s) omitted" in text and
+          "not the reader's words" in text, "")
+    check("the reader's own lines survive intact",
+          "stock.list: 2596 listings" in text and
+          "Stock resolution: 2596 detail requests" in text and
+          "Stock read: 2596 listings, 0 with a real product id, 8 lookups "
+          "failed" in text, "")
+    check("the eight failed lookups are told apart from the silent answers",
+          "8 failed lookups are a separate matter" in text and
+          "a later read may still resolve them" in text, text[:2000])
+    check("and the consequence carves them out rather than giving up on them",
+          "8 listings are not covered by that" in text and
+          "read once more before giving up on them" in text, text[:2000])
+    check("the two product-ish keys are named but not offered as a lead",
+          "isDemoProduct (empty)" in text and
+          "none of them holds an id" in text, text[-900:])
+    check("and the record is called the closing condition it is",
+          "This is the closing condition" in text and
+          "no further report to make" in text, text[-1400:])
+    check("and the one question the file cannot answer is put to the vendor",
+          "the fields an edit changes" in text and
+          "/api/products/<product_id>/" in text and
+          "before the shop is written off as uneditable" in text,
+          text[-1400:])
+    check("the editable fields are named in the vendor's own spelling",
+          cs_edit.editable_shape(record) ==
+          ["title", "priceCad", "inventory", "status", "description",
+           "primaryImageUrl", "category"], str(cs_edit.editable_shape(record)))
+    check("a record with none of them raises no such question",
+          "fields an edit changes" not in cs_edit.diagnosis_text(
+              row={"id": "a"},
+              detail={"url": "u", "status": 200, "body": '{"id": "a"}'}), "")
+    check("nothing is called a reader defect anywhere in that file",
+          "defect in the reader" not in text.replace(
+              "rather than a defect in the reader", ""), "")
 
 
 def test_plugin_1_0_35():
@@ -2355,6 +2480,7 @@ def main():
     test_the_readers_own_numbers()
     test_the_diagnosis_file()
     test_the_readers_own_resolution_counts()
+    test_the_real_diagnosis_from_the_shop()
     test_plugin_1_0_35()
     test_the_list_says_which_plugin_read_it()
     test_the_editing_panel_says_what_stopped_a_read()

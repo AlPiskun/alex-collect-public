@@ -696,7 +696,11 @@ plugin's author" verdict it gives when the counts are absent. Before 1.0.39
 that verdict could only be a guess, so a current-but-older plugin (1.0.34 to
 1.0.38) is told that 1.0.39 prints the counts that settle it. An ambiguous SKU
 is named as one - more than one product matched, so no id was invented - and a
-hard failure is still a failure.
+hard failure is still a failure. A read that mixes both is said to be two
+things: the answers that came back 200 and named nothing are the vendor's data,
+while the ones whose request failed were never read at all and a re-read may
+still resolve them - so the "reading again cannot fix these" sentence carves
+them out rather than writing them off.
 
 **No server-side resolver behind the write.** `marketplace.listing_update`
 matches the listing by id, SKU or old title - and refuses a multi-match - but
@@ -757,12 +761,24 @@ check when a read has no ids.
 The detail record is shown **key by key** (sixty with their values, the rest by
 name) rather than counted, because the question it answers is *does this record
 name a product anywhere* - and a reference sitting at key 30 of 38 is exactly
-what a key count throws away. One line then says which of its keys name a
-product (`product`, `productId`, `productData`, any spelling) and what each
-holds, or states that none of them does - which means the reader cannot resolve
-the listing from that endpoint at all. An empty `sku` on the row is called out
-too: a reader resolving by exact SKU has nothing to match on, and that costs no
-request failures.
+what a key count throws away. One line then lists the keys that *mention* a
+product (`product`, `productId`, `productData`, any spelling) and - separately -
+whether any of them actually holds an id, because `isDemoProduct: null` mentions
+a product and answers nothing. When none of them holds one, the file says the
+reader cannot resolve the listing from this endpoint, and, if the record also
+carries the fields an edit changes (`title`, `priceCad`, `inventory`, `status`,
+`description`, `primaryImageUrl`, `category`, `sku`) under the listing's own id,
+says so: that record being writable directly is the one question a diagnosis
+cannot answer, and it is worth asking before a shop is written off as uneditable.
+
+The file's copy of the console **leaves out the progress markers**, with a line
+saying how many were omitted. A 2,596-row read emits ~250
+`ALEX_COLLECT_PROGRESS:` lines; left in, they are the whole file and the five
+lines that matter are lost inside them. The markers are still parsed - the
+phases and counts come from them - they are simply not printed as if they were
+the reader's words. An empty `sku` on the row is noted but not blamed: a reader
+that has the listing id asks for that listing's detail, and the record's keys
+are what decide the answer.
 
 **A read's account is kept beside the list.** The app records the run's output
 (up to 200,000 characters), the progress stages and the exact command in
