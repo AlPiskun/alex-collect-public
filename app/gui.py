@@ -53,6 +53,7 @@ import market_stock
 import photo_thumbs
 import sale_preview
 import cs_edit
+import cs_proof
 import cs_listing
 import cs_products
 import stock_compare
@@ -2025,6 +2026,7 @@ TOOLTIPS = {
     "Save the limit": "Remember this number in User Settings, where the same value is used by Fill your eBay store every time it chooses",
     "Open the last list": "Open the page written by the last selection (or the newest one on disk); nothing is read again",
     "Save a read diagnosis...": "Write one small text file for a plugin report: the read's own output, the progress phases it reported, one listing row and the detail response its lookup would have read - sanitised, with no cookie, token or password in it",
+    "Write the proof": "Write one field on the selected CanadianShopper listing, read the record back, and put the old value back - a real change for the seconds it takes, and the only way to prove the site honours that field; one field, one listing, and nothing on your website",
     "Choose the cards:": "What decides which unlisted cards come first - dearest, newest, oldest, cheapest, or in the order typed below; the choice is remembered",
     "Only this category:": "Leave blank to choose from the whole catalogue; type part of a category's name (hockey) to choose only from products filed under it",
     "These cards first:": "Titles, SKUs or product ids separated by commas, in the order you want them listed - used by \u201cIn the order I type\u201d, and anything not found is named on the console",
@@ -9421,6 +9423,134 @@ def build_csledit(parent, app):
                                command=save_diagnosis)
     diagnosis_btn.pack(side="left", padx=(8, 0))
     add_tooltip(diagnosis_btn, TOOLTIPS["Save a read diagnosis..."])
+
+    def prove_field():
+        """Write one field, read it back, and put it back - the proof.
+
+        A field is not proven by a route advertising a method, nor by a write
+        the site accepts: only by a value the record shows afterwards, and the
+        old value showing again after the restore. One listing, one field, and
+        a value that says what it is for the seconds it is on the listing.
+        """
+        if not state["items"]:
+            messagebox.showinfo(
+                "Nothing read yet",
+                "Read CanadianShopper's listings first: a proof writes one "
+                "field on one listing, so it needs a listing to address.",
+                parent=box.winfo_toplevel())
+            return
+        item = selected()
+        if item is None:
+            return
+        listing_id = cs_edit.listing_id(item)
+        if not listing_id:
+            messagebox.showinfo(
+                "That listing has no id",
+                "The list carries no id for that listing, so there is no "
+                "record this app could address.\n\nNothing was written.",
+                parent=box.winfo_toplevel())
+            return
+        field = cs_proof.field_for(str(proof_var.get() or ""))
+        if field not in cs_proof.FIELD_LABELS:
+            messagebox.showinfo(
+                "Which field?",
+                "Choose the field to prove from the list beside the button. "
+                "Nothing was written.", parent=box.winfo_toplevel())
+            return
+        staged_url = ""
+        if field == "primaryImageUrl":
+            staged_url = str(simpledialog.askstring(
+                "The staged photo URL",
+                "Paste the address of the staged photo of this card - the one "
+                "the image staging step prepared.\n\nIt replaces the "
+                "listing's main photo for the seconds the proof runs and is "
+                "then put back, so it has to show the same card.",
+                parent=box.winfo_toplevel()) or "").strip()
+            if not staged_url:
+                say("No staged photo URL was given, so nothing was written.",
+                    "dim")
+                return
+        label = cs_proof.field_label(field)
+        named = str(item.get("name") or "that listing")
+        if not ask_yes(
+                "Write a proof to one listing?",
+                "%s\n\nThis writes one field - %s - on CanadianShopper, reads "
+                "the record back, and puts the old value back. It is a real "
+                "change to a live listing for the few seconds it takes, and it "
+                "is the only way to know whether the site honours that field."
+                "\n\nThe record's own id is the address. No product id is "
+                "used, no other field is sent, and your website is not "
+                "touched.\n\nWrite the proof now?" % (named, label)):
+            say("The proof was not confirmed; nothing was written.", "dim")
+            return
+        url = cs_edit.detail_url(listing_id, CS_HOME)
+        cookie = load_cookie_text() or ""
+        say("Proving %s on %s: writing one field, reading it back, putting it "
+            "back..." % (label.lower(), named), "cmd")
+        summary.configure(text="Proving %s on %s..." % (label.lower(), named))
+
+        def work():
+            return cs_proof.prove(field, url, cookie, staged_url=staged_url,
+                                  listing=item)
+
+        def done(result, error):
+            if error is not None:
+                say("The proof could not run: %s. Nothing was written." % error,
+                    "err")
+                summary.configure(text="The proof could not run: %s" % error)
+                return
+            good = cs_proof.proven(result)
+            say(cs_proof.sentence(result), "ok" if good else "err")
+            if result.get("verdict") == "written" and result.get("restored"):
+                #  This is the sentence a write path may be built on, so it
+                #  says outright what was settled and that it was put back.
+                say("%s is settled: the record kept the new value and the old "
+                    "one came back. That is the evidence an edit needs."
+                    % cs_proof.field_label(result.get("field")), "ok")
+            elif result.get("verdict") == "written":
+                say("The old value was not read back after the restore. Check "
+                    "that listing on CanadianShopper before anything else.",
+                    "err")
+            elif result.get("verdict") == "ignored":
+                say("The site answered but did not keep the value, so a write "
+                    "path must not be built on a 200 for %s alone."
+                    % cs_proof.field_label(result.get("field")), "dim")
+            text = cs_proof.report_text(result, listing=item,
+                                        app_version=VERSION)
+            path = cs_proof.proof_path(BASE)
+            saved = None
+            try:
+                path.write_text(text, encoding="utf-8")
+                saved = path
+            except OSError as exc:
+                say("Could not save the proof: %s" % exc, "err")
+            cs_proof.remember(BASE, result, listing=item)
+            summary.configure(text=cs_proof.sentence(result))
+            if saved is not None:
+                say("Proof saved: %s (no cookie, token or password is in it)."
+                    % saved, "dim")
+                if not open_path(saved):
+                    messagebox.showinfo(
+                        "Proof written",
+                        "Saved to:\n%s\n\nAttach it to the plugin report if "
+                        "the field is not honoured." % saved,
+                        parent=box.winfo_toplevel())
+
+        in_background(app, work, done)
+
+    proof_row = ttk.Frame(box)
+    proof_row.pack(anchor="w", pady=(4, 0))
+    ttk.Label(proof_row, text="Prove a field can be written:").pack(side="left")
+    proof_var = tk.StringVar(master=proof_row,
+                             value=cs_proof.field_label("priceCad"))
+    proof_box = ttk.Combobox(proof_row, textvariable=proof_var,
+                             state="readonly", width=14,
+                             values=cs_proof.labels())
+    proof_box.pack(side="left", padx=(6, 0))
+    prove_btn = ttk.Button(proof_row, text="Write the proof",
+                           command=prove_field)
+    prove_btn.pack(side="left", padx=(6, 0))
+    add_tooltip(prove_btn, TOOLTIPS["Write the proof"])
 
     list_frame = ttk.Frame(box)
     listing = tk.Listbox(list_frame, height=9, exportselection=False)

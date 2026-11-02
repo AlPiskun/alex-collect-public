@@ -44,6 +44,7 @@ def load_harness():
 harness = load_harness()
 gui = harness.gui
 import cs_edit                                        # noqa: E402
+import cs_proof                                       # noqa: E402
 import stock_compare                                  # noqa: E402
 
 #  A list as plugin 1.0.31 reports it: every listing keeps its own catalogue
@@ -1938,6 +1939,172 @@ def test_the_panel_writes_a_diagnosis():
           not list(folder2.glob("cs-read-diagnosis-*.txt")), "")
 
 
+def test_the_panel_writes_a_proof():
+    """The proof button: one field on the listing on screen, put back.
+
+    The same rule as the diagnosis button - the person who has just been asked
+    "does the site honour this field" should not have to build the request by
+    hand - but this one *writes*, so what it writes has to be one field, on one
+    listing, addressed by the record's own id, and put back; and what it says
+    afterwards must never call a field proven when the record did not keep it.
+    """
+    print()
+    print("== 5i. the proof button writes one field and puts it back ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    rows = [{"id": "94b93f6040f5401daabaa9c936efa5a7", "product_id": 0,
+             "sku": "OPC1973-74-112", "title": "Jim Pappin #112",
+             "status": "active", "inventory": 1, "price": "12.50"}]
+    asked, questions = [], []
+
+    def fake_prove(field, url, cookie="", staged_url="", listing=None):
+        asked.append({"field": field, "url": url, "staged": staged_url,
+                      "listing": dict(listing or {})})
+        return {"field": field, "label": cs_proof.field_label(field),
+                "verdict": "written", "written": True, "restored": True,
+                "old": 12.5, "trial": "12.51", "restore": 12.5,
+                "after": "12.51", "final": 12.5, "status": 200,
+                "restore_status": 200, "url": url,
+                "why": "The site accepted the price and the record shows it.",
+                "steps": [{"step": "GET the record", "status": 200}],
+                "at": "2026-11-02 09:00:00"}
+
+    def yes(title, question, **kwargs):
+        questions.append((title, question))
+        return True
+
+    harness._BOX.shown[:] = []
+    harness._BOX.askyesno = yes
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(cs_proof, "prove", fake_prove):
+        find(parent, gui.ttk.Button,
+             "Read CanadianShopper's listings").invoke()
+        run = app.runs[-1]
+        Path(run["args"][1]).write_text(json.dumps({"items": rows}),
+                                       encoding="utf-8")
+        run["on_done"](0)
+        listing_box = next(widget for widget in parent.walk()
+                           if isinstance(widget, gui.tk.Listbox))
+        listing_box.selection_set(0)
+        app.lines[:] = []
+        find(parent, gui.ttk.Button, "Write the proof").invoke()
+
+    check("the field chooser offers every field a proof can settle",
+          any(set(cs_proof.labels()) <= set(widget.cget("values") or ())
+              for widget in parent.walk()
+              if isinstance(widget, gui.ttk.Combobox)),
+          str([widget.cget("values") for widget in parent.walk()
+               if isinstance(widget, gui.ttk.Combobox)]))
+    check("pressing it writes exactly one field on the listing on screen",
+          len(asked) == 1 and asked[0]["field"] == "priceCad",
+          str(asked))
+    check("and addresses the record's own id, never a product id",
+          asked[0]["url"] == "https://canadianshopper.ca/api/data/product/"
+          "94b93f6040f5401daabaa9c936efa5a7" and
+          "product_id" not in asked[0]["url"], str(asked[0]["url"]))
+    check("the question says it is a real change and what is not touched",
+          questions and "record's own id" in questions[0][1] and
+          "No product id is used" in questions[0][1] and
+          "website is not touched" in questions[0][1], str(questions))
+
+    proof_files = sorted(folder.glob("cs-proof-*.txt"))
+    check("a proof file is written beside the app", len(proof_files) == 1,
+          str(proof_files))
+    text = proof_files[0].read_text(encoding="utf-8") if proof_files else ""
+    check("with the listing, the field and the record's address in it",
+          "94b93f6040f5401daabaa9c936efa5a7" in text and
+          "Price (priceCad)" in text and
+          "/api/data/product/94b93f6040f5401daabaa9c936efa5a7" in text,
+          text[:400])
+    check("the cookie is used but never written into it",
+          "secret-value" not in text, text[:400])
+    check("what is settled is said out loud on the console",
+          any("is settled" in line for _tag, line in app.lines),
+          str(app.lines[-6:]))
+    check("and the console says where the proof went",
+          any("Proof saved" in line for _tag, line in app.lines),
+          str(app.lines[-6:]))
+    saved = cs_proof.load_proofs(folder)
+    check("the field is remembered as proven",
+          cs_proof.settled("priceCad", saved), str(saved))
+
+    #  The main photo is proven with a staged photo of the same card, so the
+    #  button asks for that address and passes it through.
+    proof_box = next(widget for widget in parent.walk()
+                     if isinstance(widget, gui.ttk.Combobox) and
+                     "Main photo" in (widget.cget("values") or ()))
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(gui, "simpledialog") as dialog, \
+            patch.object(cs_proof, "prove", fake_prove):
+        dialog.askstring = lambda *a, **k: "https://cs.example/staged.webp"
+        proof_box._kw["textvariable"].set("Main photo")
+        find(parent, gui.ttk.Button, "Write the proof").invoke()
+    check("a photo proof is given the staged photo URL, and nothing else",
+          asked[-1]["field"] == "primaryImageUrl" and
+          asked[-1]["staged"] == "https://cs.example/staged.webp",
+          str(asked[-1]))
+
+    #  Nothing read: a proof of nothing is worse than a word.
+    folder2, app2, parent2 = build_panel()
+    harness._BOX.shown[:] = []
+    harness._BOX.askyesno = lambda *a, **k: True
+    find(parent2, gui.ttk.Button, "Write the proof").invoke()
+    check("with nothing read it asks for a read instead of writing",
+          harness._BOX.shown and
+          "Read CanadianShopper's listings first" in
+          str(harness._BOX.shown[0][1]), str(harness._BOX.shown))
+    check("and writes no proof at all",
+          not list(folder2.glob("cs-proof-*.txt")), "")
+
+    #  A row with no id cannot be addressed - and a proof is a write, so it is
+    #  refused before anything is sent rather than guessed at.
+    folder3, app3, parent3 = build_panel()
+    cookie3 = folder3 / "cookie.txt"
+    cookie3.write_text("session_token=secret-value\n", encoding="utf-8")
+    harness._BOX.shown[:] = []
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie3), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(cs_proof, "prove", fake_prove):
+        find(parent3, gui.ttk.Button,
+             "Read CanadianShopper's listings").invoke()
+        run = app3.runs[-1]
+        Path(run["args"][1]).write_text(
+            json.dumps({"items": [{"name": "A row with no id",
+                                   "status": "active", "price": "5.00"}]}),
+            encoding="utf-8")
+        run["on_done"](0)
+        before = len(asked)
+        find(parent3, gui.ttk.Button, "Write the proof").invoke()
+    check("a listing with no record id is refused, not guessed at",
+          any("no id" in str(payload) for _kind, payload in harness._BOX.shown),
+          str(harness._BOX.shown))
+    check("and nothing was written for it", len(asked) == before, str(asked))
+    check("no proof file was made for it either",
+          not list(folder3.glob("cs-proof-*.txt")), "")
+    harness._BOX.askyesno = lambda *a, **k: False
+    #  Leave the module's dialog answers as the rest of the suite expects them.
+
+
 def test_the_panel_quotes_the_readers_resolution():
     """A read that asked and got nothing back says so, on the console.
 
@@ -2620,6 +2787,7 @@ def main():
     test_the_list_says_which_plugin_read_it()
     test_the_editing_panel_says_what_stopped_a_read()
     test_the_panel_writes_a_diagnosis()
+    test_the_panel_writes_a_proof()
     test_the_panel_quotes_the_readers_resolution()
     test_the_evidence_outlives_the_window()
     test_the_panel_reads_and_lists()

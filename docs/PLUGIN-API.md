@@ -770,6 +770,49 @@ refuses an ambiguous match, sends only fields proven accepted, and leaves the
 existing `/api/products/<product_id>/` behaviour untouched for records that do
 carry an explicit product reference. Until then the updater does not change.
 
+**Proving a field, one listing at a time.** A `PATCH` that advertises itself,
+or a vendor's own tool seen writing a field, settles the method and that one
+field; every other field still needs the controlled, reversible change above.
+**Prove a field can be written** - beside **Save a read diagnosis...** in the
+edit panel - runs exactly that proof:
+
+- one listing, chosen in the list, addressed at
+  `/api/data/product/<listing-id>`: the record's own id, never called
+  `product_id`, and never the product id from `/api/products/<product_id>/`;
+- exactly one field per run: `priceCad`, `title`, `description`, `inventory`, or
+  `primaryImageUrl`;
+- the trial value is marked and reversible - a cent above the price, ` PROOF`
+  on the title (cut first when the title is near a marketplace's limit), one
+  dated marker line on the description, one more card on the count, and for the
+  main photo a URL from the image staging step that shows the same card, since
+  a proof must not show a shopper a different picture;
+- the record is read first and the plan is made from **that** read, so a value
+  changed in the dashboard while the panel was open is never "restored" to an
+  older one;
+- `status` is never proven: archiving a live listing and putting it back is not
+  the same record it was, and a visibility change is not something a proof
+  should do to a live listing to find out;
+- the old value is written back and the record is read a third time, so the
+  verdict separates the three answers a site gives: **written** (the record
+  shows the trial value), **ignored** (the site answered 200 and the record did
+  not change - a 200 is never proof on its own), and **refused** (not a 2xx),
+  plus unreadable/unknown when a read fails. A write that cannot be read back
+  is not called proven, and the old value is put back anyway.
+
+Each proof writes a small `cs-proof-<date>.txt` beside the app - the listing,
+the record's address, the field, before / wrote / read back / put back / final,
+every status and what it settles, with no cookie, token or password - and
+`cs-field-proofs.json` remembers which fields the last proof left written **and
+put back**. A refusal, an ignored write or a failed restore replaces that entry:
+a proof that stopped being true is worse than none.
+
+What a proof licenses is narrow: a `written`-and-restored field is the evidence
+the listing-record write path below needs **for that field**, and nothing is
+written beyond the proof itself. The edit panel still writes through
+`marketplace.listing_update` and `/api/products/<product_id>/`; no bulk,
+unattended or per-field write is added on the strength of a proof, and a field
+no proof has settled stays read-only.
+
 **A hard-failure report, if the failures turn out to be deterministic.** The
 counts do not say which listings failed, and a read caches no failures, so a
 re-read repeats every unresolved detail request. If the same listings fail
