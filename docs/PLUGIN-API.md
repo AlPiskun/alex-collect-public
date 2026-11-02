@@ -742,6 +742,40 @@ answer:
 beside the answer. The probe is one extra request per diagnosis, never part of
 a read.
 
+**What each answer licenses, agreed with the plugin's author.** The method
+answer is a gate, not a decision to edit:
+
+- **`GET, HEAD` only** - no listing-record write path is added; "not editable on
+  CanadianShopper" is final for those fields.
+- **`405`, `501`, no `Allow`** - inconclusive; no write is attempted and none is
+  designed.
+- **`PATCH` or `PUT` advertised** - the method is established and the field
+  behaviour is not. The next step is a controlled proof, not an implementation.
+
+A no-op `PATCH` (carrying the values a listing already has) is **not** that
+proof on its own: a server can accept a request and silently ignore a field, so
+a 200 shows only that the route tolerated it. Field behaviour needs the vendor's
+documentation, a response schema that establishes it, or a controlled,
+reversible change on a listing set aside for the purpose - read back before and
+after and compared over the whole record, timestamps and unrelated fields
+included, since even a no-op request may have side effects.
+
+If that proof arrives, the work is a **listing-record write path**, kept
+distinct from the dual-ID one: it addresses `/api/data/product/<listing-id>`
+with the record's own id, never calls that id `product_id`, matches exactly and
+refuses an ambiguous match, sends only fields proven accepted, and leaves the
+existing `/api/products/<product_id>/` behaviour untouched for records that do
+carry an explicit product reference. Until then the updater does not change.
+
+**A hard-failure report, if the failures turn out to be deterministic.** The
+counts do not say which listings failed, and a read caches no failures, so a
+re-read repeats every unresolved detail request. If the same listings fail
+again, the additive shape agreed on is an optional report with one entry per
+failed listing - `listing_id`, `kind` (`http` / `transport` / `json` / `empty`),
+`http_status` where there is one, and a short sanitized reason - leaving the
+`Stock resolution` line byte-identical and changing neither the resolver nor
+caching. It is not written before a re-read shows the failures repeat.
+
 **The console can say whether the lookups ran.** The reader's phases are
 evidence, not decoration: a read whose `ids` stage was reported and came back
 with no usable product id is a different report from one whose stage never

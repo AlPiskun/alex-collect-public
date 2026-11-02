@@ -1182,13 +1182,17 @@ def methods_note(probe):
                 "read-only. Inconclusive; nothing was changed." % status)
     writable = [name for name in allowed if name in WRITE_METHODS]
     if any(name in ("PATCH", "PUT") for name in writable):
-        return ("**The vendor's own route states it accepts %s.** That is the "
-                "record which holds a listing's title, price, stock and state, "
-                "addressed by the listing id the reader already has - so it "
-                "can be written, and the product id is not needed to address "
-                "it. Which fields it accepts is still unproven: a PATCH "
-                "carrying the values a listing already has would confirm that "
-                "without changing anything, and only with your say-so."
+        return ("**The vendor's own route states it accepts %s.** That settles "
+                "the method, not the fields: the record it addresses holds a "
+                "listing's title, price, stock and state under the listing id "
+                "the reader already has, but which fields a write actually "
+                "honours is still unproven. An accepted no-op request would "
+                "show only that the route tolerated it - a server can accept a "
+                "request and ignore a field - so the field question needs the "
+                "vendor's documentation, a response schema that establishes "
+                "field behaviour, or a controlled, reversible change on a "
+                "listing set aside for it, read back before and after and "
+                "compared over the whole record, timestamps included."
                 % ", ".join(writable))
     return ("The vendor's own route states it accepts only %s, so it is "
             "read-only: the record that holds the listing's title, price and "

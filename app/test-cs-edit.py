@@ -1285,10 +1285,18 @@ def test_the_diagnosis_file():
           cs_edit.methods_note(refused))
     writable = cs_edit.methods_note({"status": 200,
                                      "allow": ["GET", "HEAD", "PATCH"]})
-    check("PATCH advertised means the record can be written at that address",
+    check("PATCH advertised settles the method, and says only that",
           "states it accepts PATCH" in writable and
-          "listing id the reader already has" in writable and
+          "settles the method, not the fields" in writable and
           "still unproven" in writable, writable)
+    check("and it does not offer a no-op write as proof of the fields",
+          "tolerated it" in writable and
+          "can accept a request and ignore a field" in writable and
+          "would confirm that" not in writable, writable)
+    check("while naming what would settle them",
+          "vendor's documentation" in writable and
+          "reversible change" in writable and
+          "timestamps included" in writable, writable)
     read_only = cs_edit.methods_note({"status": 200, "allow": ["GET", "HEAD"]})
     check("GET and HEAD alone mean read-only, and make the verdict final",
           "read-only" in read_only and "final answer" in read_only, read_only)
