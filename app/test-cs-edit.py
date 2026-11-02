@@ -976,6 +976,158 @@ def test_the_readers_own_numbers():
                                                    needed="1.0.34"), "")
 
 
+def test_the_diagnosis_file():
+    """The three things the plugin's author asked for, and the sanitiser.
+
+    A round trip with the reader's author ended in *send the console output,
+    whether the ids phase appeared, and one row with its detail response* -
+    the plugin could not reproduce 0 ids, which means the next answer has to
+    be evidence rather than another theory. Everything below is what makes
+    that file safe to paste: the row's shape without its secrets, and a detail
+    request that answers instead of raising.
+    """
+    print()
+    print("== 5d5. the file a plugin author asked for ==")
+
+    #  ---- the sanitiser: shapes, not accounts
+    secret = cs_edit.sanitize({"sessionToken": "abc123", "title": "Walt Tkaczuk"})
+    check("a key that names a secret has its value hidden, not printed",
+          "hidden" in secret and "abc123" not in secret, secret)
+    long_text = cs_edit.sanitize({"title": "W" * 120})
+    check("a long string is cut, and still says how long it was",
+          "str(120)" in long_text and "W" * 60 not in long_text and
+          "\u2026" in long_text, long_text)
+    check("a zero is kept as a zero: that is the question being asked",
+          "product_id: int 0" in cs_edit.sanitize({"product_id": 0}), "")
+    many = cs_edit.sanitize({"images": list(range(30))})
+    check("a long list is capped and says how many were left out",
+          "... 18 more" in many and "29" not in many, many)
+    deep = cs_edit.sanitize({"a": {"b": {"c": {"d": "e"}}}})
+    check("nesting stops at three, as an object with a key count",
+          "object(1 keys)" in deep and "d:" not in deep, deep)
+
+    #  ---- which key (if any) is the product reference
+    check("a key holding zero is reported as a key - and as not an id",
+          cs_edit.product_reference_keys({"product_id": 0}) ==
+          [("product_id", "zero - not an id")], "")
+    check("a real id is reported present",
+          cs_edit.product_reference_keys({"product_id": "4321"}) ==
+          [("product_id", "present")], "")
+    check("an empty key is told apart from a missing one",
+          cs_edit.product_reference_keys({"product_id": ""}) ==
+          [("product_id", "empty")], "")
+    check("a row with no product key at all reports nothing",
+          cs_edit.product_reference_keys({"id": "a1", "sku": "X"}) == [], "")
+    check("the camel-case spelling is found too",
+          cs_edit.product_reference_keys({"productId": 7}) ==
+          [("productId", "present")], "")
+
+    #  ---- whether the reader's own progress says its lookups ran
+    ran = cs_edit.phases_note(["read", "ids"])
+    check("a reported ids phase means the lookups ran",
+          "the lookups ran" in ran and "not usable" in ran, ran)
+    failed = cs_edit.phases_note(["read", "ids"], 3)
+    check("and with failures said, it says some of them failed",
+          "some of them failed" in failed and "not usable" not in failed,
+          failed)
+    missing = cs_edit.phases_note(["read", "list"])
+    check("phases without an id phase mean the lookups never started",
+          "did not run at all" in missing and "ids" not in missing, missing)
+    none = cs_edit.phases_note([])
+    check("a reader that reports no phases is said to report none",
+          "no progress phases at all" in none, none)
+
+    #  ---- the one address, and the listing id it is built from
+    check("the detail address is the one the plugin's reader uses",
+          cs_edit.detail_url("94b93f60") ==
+          "https://canadianshopper.ca/api/data/product/94b93f60", "")
+    check("a base with a trailing slash does not double it",
+          cs_edit.detail_url("abc", base="https://x.example/") ==
+          "https://x.example/api/data/product/abc", "")
+    check("no listing id, no address to call",
+          cs_edit.detail_url("") == "", "")
+    check("a row's own id is not its product id",
+          cs_edit.listing_id({"id": "14effcaceb8a", "product_id": 4321}) ==
+          "14effcaceb8a", "")
+
+    #  ---- one request, answering instead of raising
+    seen = []
+
+    def opener(url, cookie):
+        seen.append((url, cookie))
+        return 200, "application/json", '{"product": {"id": "999"}}'
+
+    check("the request is made and its answer handed back",
+          cs_edit.fetch_detail("https://cs.example/api/data/product/x",
+                              "session_token=z", opener=opener) ==
+          (200, "application/json", '{"product": {"id": "999"}}'), "")
+    check("and it was made with the person's own session",
+          seen and seen[0][1] == "session_token=z", str(seen))
+    check("no address, no request at all",
+          cs_edit.fetch_detail("", "cookie", opener=opener) == (0, "", "") and
+          len(seen) == 1, str(seen))
+
+    def refusing(url, cookie):
+        raise OSError("no route to host")
+
+    import urllib.error
+    with patch.object(urllib.request, "urlopen",
+                      side_effect=urllib.error.URLError("dns")):
+        answer = cs_edit.fetch_detail("https://cs.example/api/data/product/x")
+    check("a request that cannot be made is an answer, never an exception",
+          answer[0] == 0 and "dns" in answer[2], str(answer))
+
+    #  ---- the file itself
+    row = {"id": "94b93f6040f5401daabaa9c936efa5a7", "product_id": 0,
+           "sku": "OPC1973-74-112", "sessionToken": "abc123",
+           "title": "1973-74 O-Pee-Chee Jim Pappin #112", "images": []}
+    output = ("stock.list: 2596 listings, 0 with a real product id, 2596 "
+              "without the key, 0 reported as 0")
+    detail = {"url": cs_edit.detail_url("94b93f60"), "status": 200,
+              "content_type": "application/json",
+              "body": json.dumps({"product": {"id": "999"}, "sku": "OPC-1",
+                                  "owner": {"email": "a@b.c"}})}
+    text = cs_edit.diagnosis_text(row=row, output=output,
+                                  stages=["read", "ids"], plugin="1.0.38",
+                                  command="cs-stock.py --stock-out cs-stock.json",
+                                  detail=detail, total=2596, editable=0,
+                                  app_version="3.20")
+    check("the file carries the reader's own count line",
+          "2596 listings, 0 with a real product id" in text, "")
+    check("the app's own count is beside it, so the two can be compared",
+          "2596 listing(s), 0 with a usable product id" in text, "")
+    check("the phases are in it, with the sentence they mean",
+          "Phases the reader reported: read, ids" in text and
+          "the lookups ran" in text, "")
+    check("so is the row, with every product-reference key priced",
+          "product_id (zero - not an id)" in text and "sku:" in text, "")
+    check("and the detail request, with its status and its answer",
+          "GET https://canadianshopper.ca/api/data/product/94b93f60" in text
+          and "HTTP 200, application/json" in text and
+          'product:' in text, "")
+    check("the command the app ran is in it, because the flag matters",
+          "cs-stock.py --stock-out cs-stock.json" in text, "")
+    check("and nothing in it is a session: the token and the email are gone",
+          "abc123" not in text and "a@b.c" not in text, "")
+    folder_of_test = Path(tempfile.mkdtemp())
+    first = cs_edit.diagnosis_path(folder_of_test)
+    second = cs_edit.diagnosis_path(folder_of_test)
+    check("before anything is written, two calls name the same file",
+          first == second and first.name.startswith("cs-read-diagnosis-") and
+          first.name.endswith(".txt"), "%s / %s" % (first.name, second.name))
+    first.write_text("one", encoding="utf-8")
+    third = cs_edit.diagnosis_path(folder_of_test)
+    check("after one is written, the next goes beside it, nothing replaced",
+          third != first and third.name.endswith("-2.txt") and
+          first.read_text(encoding="utf-8") == "one",
+          "%s / %s" % (first.name, third.name))
+    check("a body that is not JSON is described instead of pasted whole",
+          "not JSON" in cs_edit._body_for_diagnosis("<html>denied</html>"), "")
+    check("an empty detail is not invented",
+          "the detail request" not in cs_edit.diagnosis_text(row=row),
+          "")
+
+
 def test_plugin_1_0_35():
     """2,587 listings, every one with a string product id, resolved by the reader.
 
@@ -1215,6 +1367,94 @@ def test_the_editing_panel_says_what_stopped_a_read():
           str(app.lines[-5:]))
     check("and a 1.0.36 read is not told to update anything",
           not said("1.0.36 or newer"), str(app.lines[-5:]))
+
+
+def test_the_panel_writes_a_diagnosis():
+    """The button: one file, from the read that is on screen.
+
+    The person who has just been asked for evidence should not have to copy a
+    console by hand - the panel already has the run's output, its phases and a
+    row, and can read the one detail response the reader's lookup would read.
+    """
+    print()
+    print("== 5h. the diagnosis button writes one file ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    zeroed = [{"id": "94b93f6040f5401daabaa9c936efa5a7", "product_id": 0,
+               "sku": "OPC1973-74-112", "title": "Jim Pappin #112",
+               "status": "active", "inventory": 1}]
+    output = ("stock.list: 1 listing, 0 with a real product id, 1 without the "
+              "key, 0 reported as 0")
+    asked = []
+
+    def fake_detail(url, cookie_text="", **kwargs):
+        asked.append(url)
+        return (200, "application/json", json.dumps({"product": {"id": "9"}}))
+
+    harness._BOX.shown[:] = []
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(cs_edit, "fetch_detail", fake_detail):
+        app.stages_seen = lambda: ["read", "ids"]
+        app.runner = SimpleNamespace(output=output, cmd="cs-stock.py --stock-out x")
+        find(parent, gui.ttk.Button,
+             "Read CanadianShopper's listings").invoke()
+        run = app.runs[-1]
+        Path(run["args"][1]).write_text(json.dumps({"items": zeroed}),
+                                        encoding="utf-8")
+        run["on_done"](0)
+        app.lines[:] = []
+        find(parent, gui.ttk.Button,
+             "Save a read diagnosis...").invoke()
+
+    written = sorted(folder.glob("cs-read-diagnosis-*.txt"))
+    check("pressing it writes exactly one file, in the app's folder",
+          len(written) == 1, str(written))
+    text = written[0].read_text(encoding="utf-8") if written else ""
+    check("with the read's output, the phases and the listing's row in it",
+          output in text and "read, ids" in text and
+          "94b93f6040f5401daabaa9c936efa5a7" in text, text[:400])
+    check("and the detail request for the listing that was on screen",
+          asked == ["https://canadianshopper.ca/api/data/product/"
+                    "94b93f6040f5401daabaa9c936efa5a7"], str(asked))
+    check("the cookie is used but never written into the file",
+          "secret-value" not in text, text[:400])
+    check("the console says where it went, and that it is safe to send",
+          any("Diagnosis written" in line and "no cookie" in line
+              for _tag, line in app.lines), str(app.lines[-3:]))
+
+    #  A second press is a second piece of evidence: the same read diagnosed
+    #  later, or after a change - so the first file stays where it is.
+    with patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(cs_edit, "fetch_detail", fake_detail):
+        find(parent, gui.ttk.Button, "Save a read diagnosis...").invoke()
+    again = sorted(folder.glob("cs-read-diagnosis-*.txt"))
+    check("pressing it again keeps both files instead of replacing the first",
+          len(again) == 2 and again[-1].read_text(encoding="utf-8"), str(again))
+
+    #  Nothing read yet: a file made of nothing would be worse than a word.
+    folder2, app2, parent2 = build_panel()
+    harness._BOX.shown[:] = []
+    find(parent2, gui.ttk.Button, "Save a read diagnosis...").invoke()
+    check("with nothing read, it asks for a read instead of writing",
+          harness._BOX.shown and
+          "Read CanadianShopper's listings first" in
+          str(harness._BOX.shown[0][1]), str(harness._BOX.shown))
+    check("and writes no file at all",
+          not list(folder2.glob("cs-read-diagnosis-*.txt")), "")
 
 
 def test_the_panel_reads_and_lists():
@@ -1727,9 +1967,11 @@ def main():
     test_the_version_that_reports_product_ids()
     test_what_the_read_did_carry()
     test_the_readers_own_numbers()
+    test_the_diagnosis_file()
     test_plugin_1_0_35()
     test_the_list_says_which_plugin_read_it()
     test_the_editing_panel_says_what_stopped_a_read()
+    test_the_panel_writes_a_diagnosis()
     test_the_panel_reads_and_lists()
     test_the_edit_form()
     test_the_panel_refuses_what_it_cannot_do()

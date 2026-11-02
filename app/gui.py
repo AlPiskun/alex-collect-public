@@ -2003,6 +2003,7 @@ TOOLTIPS = {
     "Compare the last read instead (no new read)": "Compare now against the CanadianShopper list already on disk from an earlier read - it is named with its age wherever its counts appear, so nothing is mistaken for a fresh count, and no read is started",
     "Save the limit": "Remember this number in User Settings, where the same value is used by Fill your eBay store every time it chooses",
     "Open the last list": "Open the page written by the last selection (or the newest one on disk); nothing is read again",
+    "Save a read diagnosis...": "Write one small text file for a plugin report: the read's own output, the progress phases it reported, one listing row and the detail response its lookup would have read - sanitised, with no cookie, token or password in it",
     "Choose the cards:": "What decides which unlisted cards come first - dearest, newest, oldest, cheapest, or in the order typed below; the choice is remembered",
     "Only this category:": "Leave blank to choose from the whole catalogue; type part of a category's name (hockey) to choose only from products filed under it",
     "These cards first:": "Titles, SKUs or product ids separated by commas, in the order you want them listed - used by \u201cIn the order I type\u201d, and anything not found is named on the console",
@@ -2570,6 +2571,13 @@ class App(tk.Tk):
         if getattr(self, "_progress_closed", True):
             self.progress_hide()
             return        # the run is over; no late event may redraw this
+        #  The stage names a tool reports are evidence, not decoration: a
+        #  plugin's own phases are how "the lookups ran" is told apart from
+        #  "they never started", and that question has cost one round trip
+        #  with the plugin's author already. Kept for the whole run, in the
+        #  order they arrived, without repeats.
+        if stage and stage not in self._run_stages:
+            self._run_stages.append(stage)
         if stage == "finish":
             self.progress_hide()
             self._progress_finished = True
@@ -2609,8 +2617,13 @@ class App(tk.Tk):
         except (AttributeError, tk.TclError):
             pass
 
+    def stages_seen(self):
+        """The stage names the last run reported, in order; [] if it said none."""
+        return list(getattr(self, "_run_stages", []) or [])
+
     def on_run_start(self, title, cmd):
         self._saw_dangling_prompt = False
+        self._run_stages = []
         self._hinted = set()
         self._progress_closed = False
         self._progress_finished = False
@@ -8665,8 +8678,13 @@ def build_csledit(parent, app):
         state["read"] = "live"
         #  The read's own words, kept for the sentence a no-id list gets: the
         #  reader's count line is quoted from here rather than from whatever
-        #  run happens to be in the runner when a button is pressed.
+        #  run happens to be in the runner when a button is pressed. Its
+        #  progress phases are kept with them, because they are what tells
+        #  "the lookups ran" apart from "they never started".
         state["output"] = last_tool_output(app)
+        state["stages"] = app.stages_seen() if hasattr(app, "stages_seen") \
+            else []
+        state["command"] = getattr(getattr(app, "runner", None), "cmd", "")
         editable, total = cs_edit.product_id_counts(items)
         note = "%d listings read from CanadianShopper." % total
         load(items, note)
@@ -8695,7 +8713,8 @@ def build_csledit(parent, app):
             #  none is called a defect, because by then it is one.
             said = cs_edit.product_id_gap(
                 items, plugin=plugin_version(), needed=CS_PRODUCT_ID_VERSION,
-                reader_text=last_tool_output(app))
+                reader_text=last_tool_output(app),
+                stages=state.get("stages") or [])
             if said:
                 say(said[:1].upper() + said[1:], "err")
         pending, state["then"] = state["then"], None
@@ -8740,6 +8759,18 @@ def build_csledit(parent, app):
                      on_done=lambda rc: arrived(rc, out))
 
     # --------------------------------------------------------------- the list
+    def selected_raw():
+        """The clicked listing, quietly: ``None`` when nothing is clicked.
+
+        The diagnosis wants a row without asking a question first - a person
+        who pressed it with nothing selected gets the first row, not a dialog.
+        """
+        picked = listing.curselection()
+        if not picked or not state["rows"]:
+            return None
+        index = picked[0]
+        return state["rows"][index] if index < len(state["rows"]) else None
+
     def selected():
         picked = listing.curselection()
         if not picked or not state["rows"]:
@@ -8907,7 +8938,8 @@ def build_csledit(parent, app):
             said = cs_edit.product_id_gap(
                 state["items"], plugin=plugin_version(),
                 needed=CS_PRODUCT_ID_VERSION, works=False,
-                reader_text=state.get("output") or last_tool_output(app))
+                reader_text=state.get("output") or last_tool_output(app),
+                stages=state.get("stages") or [])
             say("%s cannot be changed from here: %s Nothing was sent."
                 % (named, said), "err")
             summary.configure(text="No listing in this read has a product "
@@ -9233,6 +9265,72 @@ def build_csledit(parent, app):
     add_tooltip(read_btn,
                 "Read every listing on CanadianShopper, with its state and "
                 "stock, so it can be searched here; nothing is changed")
+
+    def save_diagnosis():
+        """Write the three things a plugin author asks for, in one file.
+
+        A read with no product ids came back from a reader its author could
+        not fault, and the next question was *the console output, whether the
+        ids phase appeared, and one row with its detail response*. The app has
+        all three - the run's own output, the stages it reported, one row - and
+        can read the one detail response the reader's lookup would have read.
+        Everything written is sanitised, so the file can be pasted into a
+        conversation without handing over a session.
+        """
+        if not state["items"]:
+            messagebox.showinfo(
+                "Nothing read yet",
+                "Read CanadianShopper's listings first: the diagnosis is made "
+                "from that read's own output.",
+                parent=box.winfo_toplevel())
+            return
+        item = selected_raw() or state["items"][0]
+        if not isinstance(item, dict):
+            item = {"value": item}
+        listing_id = cs_edit.listing_id(item)
+        plugin = plugin_version()
+        output = state.get("output") or last_tool_output(app)
+        stages = state.get("stages") or []
+        editable, total = cs_edit.product_id_counts(state["items"])
+        cookie = load_cookie_text() or ""
+        url = cs_edit.detail_url(listing_id, CS_HOME)
+        say("Reading one listing's detail to go with the diagnosis...", "dim")
+
+        def work():
+            status, content_type, body = cs_edit.fetch_detail(url, cookie)
+            return {"url": url, "status": status,
+                    "content_type": content_type, "body": body}
+
+        def done(detail, error):
+            if error is not None:
+                detail = {"url": url, "status": 0, "content_type": "",
+                          "body": "the request failed: %s" % error}
+            text = cs_edit.diagnosis_text(
+                row=item, output=output, stages=stages, plugin=plugin,
+                command=state.get("command") or
+                getattr(getattr(app, "runner", None), "cmd", ""),
+                detail=detail or {}, total=total, editable=editable,
+                app_version=VERSION)
+            path = cs_edit.diagnosis_path(BASE)
+            try:
+                path.write_text(text, encoding="utf-8")
+            except OSError as exc:
+                say("Could not write the diagnosis: %s" % exc, "err")
+                return
+            say("Diagnosis written: %s (no cookie, token or password is in "
+                "it)." % path, "ok")
+            if not open_path(path):
+                messagebox.showinfo(
+                    "Diagnosis written",
+                    "Saved to:\n%s\n\nAttach it to the plugin report."
+                    % path, parent=box.winfo_toplevel())
+
+        in_background(app, work, done)
+
+    diagnosis_btn = ttk.Button(filter_row, text="Save a read diagnosis...",
+                               command=save_diagnosis)
+    diagnosis_btn.pack(side="left", padx=(8, 0))
+    add_tooltip(diagnosis_btn, TOOLTIPS["Save a read diagnosis..."])
 
     list_frame = ttk.Frame(box)
     listing = tk.Listbox(list_frame, height=9, exportselection=False)

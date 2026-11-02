@@ -25,6 +25,9 @@ in this module touches a site.
 
 import json
 import re
+import urllib.error
+import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 import stock_compare
@@ -726,8 +729,266 @@ def ids_were_asked_for_note(text_has_lookups=False):
             "reader's line above, is what to send with a report.")
 
 
+#: Stage names a reader may use for its product-id phase. The plugin's own
+#: word is ``ids``; the others are the spellings a later reader might pick, and
+#: recognising a few costs nothing while missing one costs a wrong sentence.
+_ID_PHASES = ("ids", "id", "product-ids", "product_ids", "productids",
+              "resolving ids", "lookups")
+
+
+def phases_note(stages, lookups_failed=0):
+    """What the reader's own progress phases say about whether it looked ids up.
+
+    This is the question that decided a round trip with the plugin's author:
+    the same reader resolves ids when the phase runs, so a read with none is
+    either *the lookups never ran* or *they ran and came back empty* - and the
+    progress markers the reader emits answer which. A reader that emits no
+    phases costs nothing but this sentence, which then says so instead of
+    guessing.
+    """
+    stages = [str(stage).strip() for stage in (stages or []) if str(stage).strip()]
+    if not stages:
+        return ("The reader reported no progress phases at all, so this "
+                "console cannot say whether its lookups ran.")
+    listed = ", ".join(stages)
+    if any(stage.casefold() in _ID_PHASES for stage in stages):
+        return ("The reader reported its product-id phase during this read "
+                "(%s), so the lookups ran%s." %
+                (listed, " and some of them failed" if lookups_failed else
+                 " - and the ids it sent back were not usable"))
+    return ("The reader reported these phases - %s - and never a product-id "
+            "phase, so its lookups did not run at all." % listed)
+
+
+#: Key names whose values are never put in a diagnosis file. The file is meant
+#: to be pasted into a conversation about a plugin, and a cookie or a token in
+#: it would be a login handed over by accident.
+_SECRET_KEY = re.compile(
+    r"token|cookie|secret|password|passwd|session|auth|credential|apikey|"
+    r"api_key|email|phone|address", re.IGNORECASE)
+
+
+def sanitize(value, limit=40, depth=0, max_items=12):
+    """A value reduced to what a plugin author needs and nothing more.
+
+    Key names, value types, lengths and short previews: enough to see whether a
+    product reference is there and in what shape, and not enough to be somebody's
+    account. Anything under a key that names a secret is hidden, strings are
+    cut, collections are capped, and nesting stops at ``depth`` 3.
+    """
+    if isinstance(value, dict):
+        if depth >= 3:
+            return "object(%d keys)" % len(value)
+        lines = []
+        for index, (key, item) in enumerate(value.items()):
+            if index >= max_items:
+                lines.append("... %d more key(s)" % (len(value) - max_items))
+                break
+            name = str(key)
+            if _SECRET_KEY.search(name):
+                lines.append("%s: (hidden - it is not part of the question)" % name)
+                continue
+            lines.append("%s: %s" % (name, sanitize(item, limit, depth + 1,
+                                                    max_items)))
+        return "{\n" + "\n".join("  " * (depth + 1) + line for line in lines) \
+            + "\n" + "  " * depth + "}"
+    if isinstance(value, (list, tuple)):
+        if depth >= 3:
+            return "list(%d)" % len(value)
+        items = [sanitize(item, limit, depth + 1, max_items)
+                 for item in list(value)[:max_items]]
+        if len(value) > max_items:
+            items.append("... %d more" % (len(value) - max_items))
+        if not items:
+            return "[]"
+        return "[\n" + "\n".join("  " * (depth + 1) + "  " * depth + item
+                                  for item in items) + "\n" + "  " * depth + "]"
+    if isinstance(value, str):
+        text = value.replace("\r", " ").replace("\n", " ").strip()
+        if len(text) > limit:
+            text = text[:max(1, limit - 1)] + "\u2026"
+        return 'str(%d) "%s"' % (len(value), text)
+    if isinstance(value, bool):
+        return "bool %s" % ("true" if value else "false")
+    if value is None:
+        return "null"
+    return "%s %s" % (type(value).__name__, value)
+
+
+def product_reference_keys(row):
+    """The id-shaped keys a row carries, and the ones it does not.
+
+    The question a plugin author asks first: is there a product reference in
+    this payload at all? A key that holds ``0`` is reported as one, because
+    zero is not an id and that difference has already cost one diagnosis.
+    """
+    keys = []
+    for key in (row or {}):
+        shape = "".join(char for char in str(key).lower() if char.isalnum())
+        if shape.endswith("productid") or shape in (
+                "productid", "postid", "wpid", "productidentifier"):
+            value = (row or {}).get(key)
+            if value in (None, ""):
+                state = "empty"
+            elif str(value).strip() in ("0", "0.0"):
+                state = "zero - not an id"
+            else:
+                state = "present"
+            keys.append((str(key), state))
+    return keys
+
+
+def listing_id(item):
+    """The listing's *own* id - the key the vendor's detail endpoint takes.
+
+    Not the product id: this is what names the page or the detail record, and
+    the two are different things on every one of these sites.
+    """
+    for key in ("id", "listing_id", "listingId", "listing"):
+        value = (item or {}).get(key)
+        if value in (None, "") or isinstance(value, (dict, list)):
+            continue
+        return str(value).strip()
+    return ""
+
+
+def detail_url(listing_id, base="https://canadianshopper.ca"):
+    """The vendor endpoint a reader's own lookup reads for one listing.
+
+    Kept in one place because the plugin names the same path in its own
+    diagnostics (``/api/data/product/<listing-id>``), and a diagnosis that
+    calls a different address than the reader does is evidence about the wrong
+    thing.
+    """
+    identifier = str(listing_id or "").strip()
+    if not identifier:
+        return ""
+    return "%s/api/data/product/%s" % (str(base or "").rstrip("/"), identifier)
+
+
+def diagnosis_path(folder, now=None):
+    """Where a diagnosis file goes: a dated name, an earlier one never lost.
+
+    Two presses in one minute are two pieces of evidence - a before and an
+    after, or two different listings - so the second gets its own file rather
+    than quietly replacing the first.
+    """
+    when = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
+    base = Path(folder) / ("cs-read-diagnosis-%s" % when)
+    path = base.with_suffix(".txt")
+    number = 2
+    while path.exists():
+        path = Path("%s-%d.txt" % (base, number))
+        number += 1
+    return path
+
+
+def fetch_detail(url, cookie="", timeout=25, opener=None):
+    """``(status, content_type, body_text)`` for one detail request; never raises.
+
+    Read-only, one request, the person's own session: what the plugin's reader
+    would have read, so its answer can be looked at instead of guessed. A
+    refusal is returned as a status and a body, not an exception - the status
+    is half the evidence.
+    """
+    if not url:
+        return 0, "", ""
+    if opener is not None:
+        return opener(url, cookie)
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "Mozilla/5.0 (AlexCollect-GUI)",
+                      "Accept": "application/json",
+                      "Cookie": str(cookie or "")})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read(200000).decode("utf-8", "replace")
+            return (getattr(response, "status", 200),
+                    response.headers.get("Content-Type", ""), body)
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read(200000).decode("utf-8", "replace")
+        except Exception:
+            body = ""
+        return exc.code, str(getattr(exc, "headers", "") or ""), body
+    except Exception as exc:
+        return 0, "", str(exc)
+
+
+def _body_for_diagnosis(body, limit=40):
+    """A response body as a sanitised structure when it is JSON, text if not."""
+    text = str(body or "")
+    try:
+        parsed = json.loads(text)
+    except (ValueError, TypeError):
+        snippet = text.strip().replace("\r", " ")
+        return ("not JSON (%d characters): %s" %
+                (len(text), snippet[:240] + ("\u2026" if len(snippet) > 240
+                                             else "")))
+    return sanitize(parsed, limit)
+
+
+def diagnosis_text(row=None, output="", stages=(), plugin="", command="",
+                   detail=None, total=0, editable=0, now=None,
+                   app_version=""):
+    """The three things a plugin author needs, in one file they can read.
+
+    Written because a round trip with the reader's author ended in *"send the
+    console output, whether the ids phase appeared, and one row with its detail
+    response"*: everything here is evidence the app already has or can fetch
+    once, and none of it is a credential.
+    """
+    when = (now or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+    lines = ["CanadianShopper read diagnosis", "=" * 32,
+             "Written: %s" % when]
+    if app_version:
+        lines.append("Alex Collect: %s" % app_version)
+    lines.append("Plugin: %s" % (plugin or "(version not readable)"))
+    lines.append("Command the app ran: %s" % (command or "(not recorded)"))
+    lines.append("")
+    lines.append("The app's count: %d listing(s), %d with a usable product id."
+                 % (int(total or 0), int(editable or 0)))
+    counts = reader_id_counts(output)
+    lines.append("The reader's own line: %s" % (
+        ("%d listings, %d with a real product id, %d without the key, %d "
+         "reported as 0" % counts) if counts else "(none printed)"))
+    missed = stock_compare.failed_lookups(output)
+    lines.append("Lookups the reader says failed: %s" %
+                 (missed if missed else "none said"))
+    lines.append("Phases the reader reported: %s" %
+                 (", ".join(str(stage) for stage in stages) if stages else
+                  "(none)"))
+    lines.append(phases_note(stages, missed))
+    lines.append("")
+    lines.append("--- the reader's complete output " + "-" * 20)
+    lines.append(str(output or "(nothing was printed)").rstrip())
+    lines.append("")
+    if row is not None:
+        lines.append("--- one catalogue row, sanitised " + "-" * 18)
+        references = product_reference_keys(row)
+        if references:
+            lines.append("Product-reference keys: " + ", ".join(
+                "%s (%s)" % (key, state) for key, state in references))
+        else:
+            lines.append("Product-reference keys: none - no key in this row "
+                         "names a product, not even as a zero")
+        lines.append(sanitize(row))
+        lines.append("")
+    if detail:
+        lines.append("--- the detail request the reader's lookup would make "
+                     + "-" * 10)
+        lines.append("GET %s" % (detail.get("url") or "(no listing id)"))
+        lines.append("HTTP %s, %s" % (detail.get("status") or "(no answer)",
+                                      detail.get("content_type") or
+                                      "(no content type)"))
+        lines.append(_body_for_diagnosis(detail.get("body")))
+        lines.append("")
+    lines.append("Nothing in this file is a cookie, a token or a password: "
+                 "values under those names are hidden, and long text is cut.")
+    return "\n".join(lines)
+
+
 def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True,
-                   reader_text=""):
+                   reader_text="", stages=None):
     """The whole sentence for a read nothing can be written from, or "".
 
     Said once, where it can be read, instead of three paragraphs in three
@@ -747,10 +1008,16 @@ def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True,
                 "buttons cannot send anything: the plugin's reader is not "
                 "reporting one.")
     said_by_reader = reader_says_note(reader_text)
+    #  The reader's own phases decide *which read this was*, so when they were
+    #  reported they are used instead of the general sentence - and a reader
+    #  that says nothing keeps the general one.
+    phases = (phases_note(stages, stock_compare.failed_lookups(reader_text))
+              if stages else "")
     parts = [said, said_by_reader,
              (ids_were_asked_for_note(
                  bool(stock_compare.failed_lookups(reader_text)))
-              if said_by_reader else ""),
+              if said_by_reader and not phases else ""),
+             phases,
              needed_version_note(plugin, needed), identity_note(rows)]
     if works:
         parts.append("Searching, opening a listing and editing in the vendor "

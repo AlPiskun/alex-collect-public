@@ -662,6 +662,41 @@ expects ids - so a read there with none means the lookups did not run or every
 one came back empty. A reader that prints no such line costs only the generic
 sentence; one that prints it makes the next report a one-liner.
 
+**The console can say whether the lookups ran.** The reader's phases are
+evidence, not decoration: a read whose `ids` stage was reported and came back
+with no usable product id is a different report from one whose stage never
+appeared at all, and only the reader can tell the two apart. The core records
+the `stage` names a read emits (from the progress markers above) and prints one
+of three sentences beside the count line:
+
+- the product-id stage appeared - *the lookups ran* (and, when the reader also
+  reported failed lookups, *some of them failed*);
+- stages appeared, none of them the product-id stage - *its lookups did not
+  run at all*;
+- no stages at all - *the console cannot say whether its lookups ran*.
+
+Recognised spellings are `ids`, `id`, `product-ids`, `product_ids`,
+`productids`, `resolving ids` and `lookups`, compared case-insensitively; `ids`
+is the one the shipped reader uses. A reader that stops emitting its stage
+makes the first question in a defect report unanswerable, so keep it.
+
+**One file, for the plugin's author.** When a read with no usable product ids
+has to be reported, the listing panel's **Save a read diagnosis...** button
+writes a single text file (`cs-read-diagnosis-<date>-<time>.txt` in the app's
+folder, with a number added rather than an earlier file replaced) that holds the
+three things a reader's author asks for: the run's
+complete console output, the progress stages it reported, and one catalogue row
+together with the response from `GET <site>/api/data/product/<listing-id>` -
+the same endpoint the reader's own lookup reads, fetched once with the
+person's own cookie when the button is pressed. It is meant to be pasted into a
+conversation, so it is sanitised before it is written: any key naming a token,
+cookie, secret, password, session, credential, API key, e-mail, phone or
+address has its value replaced with *(hidden - it is not part of the question)*,
+strings are cut at 40 characters (their real length is kept), and lists and
+nesting stop early. A `Product-reference keys:` line says, for the row, which
+id-shaped keys are present, empty, or holding `0` - which is the first thing to
+check when a read has no ids.
+
 **When the vendor's data carries no product reference at all.** The reader can
 be perfectly correct and still deliver no product ids: 1.0.34's own console
 line reported *2,587 listings, 0 with a real product id, 2,587 without the key,
