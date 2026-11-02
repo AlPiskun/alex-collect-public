@@ -834,6 +834,14 @@ on it is gated on the proof file, not on a version number:
 - **a zero price is refused** (a marketplace zero is almost always a mistake),
   and the website is never touched.
 
+A row the plugin cannot address is routed, not dead-ended: with a proven price,
+**Edit the selected listing...** says that the edit form cannot send a title,
+stock count or state and offers the price write instead, and the read's summary
+names the fields that are blocked rather than saying "none can be edited here".
+A read in which no listing carries its own address is reported once as a reader
+gap - the same way a read with no product ids is - so the vendor's author gets
+the version and count line that explains it.
+
 It is offered in two places - the CanadianShopper edit panel for one listing
 (the road that works when the vendor reports no product id), and the stock
 comparison panel for every compared card whose price differs (each written and

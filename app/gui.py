@@ -8867,8 +8867,11 @@ def build_csledit(parent, app):
         editable, total = cs_edit.product_id_counts(items)
         note = "%d listings read from CanadianShopper." % total
         load(items, note)
+        price_open = cs_proof.settled("priceCad",
+                                      cs_proof.load_proofs(BASE))
         say("CanadianShopper: %d listings read; %s. Type a card's name to "
-            "find one." % (total, cs_edit.editable_note(editable, total)),
+            "find one." % (total, cs_edit.editable_note(
+                editable, total, price_proven=price_open)),
             "ok")
         resolution = cs_edit.resolution_counts(last_tool_output(app))
         if resolution:
@@ -8888,6 +8891,11 @@ def build_csledit(parent, app):
             #  listing by its product id, so they are the rows that cannot be
             #  edited until another read resolves them.
             say(stock_compare.lookup_note(missed, total, panel="edit"), "warn")
+        no_address = cs_edit.address_gap(items)
+        if no_address:
+            #  Once, after the read: a whole read without addresses is the
+            #  reader's gap, not something to discover by pressing Open.
+            say(no_address, "warn")
         shared = cs_edit.shared_product_note(items)
         if shared:
             #  Said after every read, not before a write: plugin 1.0.35 resolves
@@ -9137,11 +9145,28 @@ def build_csledit(parent, app):
                 state["items"], plugin=plugin_version(),
                 needed=CS_PRODUCT_ID_VERSION, works=False,
                 reader_text=state.get("output") or last_tool_output(app),
-                stages=state.get("stages") or [])
-            say("%s cannot be changed from here: %s Nothing was sent."
-                % (named, said), "err")
+                stages=state.get("stages") or [],
+                price_proven=price_is_open())
+            say("%s: a title, stock count or state cannot be sent for it: %s "
+                "Nothing was sent." % (named, said), "err")
             summary.configure(text="No listing in this read has a product "
                                    "id, so nothing can be sent.")
+            if price_is_open():
+                #  One field does not need the product id, and leaving this
+                #  question as "open the dashboard" is how a row that can be
+                #  repriced sends its owner to another website instead.
+                if messagebox.askyesno(
+                        "Set the price here instead?",
+                        "%s\n\nNo listing in this read carried a usable "
+                        "product id, so a title, stock count or state cannot "
+                        "be sent - reading them again would return the same "
+                        "list.\n\nIts price can be set: it is written to the "
+                        "listing's own record, which a proof settled, and read "
+                        "back afterwards. Your website is not touched.\n\n"
+                        "Nothing was changed. Set the price now?" % named,
+                        parent=box.winfo_toplevel()):
+                    set_the_price()
+                return False
             if messagebox.askyesno(
                     "That listing has to be changed on the site",
                     "%s\n\nNo listing in this read carried a usable product "
@@ -9339,11 +9364,40 @@ def build_csledit(parent, app):
         app.wait_window(top)
         return result if result["done"] else None
 
+    def price_is_open():
+        """Whether a saved proof lets this panel write a price."""
+        return cs_proof.settled("priceCad", cs_proof.load_proofs(BASE))
+
     def edit_selected():
         item = selected()
         if item is None:
             return
         window = box.winfo_toplevel()
+        #  The edit form writes through the plugin, which sends a product id.
+        #  A row with none cannot use it - and opening the form anyway is what
+        #  ends in "closed without saving". The price is written to the row's
+        #  own record, so when that is proven, that is the road offered.
+        if not cs_edit.product_id(item) and price_is_open():
+            say("%s has no product id, so a title, stock count or state cannot "
+                "be sent for it - but its price can: that is written to the "
+                "listing's own record." % (item.get("name") or "That listing"),
+                "dim")
+            if messagebox.askyesno(
+                    "Set the price instead?",
+                    "%s\n\nThe plugin's edit form needs a product id, and the "
+                    "list has none for this listing - so a title, stock count "
+                    "or state cannot be sent from here.\n\nIts price can: it "
+                    "is written to the listing's own record (proven on this "
+                    "shop), read back afterwards, and your website is not "
+                    "touched.\n\nSet the price now?"
+                    % (item.get("name") or "That listing"),
+                    parent=box.winfo_toplevel()):
+                set_the_price()
+            else:
+                say("Nothing was written. \"Set the selected listing's "
+                    "price...\" is the button that reaches this row.",
+                    "dim")
+            return
         answers = ask_edit(item)
         if answers is None:
             say("The edit was closed without saving; nothing was written.",

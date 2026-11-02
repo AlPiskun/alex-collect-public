@@ -617,6 +617,34 @@ def test_a_read_with_no_product_ids_at_all():
           cs_edit.nothing_editable(nothing) and
           not cs_edit.nothing_editable(items()) and
           not cs_edit.nothing_editable([]), "")
+    #  Once a proof has settled the price, "none can be edited here" is a
+    #  sentence that stops someone using the button that works: the price is
+    #  written to the record these rows already address.
+    proven = cs_edit.editable_note(0, len(nothing), price_proven=True)
+    check("with the price proven, the note names the fields that are blocked",
+          "no title, stock count or state" in proven, proven)
+    check("and says the price can be set from here",
+          "price" in proven and "can be set from here" in proven, proven)
+    check("without a proof it does not promise a price write",
+          "can be set from here" not in cs_edit.editable_note(0, len(nothing)),
+          cs_edit.editable_note(0, len(nothing)))
+    unaddressed = [{"id": row["id"], "title": row["title"]}
+                   for row in nothing]
+    check("a read with no listing addresses says so once, for the reader",
+          "No listing in that read carried its own address" in
+          cs_edit.address_gap(unaddressed) and
+          "1 listing)" in cs_edit.address_gap(unaddressed[:1]) and
+          cs_edit.address_gap(
+              [{"id": "a", "url": "https://cs.example/l/a"}]) == "",
+          cs_edit.address_gap(unaddressed)[:120])
+    gap = cs_edit.product_id_gap(nothing, plugin="1.0.39", works=False,
+                                 price_proven=True)
+    check("the gap sentence names the fields the plugin cannot send",
+          "cannot send a title, a stock count or a state" in gap, gap[:200])
+    check("and no longer claims no edit button can send anything",
+          "edit buttons cannot send anything" not in gap, gap[:200])
+    check("it points at the price button that does reach the row",
+          "Set the selected listing's price" in gap, gap[-300:])
 
     folder, app, parent = build_panel()
     with patch.object(gui, "TOOL_ACTION",
@@ -2264,6 +2292,106 @@ def test_the_panel_sets_a_proven_price():
           str(harness._BOX.shown[:1]))
     harness._BOX.askyesno = lambda *a, **k: False
 
+
+def test_the_edit_button_takes_the_price_road():
+    """A row the plugin cannot address is offered its price, not a dead end.
+
+    This is the console that prompted it: a read of 2,596 listings with no
+    product ids, *Edit the selected listing...*, and a form closed without
+    saving - while the price was already proven and writable on that very row.
+    Nothing here may open the four-field form for such a row.
+    """
+    print()
+    print("== 5l. Edit on a row with no product id goes to the price ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+    rows = [{"id": "a2304e72dbca4e678e7111d011ade22d", "product_id": 0,
+             "title": "#006/196 Wurmple SWSH11: Lost Origin - Pokemon TCG",
+             "sku": "PKM-006", "status": "active", "inventory": 1,
+             "price": "1.00"}]
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        read_into(app, folder, parent, payload=rows)
+    select(parent, "Wurmple")
+
+    said, written, asked = [], [], []
+    harness._BOX.shown[:] = []
+    harness._BOX.askyesno = lambda title, question, **k: (
+        asked.append((title, question)) or True)
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "simpledialog") as dialog, \
+            patch.object(cs_record, "write", lambda *a, **k: written.append(
+                (a, k)) or {"verdict": "written", "written": True,
+                            "after": 2.5, "old": 1.0, "field": "priceCad",
+                            "label": "Price", "id": rows[0]["id"]}):
+        dialog.askstring = lambda *a, **k: "2.50"
+        find(parent, gui.ttk.Button, "Edit the selected listing",
+             exact=False).invoke()
+    check("with no proof the edit form still opens, as it always did",
+          not written, str(written))
+
+    (folder / "cs-field-proofs.json").write_text(
+        json.dumps({"priceCad": {"at": "2026-11-02 15:34:38", "proven": True,
+                                 "verdict": "written", "restored": True,
+                                 "listing": rows[0]["id"],
+                                 "title": "Wurmple"}}), encoding="utf-8")
+    written[:] = []
+    asked[:] = []
+    harness._BOX.shown[:] = []
+    app.lines[:] = []
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "simpledialog") as dialog, \
+            patch.object(cs_record, "write", lambda *a, **k: written.append(
+                (a, k)) or {"verdict": "written", "written": True,
+                            "after": 2.5, "old": 1.0, "field": "priceCad",
+                            "label": "Price", "id": rows[0]["id"]}):
+        dialog.askstring = lambda *a, **k: "2.50"
+        find(parent, gui.ttk.Button, "Edit the selected listing",
+             exact=False).invoke()
+    check("with the price proven, Edit offers the price instead of the form",
+          asked and "price" in asked[0][0].lower(), str(asked))
+    check("and the question says which fields the plugin cannot send",
+          asked and "title, stock count or state" in str(asked[0][1]),
+          str(asked[:1]))
+    check("the price is then written to the record, once",
+          len(written) == 1 and written[0][0][0].endswith(rows[0]["id"]),
+          str(written))
+    check("the console never says the edit was closed without saving",
+          not any("closed without saving" in text for _tag, text in app.lines),
+          str(app.lines[-4:]))
+
+    #  Declining is a real answer: nothing written, and the way in is named.
+    written[:] = []
+    app.lines[:] = []
+    harness._BOX.askyesno = lambda *a, **k: False
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "simpledialog") as dialog, \
+            patch.object(cs_record, "write", lambda *a, **k: written.append(a)):
+        dialog.askstring = lambda *a, **k: "2.50"
+        find(parent, gui.ttk.Button, "Edit the selected listing",
+             exact=False).invoke()
+    check("declining writes nothing", not written, str(written))
+    check("and points at the button that does reach the row",
+          any("Set the selected listing's price" in text
+              for _tag, text in app.lines), str(app.lines[-3:]))
+    harness._BOX.askyesno = lambda *a, **k: True
+
 def test_the_panel_quotes_the_readers_resolution():
     """A read that asked and got nothing back says so, on the console.
 
@@ -2948,6 +3076,7 @@ def main():
     test_the_panel_writes_a_diagnosis()
     test_the_panel_writes_a_proof()
     test_the_panel_sets_a_proven_price()
+    test_the_edit_button_takes_the_price_road()
     test_the_panel_quotes_the_readers_resolution()
     test_the_evidence_outlives_the_window()
     test_the_panel_reads_and_lists()
