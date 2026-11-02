@@ -8800,7 +8800,12 @@ def build_csledit(parent, app):
     def load(items, note):
         state["items"] = list(items or [])
         run_search()
-        summary.configure(text=note)
+        #  Two facts, and both belong on the line: what the read brought, and
+        #  what the list is doing with it. The list used to be capped at 200
+        #  rows, so this sentence is also the place that a shop of 2,596
+        #  listings cannot be mistaken for a shop of 200.
+        shown = str(state.get("shown") or "")
+        summary.configure(text=("%s %s" % (note, shown)).strip())
 
     def arrived(rc, out):
         try:
@@ -9007,18 +9012,25 @@ def build_csledit(parent, app):
             list_frame.pack_forget()
             actions.pack_forget()
         if not state["items"]:
+            state["shown"] = ""
             summary.configure(text="Nothing read yet. Press \"Read "
                                    "CanadianShopper's listings\" first.")
             return
-        if rows:
-            summary.configure(text="%d of %d listing%s shown." %
-                              (len(rows), len(state["items"]),
-                               "" if len(state["items"]) == 1 else "s"))
+        if rows and len(rows) == len(state["items"]):
+            #  Nothing is being hidden: saying "2587 of 2587 shown" reads
+            #  like a warning about a page that does not exist.
+            state["shown"] = "All %d listing%s shown." % (
+                len(rows), "" if len(rows) == 1 else "s")
+        elif rows:
+            state["shown"] = "%d of %d listing%s shown." % (
+                len(rows), len(state["items"]),
+                "" if len(state["items"]) == 1 else "s")
         elif str(query_var.get() or "").strip():
-            summary.configure(text="No listing matches %r. Try fewer words, "
-                                   "or a card number." % query_var.get())
+            state["shown"] = ("No listing matches %r. Try fewer words, or a "
+                              "card number." % query_var.get())
         else:
-            summary.configure(text="No listing is in that state right now.")
+            state["shown"] = "No listing is in that state right now."
+        summary.configure(text=state["shown"])
         return rows
 
     # -------------------------------------------------------------- writing

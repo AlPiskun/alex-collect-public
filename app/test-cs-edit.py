@@ -383,6 +383,14 @@ def listing_box(parent):
                  if isinstance(w, gui.tk.Listbox)), None)
 
 
+def summary_text(parent):
+    """The panel's summary line - the label that says what the list is doing."""
+    texts = [str(w.cget("text") or "") for w in parent.walk()
+             if isinstance(w, gui.ttk.Label)]
+    return next((text for text in texts
+                 if "listings read from CanadianShopper" in text), "")
+
+
 def query_box(parent):
     return next((w for w in parent.walk() if isinstance(w, gui.ttk.Entry)),
                 None)
@@ -940,9 +948,17 @@ def test_what_the_read_did_carry():
     check("the read itself keeps every listing, so the count is the read's",
           any("2587 listings read" in text for _tag, text in app.lines),
           str(app.lines[-4:]))
-    check("and the list shows as many as it has ever shown, not fewer",
-          len(listing_box(parent).items) == cs_edit.SEARCH_LIMIT == 200,
+    check("and every listing the read brought is in the list, not the first "
+          "200 of them",
+          len(listing_box(parent).items) == len(full) == 2587,
           str(len(listing_box(parent).items)))
+    check("the summary says the whole read is on screen",
+          "2587 listings read" in summary_text(parent) and
+          "All 2587 listings shown" in summary_text(parent),
+          summary_text(parent))
+    check("and the row that sorts last is really there",
+          any("card 2586" in text for text in listing_box(parent).items),
+          str(listing_box(parent).items[-1:]))
 
 
 def test_the_readers_own_numbers():
@@ -2557,6 +2573,53 @@ def test_a_form_of_every_proven_field():
           str(shown_form.get("buttons")))
 
 
+
+def test_the_panel_shows_the_whole_read():
+    """2,596 listings read, and 2,596 on screen - not the first 200.
+
+    The report: *"I'm only shown 200 products from CS stock."* The read brought
+    the whole shop; the list capped itself at 200 rows, and the read's own
+    sentence replaced the count of what was on screen - so a shop of 2,596
+    listings looked like a shop of 200, and the only way to reach the other
+    2,396 was to guess a search term for them.
+    """
+    print()
+    print("== 5n. the whole read is on screen ==")
+    rows = [{"id": "b%04d" % n, "sku": "SKU-%04d" % n,
+             "title": "zzz card %04d" % n, "price": "1.00",
+             "inventory": 1, "status": "active"} for n in range(2596)]
+    folder, app, parent = build_panel()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app, folder, parent, rows)
+    check("every listing the read brought is in the list",
+          len(listing_box(parent).items) == len(rows) == 2596,
+          str(len(listing_box(parent).items)))
+    check("and the summary says all of them are shown",
+          "All 2596 listings shown" in summary_text(parent),
+          summary_text(parent))
+    check("the last card in the read is on screen, not past a cut",
+          any("zzz card 2595" in text for text in listing_box(parent).items),
+          str(listing_box(parent).items[-1:]))
+
+    entry = query_box(parent)
+    entry._kw["textvariable"].set("SKU-2595")
+    find(parent, gui.ttk.Button, "Search").invoke()
+    check("a card that sorts past the old 200 is found by searching",
+          len(listing_box(parent).items) == 1 and
+          "SKU-2595" in listing_box(parent).items[0],
+          str(listing_box(parent).items[:3]))
+
+    check("search returns every match unless a caller asks for fewer",
+          len(cs_edit.search(rows, "")) == 2596, "")
+    check("a caller that does ask for a short list still gets one",
+          len(cs_edit.search(rows, "", limit=cs_edit.SEARCH_LIMIT)) ==
+          cs_edit.SEARCH_LIMIT == 200, "")
+    check("and a caller asking for everything gets everything, cap or no cap",
+          len(cs_edit.search(rows, "SKU-25", limit=0)) ==
+          len(cs_edit.search(rows, "SKU-25")) >= 1, "")
+
+
 def test_the_panel_quotes_the_readers_resolution():
     """A read that asked and got nothing back says so, on the console.
 
@@ -3243,6 +3306,7 @@ def main():
     test_the_panel_sets_a_proven_price()
     test_the_edit_button_takes_the_price_road()
     test_a_form_of_every_proven_field()
+    test_the_panel_shows_the_whole_read()
     test_the_panel_quotes_the_readers_resolution()
     test_the_evidence_outlives_the_window()
     test_the_panel_reads_and_lists()
