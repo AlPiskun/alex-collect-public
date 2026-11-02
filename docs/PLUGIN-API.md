@@ -662,6 +662,30 @@ expects ids - so a read there with none means the lookups did not run or every
 one came back empty. A reader that prints no such line costs only the generic
 sentence; one that prints it makes the next report a one-liner.
 
+**The reader prints its own resolution counts.** From plugin **1.0.39** every
+successful ordinary read ends with a line like:
+
+```
+Stock resolution: 2596 detail requests, 0 usable references, 2596 HTTP 200s without a usable reference, 0 ambiguous SKUs, 0 hard failures
+```
+
+Detail requests include failed attempts; usable references come from detail
+responses (direct ids and cache hits do not inflate the HTTP counts); the older
+`Stock read: … lookups failed` line still comes last when anything failed; and
+the `ids` stage is still emitted even when nothing resolves. `--no-product-lookups`
+is unchanged and prints no resolution line, because it never looked anything up.
+
+The core reads all five numbers, quotes the line verbatim in the console and in
+a diagnosis file, and - this is the part that matters - lets them decide who is
+being reported. A read whose every answer came back HTTP 200 and named no
+product is **the vendor's data, not a defect in the reader**: the core says so,
+names the counts it is relying on, and stops short of the "report this to the
+plugin's author" verdict it gives when the counts are absent. Before 1.0.39
+that verdict could only be a guess, so a current-but-older plugin (1.0.34 to
+1.0.38) is told that 1.0.39 prints the counts that settle it. An ambiguous SKU
+is named as one - more than one product matched, so no id was invented - and a
+hard failure is still a failure.
+
 **The console can say whether the lookups ran.** The reader's phases are
 evidence, not decoration: a read whose `ids` stage was reported and came back
 with no usable product id is a different report from one whose stage never
@@ -685,7 +709,8 @@ has to be reported, the listing panel's **Save a read diagnosis...** button
 writes a single text file (`cs-read-diagnosis-<date>-<time>.txt` in the app's
 folder, with a number added rather than an earlier file replaced) that holds the
 three things a reader's author asks for: the run's
-complete console output, the progress stages it reported, and one catalogue row
+complete console output, the progress stages it reported, the reader's own
+`Stock resolution:` line with the sentence it means, and one catalogue row
 together with the response from `GET <site>/api/data/product/<listing-id>` -
 the same endpoint the reader's own lookup reads, fetched once with the
 person's own cookie when the button is pressed. It is meant to be pasted into a

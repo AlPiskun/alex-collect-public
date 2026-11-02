@@ -1085,7 +1085,9 @@ def test_the_diagnosis_file():
            "sku": "OPC1973-74-112", "sessionToken": "abc123",
            "title": "1973-74 O-Pee-Chee Jim Pappin #112", "images": []}
     output = ("stock.list: 2596 listings, 0 with a real product id, 2596 "
-              "without the key, 0 reported as 0")
+              "without the key, 0 reported as 0\nStock resolution: 2596 "
+              "detail requests, 0 usable references, 2596 HTTP 200s without a "
+              "usable reference, 0 ambiguous SKUs, 0 hard failures")
     detail = {"url": cs_edit.detail_url("94b93f60"), "status": 200,
               "content_type": "application/json",
               "body": json.dumps({"product": {"id": "999"}, "sku": "OPC-1",
@@ -1179,13 +1181,37 @@ def test_the_diagnosis_file():
           "Also naming a product" not in named, named)
 
     #  ---- the row's SKU is what a reader resolves by: empty is a fact
-    check("an empty SKU on the row is said to be empty, with why it matters",
+    check("an empty SKU on the row is said to be empty - and not blamed",
           "The listing's SKU is empty" in silent and
-          "exact SKU" in silent, silent)
+          "not the reason an id is absent" in silent, silent)
     check("a row with a SKU is not told it has none",
           "SKU is empty" not in named, named)
     check("and a row that carries no SKU key at all says nothing about it",
           "SKU is empty" not in cs_edit.diagnosis_text(row={"id": "a"}), "")
+    check("the reader's resolution line is in the file, quoted",
+          "The reader's resolution line: Stock resolution: 2596 detail "
+          "requests" in text, text[:800])
+    check("and its numbers are turned into the sentence they mean",
+          "vendor's data rather than a defect in the reader" in text and
+          "no read of this shop produces a product id" in text, text[:900])
+    check("so the file never calls that read a reader defect",
+          "is a defect in the reader" not in text, text[:900])
+    check("a detail response naming no product agrees with those counts",
+          "same answer as the reader's own resolution line" in text,
+          text[-500:])
+
+    #  A plugin that cannot print the counts is told which one does.
+    quiet = cs_edit.diagnosis_text(row=row, output="stock.list: 20 listings",
+                                   plugin="1.0.38")
+    check("a 1.0.38 read's missing resolution line names the version that "
+          "prints one",
+          "(none printed - plugin 1.0.39 prints its own resolution counts"
+          in quiet, quiet[:600])
+    plain = cs_edit.diagnosis_text(row=row, output="", plugin="1.0.39")
+    check("and a current one just says none was printed",
+          "The reader's resolution line: (none printed)" in plain and
+          "prints its own" not in plain, plain[:600])
+
     check("a body that is not JSON is described instead of pasted whole",
           "not JSON" in cs_edit._body_for_diagnosis("<html>denied</html>"), "")
     check("an empty detail is not invented",
@@ -1199,6 +1225,99 @@ def test_the_diagnosis_file():
     check("a file with no output does not claim the reader printed nothing",
           "no console output was kept for this list" in thin and
           "nothing was printed" not in thin, thin)
+
+
+def test_the_readers_own_resolution_counts():
+    """Plugin 1.0.39's line: did the reader ask, and what did the answers hold.
+
+    Every round trip with this reader's author was spent on one ambiguity -
+    "0 ids and no failure line" is either the lookups never running, or every
+    one answering 200 without naming a product. The reader now says which, and
+    the app has to use it: a read whose answers all came back empty is the
+    vendor's data, not a defect in the reader, and telling the reader's author
+    to fix a fault the numbers rule out is how the next round trip is wasted.
+    """
+    print()
+    print("== 5d6. the reader's own resolution counts ==")
+    line = ("Stock resolution: 2596 detail requests, 0 usable references, 2596 "
+            "HTTP 200s without a usable reference, 0 ambiguous SKUs, 0 hard "
+            "failures")
+    counts = cs_edit.resolution_counts(line)
+    check("the five numbers are read from the reader's own line",
+          counts == {"requested": 2596, "usable": 0, "empty": 2596,
+                     "ambiguous": 0, "failed": 0}, str(counts))
+    check("the line itself is quoted, not rebuilt",
+          cs_edit.resolution_line("Stock read: ok\n" + line) == line, "")
+    check("a read with only the count line has no resolution line",
+          cs_edit.resolution_counts("stock.list: 3 listings, 0 with a real "
+                                    "product id") is None and
+          cs_edit.resolution_line("nothing") == "", "")
+    check("a one-listing read's singulars are read too",
+          cs_edit.resolution_counts(
+              "Stock resolution: 1 detail request, 1 usable reference, 0 HTTP "
+              "200s without a usable reference, 0 ambiguous SKUs, 0 hard "
+              "failures") == {"requested": 1, "usable": 1, "empty": 0,
+                              "ambiguous": 0, "failed": 0}, "")
+
+    vendor = cs_edit.resolution_note(counts)
+    check("all answers 200 and none naming a product is called the vendor's "
+          "data",
+          "vendor's data" in vendor and "defect in the reader" in vendor,
+          vendor)
+    check("and it says no read of this shop will produce an id",
+          "no read of this shop produces a product id" in vendor, vendor)
+    partial = cs_edit.resolution_note({
+        "requested": 6, "usable": 4, "empty": 1, "ambiguous": 1, "failed": 0})
+    check("a mixed read says how many became ids, and names the ambiguous one",
+          "turned 4 into usable product ids" in partial and
+          "1 listing was left without an id" in partial, partial)
+    none_asked = cs_edit.resolution_note({
+        "requested": 0, "usable": 0, "empty": 0, "ambiguous": 0, "failed": 0})
+    check("a read that asked for nothing says so",
+          "made no detail lookups at all" in none_asked, none_asked)
+    failed = cs_edit.resolution_note({
+        "requested": 2, "usable": 0, "empty": 0, "ambiguous": 0, "failed": 2})
+    check("hard failures alone are named as failures",
+          "2 detail requests failed outright" in failed, failed)
+    check("no line, no sentence",
+          cs_edit.resolution_note(None) == "", "")
+
+    #  ---- the version sentence must not contradict the reader's numbers
+    old_verdict = cs_edit.needed_version_note("1.0.34", "1.0.34")
+    check("without the counts, a current plugin is still pointed at a defect",
+          "defect in the reader" in old_verdict, old_verdict)
+    quiet = cs_edit.needed_version_note("1.0.34", "1.0.34", site_silent=True)
+    check("with the counts, the reader is not accused of a defect",
+          "defect in the reader" not in quiet and
+          "lookups ran" in quiet and "not the reader failing to try" in quiet,
+          quiet)
+    hint = cs_edit.needed_version_note("1.0.38", "1.0.34")
+    check("a plugin that cannot print the counts is told 1.0.39 does",
+          "1.0.39 prints the reader's own resolution counts" in hint, hint)
+    check("and one that can print them is not told to update",
+          "1.0.39 prints" not in cs_edit.needed_version_note("1.0.39",
+                                                            "1.0.34"), "")
+
+    #  ---- the whole sentence, on the read that started all of this
+    rows = [{"id": "a%04d" % n, "sku": "", "title": "card %d" % n}
+            for n in range(20)]
+    output = ("stock.list: 20 listings, 0 with a real product id, 20 without "
+              "the key, 0 reported as 0\nStock resolution: 20 detail "
+              "requests, 0 usable references, 20 HTTP 200s without a usable "
+              "reference, 0 ambiguous SKUs, 0 hard failures")
+    gap = cs_edit.product_id_gap(rows, plugin="1.0.39", needed="1.0.34",
+                                 reader_text=output, stages=["read", "ids"])
+    check("the gap sentence quotes the reader's resolution and calls it the "
+          "site",
+          "vendor's data" in gap and "no read of this shop" in gap, gap)
+    check("and no longer calls a read with those counts a reader defect",
+          "is a defect in the reader" not in gap and
+          "that is what to send with a report" not in gap, gap)
+    check("while keeping what still works last",
+          gap.index("still work") > gap.index("vendor's data"), gap)
+    check("and the phases are not said twice over the resolution line",
+          "so the lookups ran." in gap and
+          "the ids it sent back were not usable" not in gap, gap)
 
 
 def test_plugin_1_0_35():
@@ -1528,6 +1647,50 @@ def test_the_panel_writes_a_diagnosis():
           str(harness._BOX.shown[0][1]), str(harness._BOX.shown))
     check("and writes no file at all",
           not list(folder2.glob("cs-read-diagnosis-*.txt")), "")
+
+
+def test_the_panel_quotes_the_readers_resolution():
+    """A read that asked and got nothing back says so, on the console.
+
+    The person reading the console is the one who would otherwise carry "still
+    no ids" to the plugin's author, so the reader's own counts belong there -
+    once, quoted, with the sentence they mean - and the "would have to update
+    the plugin" advice must not be printed over the top of them.
+    """
+    print()
+    print("== 5j. a read that asked and was answered with nothing ==")
+    folder, app, parent = build_panel()
+    line = ("Stock resolution: 20 detail requests, 0 usable references, 20 "
+            "HTTP 200s without a usable reference, 0 ambiguous SKUs, 0 hard "
+            "failures")
+    nothing = [{key: value for key, value in row.items() if key != "product_id"}
+               for row in LISTINGS]
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "plugin_version", lambda *a, **k: "1.0.39"):
+        find(parent, gui.ttk.Button,
+             "Read CanadianShopper's listings").invoke()
+        run = app.runs[-1]
+        Path(run["args"][1]).write_text(json.dumps({"items": nothing}),
+                                        encoding="utf-8")
+        app.runner = SimpleNamespace(
+            output=("stock.list: %d listings, 0 with a real product id"
+                    % len(nothing) + "\n" + line), cmd="cs-stock.py")
+        run["on_done"](0)
+
+    said = [text for _tag, text in app.lines]
+    check("the reader's own resolution line is quoted on the console",
+          any(text.startswith("The reader's own resolution line: Stock "
+                              "resolution: 20 detail requests") for text in said),
+          str(said[-5:]))
+    check("and the console says what those numbers mean",
+          any("vendor's data rather than a defect in the reader" in text
+              for text in said), str(said[-5:]))
+    check("a 1.0.39 read is not told to update the plugin",
+          not any("0.39 or newer" in text or "0.39 prints the reader" in text
+                  for text in said), str(said[-5:]))
+    check("and the rows are still on screen to read and open",
+          len(listing_box(parent).items) == len(nothing), "")
 
 
 def test_the_evidence_outlives_the_window():
@@ -2156,10 +2319,12 @@ def main():
     test_what_the_read_did_carry()
     test_the_readers_own_numbers()
     test_the_diagnosis_file()
+    test_the_readers_own_resolution_counts()
     test_plugin_1_0_35()
     test_the_list_says_which_plugin_read_it()
     test_the_editing_panel_says_what_stopped_a_read()
     test_the_panel_writes_a_diagnosis()
+    test_the_panel_quotes_the_readers_resolution()
     test_the_evidence_outlives_the_window()
     test_the_panel_reads_and_lists()
     test_the_edit_form()

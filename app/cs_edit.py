@@ -520,8 +520,13 @@ def editable_note(editable, total):
 #: like that gets: *update the plugin* or *this one is a defect*.
 PRODUCT_ID_VERSION = "1.0.34"
 
+#: The plugin version that prints the reader's own resolution counts. Written
+#: for exactly the question this shop's read could not answer - did the lookups
+#: run, and what did their answers hold - so an older one is told so.
+RESOLUTION_VERSION = "1.0.39"
 
-def needed_version_note(plugin="", needed=PRODUCT_ID_VERSION):
+
+def needed_version_note(plugin="", needed=PRODUCT_ID_VERSION, site_silent=False):
     """Which plugin version reports real product ids, given what is installed.
 
     Three different situations and they must not read alike: an installed
@@ -539,10 +544,25 @@ def needed_version_note(plugin="", needed=PRODUCT_ID_VERSION):
         return ("Plugin %s or newer reports each listing's real product id."
                 % needed)
     if version_at_least(plugin, needed):
-        return ("The list was read by plugin %s, which does report real "
+        if site_silent:
+            #  The reader's own counts say it asked and every answer came
+            #  back without a product reference, so the version sentence must
+            #  not send anybody to report a defect that the numbers rule out.
+            return ("The list was read by plugin %s, which does report real "
+                    "product ids - and its own resolution line says the "
+                    "lookups ran, so this is not an old list and not the "
+                    "reader failing to try." % plugin)
+        note = ("The list was read by plugin %s, which does report real "
                 "product ids, so a read without them is a defect in the "
                 "reader rather than a list that needs reading again - worth "
                 "reporting with the plugin's own console line." % plugin)
+        if not version_at_least(plugin, RESOLUTION_VERSION):
+            #  Before 1.0.39 the reader says nothing about its resolution, so
+            #  "defect" is the app's best guess rather than the reader's word.
+            note += (" Plugin %s prints the reader's own resolution counts "
+                     "for exactly this read, which says whether the lookups "
+                     "ran and what their answers held." % RESOLUTION_VERSION)
+        return note
     return ("The list was read by plugin %s, and %s or newer is the version "
             "that reports each listing's real product id - so updating the "
             "plugin is the fix." % (plugin, needed))
@@ -729,6 +749,96 @@ def ids_were_asked_for_note(text_has_lookups=False):
             "reader's line above, is what to send with a report.")
 
 
+#: The reader's own resolution counts: detail requests made, usable
+#: references, HTTP 200s that named none, ambiguous SKUs and hard failures.
+#: Plugin 1.0.39 prints it after every successful ordinary read, and it is the
+#: one line that says whether a read with no ids *asked* and got nothing back.
+_RESOLUTION = re.compile(
+    r"Stock resolution:\s*"
+    r"(\d+)\s+detail requests?,\s*"
+    r"(\d+)\s+usable references?,\s*"
+    r"(\d+)\s+HTTP 200s? without a usable reference,\s*"
+    r"(\d+)\s+ambiguous SKUs?,\s*"
+    r"(\d+)\s+hard failures?", re.IGNORECASE)
+
+
+def resolution_line(text):
+    """The reader's own ``Stock resolution:`` line, or "" when it printed none."""
+    for line in reversed(str(text or "").splitlines()):
+        if "stock resolution:" in line.casefold():
+            return line.strip()
+    return ""
+
+
+def resolution_counts(text):
+    """The five numbers in the reader's resolution line, or ``None``.
+
+    ``requested`` includes failed attempts (the reader says so itself), so
+    ``empty`` is the number of answers that came back 200 and still named no
+    product - which is the count that decides whether a read with no ids is
+    the reader being wrong or the site's records being silent.
+    """
+    found = _RESOLUTION.findall(str(text or ""))
+    if not found:
+        return None
+    requested, usable, empty, ambiguous, failed = (int(value)
+                                                   for value in found[-1])
+    return {"requested": requested, "usable": usable, "empty": empty,
+            "ambiguous": ambiguous, "failed": failed}
+
+
+def resolution_note(counts, total=0):
+    """What the reader's own resolution counts mean, in one or two sentences.
+
+    The line exists because "0 ids and no failure line" was ambiguous between
+    three code paths. With it, the ambiguity is gone: a read whose every detail
+    answered 200 and named nothing is not a broken reader at all - it is a shop
+    whose records carry no product reference, and saying so is the difference
+    between a defect report and a dead end.
+    """
+    if not counts:
+        return ""
+    asked = int(counts.get("requested") or 0)
+    usable = int(counts.get("usable") or 0)
+    empty = int(counts.get("empty") or 0)
+    ambiguous = int(counts.get("ambiguous") or 0)
+    failed = int(counts.get("failed") or 0)
+    if not asked and not usable:
+        return ("The reader's own resolution line says it made no detail "
+                "lookups at all for this read, so its ids cannot have come "
+                "from one.")
+    vendor_side = usable == 0 and empty > 0
+    said = ""
+    if vendor_side:
+        said = ("The reader's own resolution line settles it: %d detail "
+                "%s made, %d of them answering HTTP 200 without a usable "
+                "reference%s. The reader looked and the site's own records "
+                "name no product, so this is the vendor's data rather than a "
+                "defect in the reader - and no read of this shop produces a "
+                "product id until those records carry one."
+                % (asked, "request was" if asked == 1 else "requests were",
+                   empty, "" if not failed else
+                   ", plus %d hard %s" % (failed, "failure" if failed == 1
+                                          else "failures")))
+    elif usable:
+        said = ("The reader's own resolution line says it made %d detail "
+                "%s and turned %d into %s."
+                % (asked, "request" if asked == 1 else "requests", usable,
+                   "a usable product id" if usable == 1
+                   else "usable product ids"))
+        if empty:
+            said += " %d of them answered without naming one." % empty
+    if ambiguous:
+        said += (" %d %s left without an id because more than one product "
+                 "matched its SKU." % (ambiguous,
+                                       "listing was" if ambiguous == 1
+                                       else "listings were"))
+    if failed and not vendor_side:
+        said += (" %d detail %s failed outright." %
+                 (failed, "request" if failed == 1 else "requests"))
+    return " ".join(said.split())
+
+
 #: Stage names a reader may use for its product-id phase. The plugin's own
 #: word is ``ids``; the others are the spellings a later reader might pick, and
 #: recognising a few costs nothing while missing one costs a wrong sentence.
@@ -736,7 +846,7 @@ _ID_PHASES = ("ids", "id", "product-ids", "product_ids", "productids",
               "resolving ids", "lookups")
 
 
-def phases_note(stages, lookups_failed=0):
+def phases_note(stages, lookups_failed=0, site_silent=False):
     """What the reader's own progress phases say about whether it looked ids up.
 
     This is the question that decided a round trip with the plugin's author:
@@ -752,6 +862,11 @@ def phases_note(stages, lookups_failed=0):
                 "console cannot say whether its lookups ran.")
     listed = ", ".join(stages)
     if any(stage.casefold() in _ID_PHASES for stage in stages):
+        if site_silent:
+            #  The resolution line already says what the answers held; saying
+            #  it twice reads as two problems.
+            return ("The reader reported its product-id phase during this "
+                    "read (%s), so the lookups ran." % listed)
         return ("The reader reported its product-id phase during this read "
                 "(%s), so the lookups ran%s." %
                 (listed, " and some of them failed" if lookups_failed else
@@ -1006,6 +1121,16 @@ def diagnosis_text(row=None, output="", stages=(), plugin="", command="",
     lines.append("The reader's own line: %s" % (
         ("%d listings, %d with a real product id, %d without the key, %d "
          "reported as 0" % counts) if counts else "(none printed)"))
+    resolution = resolution_counts(output)
+    resolution_said = resolution_line(output)
+    if resolution_said:
+        lines.append("The reader's resolution line: %s" % resolution_said)
+    elif plugin and not version_at_least(plugin, RESOLUTION_VERSION):
+        lines.append("The reader's resolution line: (none printed - plugin "
+                     "%s prints its own resolution counts for this read)"
+                     % RESOLUTION_VERSION)
+    else:
+        lines.append("The reader's resolution line: (none printed)")
     missed = stock_compare.failed_lookups(output)
     lines.append("Lookups the reader says failed: %s" %
                  (missed if missed else "none said"))
@@ -1013,6 +1138,8 @@ def diagnosis_text(row=None, output="", stages=(), plugin="", command="",
                  (", ".join(str(stage) for stage in stages) if stages else
                   "(none)"))
     lines.append(phases_note(stages, missed))
+    if resolution:
+        lines.append(resolution_note(resolution))
     lines.append("")
     lines.append("--- the reader's complete output " + "-" * 20)
     lines.append(str(output or "(no console output was kept for this list - "
@@ -1041,9 +1168,10 @@ def diagnosis_text(row=None, output="", stages=(), plugin="", command="",
             #  The reader resolves a listing to its product by its SKU first,
             #  and an empty one leaves nothing to match on - which is one way
             #  ids go missing while every request still answers 200.
-            lines.append("The listing's SKU is empty: a reader that resolves a "
-                         "product by exact SKU has nothing to match on here, "
-                         "which is one way ids go missing with no failure line")
+            lines.append("The listing's SKU is empty. Plugin 1.0.39 resolves "
+                         "such a listing through its own detail request rather "
+                         "than by SKU, so a missing SKU is not the reason an "
+                         "id is absent here - the response's own keys are.")
         lines.append("")
     if detail:
         lines.append("--- the detail request the reader's lookup would make "
@@ -1064,6 +1192,11 @@ def diagnosis_text(row=None, output="", stages=(), plugin="", command="",
                          "a reader cannot resolve this listing's product from "
                          "this endpoint at all: the reference lives somewhere "
                          "the stock reader never asks.")
+        if resolution and resolution["usable"] == 0 and resolution["empty"]:
+            lines.append("That is the same answer as the reader's own "
+                         "resolution line: %d lookups, %d answers and none "
+                         "naming a product."
+                         % (resolution["requested"], resolution["empty"]))
         lines.append("")
     lines.append("Nothing in this file is a cookie, a token or a password: "
                  "values under those names are hidden, and long text is cut.")
@@ -1094,14 +1227,23 @@ def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True,
     #  The reader's own phases decide *which read this was*, so when they were
     #  reported they are used instead of the general sentence - and a reader
     #  that says nothing keeps the general one.
-    phases = (phases_note(stages, stock_compare.failed_lookups(reader_text))
-              if stages else "")
+    resolution = resolution_counts(reader_text)
+    site_silent = bool(resolution and resolution["usable"] == 0 and
+                       resolution["empty"] > 0)
+    phases = (phases_note(stages, stock_compare.failed_lookups(reader_text),
+                          site_silent=site_silent) if stages else "")
     parts = [said, said_by_reader,
+             #  The general "they did not run or came back empty" sentence is
+             #  only worth printing while nobody knows which: phases and the
+             #  resolution line each answer it, and printing all three would
+             #  contradict the sentence that actually knows.
              (ids_were_asked_for_note(
                  bool(stock_compare.failed_lookups(reader_text)))
-              if said_by_reader and not phases else ""),
+              if said_by_reader and not phases and not resolution else ""),
              phases,
-             needed_version_note(plugin, needed), identity_note(rows)]
+             resolution_note(resolution),
+             needed_version_note(plugin, needed, site_silent=site_silent),
+             identity_note(rows)]
     if works:
         parts.append("Searching, opening a listing and editing in the vendor "
                      "dashboard all still work.")

@@ -8726,6 +8726,18 @@ def build_csledit(parent, app):
         say("CanadianShopper: %d listings read; %s. Type a card's name to "
             "find one." % (total, cs_edit.editable_note(editable, total)),
             "ok")
+        resolution = cs_edit.resolution_counts(last_tool_output(app))
+        if resolution:
+            #  The reader's own counts, quoted rather than paraphrased: they
+            #  are what tells "the lookups ran and the site named nothing"
+            #  apart from "they never ran", and the person reading this line is
+            #  the one who would otherwise have to report it.
+            say("The reader's own resolution line: %s"
+                % cs_edit.resolution_line(last_tool_output(app)), "dim")
+            if not cs_edit.nothing_editable(items):
+                note = cs_edit.resolution_note(resolution, total)
+                if note:
+                    say(note[:1].upper() + note[1:], "dim")
         missed = stock_compare.failed_lookups(last_tool_output(app))
         if missed:
             #  Those listings are in the list, but this panel addresses a
