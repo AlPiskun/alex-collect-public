@@ -9377,9 +9377,14 @@ def build_csledit(parent, app):
         say("Reading one listing's detail to go with the diagnosis...", "dim")
 
         def work():
+            #  Two read-only requests: the record itself, and one OPTIONS
+            #  question that asks the vendor's own route which methods it
+            #  accepts. The second is what settles whether that record can be
+            #  written at all - and it is answered without writing anything.
             status, content_type, body = cs_edit.fetch_detail(url, cookie)
             return {"url": url, "status": status,
-                    "content_type": content_type, "body": body}
+                    "content_type": content_type, "body": body,
+                    "probe": cs_edit.fetch_options(url, cookie)}
 
         def done(detail, error):
             if error is not None:
@@ -9388,7 +9393,8 @@ def build_csledit(parent, app):
             text = cs_edit.diagnosis_text(
                 row=item, output=output, stages=stages, plugin=plugin,
                 command=command, detail=detail or {}, total=total,
-                editable=editable, app_version=VERSION, source=source)
+                editable=editable, app_version=VERSION, source=source,
+                probe=(detail or {}).get("probe"))
             path = cs_edit.diagnosis_path(BASE)
             try:
                 path.write_text(text, encoding="utf-8")
@@ -9397,6 +9403,12 @@ def build_csledit(parent, app):
                 return
             say("Diagnosis written: %s (no cookie, token or password is in "
                 "it)." % path, "ok")
+            probe = (detail or {}).get("probe") or {}
+            if probe.get("allow"):
+                #  The answer to "can this record be written at all" is worth
+                #  saying out loud, not only filing.
+                say("Asked read-only, the vendor's own route for that listing "
+                    "accepts: %s." % ", ".join(probe["allow"]), "dim")
             if not open_path(path):
                 messagebox.showinfo(
                     "Diagnosis written",

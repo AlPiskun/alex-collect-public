@@ -1104,6 +1104,99 @@ def fetch_detail(url, cookie="", timeout=25, opener=None):
         return 0, "", str(exc)
 
 
+#: Methods that mean "this route can be written", in the order they matter.
+WRITE_METHODS = ("PATCH", "PUT", "POST")
+
+
+def allowed_methods(header):
+    """The method names in an ``Allow`` header, uppercased and in a stable order."""
+    words = []
+    for part in str(header or "").replace(";", ",").split(","):
+        word = part.strip().upper()
+        if word and word not in words:
+            words.append(word)
+    known = [name for name in ("GET", "HEAD", "OPTIONS", "PATCH", "PUT",
+                               "POST", "DELETE") if name in words]
+    return known + [word for word in words if word not in known]
+
+
+def fetch_options(url, cookie="", timeout=15, opener=None):
+    """Ask a route which methods it accepts; never raises, never changes anything.
+
+    ``OPTIONS`` carries no body and asks the server what it supports, so it is
+    the one way to find out whether the record that holds a listing's editable
+    fields can be written *without* writing to it. A site that does not
+    implement OPTIONS answers 405/501 or omits ``Allow``; that is inconclusive
+    and is reported as such rather than as a refusal.
+    """
+    blank = {"status": 0, "allow": [], "allow_header": "", "note": ""}
+    if not url:
+        return dict(blank, note="no address to ask")
+    if opener is not None:
+        return opener(url, cookie)
+    request = urllib.request.Request(
+        url, method="OPTIONS",
+        headers={"User-Agent": "Mozilla/5.0 (AlexCollect-GUI)",
+                 "Accept": "application/json",
+                 "Cookie": str(cookie or "")})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            header = response.headers.get("Allow", "") or ""
+            return {"status": getattr(response, "status", 200),
+                    "allow": allowed_methods(header), "allow_header": header,
+                    "note": ""}
+    except urllib.error.HTTPError as exc:
+        header = ""
+        try:
+            header = (getattr(exc, "headers", None) or {}).get("Allow", "") or ""
+        except Exception:
+            header = ""
+        return {"status": exc.code, "allow": allowed_methods(header),
+                "allow_header": header,
+                "note": "" if header else str(exc.reason or exc)}
+    except Exception as exc:
+        return dict(blank, note=str(exc))
+
+
+def methods_note(probe):
+    """What an endpoint's advertised methods mean for editing one listing.
+
+    Two answers matter and one does not: a route that advertises ``PATCH`` or
+    ``PUT`` is one the vendor says can be written, which makes the listing id
+    enough to address it; a route that advertises only ``GET``/``HEAD`` is
+    read-only and the edit panel's verdict is final. Anything else - 405, 501,
+    no ``Allow`` header - is inconclusive and must not be read as either.
+    """
+    if not probe:
+        return ""
+    status = probe.get("status") or 0
+    allowed = list(probe.get("allow") or [])
+    if not status:
+        return ("The vendor's own route could not be asked which methods it "
+                "accepts (%s). Nothing was changed, and this says nothing "
+                "either way." % (probe.get("note") or "no answer"))
+    if not allowed:
+        return ("The vendor's own route answered HTTP %s without an Allow "
+                "header, so it does not say which methods it accepts - some "
+                "sites answer OPTIONS that way without meaning the route is "
+                "read-only. Inconclusive; nothing was changed." % status)
+    writable = [name for name in allowed if name in WRITE_METHODS]
+    if any(name in ("PATCH", "PUT") for name in writable):
+        return ("**The vendor's own route states it accepts %s.** That is the "
+                "record which holds a listing's title, price, stock and state, "
+                "addressed by the listing id the reader already has - so it "
+                "can be written, and the product id is not needed to address "
+                "it. Which fields it accepts is still unproven: a PATCH "
+                "carrying the values a listing already has would confirm that "
+                "without changing anything, and only with your say-so."
+                % ", ".join(writable))
+    return ("The vendor's own route states it accepts only %s, so it is "
+            "read-only: the record that holds the listing's title, price and "
+            "state cannot be written there, and 'not editable on "
+            "CanadianShopper' is the final answer for those fields."
+            % ", ".join(allowed))
+
+
 def without_progress(text):
     """``(spoken, omitted)`` for a tool's output with its progress markers cut.
 
@@ -1151,7 +1244,7 @@ def _body_for_diagnosis(body, limit=40):
 
 def diagnosis_text(row=None, output="", stages=(), plugin="", command="",
                    detail=None, total=0, editable=0, now=None,
-                   app_version="", source=""):
+                   app_version="", source="", probe=None):
     """The three things a plugin author needs, in one file they can read.
 
     Written because a round trip with the reader's author ended in *"send the
@@ -1286,12 +1379,33 @@ def diagnosis_text(row=None, output="", stages=(), plugin="", command="",
         if resolution and resolution["usable"] == 0 and resolution["empty"]:
             lines.append("That is the same answer as the reader's own "
                          "resolution line: %d lookups, %d answers and none "
-                         "naming a product. This is the closing condition "
-                         "both sides agreed on - the vendor's data carries no "
-                         "product reference for these listings, so there is "
-                         "nothing for a reader to resolve and no further "
-                         "report to make." % (resolution["requested"],
-                                              resolution["empty"]))
+                         "naming a product. This settles the reader's side "
+                         "for these listings - the vendor's data carries no "
+                         "product reference to resolve, so there is nothing "
+                         "more to report about the resolver."
+                         % (resolution["requested"], resolution["empty"]))
+            lines.append("Whether those listings can still be edited depends "
+                         "on the check below, not on the reader: a record the "
+                         "vendor lets the app write can be edited without any "
+                         "product id at all.")
+        lines.append("")
+    if probe:
+        lines.append("--- whether that record can be written (a read-only "
+                     "check) " + "-" * 4)
+        lines.append("OPTIONS %s" % (detail.get("url") if detail else "") if
+                     detail and detail.get("url") else "OPTIONS (no address)")
+        if probe.get("status"):
+            lines.append("HTTP %s; Allow: %s" % (
+                probe.get("status"),
+                probe.get("allow_header") or "(no Allow header)"))
+        else:
+            lines.append("No answer: %s" % (probe.get("note") or "unknown"))
+        note = methods_note(probe)
+        if note:
+            lines.append(note.replace("**", ""))
+        lines.append("An OPTIONS request carries no body: nothing on the site "
+                     "was read beyond the answer to this question, and "
+                     "nothing was changed.")
         lines.append("")
     lines.append("Nothing in this file is a cookie, a token or a password: "
                  "values under those names are hidden, and long text is cut.")
@@ -1312,8 +1426,9 @@ def uneditable_note(failures=0):
             "plugin's update action finds the listing but refuses to write "
             "without an explicit product reference, and these records carry "
             "none. Title, price and state have to be changed in the vendor "
-            "dashboard; stock counts are the exception, because the comparison "
-            "panel writes those to the listing itself.")
+            "dashboard. Stock counts are the one exception in address: the "
+            "comparison panel's stock.set names the listing itself, so a "
+            "missing product id does not stand in its way.")
     failures = int(failures or 0)
     if failures:
         said += (" %d %s not covered by that: %s lookup did not answer at "

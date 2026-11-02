@@ -722,6 +722,26 @@ core states rather than leaves to be discovered:
   that is a new, verifiable contract and a change on both sides, not something
   to infer from a GET response.
 
+**Asking the route instead of guessing.** One `OPTIONS` request to the same
+`/api/data/product/<listing-id>` address answers most of that question without
+writing anything, so **Save a read diagnosis...** makes it and records the
+answer:
+
+- `Allow: … PATCH …` (or `PUT`) - the vendor's own route states it accepts a
+  write, at the address the listing id already names. That is evidence the
+  product id is not needed *to address* the record; which fields it accepts is
+  still unproven, and the core says so rather than acting on it.
+- `Allow: GET, HEAD` only - the route is read-only and "not editable on
+  CanadianShopper" is final for title, price and state.
+- `405`, `501` or no `Allow` header - inconclusive. Many servers answer
+  `OPTIONS` that way without meaning the route is read-only, so the core
+  reports it as unanswered, never as a refusal.
+- No answer at all (offline, refused) - said to say nothing either way.
+
+`OPTIONS` carries no body: it cannot change a listing, and the file says so
+beside the answer. The probe is one extra request per diagnosis, never part of
+a read.
+
 **The console can say whether the lookups ran.** The reader's phases are
 evidence, not decoration: a read whose `ids` stage was reported and came back
 with no usable product id is a different report from one whose stage never

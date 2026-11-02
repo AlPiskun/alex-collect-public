@@ -1229,6 +1229,89 @@ def test_the_diagnosis_file():
           "The reader's resolution line: (none printed)" in plain and
           "prints its own" not in plain, plain[:600])
 
+    #  ---- whether the vendor's own route can be written at all: asked, not assumed
+    check("an Allow header is read into method names, in a stable order",
+          cs_edit.allowed_methods("get, HEAD , patch") ==
+          ["GET", "HEAD", "PATCH"], cs_edit.allowed_methods("get, HEAD , patch"))
+    check("an empty header is no methods at all",
+          cs_edit.allowed_methods("") == [] and
+          cs_edit.allowed_methods(None) == [], "")
+
+    class FakeResponse:
+        status = 200
+        headers = {"Allow": "GET, HEAD, PATCH",
+                   "Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self, *_args):
+            return b"{}"
+
+    import urllib.request as urlreq
+    seen_requests = []
+
+    def answer(request, timeout=0):
+        seen_requests.append(request)
+        return FakeResponse()
+
+    with patch.object(urlreq, "urlopen", answer):
+        probe = cs_edit.fetch_options("https://cs.example/api/data/product/x",
+                                      "session_token=z")
+    check("the probe is an OPTIONS request - it asks, it does not write",
+          seen_requests and
+          seen_requests[0].get_method() == "OPTIONS",
+          str([r.get_method() for r in seen_requests]))
+    check("and the route's answer is kept as methods",
+          probe["allow"] == ["GET", "HEAD", "PATCH"] and probe["status"] == 200,
+          str(probe))
+
+    def error_opener(status, allow=""):
+        import email.message
+        import urllib.error
+        headers = email.message.Message()
+        if allow:
+            headers["Allow"] = allow
+        raise urllib.error.HTTPError("u", status, "no", headers, None)
+
+    refused = cs_edit.fetch_options("https://cs.example/x", opener=lambda *a: {
+        "status": 405, "allow": [], "allow_header": "", "note": "405"})
+    check("a 405 with no Allow header is inconclusive, never a refusal",
+          "Inconclusive" in cs_edit.methods_note(refused) and
+          "nothing was changed" in cs_edit.methods_note(refused),
+          cs_edit.methods_note(refused))
+    writable = cs_edit.methods_note({"status": 200,
+                                     "allow": ["GET", "HEAD", "PATCH"]})
+    check("PATCH advertised means the record can be written at that address",
+          "states it accepts PATCH" in writable and
+          "listing id the reader already has" in writable and
+          "still unproven" in writable, writable)
+    read_only = cs_edit.methods_note({"status": 200, "allow": ["GET", "HEAD"]})
+    check("GET and HEAD alone mean read-only, and make the verdict final",
+          "read-only" in read_only and "final answer" in read_only, read_only)
+    check("a request that could not be made says nothing either way",
+          "says nothing either way" in cs_edit.methods_note(
+              {"status": 0, "allow": [], "note": "dns"}), "")
+
+    probed = cs_edit.diagnosis_text(
+        row={"id": "a", "sku": "S1"},
+        detail={"url": "https://cs.example/api/data/product/a", "status": 200,
+                "content_type": "application/json", "body": '{"id": "a"}'},
+        probe={"status": 200, "allow": ["GET", "HEAD", "PATCH"],
+               "allow_header": "GET, HEAD, PATCH", "note": ""})
+    check("a diagnosis carries the probe and what it means",
+          "OPTIONS https://cs.example/api/data/product/a" in probed and
+          "Allow: GET, HEAD, PATCH" in probed and
+          "states it accepts PATCH" in probed, probed[-700:])
+    check("and says the probe itself changed nothing",
+          "carries no body" in probed and "nothing was changed" in probed, "")
+    check("no probe, no section",
+          "whether that record can be written" not in
+          cs_edit.diagnosis_text(row={"id": "a"}), "")
+
     check("a body that is not JSON is described instead of pasted whole",
           "not JSON" in cs_edit._body_for_diagnosis("<html>denied</html>"), "")
     check("an empty detail is not invented",
@@ -1338,7 +1421,9 @@ def test_the_readers_own_resolution_counts():
     check("and it says plainly that reading again cannot fix these rows",
           "not something reading again can fix" in gap and
           "vendor dashboard" in gap and
-          "writes those to the listing itself" in gap, gap)
+          "stock.set names the listing itself" in gap, gap)
+    check("while not claiming the stock write is known to work here",
+          "writes those to the listing itself" not in gap, gap)
 
     #  The plugin's author confirmed the updater will not resolve a listing
     #  without a product reference, so the sentence must not exist for a read
@@ -1459,9 +1544,10 @@ def test_the_real_diagnosis_from_the_shop():
     check("the two product-ish keys are named but not offered as a lead",
           "isDemoProduct (empty)" in text and
           "none of them holds an id" in text, text[-900:])
-    check("and the record is called the closing condition it is",
-          "This is the closing condition" in text and
-          "no further report to make" in text, text[-1400:])
+    check("and the reader's side is called settled, without settling editing",
+          "settles the reader's side" in text and
+          "nothing more to report about the resolver" in text and
+          "depends on the check below" in text, text[-1400:])
     check("and the one question the file cannot answer is put to the vendor",
           "the fields an edit changes" in text and
           "/api/products/<product_id>/" in text and
@@ -1752,13 +1838,18 @@ def test_the_panel_writes_a_diagnosis():
         asked.append(url)
         return (200, "application/json", json.dumps({"product": {"id": "9"}}))
 
+    def fake_options(url, cookie_text="", **kwargs):
+        return {"status": 200, "allow": ["GET", "HEAD", "PATCH"],
+                "allow_header": "GET, HEAD, PATCH", "note": ""}
+
     harness._BOX.shown[:] = []
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/stock.py"), \
             patch.object(gui, "CS_COOKIE_FILE", cookie), \
             patch.object(gui, "in_background", sync_background), \
             patch.object(gui, "open_path", lambda path: True), \
-            patch.object(cs_edit, "fetch_detail", fake_detail):
+            patch.object(cs_edit, "fetch_detail", fake_detail), \
+            patch.object(cs_edit, "fetch_options", fake_options):
         app.stages_seen = lambda: ["read", "ids"]
         app.runner = SimpleNamespace(output=output, cmd="cs-stock.py --stock-out x")
         find(parent, gui.ttk.Button,
@@ -1785,13 +1876,22 @@ def test_the_panel_writes_a_diagnosis():
           "secret-value" not in text, text[:400])
     check("the console says where it went, and that it is safe to send",
           any("Diagnosis written" in line and "no cookie" in line
-              for _tag, line in app.lines), str(app.lines[-3:]))
+              for _tag, line in app.lines), str(app.lines[-6:]))
+    check("the file answers whether the vendor's record can be written",
+          "Allow: GET, HEAD, PATCH" in text and
+          "states it accepts PATCH" in text and
+          "nothing was changed" in text, text[-800:])
+    check("and the console says what the route allows, read-only",
+          any("the vendor's own route for that listing accepts: GET, HEAD, "
+              "PATCH" in line for _tag, line in app.lines),
+          str(app.lines[-4:]))
 
     #  A second press is a second piece of evidence: the same read diagnosed
     #  later, or after a change - so the first file stays where it is.
     with patch.object(gui, "in_background", sync_background), \
             patch.object(gui, "open_path", lambda path: True), \
-            patch.object(cs_edit, "fetch_detail", fake_detail):
+            patch.object(cs_edit, "fetch_detail", fake_detail), \
+            patch.object(cs_edit, "fetch_options", fake_options):
         find(parent, gui.ttk.Button, "Save a read diagnosis...").invoke()
     again = sorted(folder.glob("cs-read-diagnosis-*.txt"))
     check("pressing it again keeps both files instead of replacing the first",
@@ -1879,6 +1979,10 @@ def test_the_evidence_outlives_the_window():
     def fake_detail(url, cookie_text="", **kwargs):
         return (200, "application/json", json.dumps({"id": "a", "sku": "S1"}))
 
+    def fake_options(url, cookie_text="", **kwargs):
+        return {"status": 204, "allow": ["GET", "HEAD"],
+                "allow_header": "GET, HEAD", "note": ""}
+
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/stock.py"), \
             patch.object(gui, "in_background", sync_background):
@@ -1915,7 +2019,8 @@ def test_the_evidence_outlives_the_window():
     parent2 = harness.FakeWidget()
     with patch.object(gui, "in_background", sync_background), \
             patch.object(gui, "open_path", lambda path: True), \
-            patch.object(cs_edit, "fetch_detail", fake_detail):
+            patch.object(cs_edit, "fetch_detail", fake_detail), \
+            patch.object(cs_edit, "fetch_options", fake_options):
         gui.build_csledit(parent2, app2)
         text = press(parent2)
     check("a fresh window's diagnosis still quotes the run's own output",
@@ -1958,7 +2063,8 @@ def test_the_evidence_outlives_the_window():
     with patch.object(gui, "LOG_FILE", log), \
             patch.object(gui, "in_background", sync_background), \
             patch.object(gui, "open_path", lambda path: True), \
-            patch.object(cs_edit, "fetch_detail", fake_detail):
+            patch.object(cs_edit, "fetch_detail", fake_detail), \
+            patch.object(cs_edit, "fetch_options", fake_options):
         gui.build_csledit(parent3, harness.FakeApp(folder))
         old_text = press(parent3)
     check("an older list's command still comes from the log",

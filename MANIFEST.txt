@@ -89,7 +89,9 @@ app/:
                                    product reference at all means - those rows
                                    can be read and opened, not edited, with the
                                    record's editable shape named as the one
-                                   question left for the vendor
+                                   question left for the vendor, and that
+                                   question put to the route itself with one
+                                   read-only OPTIONS request
   photo_unsquare.py                crop a square, padded listing photo back to
                                    the card's own shape before uploading it
   sold-everywhere.py              sale checklist workflow
