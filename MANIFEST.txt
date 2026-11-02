@@ -85,7 +85,9 @@ app/:
                                    own resolution counts, one sanitised row and
                                    that listing's detail response, key by key,
                                    with a line naming any product key it has or
-                                   saying it has none
+                                   saying it has none; and what a read with no
+                                   product reference at all means - those rows
+                                   can be read and opened, not edited
   photo_unsquare.py                crop a square, padded listing photo back to
                                    the card's own shape before uploading it
   sold-everywhere.py              sale checklist workflow

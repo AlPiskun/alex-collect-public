@@ -672,8 +672,20 @@ Stock resolution: 2596 detail requests, 0 usable references, 2596 HTTP 200s with
 Detail requests include failed attempts; usable references come from detail
 responses (direct ids and cache hits do not inflate the HTTP counts); the older
 `Stock read: … lookups failed` line still comes last when anything failed; and
-the `ids` stage is still emitted even when nothing resolves. `--no-product-lookups`
-is unchanged and prints no resolution line, because it never looked anything up.
+the `ids` stage is still emitted even when nothing resolves. Its scope is
+confirmed and deliberately narrow:
+
+- a read whose **every** detail request failed at the transport level still
+  prints the line (`… 0 usable references, 0 HTTP 200s without a usable
+  reference, 0 ambiguous SKUs, N hard failures`), followed by the older failure
+  line - the catalogue read completed, only the lookups did not;
+- a read of an **empty catalogue** prints it too, all five numbers zero;
+- a **fatal** session or catalogue failure is a different path: the read ends
+  with its error, no resolution happened, and no line is printed;
+- a `--no-product-lookups` read is the comparison's own read: it performs no
+  detail lookup, its rows are expected to carry no ids, and the core never
+  prints the gap sentence for it. Whether that read also prints the resolution
+  line is the reader's business - the core only uses one when it is there.
 
 The core reads all five numbers, quotes the line verbatim in the console and in
 a diagnosis file, and - this is the part that matters - lets them decide who is
@@ -685,6 +697,26 @@ that verdict could only be a guess, so a current-but-older plugin (1.0.34 to
 1.0.38) is told that 1.0.39 prints the counts that settle it. An ambiguous SKU
 is named as one - more than one product matched, so no id was invented - and a
 hard failure is still a failure.
+
+**No server-side resolver behind the write.** `marketplace.listing_update`
+matches the listing by id, SKU or old title - and refuses a multi-match - but
+it will not write without an **explicit** product reference in that listing's
+own record: it PATCHes `/api/products/<product_id>/` and, if the matched
+record names none, it fails before any request rather than guessing. There is
+no listing-to-product resolution on the write path in 1.0.39, and the generic
+`/api/data/product/<listing-id>` record is not written to. Two consequences the
+core states rather than leaves to be discovered:
+
+- A read whose resolution line says every answer came back 200 and named no
+  product is **settled**, not pending: those listings cannot have their title,
+  price or state changed from the app, and reading again cannot change that.
+  The console says so in those words and points at the vendor dashboard.
+- **Stock counts are unaffected.** `stock.set` addresses the listing itself, so
+  the comparison panel still writes counts for exactly those listings.
+- If a vendor ever confirms that the write route accepts the listing id - or
+  that the reader may resolve it server-side and refuse a non-unique answer -
+  that is a new, verifiable contract and a change on both sides, not something
+  to infer from a GET response.
 
 **The console can say whether the lookups ran.** The reader's phases are
 evidence, not decoration: a read whose `ids` stage was reported and came back
@@ -763,6 +795,11 @@ listings themselves:
   entry naming `id`, `sku`, `title`, `card` or `name` confirms the change just
   as a product id does, so a writer that resolves internally and reports what
   it resolved needs no change here.
+- **Editing is blocked by it, and said to be.** With no product reference in
+  any detail record, `marketplace.listing_update` refuses each of those
+  listings before writing, so the edit panel says reading again cannot fix
+  them and leaves title, price and state to the vendor dashboard. Stock counts
+  are the exception:
 - **Stock counts are not blocked by any of this.** The comparison panel's
   **Set CanadianShopper to the website's counts...** writes through `stock.set`,
   which addresses the listing rather than a product, so a shop whose reader

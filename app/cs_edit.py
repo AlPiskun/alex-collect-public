@@ -526,7 +526,8 @@ PRODUCT_ID_VERSION = "1.0.34"
 RESOLUTION_VERSION = "1.0.39"
 
 
-def needed_version_note(plugin="", needed=PRODUCT_ID_VERSION, site_silent=False):
+def needed_version_note(plugin="", needed=PRODUCT_ID_VERSION,
+                        site_silent=False, failures=0):
     """Which plugin version reports real product ids, given what is installed.
 
     Three different situations and they must not read alike: an installed
@@ -544,6 +545,15 @@ def needed_version_note(plugin="", needed=PRODUCT_ID_VERSION, site_silent=False)
         return ("Plugin %s or newer reports each listing's real product id."
                 % needed)
     if version_at_least(plugin, needed):
+        failures = int(failures or 0)
+        if failures and not site_silent:
+            #  The reader said its lookups failed outright, so "a defect in
+            #  the reader" would be the wrong report: the failing lookups are
+            #  the reason, and reading again is what may resolve them.
+            return ("The list was read by plugin %s, which does report real "
+                    "product ids, so this is not the reader failing to try: "
+                    "those failed lookups are why the ids are missing, and "
+                    "reading again may resolve them." % plugin)
         if site_silent:
             #  The reader's own counts say it asked and every answer came
             #  back without a product reference, so the version sentence must
@@ -1140,6 +1150,10 @@ def diagnosis_text(row=None, output="", stages=(), plugin="", command="",
     lines.append(phases_note(stages, missed))
     if resolution:
         lines.append(resolution_note(resolution))
+        if resolution["usable"] == 0 and resolution["empty"]:
+            #  The file is what somebody reads next month, so it carries the
+            #  consequence and not only the cause.
+            lines.append(uneditable_note())
     lines.append("")
     lines.append("--- the reader's complete output " + "-" * 20)
     lines.append(str(output or "(no console output was kept for this list - "
@@ -1203,6 +1217,24 @@ def diagnosis_text(row=None, output="", stages=(), plugin="", command="",
     return "\n".join(lines)
 
 
+def uneditable_note():
+    """What a shop whose records name no product means for the edit buttons.
+
+    Confirmed by the plugin's author for 1.0.39: ``marketplace.listing_update``
+    matches a listing by id, SKU or title but refuses to write without an
+    explicit product reference, and there is no server-side resolver behind it.
+    So a read in which no record names a product is not a list that a later
+    read fixes - those listings cannot have their title, price or state changed
+    from here at all, and saying "read again" would be advice that cannot work.
+    """
+    return ("Editing one of these is not something reading again can fix: the "
+            "plugin's update action finds the listing but refuses to write "
+            "without an explicit product reference, and these records carry "
+            "none. Title, price and state have to be changed in the vendor "
+            "dashboard; stock counts are the exception, because the comparison "
+            "panel writes those to the listing itself.")
+
+
 def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True,
                    reader_text="", stages=None):
     """The whole sentence for a read nothing can be written from, or "".
@@ -1242,7 +1274,11 @@ def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True,
               if said_by_reader and not phases and not resolution else ""),
              phases,
              resolution_note(resolution),
-             needed_version_note(plugin, needed, site_silent=site_silent),
+             (uneditable_note() if site_silent else ""),
+             needed_version_note(
+                 plugin, needed, site_silent=site_silent,
+                 failures=(resolution["failed"] if resolution else
+                           stock_compare.failed_lookups(reader_text))),
              identity_note(rows)]
     if works:
         parts.append("Searching, opening a listing and editing in the vendor "

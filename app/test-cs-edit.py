@@ -1196,6 +1196,9 @@ def test_the_diagnosis_file():
           "no read of this shop produces a product id" in text, text[:900])
     check("so the file never calls that read a reader defect",
           "is a defect in the reader" not in text, text[:900])
+    check("and it says what that verdict costs: these rows cannot be edited",
+          "not something reading again can fix" in text and
+          "vendor dashboard" in text, text[:1200])
     check("a detail response naming no product agrees with those counts",
           "same answer as the reader's own resolution line" in text,
           text[-500:])
@@ -1318,6 +1321,38 @@ def test_the_readers_own_resolution_counts():
     check("and the phases are not said twice over the resolution line",
           "so the lookups ran." in gap and
           "the ids it sent back were not usable" not in gap, gap)
+    check("and it says plainly that reading again cannot fix these rows",
+          "not something reading again can fix" in gap and
+          "vendor dashboard" in gap and
+          "writes those to the listing itself" in gap, gap)
+
+    #  The plugin's author confirmed the updater will not resolve a listing
+    #  without a product reference, so the sentence must not exist for a read
+    #  whose counts do not say the site is silent.
+    failed_only = cs_edit.product_id_gap(
+        rows, plugin="1.0.39", needed="1.0.34",
+        reader_text=("stock.list: 20 listings, 0 with a real product id, 20 "
+                     "without the key, 0 reported as 0\nStock resolution: 20 "
+                     "detail requests, 0 usable references, 0 HTTP 200s "
+                     "without a usable reference, 0 ambiguous SKUs, 20 hard "
+                     "failures"))
+    check("a read whose lookups failed is not told its records are silent",
+          "vendor's data" not in failed_only and
+          "not something reading again can fix" not in failed_only,
+          failed_only)
+    check("and its failures are named as the reason, with reading again "
+          "offered",
+          "20 detail requests failed outright" in failed_only and
+          "those failed lookups are why the ids are missing" in failed_only and
+          "reading again may resolve them" in failed_only.lower(), failed_only)
+
+    #  "hard failures" and "lookups failed" are two lines and must not be read
+    #  as each other: the second is the reader's older failure count.
+    check("the older failure line is still read, and a resolution line is not "
+          "mistaken for it",
+          stock_compare.failed_lookups("Stock read: 2 listings, 0 with a real "
+                                       "product id, 2 lookups failed") == 2 and
+          stock_compare.failed_lookups(line) == 0, "")
 
 
 def test_plugin_1_0_35():
