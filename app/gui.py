@@ -1207,12 +1207,25 @@ listed yet and fit under the limit. A card already on eBay is matched by
 SKU first and then by title, with the same matcher the stock comparison
 uses, so it is not offered twice.
 
+**Choose the cards** decides the order they are taken in, because the
+dearest card is not always the one a shop wants: *dearest first* (the
+default, and the most money for a fixed number of listings), *newest
+first* when a batch has just been made, *oldest first*, *cheapest
+first*, and *in the order I type* for a list of titles, SKUs or product
+ids typed into the box below - those cards first, in that order, and the
+rest after them. A typed card that is not there is named on the console
+rather than silently skipped. **Only this category** narrows the
+catalogue to products filed under one category of the website (part of
+its name is enough, and blank means all of it), and says how many
+products that left out.
+
 What it writes is the eBay Quick List page for those cards: one
 draggable, click-to-copy button per field (title, price, SKU, year,
 manufacturer, card number, player, set, condition, grade), each card's
-own website photos, and a link to the matching eBay template. Card facts
-come from the product's own attributes; the marketplace defaults in User
-Settings fill in what a product does not say.
+own website photos, and a link to the matching eBay template. The
+template pages for the sports involved are opened as well, once each.
+Card facts come from the product's own attributes; the marketplace
+defaults in User Settings fill in what a product does not say.
 
 Nothing is listed and nothing is changed - not on eBay, not on the
 website. The limit is remembered in User Settings, so both places show
@@ -1990,6 +2003,9 @@ TOOLTIPS = {
     "Compare the last read instead (no new read)": "Compare now against the CanadianShopper list already on disk from an earlier read - it is named with its age wherever its counts appear, so nothing is mistaken for a fresh count, and no read is started",
     "Save the limit": "Remember this number in User Settings, where the same value is used by Fill your eBay store every time it chooses",
     "Open the last list": "Open the page written by the last selection (or the newest one on disk); nothing is read again",
+    "Choose the cards:": "What decides which unlisted cards come first - dearest, newest, oldest, cheapest, or in the order typed below; the choice is remembered",
+    "Only this category:": "Leave blank to choose from the whole catalogue; type part of a category's name (hockey) to choose only from products filed under it",
+    "These cards first:": "Titles, SKUs or product ids separated by commas, in the order you want them listed - used by \u201cIn the order I type\u201d, and anything not found is named on the console",
     "Find the cards to list next": "Read your website's catalogue and your eBay active listings, keep the dearest cards that are not on eBay yet and fit under your limit, and open the Quick List page for them - nothing is listed or changed",
     "Active listings eBay allows:": "How many active listings your eBay account may hold (250 on a free store); the number of cards chosen is this minus what is already listed",
     "Open the eBay listing page": "Open your eBay active-listings page in the browser, where the readings come from and where a listing is made",
@@ -5042,6 +5058,53 @@ def build_ebayfill(parent, app):
     def say(text, tag=""):
         app.console_line(text, tag)
 
+    #  -- what decides which cards come first -------------------------------
+    #  Dearest is the default - a fixed number of listings is worth the most
+    #  money that way - but a shop filling a hole in a set wants the cards it
+    #  names, and a shop restocking wants the newest. The choice is remembered
+    #  with the other settings, and the category and typed boxes are read on
+    #  every run because they change with what is being listed today.
+    order_row = ttk.Frame(box)
+    order_row.pack(anchor="w", pady=(4, 0))
+    ttk.Label(order_row, text="Choose the cards:").pack(side="left")
+    sort_var = tk.StringVar(
+        master=order_row,
+        value=ebay_fill.sort_label(app.settings.get("ebay_fill_sort")))
+    sort_box = ttk.Combobox(order_row, textvariable=sort_var,
+                            state="readonly", width=22,
+                            values=ebay_fill.sort_labels())
+    sort_box.pack(side="left", padx=(6, 0))
+    add_tooltip(sort_box, TOOLTIPS["Choose the cards:"])
+
+    def remember_sort(_event=None):
+        """Store the order the moment it changes; choosing changes nothing else."""
+        key = ebay_fill.sort_key(str(sort_var.get() or ""))
+        if app.settings.get("ebay_fill_sort") == key:
+            return
+        app.settings["ebay_fill_sort"] = key
+        try:
+            save_settings(app.settings)
+        except Exception as exc:          # a read-only settings file
+            log("could not remember the eBay order: %s" % exc)
+
+    sort_box.bind("<<ComboboxSelected>>", remember_sort)
+
+    filter_row = ttk.Frame(box)
+    filter_row.pack(anchor="w", pady=(2, 0))
+    ttk.Label(filter_row, text="Only this category:").pack(side="left")
+    category_var = tk.StringVar(master=filter_row, value="")
+    category_entry = ttk.Entry(filter_row, textvariable=category_var, width=22)
+    category_entry.pack(side="left", padx=6)
+    add_tooltip(category_entry, TOOLTIPS["Only this category:"])
+
+    wanted_row = ttk.Frame(box)
+    wanted_row.pack(anchor="w", pady=(2, 0))
+    ttk.Label(wanted_row, text="These cards first:").pack(side="left")
+    wanted_var = tk.StringVar(master=wanted_row, value="")
+    wanted_entry = ttk.Entry(wanted_row, textvariable=wanted_var, width=52)
+    wanted_entry.pack(side="left", padx=6)
+    add_tooltip(wanted_entry, TOOLTIPS["These cards first:"])
+
     #  -- the store's own listing limit -------------------------------------
     limit_row = ttk.Frame(box)
     limit_row.pack(anchor="w", pady=(4, 0))
@@ -5119,6 +5182,12 @@ def build_ebayfill(parent, app):
                 "be read.", "dim")
             return
         limit = save_limit(quiet=True)
+        #  The boxes are read here, on the window's own thread, and the values
+        #  travel to the background work: a Tk variable touched from another
+        #  thread is not a thing to do, however harmless a string looks.
+        criteria = {"sort": str(sort_var.get() or ""),
+                    "category": str(category_var.get() or ""),
+                    "wanted": str(wanted_var.get() or "")}
         cookie_path = BASE / market_stock.site("ebay")["cookie"]
         cookie = market_stock.read_cookie(cookie_path) if cookie_path.is_file() \
             else ""
@@ -5164,7 +5233,10 @@ def build_ebayfill(parent, app):
                     "Choosing the cards that are not on eBay yet..."))
             except Exception:
                 pass
-            answer = ebay_fill.plan(products, store["items"], limit)
+            answer = ebay_fill.plan(
+                products, store["items"], limit, sort=criteria["sort"],
+                only_category=criteria["category"],
+                wanted=criteria["wanted"])
             return {"store": store, "products": products, "answer": answer}
 
         def done(result, error):
@@ -5190,6 +5262,8 @@ def build_ebayfill(parent, app):
                       for product in answer["chosen"]]
             page, _templates = ebay_fill.render(
                 answer["chosen"], app.settings, note=text)
+            #  The templates this selection uses: one per sport, in card order,
+            #  de-duplicated by render() itself.
             path = ebay_fill.write_page(page, BASE / "ebay_fill")
             state["page"] = path
             say("Written: %s" % path, "dim")
@@ -5204,6 +5278,25 @@ def build_ebayfill(parent, app):
             else:
                 say("The page is written beside the app; open it from the "
                     "button below.", "dim")
+            #  The templates are opened too, because that is where the fields
+            #  are pasted and the batch's own Quick List already does it: at
+            #  most one tab per sport the chosen cards belong to, never one per
+            #  card. Nothing is submitted by opening a page.
+            if _templates:
+                try:
+                    app.open_webpages(list(_templates))
+                    say("Opened %d eBay template page%s: %s. Nothing is "
+                        "submitted there without you." %
+                        (len(_templates), "" if len(_templates) == 1 else "s",
+                         ", ".join(sorted({ebay_fill.sport_of(product).title()
+                                           or "default"
+                                           for product in answer["chosen"]}))),
+                        "ok")
+                except Exception as exc:
+                    say("Could not open the template pages: %s" % exc, "err")
+            elif answer["chosen"]:
+                say("No eBay template is set for these cards: add one in User "
+                    "Settings (eBay) and the page opens it next time.", "dim")
 
         in_background(app, work, done)
 
@@ -5240,15 +5333,21 @@ def build_ebayfill(parent, app):
 
     panel_note(box, (
         "Reads your website's whole catalogue and your eBay store's active "
-        "listings, then keeps the dearest cards that are not on eBay yet and "
-        "fit under your limit. A card already there is matched by SKU first "
-        "and then by title, so it is not offered twice.\n\n"
+        "listings, then keeps the cards that are not on eBay yet and fit "
+        "under your limit - in the order chosen above: dearest, newest, oldest, "
+        "cheapest, or the cards you type, one after another. A card already "
+        "there is matched by SKU first and then by title, so it is not offered "
+        "twice. *Only this category* narrows the catalogue to one category of "
+        "the website, and is blank for all of it.\n\n"
         "The page it opens is the eBay Quick List for those cards: click a "
         "field to copy it, drag it onto the eBay form, open the matching "
-        "template, and submit. Nothing is listed or changed by this panel.\n\n"
+        "template, and submit. The template pages for the sports your cards "
+        "belong to are opened too - at most a handful, never one per card. "
+        "Nothing is listed or changed by this panel.\n\n"
         "Left out, and said on the console: cards with no price, cards the "
-        "website has none of, unpublished products, and anything already "
-        "listed. The limit above is remembered in User Settings."))
+        "website has none of, unpublished products, anything outside the "
+        "category you named, and anything already listed. The order and the "
+        "limit are remembered in User Settings."))
 
 
 def build_combine(parent, app):

@@ -241,21 +241,206 @@ def _product_rows(products):
     return rows
 
 
-def plan(products, items, limit=DEFAULT_LIMIT):
+#  What decides which cards come first. Dearest is the default because a fixed
+#  number of listings is worth the most money that way, but it is not the only
+#  right answer: a shop restocking a set wants the newest, and a shop filling a
+#  hole in a collection wants the cards it names. The key is what settings and
+#  the tests store; the label is what the chooser shows.
+SORT_OPTIONS = (
+    ("dearest", "Dearest first"),
+    ("newest", "Newest first"),
+    ("oldest", "Oldest first"),
+    ("cheapest", "Cheapest first"),
+    ("custom", "In the order I type"),
+)
+#  The same choices in the words a person might already have in a settings
+#  file or type into a box, so a hand-edited value still means something.
+_SORT_ALIASES = {
+    "dearest": "dearest", "most dear": "dearest", "most expensive": "dearest",
+    "price": "dearest", "price high": "dearest", "dearest first": "dearest",
+    "newest": "newest", "newest first": "newest", "date": "newest",
+    "newest product": "newest",
+    "oldest": "oldest", "oldest first": "oldest", "first listed": "oldest",
+    "cheapest": "cheapest", "cheapest first": "cheapest",
+    "least expensive": "cheapest", "price low": "cheapest",
+    "custom": "custom", "in the order i type": "custom", "order": "custom",
+    "my order": "custom", "typed": "custom",
+}
+
+
+def sort_key(value):
+    """Which order a chooser's answer means; anything unknown is dearest.
+
+    A value nobody recognises falls back rather than failing: this decides
+    nothing but the order of a list, and a settings file written by hand must
+    not be able to stop a selection from being made at all.
+    """
+    text = " ".join(str(value or "").strip().casefold().split())
+    return _SORT_ALIASES.get(text, "dearest")
+
+
+def sort_label(key):
+    """The chooser's own words for an order, for the chooser to show."""
+    key = sort_key(key)
+    for option, label in SORT_OPTIONS:
+        if option == key:
+            return label
+    return SORT_OPTIONS[0][1]
+
+
+#: How each order is said in a sentence, where "first" is clearer than the
+#: chooser's own wording for the typed one.
+_SORT_PHRASES = {"dearest": "dearest first", "newest": "newest first",
+                 "oldest": "oldest first", "cheapest": "cheapest first",
+                 "custom": "in the order you typed"}
+
+
+def sort_labels():
+    """Every order worth offering, in the order worth offering them."""
+    return [label for _key, label in SORT_OPTIONS]
+
+
+def created_of(product):
+    """When the product was made on the website, or ``None`` if it does not say.
+
+    WooCommerce writes ``2024-05-01T10:00:00``; a hand-edited product may carry
+    the date alone. Both are read, and neither is guessed at when absent - a
+    card with no date sorts as unknown rather than as the newest thing there.
+    """
+    raw = str((product or {}).get("date_created") or "").strip()
+    if not raw:
+        return None
+    text = raw.replace("T", " ").strip()
+    for shape in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, shape)
+        except ValueError:
+            continue
+    return None
+
+
+def _stamp(product):
+    when = created_of(product)
+    return when.timestamp() if when else None
+
+
+def order(products, sort="dearest", wanted=()):
+    """The candidates in the order they should be listed: ``(ordered, missing)``.
+
+    ``wanted`` is the typed list - titles, SKUs or product ids, in the order
+    they were typed - and it is what "in the order I type" means: those cards
+    first, in that order, then everything else by the default (dearest, then
+    alphabetical). A typed card that is not among the candidates is returned in
+    ``missing`` rather than silently ignored, because a list that names a card
+    and does not list it is a puzzle the person cannot solve from the screen.
+    """
+    key = sort_key(sort)
+    rows = list(products or [])
+
+    def by_title(product):
+        return title_of(product).lower()
+
+    if key == "newest":
+        rows.sort(key=lambda p: (_stamp(p) is None,
+                                 -(_stamp(p) or 0.0), by_title(p)))
+    elif key == "oldest":
+        rows.sort(key=lambda p: (_stamp(p) is None, _stamp(p) or 0.0,
+                                 by_title(p)))
+    elif key == "cheapest":
+        rows.sort(key=lambda p: (price_of(p) if price_of(p) is not None
+                                 else float("inf"), by_title(p)))
+    else:
+        rows.sort(key=lambda p: (-(price_of(p) or 0.0), by_title(p)))
+
+    terms = [str(term).strip() for term in (wanted or []) if str(term).strip()]
+    if key != "custom" or not terms:
+        return rows, []
+
+    picked, missing, used = [], [], set()
+    for term in terms:
+        match = None
+        for product in rows:
+            if id(product) in used:
+                continue
+            if term_matches(product, term):
+                match = product
+                break
+        if match is None:
+            missing.append(term)
+            continue
+        used.add(id(match))
+        picked.append(match)
+    rest = [product for product in rows if id(product) not in used]
+    return picked + rest, missing
+
+
+def term_matches(product, term):
+    """Whether a typed word names this product: its id, its SKU or its title."""
+    wanted = " ".join(str(term or "").strip().split())
+    if not wanted:
+        return False
+    folded = wanted.casefold()
+    product_id = str((product or {}).get("id") or "").strip()
+    if product_id and folded in (product_id.casefold(), "#" + product_id.casefold()):
+        return True
+    if folded == str((product or {}).get("sku") or "").strip().casefold():
+        return True
+    return folded in title_of(product).casefold()
+
+
+def wanted_terms(text):
+    """The typed list, split on commas and new lines, without blanks.
+
+    Both separators are accepted because a card's name can be pasted from a
+    spreadsheet (one per line) or typed in a row (comma-separated), and neither
+    should need the other's punctuation removed first.
+    """
+    terms = []
+    for chunk in re.split(r"[\n,;]+", str(text or "")):
+        term = " ".join(chunk.split())
+        if term and term not in terms:
+            terms.append(term)
+    return terms
+
+
+def in_category(product, wanted):
+    """Whether the product is filed under a category the text names.
+
+    Matched on the category's own name, case-insensitively and on part of it,
+    so "hockey" finds "Hockey Cards" - and a blank filter matches everything,
+    which is what leaving the box empty means.
+    """
+    text = str(wanted or "").strip().casefold()
+    if not text:
+        return True
+    names = [str(entry.get("name") if isinstance(entry, dict) else entry or "")
+             .strip().casefold() for entry in (product or {}).get("categories") or []]
+    return any(text == name or text in name for name in names if name)
+
+
+def plan(products, items, limit=DEFAULT_LIMIT, sort="dearest",
+         only_category="", wanted=""):
     """Which products to list next, and what stands behind every number.
 
     ``products`` are the website's whole catalogue and ``items`` the store's
-    *active* listings, as the eBay reader returns them. The answer carries the
-    chosen products in the order worth listing them (dearest first, ties
-    alphabetical), the room left under the limit, and every group that was
-    left out - already on eBay, out of stock, unpriced - with its count.
+    *active* listings, as the eBay reader returns them. ``sort`` decides the
+    order, ``only_category`` narrows the catalogue to one category (blank means
+    all of it), and ``wanted`` is the typed list used by the custom order.
+
+    The answer carries the chosen products in the order they should be listed,
+    the room left under the limit, and every group that was left out - already
+    on eBay, out of stock, unpriced, outside the chosen category - with its
+    count, because a list that shrinks without saying why cannot be trusted.
     """
     catalogue = [product for product in products or [] if isinstance(product, dict)]
     active = [item for item in items or [] if isinstance(item, dict)]
     allowed = limit_of(limit)
     room = max(0, allowed - len(active))
+    kept = [product for product in catalogue
+            if in_category(product, only_category)]
+    outside = len(catalogue) - len(kept)
     pairs, unlisted_rows, only_ebay = stock_compare.pair(
-        _product_rows(catalogue), active)
+        _product_rows(kept), active)
     candidates, skipped = [], []
     for row in unlisted_rows:
         product = row["product"]
@@ -264,13 +449,16 @@ def plan(products, items, limit=DEFAULT_LIMIT):
             candidates.append(product)
         else:
             skipped.append({"product": product, "why": why})
-    candidates.sort(key=lambda product: (-(price_of(product) or 0),
-                                         title_of(product).lower()))
-    chosen = candidates[:room]
+    ordered, missing = order(candidates, sort, wanted_terms(wanted))
+    chosen = ordered[:room]
     return {"products": len(catalogue), "active": len(active), "limit": allowed,
             "room": room, "listed": len(pairs), "only_ebay": only_ebay,
             "candidates": len(candidates), "chosen": chosen,
-            "left": max(0, len(candidates) - len(chosen)), "skipped": skipped}
+            "left": max(0, len(candidates) - len(chosen)), "skipped": skipped,
+            "sort": sort_key(sort), "category": str(only_category or "").strip(),
+            "outside": outside, "wanted_missing": missing,
+            "wanted": len(wanted_terms(wanted)) if sort_key(sort) == "custom"
+            else 0}
 
 
 def values(product, settings=None):
@@ -331,6 +519,22 @@ def summary(answer):
                 "to fill them with.")
     head = ("eBay has %d active listing%s, so there is room for %d more under "
             "a limit of %d." % (active, "" if active == 1 else "s", room, allowed))
+    key = sort_key(answer.get("sort"))
+    head += " Chosen %s." % _SORT_PHRASES[key]
+    category = str(answer.get("category") or "").strip()
+    if category:
+        outside = int(answer.get("outside") or 0)
+        head += (" Only products in a category matching \u201c%s\u201d were "
+                 "considered" % category)
+        head += (", which left out %d other product%s." %
+                 (outside, "" if outside == 1 else "s") if outside else ".")
+    missing = list(answer.get("wanted_missing") or [])
+    if key == "custom" and missing:
+        head += (" %d typed card%s %s not among the unlisted ones: %s." %
+                 (len(missing), "" if len(missing) == 1 else "s",
+                  "was" if len(missing) == 1 else "were",
+                  "; ".join(missing[:5]) +
+                  (" ..." if len(missing) > 5 else "")))
     if not room:
         head += (" The store is full: nothing is chosen until a listing ends "
                  "or the limit goes up.")
@@ -338,7 +542,7 @@ def summary(answer):
         head += (" No unlisted product was ready to go on the page.")
     else:
         first, last = chosen[0], chosen[-1]
-        head += (" %d card%s chosen, dearest first: %s to %s." %
+        head += (" %d card%s chosen: %s to %s." %
                  (len(chosen), "" if len(chosen) == 1 else "s",
                   _money(first), _money(last)))
     if left:

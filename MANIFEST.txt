@@ -61,9 +61,12 @@ app/:
                                    the write, remember the cards you dismissed
   market_stock.py                  read eBay and Facebook listings with your
                                    session, and name a site's check page
-  ebay_fill.py                     which cards go on eBay next: the dearest
-                                   unlisted products that fit under the store's
-                                   limit, and the Quick List page for them
+  ebay_fill.py                     which cards go on eBay next: the unlisted
+                                   products that fit under the store's limit,
+                                   chosen dearest, newest, oldest, cheapest or
+                                   in a typed order, within one category or all
+                                   of them, and the Quick List page and
+                                   template pages for them
   stock_write.py                   write one stock count onto a website product,
                                    and confirm the site kept it
   cs_listing.py                    build the CanadianShopper import CSV for

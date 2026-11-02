@@ -251,6 +251,111 @@ def test_the_selection():
               ebay_fill.plan([], [], limit=250)), "")
 
 
+def test_the_criteria():
+    print()
+    print("== 3b. what decides which cards come first ==")
+    old_dear = product(id=1, name="Old dear #1", price="900.00",
+                       date_created="2024-01-02T10:00:00",
+                       categories=[{"name": "Hockey Cards"}])
+    new_cheap = product(id=2, name="New cheap #2", price="5.00",
+                        date_created="2026-10-30T09:00:00",
+                        categories=[{"name": "Baseball Cards"}])
+    middle = product(id=3, name="Middle #3", price="50.00",
+                     date_created="2025-06-01T12:00:00",
+                     categories=[{"name": "Hockey Cards"}])
+    undated = product(id=4, name="Undated #4", price="80.00",
+                      date_created="", categories=[{"name": "Football Cards"}])
+    catalogue = [old_dear, new_cheap, middle, undated]
+
+    def names(sort, **kw):
+        answer = ebay_fill.plan(catalogue, [], 250, sort=sort, **kw)
+        return [row["name"] for row in answer["chosen"]], answer
+
+    order, _answer = names("dearest")
+    check("dearest first is the default, and sorts by price",
+          order == ["Old dear #1", "Undated #4", "Middle #3", "New cheap #2"],
+          str(order))
+    check("cheapest first is the same list the other way",
+          names("cheapest")[0] == ["New cheap #2", "Middle #3", "Undated #4",
+                                   "Old dear #1"], str(names("cheapest")[0]))
+    order, _ = names("newest")
+    check("newest first puts the most recently created products on top",
+          order[:2] == ["New cheap #2", "Middle #3"], str(order))
+    check("and a product with no date sorts last, not as the newest",
+          order[-1] == "Undated #4", str(order))
+    order, _ = names("oldest")
+    check("oldest first is the earliest created first",
+          order[:2] == ["Old dear #1", "Middle #3"], str(order))
+    check("and the undated one is last here too, not the oldest",
+          order[-1] == "Undated #4", str(order))
+
+    #  -- the typed list
+    order, answer = names("custom", wanted="Middle #3, New cheap #2")
+    check("the typed cards come first, in the order typed",
+          order[:2] == ["Middle #3", "New cheap #2"], str(order))
+    check("and everything else follows, dearest first",
+          order[2:] == ["Old dear #1", "Undated #4"], str(order))
+    check("nothing is missing when every typed card is there",
+          answer["wanted_missing"] == [], str(answer["wanted_missing"]))
+    order, answer = names("custom", wanted="Middle #3, Nosuch #9")
+    check("a typed card that is not there is named, not silently dropped",
+          answer["wanted_missing"] == ["Nosuch #9"],
+          str(answer["wanted_missing"]))
+    check("a typed SKU finds its card",
+          names("custom", wanted="OPC1973-74-112-Pappin-EX-5")[0][0] ==
+          "Old dear #1", "")
+    check("a typed product id finds its card",
+          names("custom", wanted="3")[0][0] == "Middle #3", "")
+    check("a typed list split on commas and new lines",
+          ebay_fill.wanted_terms("a, b\nc;d\n\n b ") == ["a", "b", "c", "d"],
+          str(ebay_fill.wanted_terms("a, b\nc;d\n\n b ")))
+    check("and no typed list means the default order",
+          names("custom", wanted="")[0] == names("dearest")[0], "")
+
+    #  -- the category filter
+    order, answer = names("dearest", only_category="hockey")
+    check("only the category named is considered",
+          order == ["Old dear #1", "Middle #3"], str(order))
+    check("the count left outside it is carried",
+          answer["outside"] == 2, str(answer["outside"]))
+    check("part of a category's name is enough, in any case",
+          names("dearest", only_category="BASEBALL")[0] == ["New cheap #2"], "")
+    check("a category nothing is filed under leaves nothing",
+          names("dearest", only_category="stamps")[0] == [], "")
+    check("a blank filter considers the whole catalogue",
+          names("dearest", only_category="")[0] == names("dearest")[0], "")
+
+    #  -- what the settings hold, and what a hand-edited value means
+    check("each order is read back from its own label",
+          [ebay_fill.sort_key(label) for label in ebay_fill.sort_labels()] ==
+          ["dearest", "newest", "oldest", "cheapest", "custom"],
+          str([ebay_fill.sort_key(label) for label in ebay_fill.sort_labels()]))
+    check("words a person might have written mean the same thing",
+          ebay_fill.sort_key("Most expensive") == "dearest" and
+          ebay_fill.sort_key("Newest") == "newest" and
+          ebay_fill.sort_key("newest first") == "newest" and
+          ebay_fill.sort_key("Price low") == "cheapest", "")
+    check("an order nobody knows falls back to dearest rather than failing",
+          ebay_fill.sort_key("sideways") == "dearest" and
+          ebay_fill.sort_key(None) == "dearest", "")
+    check("the chooser shows the label for a stored key",
+          ebay_fill.sort_label("newest") == "Newest first" and
+          ebay_fill.sort_label("nonsense") == "Dearest first", "")
+
+    text = ebay_fill.summary(names("newest")[1])
+    check("the summary says which order chose the cards",
+          "Chosen newest first." in text, text)
+    text = ebay_fill.summary(names("custom", wanted="Middle #3, Nosuch")[1])
+    check("and says when the order was the one typed",
+          "Chosen in the order you typed." in text, text)
+    check("and names the typed cards that were not found",
+          "1 typed card was not among the unlisted ones: Nosuch" in text, text)
+    text = ebay_fill.summary(names("dearest", only_category="hockey")[1])
+    check("the category filter is stated with what it left out",
+          "matching \u201chockey\u201d" in text and
+          "left out 2 other products" in text, text)
+
+
 def test_the_values_and_the_page():
     print()
     print("== 4. the fields, and the page they go on ==")
@@ -346,12 +451,44 @@ def build_panel(folder, limit=250):
     return app, parent
 
 
+def field_after(parent, caption, kind="FakeEntry"):
+    """The input sitting beside a caption, in the same row, as a person sees it.
+
+    Found by the caption rather than by position: the panel has several one-line
+    boxes, and "the third entry" is a fact about the layout rather than about
+    the setting being tested.
+    """
+    for frame in parent.walk():
+        texts = [str(child.cget("text")) for child in getattr(frame, "children", [])
+                 if type(child).__name__ == "FakeLabel"]
+        if str(caption) not in texts:
+            continue
+        for child in frame.children:
+            if type(child).__name__ == kind:
+                return child
+    return None
+
+
 def limit_box(parent):
     """The entry that holds the listing limit, as the person sees it."""
-    for widget in parent.walk():
-        if type(widget).__name__ == "FakeEntry":
-            return widget._kw.get("textvariable")
-    return None
+    entry = field_after(parent, "Active listings eBay allows:")
+    return None if entry is None else entry._kw.get("textvariable")
+
+
+def sort_box(parent):
+    """The order chooser, as a person sees it: its own variable, and its values."""
+    box = field_after(parent, "Choose the cards:", "FakeCombobox")
+    return box
+
+
+def category_box(parent):
+    entry = field_after(parent, "Only this category:")
+    return None if entry is None else entry._kw.get("textvariable")
+
+
+def wanted_box(parent):
+    entry = field_after(parent, "These cards first:")
+    return None if entry is None else entry._kw.get("textvariable")
 
 
 def find(parent, kind, text):
@@ -500,9 +637,10 @@ def test_the_panel():
     seen = {}
     real_plan = ebay_fill.plan
 
-    def fake_plan(products, items, limit):
+    def fake_plan(products, items, limit, **criteria):
         seen["limit"] = limit
-        return real_plan(products, items, limit)
+        seen.update(criteria)
+        return real_plan(products, items, limit, **criteria)
 
     app, parent = build_panel(folder)
     button = find(parent, "FakeButton", "Find the cards to list next")
@@ -532,13 +670,141 @@ def test_the_panel():
           and ebay_fill.limit_of("") == 250, "")
 
 
+def test_the_panel_criteria_and_templates():
+    print()
+    print("== 6. the panel: which cards, in what order, and the template tabs ==")
+    folder = Path(tempfile.mkdtemp())
+    app, parent = build_panel(folder, limit=250)
+    app.settings["ebay_template_hockey_url"] = "https://ebay.example/hockey"
+    app.settings["ebay_template_default_url"] = "https://ebay.example/default"
+    button = find(parent, "FakeButton", "Find the cards to list next")
+
+    choices = sort_box(parent)
+    check("the panel offers the order chooser, with every order in it",
+          choices is not None and list(choices._kw.get("values") or []) ==
+          ebay_fill.sort_labels(),
+          str(None if choices is None else choices._kw.get("values")))
+    check("and it starts on the saved order",
+          str(choices._kw["textvariable"].get()) == "Dearest first", "")
+    check("the category and typed boxes are there, and empty to begin with",
+          str(category_box(parent).get()) == "" and
+          str(wanted_box(parent).get()) == "", "")
+
+    products = [
+        product(id=1, name="Dear hockey #1", price="900.00",
+                categories=[{"name": "Hockey Cards"}],
+                date_created="2024-01-01T10:00:00"),
+        product(id=2, name="New hockey #2", price="40.00",
+                categories=[{"name": "Hockey Cards"}],
+                date_created="2026-10-30T09:00:00"),
+        product(id=3, name="Baseball card #3", price="70.00",
+                categories=[{"name": "Baseball Cards"}],
+                date_created="2025-05-05T09:00:00"),
+    ]
+    #  What the fake website hands back; the last case empties the shop.
+    shelf = {"products": products, "listings": []}
+    seen = {}
+    real_plan = ebay_fill.plan
+
+    def watch_plan(items_products, listings, limit, **criteria):
+        seen.update(criteria)
+        seen["limit"] = limit
+        return real_plan(items_products, listings, limit, **criteria)
+
+    def run():
+        app.lines[:] = []
+        app.opened[:] = []
+        with patch.object(gui, "read_woo_credentials",
+                          lambda path=None: ("https://shop.example", "ck",
+                                             "cs")), \
+                patch.object(market_stock, "read_cookie", lambda path: "a=1"), \
+                patch.object(market_stock, "read_ebay",
+                             lambda fetch, url, cookie:
+                             (list(shelf["listings"]), 0, "")), \
+                patch.object(gui.woo_create, "read_all_products",
+                             lambda site, key, secret, progress=None, **kw:
+                             shelf["products"]), \
+                patch.object(gui.ebay_fill, "plan", watch_plan), \
+                patch.object(gui, "open_path", lambda path: True), \
+                patch.object(gui, "in_background", sync_background), \
+                patch.object(gui, "BASE", folder), \
+                patch.object(gui, "save_settings", lambda s: None):
+            button.invoke()
+
+    #  -- newest, in one category, with two cards typed first
+    choices._kw["textvariable"].set("Newest first")
+    choices.event_generate("<<ComboboxSelected>>")   # as a real chooser does
+    category_box(parent).set("hockey")
+    wanted_box(parent).set("Dear hockey #1")
+    run()
+    check("the chooser's order is what the selection uses",
+          ebay_fill.sort_key(seen.get("sort")) == "newest", str(seen.get("sort")))
+    check("the category typed on the panel narrows the catalogue",
+          seen.get("only_category") == "hockey", str(seen))
+    check("and the typed cards travel with it",
+          seen.get("wanted") == "Dear hockey #1", str(seen))
+    check("choosing an order remembers it with the other settings",
+          app.settings.get("ebay_fill_sort") == "newest",
+          str(app.settings.get("ebay_fill_sort")))
+    wrote = sorted((folder / "ebay_fill").glob("ebay_fill_*.html"))
+    page = wrote[-1].read_text(encoding="utf-8") if wrote else ""
+    check("the baseball card is not on the page: it is outside the category",
+          "Baseball card #3" not in page and "Dear hockey #1" in page, "")
+    check("the baseball card is counted as left out, on the console",
+          any("left out 1 other product" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+
+    #  -- the template pages open, once each, and only for the chosen sports
+    check("the template for the cards' sport is opened",
+          "https://ebay.example/hockey" in app.opened, str(app.opened))
+    check("and the one template is opened once, not once per card",
+          app.opened.count("https://ebay.example/hockey") == 1, str(app.opened))
+    check("the console says the template pages were opened",
+          any("Opened 1 eBay template page" in text for _tag, text in app.lines),
+          str(app.lines[-4:]))
+    check("and repeats that nothing is submitted there",
+          any("Nothing is submitted there without you" in text
+              for _tag, text in app.lines), str(app.lines[-2:]))
+
+    #  -- no template configured is said, not silently skipped
+    app.settings["ebay_template_hockey_url"] = ""
+    app.settings["ebay_template_default_url"] = ""
+    category_box(parent).set("")
+    wanted_box(parent).set("")
+    choices._kw["textvariable"].set("Dearest first")
+    run()
+    check("with no template set the page still opens",
+          any((folder / "ebay_fill").glob("ebay_fill_*.html")) and
+          len(app.opened) == 0, str(app.opened))
+    check("and the console says a template would open it next time",
+          any("No eBay template is set" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+
+    #  -- a shop whose every product is already listed chooses nothing, and a
+    #     selection with nothing on it opens no page and no template.
+    app.settings["ebay_template_hockey_url"] = "https://ebay.example/hockey"
+    shelf["listings"] = [{"id": str(row["id"]), "name": row["name"],
+                          "sku": row["sku"], "qty": 1} for row in products]
+    before = len(sorted((folder / "ebay_fill").glob("*.html")))
+    run()
+    check("a shop with every card already on eBay chooses nothing",
+          any("No unlisted product was ready" in text
+              for _tag, text in app.lines), str(app.lines[-3:]))
+    check("no template is opened for a selection with no cards",
+          len(app.opened) == 0, str(app.opened))
+    check("and no page is written for it",
+          len(sorted((folder / "ebay_fill").glob("*.html"))) == before, "")
+
+
 def main():
     try:
         test_prices_and_titles()
         test_what_can_be_listed()
         test_the_selection()
+        test_the_criteria()
         test_the_values_and_the_page()
         test_the_panel()
+        test_the_panel_criteria_and_templates()
     except AssertionError:
         raise
     print()
