@@ -31,7 +31,6 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-import cs_listing
 import stock_compare
 
 #: How many active listings a free eBay store may have. A setting, because a
@@ -50,6 +49,16 @@ PICTURE_LIMIT = 2
 _TAG = re.compile(r"<[^>]+>")
 _SPACE = re.compile(r"\s+")
 _MONEY = re.compile(r"[^0-9.\-]")
+
+#: What ends a line of a description. A block ends a paragraph; ``<br>`` ends
+#: a line; everything else is only markup. Kept so the words arrive on the page
+#: in the paragraphs the website wrote them in, not as one wall of text.
+_PARAGRAPH = re.compile(r"<\s*/?\s*(?:p|div|li|h[1-6]|tr|blockquote)\b[^>]*>",
+                        re.I)
+_LINE_BREAK = re.compile(r"<\s*br\b[^>]*>", re.I)
+_SCRIPT_STYLE = re.compile(r"<(script|style)\b.*?</\1>", re.I | re.S)
+#: Runs of spaces inside a line, but never the newlines that separate lines.
+_INLINE_SPACE = re.compile(r"[^\S\n]+")
 
 
 def _bare(key):
@@ -461,6 +470,52 @@ def plan(products, items, limit=DEFAULT_LIMIT, sort="dearest",
             else 0}
 
 
+def plain_description(markup):
+    """A product description as the words of it, paragraphs and all.
+
+    Nothing is cut. A description is the seller's own writing about the card,
+    and the eBay form it is being copied into has room for all of it: shortening
+    it here would put half a description in the buyer's hands with nothing on
+    the page to say a half was all there was. Markup goes - scripts, styles and
+    tags are not words - and the paragraph breaks stay, because a description
+    that arrives as one block is a description somebody has to re-edit.
+    """
+    text = str(markup or "")
+    text = _SCRIPT_STYLE.sub("\n", text)
+    text = _LINE_BREAK.sub("\n", text)
+    text = _PARAGRAPH.sub("\n\n", text)
+    text = _TAG.sub(" ", text)
+    text = html.unescape(text)
+    lines, gap = [], False
+    for line in text.splitlines():
+        line = _INLINE_SPACE.sub(" ", line).strip()
+        if line:
+            if gap and lines:
+                lines.append("")
+            lines.append(line)
+            gap = False
+        else:
+            gap = True
+    return "\n".join(lines)
+
+
+def description_text(product):
+    """The listing's description, and the summary when it is a different one.
+
+    WooCommerce keeps two blocks of words: ``description`` is the product page
+    itself, ``short_description`` the summary above the price. The eBay form
+    asks for one description, and it is the full one - that is what a buyer
+    reads - so the summary is offered beside it only when it says something
+    the full text does not.
+    """
+    product = product or {}
+    full = plain_description(product.get("description"))
+    short = plain_description(product.get("short_description"))
+    if not full:
+        return short, ""
+    return full, (short if short and short not in full else "")
+
+
 def values(product, settings=None):
     """The fields a listing form asks for, from the product and its attributes.
 
@@ -473,6 +528,7 @@ def values(product, settings=None):
     price = price_of(product)
     pictures = images_of(product)
     sport = sport_of(product)
+    description, short_description = description_text(product)
 
     def fact(name, default_key):
         return (attribute(product, name)
@@ -491,8 +547,8 @@ def values(product, settings=None):
         "condition": fact("Condition", "ebay_default_condition"),
         "grade": fact("Grade", "ebay_default_grade"),
         "autographed": str(settings.get("ebay_default_autographed", "No") or "No"),
-        "description": (cs_listing.plain_text((product or {}).get("short_description"))
-                        or cs_listing.plain_text((product or {}).get("description"))),
+        "description": description,
+        "short_description": short_description,
         "front_image": pictures[0] if pictures else "",
         "back_image": pictures[1] if len(pictures) > 1 else "",
         "product_url": str((product or {}).get("permalink") or ""),
@@ -599,7 +655,37 @@ def render(chosen, settings=None, note="", built=None):
                 '<button class="snippet" draggable="true" data-value="%s" '
                 'title="Drag to eBay or click to copy"><b>%s</b><br>%s</button>'
                 % (escaped, html.escape(label), escaped or "(blank)"))
-        description = html.escape(fields["description"], quote=True)
+        #  The description is the card's whole write-up, not a preview of it:
+        #  it is on the page in full, in the paragraphs the website has it in,
+        #  and the box it sits in is as tall as the words need. A person filling
+        #  the eBay form reads this text; a shortened one is a listing whose
+        #  description stops halfway with no sign that it did.
+        words = len(fields["description"].split())
+        if fields["description"]:
+            description = (
+                '<h3>Description: all %d word%s of it, as the website has it '
+                '(drag or click to copy)</h3>'
+                '<pre class="description snippet" draggable="true" '
+                'data-value="%s" title="Drag to eBay or click to copy">%s</pre>'
+                % (words, "" if words == 1 else "s",
+                   html.escape(fields["description"], quote=True),
+                   _page_text(fields["description"])))
+        else:
+            description = (
+                '<h3>Description</h3>'
+                '<p class="missing">The website has no description for this '
+                'card, so there is nothing to copy: write the description in '
+                'the eBay form yourself.</p>')
+        if fields["short_description"]:
+            #  Only when it says something the full text does not - otherwise
+            #  it is the same words twice on one card.
+            description += (
+                '<h3>Short description: the website\'s summary (drag or click '
+                'to copy)</h3>'
+                '<pre class="description snippet" draggable="true" '
+                'data-value="%s" title="Drag to eBay or click to copy">%s</pre>'
+                % (html.escape(fields["short_description"], quote=True),
+                   _page_text(fields["short_description"])))
         pictures = []
         for label, url in (("Front", fields["front_image"]),
                            ("Back", fields["back_image"])):
@@ -628,21 +714,18 @@ def render(chosen, settings=None, note="", built=None):
             '<article><h2>%d. %s</h2><p class="price">$%s CAD</p>%s'
             '<p class="sport">Sport template: %s</p>'
             '<div class="snippets">%s</div>'
-            '<h3>Description (drag or click to copy)</h3>'
-            '<pre class="description snippet" draggable="true" data-value="%s" '
-            'title="Drag to eBay or click to copy">%s</pre>'
+            '%s'
             '<div class="images">%s</div>%s%s</article>'
             % (index, _page_text(fields["title"]), _page_text(fields["price"]),
                product_link, _page_text(fields["sport"]), "".join(snippets),
-               description, _page_text(fields["description"]),
-               "".join(pictures), link,
+               description, "".join(pictures), link,
                '<p class="product"><small>%s</small></p>'
                % _page_text(fields["product_url"]) if product_url else ""))
     page = """<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Alex Collect - eBay fill list</title>
 <style>
-:root{color-scheme:light;font:15px/1.5 system-ui,sans-serif;color:#172033;background:#eef2f7}body{max-width:1100px;margin:24px auto;padding:0 16px}h1{color:#183153}article{background:white;border:1px solid #d7dfeb;border-radius:12px;padding:20px;margin:18px 0;box-shadow:0 4px 18px #1b365010}h2{margin:0;color:#183153}.price{font-size:1.35rem;color:#08652c;font-weight:700}.sport{color:#52627a}.snippets{display:flex;flex-wrap:wrap;gap:8px}.snippet{font:13px/1.4 ui-monospace,monospace;text-align:left;color:#183153;background:#f5f8fc;border:1px solid #cdd8e6;border-radius:8px;padding:9px 12px;cursor:grab;max-width:100%;overflow-wrap:anywhere}.snippet:hover{background:#e9f1fb}.description{white-space:pre-wrap;max-height:260px;overflow:auto;background:#fafbfd;border:1px solid #e1e6ee;border-radius:8px;padding:12px}.images{display:flex;flex-wrap:wrap;gap:14px;margin:14px 0}.image{display:flex;flex-direction:column;gap:6px;max-width:280px}.image img{max-width:260px;max-height:190px;object-fit:contain;background:#f5f5f5;border:1px solid #ddd;border-radius:8px}.template{display:inline-block;margin-top:14px;background:#e53238;color:#fff;text-decoration:none;padding:10px 16px;border-radius:8px;font-weight:700}.missing{color:#9b3c00}.note{background:#fff7e8;border:1px solid #f0d29d;border-radius:8px;padding:12px}.status{color:#087044;font-weight:600}
+:root{color-scheme:light;font:15px/1.5 system-ui,sans-serif;color:#172033;background:#eef2f7}body{max-width:1100px;margin:24px auto;padding:0 16px}h1{color:#183153}article{background:white;border:1px solid #d7dfeb;border-radius:12px;padding:20px;margin:18px 0;box-shadow:0 4px 18px #1b365010}h2{margin:0;color:#183153}.price{font-size:1.35rem;color:#08652c;font-weight:700}.sport{color:#52627a}.snippets{display:flex;flex-wrap:wrap;gap:8px}.snippet{font:13px/1.4 ui-monospace,monospace;text-align:left;color:#183153;background:#f5f8fc;border:1px solid #cdd8e6;border-radius:8px;padding:9px 12px;cursor:grab;max-width:100%;overflow-wrap:anywhere}.snippet:hover{background:#e9f1fb}.description{white-space:pre-wrap;background:#fafbfd;border:1px solid #e1e6ee;border-radius:8px;padding:12px}.images{display:flex;flex-wrap:wrap;gap:14px;margin:14px 0}.image{display:flex;flex-direction:column;gap:6px;max-width:280px}.image img{max-width:260px;max-height:190px;object-fit:contain;background:#f5f5f5;border:1px solid #ddd;border-radius:8px}.template{display:inline-block;margin-top:14px;background:#e53238;color:#fff;text-decoration:none;padding:10px 16px;border-radius:8px;font-weight:700}.missing{color:#9b3c00}.note{background:#fff7e8;border:1px solid #f0d29d;border-radius:8px;padding:12px}.status{color:#087044;font-weight:600}
 </style>
 <body><h1>Alex Collect - these cards are next for eBay</h1>
 <p class="note">__NOTE__</p>

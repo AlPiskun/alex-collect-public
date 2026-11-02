@@ -407,6 +407,79 @@ def test_the_values_and_the_page():
           "No eBay template is set" in
           ebay_fill.render([{"name": "A card", "price": "5.00"}], {})[0], "")
 
+    print()
+    print("== 4b. the whole description, not a preview of it ==")
+    #  A card's write-up is a page of words: the website's marketing prose, a
+    #  condition report, and a line at the very end. The eBay form has room for
+    #  all of it, so the page it is copied from must hold all of it.
+    long_words = " ".join("Sentence %d about the card." % number
+                          for number in range(1, 61))
+    long_body = ("<p>The full write-up of this card.</p>"
+                 "<p>Condition Report: sharp corners and a clean back.</p>"
+                 "<p>%s</p><p>THE LAST LINE OF IT</p>" % long_words)
+    full = ebay_fill.values(product(description=long_body), SETTINGS)
+    check("the full description is what the page offers, not just the summary",
+          full["description"].startswith("The full write-up of this card."),
+          full["description"][:60])
+    check("nothing is cut off the end of a long description",
+          "THE LAST LINE OF IT" in full["description"] and
+          "\u2026" not in full["description"] and
+          len(full["description"]) > 900, str(len(full["description"])))
+    check("the description keeps the paragraphs the website has it in",
+          ("The full write-up of this card.\n\nCondition Report: sharp corners "
+           "and a clean back.") in full["description"],
+          repr(full["description"][:90]))
+    check("a summary that says something else is kept beside it",
+          full["short_description"] == "Sharp corners & a clean back.",
+          repr(full["short_description"]))
+    check("a summary already inside the full text is not shown twice",
+          ebay_fill.values(
+              product(description="<p>Sharp corners &amp; a clean back.</p>"),
+              SETTINGS)["short_description"] == "", "")
+    check("a product with only a summary uses it as its description",
+          ebay_fill.values(product(), SETTINGS)["description"] ==
+          "Sharp corners & a clean back.", "")
+    check("a product with no words at all has no description, not a placeholder",
+          (ebay_fill.values({"name": "A card"}, SETTINGS)["description"],
+           ebay_fill.values({"name": "A card"}, SETTINGS)["short_description"])
+          == ("", ""), "")
+    check("a line break in the description stays a line",
+          ebay_fill.plain_description("<p>Line one<br>Line two</p>") ==
+          "Line one\nLine two", "")
+    check("markup and scripts are not words: only the text is kept",
+          ebay_fill.plain_description(
+              "<p>A card</p><script>track()</script><style>p{}</style>"
+              "<p>From 1973</p>") == "A card\n\nFrom 1973", "")
+
+    page, _ = ebay_fill.render([product(description=long_body)], SETTINGS)
+    check("the page carries the whole description, last line and all",
+          "THE LAST LINE OF IT" in page and
+          "The full write-up of this card." in page, "")
+    check("the description box is not a scrolling window over half the words",
+          "max-height:260px" not in page and
+          'class="description snippet"' in page, "")
+    check("the page says how many words of description there are",
+          "all %d word" % len(full["description"].split()) in page, "")
+    check("the summary travels too, as its own click-to-copy field",
+          "Short description" in page and
+          "Sharp corners &amp; a clean back." in page, "")
+    noisy = "<p>Condition Report: fine.</p><script>track()</script>"
+    noisy_page, _ = ebay_fill.render([product(description=noisy)], SETTINGS)
+    check("markup from the product never reaches the page",
+          "<p>Condition Report" not in noisy_page and
+          "track()" not in noisy_page, "")
+
+    page_short, _ = ebay_fill.render([product()], SETTINGS)
+    check("a product with only a summary gets one description, not two",
+          "Short description" not in page_short and
+          "all %d word" % len("Sharp corners & a clean back.".split())
+          in page_short, "")
+    page_none, _ = ebay_fill.render([{"name": "A card", "price": "5.00"}],
+                                    SETTINGS)
+    check("a card with no description says so instead of showing an empty box",
+          "no description for this card" in page_none and
+          'class="description snippet"' not in page_none, "")
+
     page, _ = ebay_fill.render([], SETTINGS, note="Nothing fits.")
     check("a page with nothing on it still says why",
           "Nothing fits." in page and "<article>" not in page, "")

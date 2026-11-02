@@ -134,6 +134,13 @@ def main():
             assert templates == ["https://ebay.example/hockey-template"]
             assert "Wayne Gretzky" in page and "draggable=\"true\"" in page
             assert "Vintage trading card description." in page
+            #  The whole description is on the page, in a box as tall as it
+            #  needs: half a description in a scroll box is half a listing.
+            long_card = dict(card, full_description=(
+                "A card with a long write-up. " * 80 + "THE LAST LINE."))
+            long_page, _ = pipeline._render_ebay_quicklist([long_card])
+            assert "THE LAST LINE." in long_page, long_page[:400]
+            assert "max-height:260px" not in long_page
             assert "https://store.example/uploads/" in page
             assert "card-front.webp" in page
 
