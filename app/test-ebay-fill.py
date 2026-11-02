@@ -1,0 +1,553 @@
+#!/usr/bin/env python3
+"""Checks for ebay_fill - which cards go on eBay next, and the page for them.
+
+No network, no eBay and no shop: the catalogue is a list of products, the
+store's listings are a list of rows the eBay reader would have returned, and
+the page is a string. The deciding is what is worth testing, because a list
+that misses a card or repeats one is a month of listings done twice.
+"""
+import importlib.util
+import sys
+import tempfile
+from datetime import datetime
+from pathlib import Path
+from unittest.mock import patch
+
+APP = Path(__file__).resolve().parent
+sys.path[:0] = [str(APP), str(APP / "pipeline")]
+
+PASS = 0
+FAIL = 0
+
+
+def check(name, cond, extra=""):
+    global PASS, FAIL
+    if cond:
+        PASS += 1
+        print("  PASS  %s" % name)
+    else:
+        FAIL += 1
+        print("  FAIL  %s %s" % (name, extra))
+
+
+def load_harness():
+    spec = importlib.util.spec_from_file_location(
+        "panel", str(APP / "test-photo-panel.py"))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["panel"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+harness = load_harness()
+gui = harness.gui
+import ebay_fill                                      # noqa: E402
+import market_stock                                   # noqa: E402
+
+
+def product(**overrides):
+    """One website product, with everything a real one carries."""
+    base = {
+        "id": 1,
+        "name": "1973-74 O-Pee-Chee Jim Pappin #112 Chicago Black Hawks EX 5",
+        "sku": "OPC1973-74-112-Pappin-EX-5",
+        "price": "1250.00",
+        "status": "publish",
+        "stock_status": "instock",
+        "manage_stock": True,
+        "stock_quantity": 1,
+        "permalink": "https://shop.example/?p=1",
+        "short_description": "<p>Sharp corners &amp; a clean back.</p>",
+        "attributes": [
+            {"name": "Player", "options": ["Jim Pappin"]},
+            {"name": "Card number", "options": ["112"]},
+            {"name": "Year", "options": ["1973-74"]},
+            {"name": "Set", "options": ["O-Pee-Chee"]},
+            {"name": "Condition", "options": ["EX 5"]},
+        ],
+        "categories": [{"name": "Hockey Cards"}],
+        "tags": [{"name": "O-Pee-Chee"}],
+        "images": [{"src": "https://shop.example/a.jpg"},
+                   {"src": "https://shop.example/b.jpg"}],
+    }
+    base.update(overrides)
+    return base
+
+
+SETTINGS = {
+    "ebay_template_hockey_url": "https://ebay.example/hockey",
+    "ebay_template_default_url": "https://ebay.example/default",
+    "ebay_default_condition": "Mint",
+    "ebay_default_year": "Unknown",
+    "ebay_default_manufacturer": "Unknown",
+    "ebay_default_card_number": "N/A",
+    "ebay_default_player": "Unknown",
+    "ebay_default_set": "Vintage",
+    "ebay_default_grade": "",
+    "ebay_default_autographed": "No",
+    "ebay_default_description": "Vintage card.",
+}
+
+
+def test_prices_and_titles():
+    print()
+    print("== 1. what a product says about itself ==")
+    check("a plain price is a number",
+          ebay_fill.price_of({"price": "1250.00"}) == 1250.0, "")
+    check("a price with a comma and a currency is read, not dropped",
+          ebay_fill.price_of({"price": "CA$1,250.00"}) == 1250.0, "")
+    check("a product with no price has none, rather than zero",
+          ebay_fill.price_of({}) is None and
+          ebay_fill.price_of({"price": ""}) is None, "")
+    check("the sale price is used when there is no price",
+          ebay_fill.price_of({"sale_price": "8.50"}) == 8.5, "")
+    check("a title keeps its words and loses its extra spaces",
+          ebay_fill.title_of({"name": "  A   card  "}) == "A card", "")
+    long_name = ("1973-74 O-Pee-Chee Jim Pappin #112 Chicago Black Hawks "
+                 "EX 5 Chicago Stadium Photograph Card Rare Bilingual Back")
+    title = ebay_fill.listing_title({"name": long_name})
+    check("an eBay title is cut at 80 characters or fewer",
+          len(title) <= 80, str(len(title)))
+    check("and cut between words, not through one",
+          long_name.startswith(title) and not long_name[len(title)].isalnum(),
+          title)
+    check("a title that fits is left exactly as it is",
+          ebay_fill.listing_title({"name": "Short card"}) == "Short card", "")
+
+    check("the card's own attributes are read by name",
+          ebay_fill.attribute(product(), "Player") == "Jim Pappin" and
+          ebay_fill.attribute(product(), "card number") == "112" and
+          ebay_fill.attribute(product(), "CARD_NUMBER") == "112", "")
+    check("a product with no attribute says nothing rather than guessing",
+          ebay_fill.attribute(product(), "Grade") == "", "")
+    check("the pictures are the shop's own addresses, front first",
+          ebay_fill.images_of(product()) == ["https://shop.example/a.jpg",
+                                             "https://shop.example/b.jpg"], "")
+    check("a product with one picture has no back",
+          ebay_fill.images_of(product(images=[{"src": "https://x/a.jpg"}])) ==
+          ["https://x/a.jpg"], "")
+
+    check("stock management switched off is not sold out",
+          ebay_fill.stock_left(product(manage_stock=False,
+                                       stock_quantity=None)) is None, "")
+    check("a counted product at zero is sold out",
+          ebay_fill.stock_left(product(stock_quantity=0)) == 0, "")
+    check("a product marked out of stock is sold out however it is counted",
+          ebay_fill.stock_left(product(stock_status="outofstock",
+                                       stock_quantity=4)) == 0, "")
+
+
+def test_what_can_be_listed():
+    print()
+    print("== 2. what can and cannot be listed ==")
+    check("a published, priced, stocked card can",
+          ebay_fill.listable(product()) == (True, ""), "")
+    check("a draft cannot, and says so",
+          ebay_fill.listable(product(status="draft")) ==
+          (False, "it is not published on the website (draft)"), "")
+    check("a card with no price cannot",
+          ebay_fill.listable(product(price=""))[1] ==
+          "it has no price on the website", "")
+    check("a card priced at zero cannot",
+          ebay_fill.listable(product(price="0.00"))[1] ==
+          "its price is zero", "")
+    check("a card the website has none of cannot",
+          ebay_fill.listable(product(stock_quantity=0))[1] ==
+          "the website has none in stock", "")
+    check("a product with no name cannot",
+          ebay_fill.listable(product(name="  "))[1] ==
+          "it has no name on the website", "")
+
+
+def test_the_selection():
+    print()
+    print("== 3. which cards are chosen, and why ==")
+    products = [
+        product(id=1, name="Dear card #1", price="900.00"),
+        product(id=2, name="Middle card #2", price="500.00"),
+        product(id=3, name="Cheap card #3", price="10.00"),
+        product(id=4, name="Already listed #4", price="800.00",
+                sku="LISTED-4"),
+        product(id=5, name="Sold out #5", price="700.00", stock_quantity=0),
+        product(id=6, name="Draft card #6", price="600.00", status="draft"),
+        product(id=7, name="Unpriced card #7", price=""),
+    ]
+    listings = [{"id": "1", "name": "Already listed #4", "sku": "LISTED-4",
+                 "qty": 1}]
+    answer = ebay_fill.plan(products, listings, limit=3)
+    check("the limit minus what is listed is the room",
+          (answer["active"], answer["limit"], answer["room"]) == (1, 3, 2),
+          str(answer["active"]))
+    check("the dearest unlisted cards fill the room",
+          [row["name"] for row in answer["chosen"]] ==
+          ["Dear card #1", "Middle card #2"],
+          str([row["name"] for row in answer["chosen"]]))
+    check("a card already on eBay is not chosen",
+          not any(row["id"] == 4 for row in answer["chosen"]), "")
+    check("and the ones left below the cut are counted",
+          answer["left"] == 1, str(answer["left"]))
+    reasons = {row["product"]["id"]: row["why"] for row in answer["skipped"]}
+    check("every card that could not be listed carries its reason",
+          reasons == {5: "the website has none in stock",
+                      6: "it is not published on the website (draft)",
+                      7: "it has no price on the website"}, str(reasons))
+
+    full = ebay_fill.plan(products, [{"id": str(n), "name": "x",
+                                      "sku": "", "qty": 1}
+                                    for n in range(3)], limit=3)
+    check("a full store chooses nothing",
+          full["room"] == 0 and full["chosen"] == [], str(full["room"]))
+    empty = ebay_fill.plan(products, [], limit=250)
+    check("an empty store fills up with every listable card, dearest first",
+          [row["name"] for row in empty["chosen"]] ==
+          ["Dear card #1", "Already listed #4", "Middle card #2",
+           "Cheap card #3"],
+          str([row["name"] for row in empty["chosen"]]))
+
+    #  The matcher is the one the stock panel uses, so a title that differs
+    #  only in the card number is not the same card - and a listing that names
+    #  the product by SKU is matched whatever its title says.
+    by_sku = ebay_fill.plan(
+        [product(id=1, name="A card #1", sku="S-1", price="50.00")],
+        [{"id": "1", "name": "Something else entirely", "sku": "S-1",
+          "qty": 1}], limit=250)
+    check("a listing is matched by its SKU when both sides carry one",
+          by_sku["chosen"] == [], str(by_sku["chosen"]))
+    by_title = ebay_fill.plan(
+        [product(id=1, name="1973-74 O-Pee-Chee Jim Pappin #112",
+                 sku="", price="50.00")],
+        [{"id": "1", "name": "Jim Pappin 1973-74 O-Pee-Chee #112 Chicago",
+          "sku": "", "qty": 1}], limit=250)
+    check("a listing is matched by its title when neither carries a SKU",
+          by_title["chosen"] == [], str(by_title["chosen"]))
+    different = ebay_fill.plan(
+        [product(id=1, name="1973-74 O-Pee-Chee Jim Pappin #112",
+                 sku="", price="50.00")],
+        [{"id": "1", "name": "1973-74 O-Pee-Chee Jim Pappin #114",
+          "sku": "", "qty": 1}], limit=250)
+    check("two different card numbers are two different cards",
+          len(different["chosen"]) == 1, str(different["chosen"]))
+
+    #  A quantity of zero on a listing is still a listing: an ended one is not
+    #  in the active list at all.
+    zero = ebay_fill.plan([product(id=1, name="A card #1", price="5.00")],
+                          [{"id": "1", "name": "A card #1", "sku": "",
+                            "qty": 0}], limit=250)
+    check("a zero-quantity active listing still counts as listed",
+          zero["chosen"] == [], str(zero["chosen"]))
+
+    text = ebay_fill.summary(answer)
+    check("the summary says how full the store is and how much room is left",
+          "1 active listing" in text and "room for 2 more" in text and
+          "limit of 3" in text, text)
+    check("and names the price range of the cards chosen",
+          "$900.00" in text and "$500.00" in text, text)
+    check("and counts what stayed behind",
+          "1 more unlisted card" in text, text)
+    check("a full store is told plainly that it is full",
+          "The store is full" in ebay_fill.summary(full), "")
+    check("an empty shop with no listings says so rather than inventing one",
+          "no product" in ebay_fill.summary(
+              ebay_fill.plan([], [], limit=250)), "")
+
+
+def test_the_values_and_the_page():
+    print()
+    print("== 4. the fields, and the page they go on ==")
+    values = ebay_fill.values(product(), SETTINGS)
+    check("the title, price and SKU come from the product",
+          (values["title"].startswith("1973-74 O-Pee-Chee"), values["price"],
+           values["sku"]) == (True, "1250.00",
+                              "OPC1973-74-112-Pappin-EX-5"),
+          str(values))
+    check("the card's own facts come from its attributes",
+          (values["player"], values["card_number"], values["year"],
+           values["set"], values["condition"]) ==
+          ("Jim Pappin", "112", "1973-74", "O-Pee-Chee", "EX 5"), str(values))
+    check("what the product does not say falls back to the saved default",
+          values["manufacturer"] == "Unknown" and
+          values["autographed"] == "No", str(values["manufacturer"]))
+    check("the sport decides the template, and the template is the saved one",
+          values["sport"] == "Hockey" and
+          ebay_fill.template_url(product(), SETTINGS) ==
+          "https://ebay.example/hockey", "")
+    check("a product naming no sport gets the default template",
+          ebay_fill.template_url({"name": "A card"}, SETTINGS) ==
+          "https://ebay.example/default", "")
+    check("no template configured is no template, not a guess",
+          ebay_fill.template_url({"name": "A card"}, {}) == "", "")
+    check("the description is the product's own words, tags stripped",
+          values["description"] == "Sharp corners & a clean back.", str(
+              values["description"]))
+    check("both of the shop's pictures travel with it",
+          (values["front_image"], values["back_image"]) ==
+          ("https://shop.example/a.jpg", "https://shop.example/b.jpg"), "")
+
+    page, templates = ebay_fill.render([product()], SETTINGS)
+    check("the page is the Quick List page: draggable, click-to-copy fields",
+          'draggable="true"' in page and "click to copy" in page, "")
+    check("it carries the card's own fields",
+          "Jim Pappin" in page and "1250.00" in page and
+          "OPC1973-74-112-Pappin-EX-5" in page, "")
+    check("and its pictures are the shop's URLs",
+          "https://shop.example/a.jpg" in page and
+          "https://shop.example/b.jpg" in page, "")
+    check("an ampersand in a description is escaped, not left to break the page",
+          "sharp corners &amp; a clean back" in page.lower() and
+          "sharp corners & a clean back" not in page.lower(), "")
+    check("the template link is on the card, once",
+          templates == ["https://ebay.example/hockey"] and
+          "https://ebay.example/hockey" in page, str(templates))
+    check("a page without a template says so instead of linking nowhere",
+          "No eBay template is set" in
+          ebay_fill.render([{"name": "A card", "price": "5.00"}], {})[0], "")
+
+    page, _ = ebay_fill.render([], SETTINGS, note="Nothing fits.")
+    check("a page with nothing on it still says why",
+          "Nothing fits." in page and "<article>" not in page, "")
+    page, _ = ebay_fill.render([product()], SETTINGS, note="A <b>note</b>")
+    check("the note is text, not markup",
+          "A &lt;b&gt;note&lt;/b&gt;" in page, "")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        first = ebay_fill.write_page("<html></html>", folder)
+        second = ebay_fill.write_page(
+            "<html></html>", folder, built=datetime(2026, 11, 2, 9, 30, 5))
+        check("each page is written with the minute in its name",
+              first.name.startswith("ebay_fill_") and
+              first.suffix == ".html" and
+              second.name == "ebay_fill_20261102_093005.html", second.name)
+        check("and both are kept, not overwritten",
+              len(list(folder.glob("ebay_fill_*.html"))) == 2, "")
+
+
+def sync_background(app, work, done):
+    """Run a background job the way the window's thread would have.
+
+    The real ``in_background`` catches whatever the work raises and hands it
+    to the caller's ``done``; a test that let it escape would never reach the
+    error path this panel is supposed to explain.
+    """
+    try:
+        result, error = work(), None
+    except Exception as exc:
+        result, error = None, exc
+    return done(result, error)
+
+
+def build_panel(folder, limit=250):
+    app = harness.FakeApp(folder)
+    app.settings["ebay_listing_limit"] = limit
+    parent = harness.FakeWidget()
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "save_settings", lambda s: None):
+        gui.build_ebayfill(parent, app)
+    return app, parent
+
+
+def limit_box(parent):
+    """The entry that holds the listing limit, as the person sees it."""
+    for widget in parent.walk():
+        if type(widget).__name__ == "FakeEntry":
+            return widget._kw.get("textvariable")
+    return None
+
+
+def find(parent, kind, text):
+    """The first widget of that Tk class carrying that label, or None.
+
+    By class *name* rather than the class itself: the harness builds one fake
+    class per Tk widget, and importing ttk here would import the real one.
+    """
+    for widget in parent.walk():
+        if type(widget).__name__ == kind and \
+                str(widget.cget("text")) == text:
+            return widget
+    return None
+
+
+def test_the_panel():
+    print()
+    print("== 5. the panel: choosing, and opening what it chose ==")
+    folder = Path(tempfile.mkdtemp())
+    app, parent = build_panel(folder)
+    button = find(parent, "FakeButton", "Find the cards to list next")
+    check("the panel offers the one job it does", button is not None, "")
+    check("and says what it changes: nothing",
+          "Nothing is listed" in str(
+              [w.cget("text") for w in parent.walk()
+               if type(w).__name__ == "FakeLabel"]), "")
+    check("its tooltip says the same",
+          "nothing is listed or changed" in gui.tip_for(
+              "Find the cards to list next"), "")
+    box = limit_box(parent)
+    check("the limit shows the saved setting",
+          box is not None and str(box.get()) == "250",
+          str(None if box is None else box.get()))
+
+    #  -- without the website's keys nothing is read and nothing is written
+    app.lines[:] = []
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("", "", "")):
+        button.invoke()
+    check("without keys it says what is missing",
+          any("No WooCommerce keys saved" in text for _tag, text in app.lines),
+          str(app.lines[-1:]))
+    check("and writes no page at all",
+          not any((folder / "ebay_fill").glob("ebay_fill_*.html"))
+          if (folder / "ebay_fill").is_dir() else True, "")
+
+    #  -- with keys: it reads, chooses, writes the page and opens it
+    products = [
+        product(id=1, name="Dear card #1", price="900.00"),
+        product(id=2, name="Middle card #2", price="500.00"),
+        product(id=3, name="Cheap card #3", price="10.00"),
+        product(id=4, name="Already listed #4", price="800.00", sku="L-4"),
+        product(id=5, name="Sold out #5", price="700.00", stock_quantity=0),
+    ]
+    listings = [{"id": "1", "name": "Already listed #4", "sku": "L-4",
+                 "qty": 1}]
+    opened = []
+    app.lines[:] = []
+    app, parent = build_panel(folder, limit=3)
+    button = find(parent, "FakeButton", "Find the cards to list next")
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck", "cs")), \
+            patch.object(market_stock, "read_cookie", lambda path: "a=1"), \
+            patch.object(market_stock, "read_ebay",
+                         lambda fetch, url, cookie: (listings, 1, "<html>")), \
+            patch.object(gui.woo_create, "read_all_products",
+                         lambda site, key, secret, progress=None, **kw:
+                         products), \
+            patch.object(gui, "open_path", lambda path:
+                         opened.append(Path(path)) or True), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder), \
+            patch.object(gui, "save_settings", lambda s: None):
+        button.invoke()
+    check("it reads the store's listings and the whole catalogue",
+          any("eBay: 1 active listing" in text for _tag, text in app.lines) and
+          any("website: 5 products" in text for _tag, text in app.lines),
+          str(app.lines[:3]))
+    wrote = sorted((folder / "ebay_fill").glob("ebay_fill_*.html"))
+    check("it writes the page beside the app", len(wrote) == 1, str(wrote))
+    check("and opens it", len(opened) == 1 and opened[0] == wrote[0],
+          str(opened))
+    page = wrote[0].read_text(encoding="utf-8")
+    check("the page holds the two cards that fit, dearest first",
+          page.index("Dear card #1") < page.index("Middle card #2") and
+          "Cheap card #3" not in page, "")
+    check("a card already on eBay and a sold-out card are not on it",
+          "Already listed #4" not in page and "Sold out #5" not in page, "")
+    check("the console names the cards it chose, with their prices",
+          any("Dear card #1" in text and "900.00" in text
+              for _tag, text in app.lines), str(app.lines[-6:]))
+    check("and says plainly that nothing was listed",
+          any("Nothing was listed" in text for _tag, text in app.lines),
+          str(app.lines[-2:]))
+    check("the summary counts what could not be listed",
+          any("could not be listed" in text and "none in stock" in text
+              for _tag, text in app.lines), str(app.lines[-4:]))
+
+    #  -- a store that cannot be read live falls back to the saved page
+    found = {"path": "C:/Users/Owner/Downloads/Seller Hub eBay.html",
+             "items": [{"id": "1", "name": "Already listed #4", "sku": "L-4",
+                        "qty": 1}], "text": "", "mtime": 0}
+    app.lines[:] = []
+
+    def refuse(fetch, url, cookie):
+        raise market_stock.MarketError("eBay refused the request (blocked)",
+                                       kind="blocked")
+
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck", "cs")), \
+            patch.object(market_stock, "read_cookie", lambda path: "a=1"), \
+            patch.object(market_stock, "read_ebay", refuse), \
+            patch.object(market_stock, "saved_page",
+                         lambda site, folders, **kw: found), \
+            patch.object(gui.woo_create, "read_all_products",
+                         lambda site, key, secret, progress=None, **kw:
+                         products), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder), \
+            patch.object(gui, "save_settings", lambda s: None):
+        button.invoke()
+    check("a refused live read is answered from the saved page",
+          any("saved page Seller Hub eBay.html" in text
+              for _tag, text in app.lines), str(app.lines[:3]))
+
+    #  -- and nothing to fall back on is said plainly, not guessed at
+    app.lines[:] = []
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck", "cs")), \
+            patch.object(market_stock, "read_cookie", lambda path: "a=1"), \
+            patch.object(market_stock, "read_ebay", refuse), \
+            patch.object(market_stock, "saved_page",
+                         lambda site, folders, **kw: None), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder), \
+            patch.object(gui, "save_settings", lambda s: None):
+        button.invoke()
+    check("with no saved page it says what to do instead of choosing blind",
+          any("no saved page" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and nothing was added to the folder on that path",
+          len(sorted((folder / "ebay_fill").glob("*.html"))) == 1, "")
+
+    #  -- the limit is a setting, saved where the others are
+    seen = {}
+    real_plan = ebay_fill.plan
+
+    def fake_plan(products, items, limit):
+        seen["limit"] = limit
+        return real_plan(products, items, limit)
+
+    app, parent = build_panel(folder)
+    button = find(parent, "FakeButton", "Find the cards to list next")
+    limit_box(parent).set("200")
+    app.lines[:] = []
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck", "cs")), \
+            patch.object(market_stock, "read_cookie", lambda path: "a=1"), \
+            patch.object(market_stock, "read_ebay",
+                         lambda fetch, url, cookie: (listings, 1, "")), \
+            patch.object(gui.woo_create, "read_all_products",
+                         lambda site, key, secret, progress=None, **kw:
+                         products), \
+            patch.object(gui.ebay_fill, "plan", fake_plan), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder), \
+            patch.object(gui, "save_settings", lambda s: None):
+        button.invoke()
+    check("the limit typed on the panel is the one the selection uses",
+          seen.get("limit") == 200, str(seen))
+    check("and it is remembered in the settings",
+          app.settings.get("ebay_listing_limit") == 200,
+          str(app.settings.get("ebay_listing_limit")))
+    check("a nonsense limit falls back to what a free store holds",
+          ebay_fill.limit_of("lots") == 250 and ebay_fill.limit_of("0") == 250
+          and ebay_fill.limit_of("") == 250, "")
+
+
+def main():
+    try:
+        test_prices_and_titles()
+        test_what_can_be_listed()
+        test_the_selection()
+        test_the_values_and_the_page()
+        test_the_panel()
+    except AssertionError:
+        raise
+    print()
+    if FAIL:
+        print("FAILED %d   PASSED %d" % (FAIL, PASS))
+        return 1
+    print("ALL EBAY FILL CHECKS PASSED (%d)" % PASS)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

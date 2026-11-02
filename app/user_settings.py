@@ -125,6 +125,10 @@ def load_user_settings(path: Path = SETTINGS_FILE) -> dict:
         "facebook_feed_id_template": "{id}",
         "facebook_feed_image_link_template": "{image_link}",
         "ebay_selling_url": "https://www.ebay.ca/sh/lst/active",
+        #  How many active listings the eBay account may hold. A free store
+        #  holds 250; the number decides how many cards "Fill your eBay
+        #  store" chooses, so it is a setting rather than a constant.
+        "ebay_listing_limit": 250,
         "ebay_quicklist_enabled": True,
         "ebay_template_football_url": "https://www.ebay.ca/lstng?mode=AddItem&templateId=6755372012&radixTrackingId=e5f71b04-6dd5-4e2f-853e-37d1af3d979b",
         "ebay_template_baseball_url": "https://www.ebay.ca/lstng?mode=AddItem&templateId=6683628012&radixTrackingId=e5f71b04-6dd5-4e2f-853e-37d1af3d979b",

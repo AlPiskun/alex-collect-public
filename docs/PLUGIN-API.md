@@ -651,6 +651,17 @@ updating the plugin is the fix, and from **1.0.34 or newer** it says the read is
 a defect in the reader worth reporting, because by then it is one. Nothing about
 a listing is changed either way.
 
+**The reader's own line is quoted.** A reader that summarises a read in the
+shape `stock.list: 2596 listings, 0 with a real product id, 2596 without the
+key, 0 reported as 0` has those four numbers repeated in the core's sentence,
+because they are what a defect report is built from - and because `without the
+key` and `reported as 0` are different bugs. The core also says which read it
+was: the comparison asks for `--no-product-lookups` (and its rows having no
+`product_id` is the flag working), while the edit panel never passes it and
+expects ids - so a read there with none means the lookups did not run or every
+one came back empty. A reader that prints no such line costs only the generic
+sentence; one that prints it makes the next report a one-liner.
+
 **When the vendor's data carries no product reference at all.** The reader can
 be perfectly correct and still deliver no product ids: 1.0.34's own console
 line reported *2,587 listings, 0 with a real product id, 2,587 without the key,

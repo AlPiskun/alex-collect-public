@@ -23,9 +23,10 @@ def check(name, condition, extra=""):
 
 
 class Console:
-    def __init__(self):
+    def __init__(self, view=(0.0, 1.0)):
         self.last_insert = ""
         self.last_scroll = None
+        self.view = view
 
     def config(self, **_kwargs):
         pass
@@ -36,16 +37,39 @@ class Console:
     def see(self, index):
         self.last_scroll = index
 
+    def yview(self, *_args):
+        """Where the visible window is: (first, last) fractions of the text."""
+        return self.view
+
 
 def main():
     console = Console()
     app = SimpleNamespace(console=console)
     gui.App.console_write(app, "tool output")
     gui.App.console_line(app, "> typed reply", "cmd")
-    check("new output and typed replies always scroll into view",
+    check("new output and typed replies scroll into view when the end is on "
+          "screen",
           console.last_insert == "> typed reply\n" and
-          console.last_scroll == "end" and
-          not hasattr(gui.App, "_console_following_tail"))
+          console.last_scroll == "end")
+
+    #  A read that prints for minutes must not yank the view back down every
+    #  time it says something: once the person has scrolled up into the run,
+    #  new lines land below the view and it stays where they put it.
+    scrolled_up = Console(view=(0.0, 0.35))
+    gui.App.console_write(SimpleNamespace(console=scrolled_up), "more output")
+    gui.App.console_line(SimpleNamespace(console=scrolled_up), "another line",
+                         "dim")
+    check("output does not jump the console when the reader has scrolled up",
+          scrolled_up.last_scroll is None and
+          scrolled_up.last_insert == "another line\n")
+    at_bottom = Console(view=(0.0, 0.9995))
+    gui.App.console_line(SimpleNamespace(console=at_bottom), "line")
+    check("a view within a rounding error of the end still follows it",
+          at_bottom.last_scroll == "end")
+    check("a console that cannot say where it is behaves as it always did",
+          gui.at_end_of_console(None) and gui.at_end_of_console(()) and
+          gui.at_end_of_console((0.0, 1.0)) and
+          not gui.at_end_of_console((0.0, 0.5)))
 
     task_ids = {pid for _group, ids in gui.groups_for(True) for pid in ids}
     check("settings, plugins, and logs are removed from task buttons",
@@ -99,9 +123,15 @@ def main():
     batch_group = [list(ids) for name, ids in gui.groups_for(True)
                    if name == "Sell a new batch"]
     check("the re-run panel sits with the batch it re-runs",
-          batch_group == [["pipeline", "combine", "markets"]] and
+          batch_group == [["pipeline", "combine", "ebayfill", "markets"]] and
           gui.TITLES["markets"] == "Re-run a marketplace step" and
           gui.PANEL_BUILDERS["markets"] is gui.build_markets, str(batch_group))
+    check("filling the eBay store is a batch job, with its own panel and help",
+          "ebayfill" in batch_group[0] and
+          gui.TITLES["ebayfill"] == "Fill your eBay store" and
+          gui.PANEL_BUILDERS["ebayfill"] is gui.build_ebayfill and
+          "ebayfill" in gui.DOCS and gui.MENU_LABELS["ebayfill"] ==
+          "Fill the eBay store", str(batch_group))
     check("every marketplace can be re-run on its own",
           list(gui.MARKET_RERUNS) == ["woocommerce", "canadianshopper",
                                       "facebook", "ebay"] and

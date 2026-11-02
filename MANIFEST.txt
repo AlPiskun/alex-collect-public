@@ -1,4 +1,4 @@
-Alex Collect 3.19 — public core package
+Alex Collect 3.20 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -61,6 +61,9 @@ app/:
                                    the write, remember the cards you dismissed
   market_stock.py                  read eBay and Facebook listings with your
                                    session, and name a site's check page
+  ebay_fill.py                     which cards go on eBay next: the dearest
+                                   unlisted products that fit under the store's
+                                   limit, and the Quick List page for them
   stock_write.py                   write one stock count onto a website product,
                                    and confirm the site kept it
   cs_listing.py                    build the CanadianShopper import CSV for

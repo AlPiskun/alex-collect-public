@@ -664,13 +664,77 @@ def shared_product_note(items, limit=3):
     return line
 
 
-def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True):
+#: The reader's own summary of what a read carried. Plugin 1.0.34 and later
+#: print it, and it is the one piece of evidence that tells the three ways this
+#: ends apart: no product reference in the vendor's data (``without the key``),
+#: a placeholder (``reported as 0``), or lookups that came back empty.
+_READER_COUNTS = re.compile(
+    r"(\d+)\s+listings?,\s*(\d+)\s+with a real product id,\s*"
+    r"(\d+)\s+without the key,\s*(\d+)\s+reported as 0",
+    re.IGNORECASE)
+
+
+def reader_id_counts(text):
+    """``(listings, with a real id, without the key, reported as 0)`` or None.
+
+    The reader's own numbers, quoted rather than recomputed: the app counts
+    the rows the reader emitted, and a reader that says the same thing in its
+    own line is agreeing with it - or, when the two disagree, saying something
+    worth reading.
+    """
+    found = _READER_COUNTS.findall(str(text or ""))
+    if not found:
+        return None
+    return tuple(int(value) for value in found[-1])
+
+
+def reader_says_note(text):
+    """One sentence quoting the reader's own count line, or "".
+
+    A read with no product ids is answered here with what the *reader* said it
+    found, because that is what a defect report is built from - and because
+    "without the key" is a different problem from "reported as 0": the first
+    is the vendor's data carrying no product reference, the second a reader
+    writing a placeholder it was told never to write.
+    """
+    counts = reader_id_counts(text)
+    if counts is None:
+        return ""
+    listings, real, missing, zeros = counts
+    said = ("The reader's own line says the same: %d listing%s, %d with a real "
+            "product id, %d without the key at all, %d reported as 0."
+            % (listings, "" if listings == 1 else "s", real, missing, zeros))
+    return said
+
+
+def ids_were_asked_for_note(text_has_lookups=False):
+    """Why a read that asked for product ids still has none.
+
+    The comparison panel asks the reader to skip product ids - it never reads
+    one - and this panel never does: resolving them is the whole point of its
+    read. So a read here with no ids either never ran the lookups or had every
+    one of them come back empty, and saying which read this was is the
+    difference between reporting a defect and chasing the wrong thing.
+    """
+    if text_has_lookups:
+        return ("This read asked for the lookups - the edit panel never asks "
+                "the reader to skip them - and it reports failures above, so "
+                "those listings are the ones that lost their id.")
+    return ("This read was not the fast, list-only one (the edit panel never "
+            "asks for that flag), so the reader's own lookups either did not "
+            "run or came back empty for every listing - and that, with the "
+            "reader's line above, is what to send with a report.")
+
+
+def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True,
+                   reader_text=""):
     """The whole sentence for a read nothing can be written from, or "".
 
     Said once, where it can be read, instead of three paragraphs in three
-    places: what the reader did (a key holding 0, or no key at all), which
-    plugin version fixes it, and - for the console - what still works from
-    here. A read that can be written returns "" and says nothing.
+    places: what the reader did (a key holding 0, or no key at all), what its
+    own count line says when it printed one, which plugin version fixes it,
+    and - for the console - what still works from here. A read that can be
+    written returns "" and says nothing.
     """
     rows = list(items or [])
     if not rows or not nothing_editable(rows):
@@ -682,7 +746,12 @@ def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True):
         said = ("No listing in that read carried a product id, so the edit "
                 "buttons cannot send anything: the plugin's reader is not "
                 "reporting one.")
-    parts = [said, needed_version_note(plugin, needed), identity_note(rows)]
+    said_by_reader = reader_says_note(reader_text)
+    parts = [said, said_by_reader,
+             (ids_were_asked_for_note(
+                 bool(stock_compare.failed_lookups(reader_text)))
+              if said_by_reader else ""),
+             needed_version_note(plugin, needed), identity_note(rows)]
     if works:
         parts.append("Searching, opening a listing and editing in the vendor "
                      "dashboard all still work.")

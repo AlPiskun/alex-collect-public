@@ -912,6 +912,70 @@ def test_what_the_read_did_carry():
           str(len(listing_box(parent).items)))
 
 
+def test_the_readers_own_numbers():
+    """The run that started this: 2,596 listings, 0 with a real product id.
+
+    Plugin 1.0.38 printed its own line for exactly that -
+    ``stock.list: 2596 listings, 0 with a real product id, 2596 without the
+    key, 0 reported as 0`` - and the panel's answer has to quote it: the
+    numbers are what a defect report is built from, and "without the key" is a
+    different problem from a reader writing a placeholder zero.
+    """
+    print()
+    print("== 5d4. what the reader said it found ==")
+    line = ("stock.list: 2596 listings, 0 with a real product id, 2596 "
+            "without the key, 0 reported as 0")
+    check("the reader's count line is read as four numbers",
+          cs_edit.reader_id_counts(line) == (2596, 0, 2596, 0),
+          str(cs_edit.reader_id_counts(line)))
+    check("a line for one listing is read too",
+          cs_edit.reader_id_counts(
+              "stock.list: 1 listing, 0 with a real product id, 1 without "
+              "the key, 0 reported as 0") == (1, 0, 1, 0), "")
+    check("a console with no such line says nothing rather than inventing one",
+          cs_edit.reader_id_counts("Stock read finished.") is None and
+          cs_edit.reader_says_note("Stock read finished.") == "", "")
+
+    said = cs_edit.reader_says_note(line)
+    check("the sentence quotes the reader's own numbers",
+          "2596 listings" in said and "0 with a real product id" in said and
+          "2596 without the key at all" in said and
+          "0 reported as 0" in said, said)
+
+    rows = [{"id": "a%04d" % n, "sku": "OPC73-%d" % n,
+             "url": "https://canadianshopper.ca/l/%d" % n,
+             "title": "card %d" % n} for n in range(2596)]
+    gap = cs_edit.product_id_gap(rows, plugin="1.0.38", needed="1.0.34",
+                                 reader_text=line)
+    check("the gap sentence carries the reader's line", said in gap, gap)
+    check("and says this read was not the list-only one",
+          "not the fast, list-only one" in gap and
+          "never asks for that flag" in gap, gap)
+    check("so the lookups are the thing to report, not the shop",
+          "came back empty" in gap, gap)
+    check("the version sentence is still there, after it",
+          gap.index(said) < gap.index("defect in the reader"), gap)
+    check("and what still works comes last",
+          gap.index("came back empty") < gap.index("still work"), gap)
+
+    #  A read whose lookups failed says that instead - the two sentences point
+    #  at different things, and only one of them is a plugin defect.
+    failed = cs_edit.ids_were_asked_for_note(text_has_lookups=True)
+    check("a read with failed lookups names the failures",
+          "reports failures above" in failed and
+          "came back empty" not in failed, failed)
+    check("and a read without any says the lookups never ran or came back "
+          "empty",
+          "either did not run or came back empty" in
+          cs_edit.ids_were_asked_for_note(False), "")
+
+    #  The comparison panel asks for the list-only read. Its rows come back
+    #  with no ids by design, and this sentence must never be printed there.
+    check("a gap with no reader line says nothing about which read it was",
+          "list-only" not in cs_edit.product_id_gap(rows, plugin="1.0.38",
+                                                   needed="1.0.34"), "")
+
+
 def test_plugin_1_0_35():
     """2,587 listings, every one with a string product id, resolved by the reader.
 
@@ -1662,6 +1726,7 @@ def main():
     test_a_reader_that_says_zero()
     test_the_version_that_reports_product_ids()
     test_what_the_read_did_carry()
+    test_the_readers_own_numbers()
     test_plugin_1_0_35()
     test_the_list_says_which_plugin_read_it()
     test_the_editing_panel_says_what_stopped_a_read()
