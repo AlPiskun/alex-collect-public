@@ -1028,6 +1028,14 @@ def diagnosis_text(row=None, output="", stages=(), plugin="", command="",
             lines.append("Product-reference keys: none - no key in this row "
                          "names a product, not even as a zero")
         lines.append(sanitize(row))
+        extra = [(key, state) for key, state in productish_keys(row)
+                 if key not in [name for name, _state in references]]
+        if extra:
+            #  A row may name its product in a key that is not an id at all -
+            #  a nested record, or a spelling the exact list does not know.
+            lines.append("Also naming a product: " +
+                         "; ".join("%s (%s)" % (key, state)
+                                   for key, state in extra))
         if isinstance(row, dict) and "sku" in row and \
                 not str(row.get("sku") or "").strip():
             #  The reader resolves a listing to its product by its SKU first,

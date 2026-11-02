@@ -1168,6 +1168,16 @@ def test_the_diagnosis_file():
           "Keys in that response that name a product: productId" in named,
           named)
 
+    nested = cs_edit.diagnosis_text(
+        row={"id": "a", "product": {"id": 1}, "product_id": 0})
+    check("a row naming its product in a key that is not an id says so",
+          "Also naming a product: product (a record with 1 key(s))" in nested,
+          nested)
+    check("and the id-shaped key is not printed twice",
+          "Also naming a product: product_id" not in nested, nested)
+    check("a row with no such key gets no extra line",
+          "Also naming a product" not in named, named)
+
     #  ---- the row's SKU is what a reader resolves by: empty is a fact
     check("an empty SKU on the row is said to be empty, with why it matters",
           "The listing's SKU is empty" in silent and
