@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write a price to a CanadianShopper listing's own record - and only a proven one.
+"""Write a listing's own record - every field a proof has settled, and no other.
 
 A proof (``cs_proof.py``) settles one field at one address: it writes a marked
 value to ``/api/data/product/<listing-id>``, reads the record back, puts the old
@@ -12,29 +12,33 @@ So the rules here are short and hard:
   listing and the one a proof wrote to. It is never called a product id, it is
   never taken from ``/api/products/<product_id>/``, and a row that does not say
   its own id is not addressed at all;
-* **only a proven field is written**. :data:`PROVEN_FIELDS` is the list, and a
-  field joins it when a proof saved in ``cs-field-proofs.json`` says the site
-  kept the value and gave the old one back. Without that file the write path is
-  closed - deliberately: an app that cannot show why it is allowed to write is
-  an app that will write something nobody proved;
+* **only a proven field is written.** :func:`writable_fields` reads
+  ``cs-field-proofs.json`` and returns the fields whose last proof kept the
+  value and gave the old one back. Every write re-reads it, so deleting the file
+  closes the path again. A field nobody proved is never sent, however sure the
+  panel is about it;
 * **the record is read first**, and its own id must be the id that was asked
   for. A record at that address that names a different id is not the listing
   that was chosen, and nothing is sent;
-* **the price the person confirmed is the price that must still be there**. If
-  the record shows a different price now, nothing is written and the panel says
-  what it found - a confirmation about 8.50 must never turn into a write of
-  something else;
-* **the write is read back**, because a 200 is not a price. The answer says
-  what the record shows afterwards: the new price (written), the old one
-  (ignored), or nothing readable (unknown - and the console says so rather
-  than claiming success);
-* **one field, one request**: the body is ``{"priceCad": "12.50"}`` and
-  nothing else, so no other field can be changed by a price write.
+* **the values the person confirmed must still be there.** Each change carries
+  what the row said; if the record now differs, nothing is written and the
+  panel says what it found. A confirmation about 8.50 must never turn into a
+  write of something else;
+* **one request, only the changed fields.** A form where a title and a price
+  were both edited sends both, and nothing else - so a field nobody touched
+  cannot move with a field they did;
+* **the write is read back, field by field**, because a 200 is not a value. Each
+  field is reported as written, ignored (the record still shows the old value),
+  or unknown (the read-back said nothing) - never guessed.
+
+``status`` is not a field here at all: it is not one a proof can settle (see
+``cs_proof.UNPROVABLE``), so there is nothing to send and no button for it.
 
 Nothing here touches the website, the plugin, or ``/api/products/...``.
 """
 from __future__ import annotations
 
+import json
 import urllib.error
 import urllib.request
 
@@ -42,21 +46,43 @@ import cs_edit
 import cs_listing
 import cs_proof
 
-#: The fields this module will write, in a person's words. A field is added
-#: here only after a saved proof has settled it; the proof file is re-read on
-#: every write, so deleting it closes the path again.
-PROVEN_FIELDS = ("priceCad",)
+#: The fields this module can write, in the order a form shows them: exactly
+#: the fields a proof can settle. ``status`` is absent on purpose.
+KNOWN_FIELDS = tuple(field for field, _label in cs_proof.FIELDS)
 
-FIELD_LABELS = {"priceCad": "Price"}
+FIELD_LABELS = dict(cs_proof.FIELD_LABELS)
 
 #: A price of zero is not written from here: on a marketplace a zero is almost
 #: always a mistake, and it makes the card free while the shop keeps selling
 #: it. If a card is really being given away, that is set in the dashboard.
 REFUSE_ZERO = True
 
+#: eBay refuses a title longer than 80 characters; CanadianShopper may allow
+#: more, but a title pasted from an eBay listing that is refused there is
+#: better refused here, before a write, with the reason.
+TITLE_LIMIT = 80
+
+#: The fields whose row value is checked against the record before a write.
+#: The main photo is not one of them: a catalogue row carries the shop's own
+#: URL while the record carries the site's hosted file, so a difference there
+#: is normal - the read-back still proves what happened.
+GUARDED = ("priceCad", "title", "description", "inventory")
+
 
 def field_label(field):
     return FIELD_LABELS.get(str(field or ""), str(field or ""))
+
+
+def writable_fields(proofs=None):
+    """The fields a saved proof has settled, in form order."""
+    return tuple(field for field in KNOWN_FIELDS
+                 if cs_proof.settled(field, proofs))
+
+
+def locked_fields(proofs=None):
+    """The fields with no proof behind them - offered, never written."""
+    settled = set(writable_fields(proofs))
+    return tuple(field for field in KNOWN_FIELDS if field not in settled)
 
 
 def money(value):
@@ -75,24 +101,80 @@ def money(value):
     return "%.2f" % number
 
 
-def refuse_reason(field, price):
-    """Why a price cannot be written at all, or ``""`` when it can."""
+def clean(field, value):
+    """A field's value as it is sent, or ``""`` when it cannot be read.
+
+    The shape each field takes is the site's own: money as ``"12.50"``, a
+    count as a whole number, a title with its runs of spaces folded, a
+    description exactly as typed, and a photo as a web address.
+    """
     field = str(field or "")
-    if field not in PROVEN_FIELDS:
-        return ("%s is not a field this app writes: only a field a proof has "
-                "settled is ever sent." % (field_label(field) or field))
-    if "-" in str(price if price is not None else ""):
-        return ("A price cannot be negative: %r is not a price this app will "
-                "write." % (price,))
-    text = money(price)
-    if not text:
-        return ("%r is not a price, so there is nothing to write." % (price,))
-    number = float(text)
-    if REFUSE_ZERO and number == 0:
-        return ("A price of zero is not written from here - on a marketplace "
-                "that is almost always a mistake, and it makes the card free. "
-                "Set a zero price in the vendor dashboard if it is really "
-                "meant.")
+    if field == "priceCad":
+        return money(value)
+    if field == "inventory":
+        text = str(value if value is not None else "").strip()
+        try:
+            number = int(text)
+        except (TypeError, ValueError):
+            return ""
+        return number if number >= 0 else ""
+    if field == "title":
+        return " ".join(str(value or "").split())
+    if field == "description":
+        return str(value if value is not None else "").strip()
+    if field == "primaryImageUrl":
+        text = str(value or "").strip()
+        return text if text.lower().startswith(("http://", "https://")) else ""
+    return ""
+
+
+def refuse_reason(field, value, proofs=None):
+    """Why one field cannot be written at all, or ``""`` when it can."""
+    field = str(field or "")
+    if field not in KNOWN_FIELDS:
+        if field in cs_proof.UNPROVABLE:
+            return ("%s is not written from here: %s."
+                    % (field_label(field) or field,
+                       cs_proof.UNPROVABLE[field]))
+        return "%s is not a field this app writes." % (field_label(field) or
+                                                       field)
+    if proofs is not None and not cs_proof.settled(field, proofs):
+        return ("%s has not been proven writable on this site, so nothing is "
+                "sent. Run \"Prove a field can be written\" for %s first: a "
+                "write path with no proof behind it is exactly what must not "
+                "exist." % (field_label(field), field_label(field).lower()))
+    text = str(value if value is not None else "")
+    if field == "priceCad":
+        if "-" in text:
+            return ("A price cannot be negative: %r is not a price this app "
+                    "will write." % (value,))
+        if not money(value):
+            return ("%r is not a price, so there is nothing to write."
+                    % (value,))
+        if REFUSE_ZERO and float(money(value)) == 0:
+            return ("A price of zero is not written from here - on a "
+                    "marketplace that is almost always a mistake, and it makes "
+                    "the card free. Set a zero price in the vendor dashboard if "
+                    "it is really meant.")
+    elif field == "inventory":
+        if clean(field, value) == "":
+            return ("%r is not a whole number of cards, so there is nothing to "
+                    "write." % (value,))
+    elif field == "title":
+        title = clean(field, value)
+        if not title:
+            return ("A listing needs a title - an empty one leaves the card "
+                    "with nothing to be found by.")
+        if len(title) > TITLE_LIMIT:
+            return ("That title is %d characters; a marketplace refuses one "
+                    "longer than %d. Cut it first - nothing was sent."
+                    % (len(title), TITLE_LIMIT))
+    elif field == "description":
+        if not clean(field, value):
+            return "An empty description is not written from here."
+    elif field == "primaryImageUrl":
+        if not clean(field, value):
+            return "%r is not a web address, so it is not a photo." % (value,)
     return ""
 
 
@@ -107,50 +189,135 @@ def note_for(field, proofs=None):
              " on %s" % entry.get("title") if entry.get("title") else ""))
 
 
-def plan(item, price, proofs=None):
-    """One listing's price change: what would be sent, or why nothing would be.
+def evidence_note(proofs=None):
+    """What can be edited on this machine, in one sentence."""
+    open_fields = writable_fields(proofs)
+    if not open_fields:
+        return ("No field has been proven writable on this site yet, so this "
+                "app will not write to a listing's record. Run \"Prove a field "
+                "can be written\" for the field to change.")
+    words = ", ".join(field_label(field).lower() for field in open_fields)
+    locked = locked_fields(proofs)
+    said = "Proven writable here: %s." % words
+    if locked:
+        said += (" Not proven, so never sent: %s."
+                 % ", ".join(field_label(field).lower() for field in locked))
+    return said
 
-    The plan carries the row's own price as the *expected* one. It is not
-    trusted as the truth - the record is read again before anything is sent -
-    but it is what the person was looking at when they agreed, and a record
-    that no longer matches it is not written.
+
+def _row_value(item, field):
+    """What the row on the panel said a field holds, as the form shows it."""
+    item = item or {}
+    if field == "priceCad":
+        text = cs_edit.price_text(item)
+        return money(text) or text
+    if field == "title":
+        return str(item.get("name") or item.get("title") or "").strip()
+    if field == "inventory":
+        qty = item.get("qty")
+        return "" if qty is None else str(int(qty))
+    if field == "description":
+        return str(item.get("description") or "").strip()
+    if field == "primaryImageUrl":
+        for image in item.get("images") or []:
+            if isinstance(image, str) and image.strip():
+                return image.strip()
+            if isinstance(image, dict) and image.get("src"):
+                return str(image["src"]).strip()
+        return ""
+    return ""
+
+
+def current_value(item, field):
+    """What the row on the panel says a field holds, as a form opens it."""
+    return _row_value(item, field)
+
+
+def plan_update(item, changes, proofs=None):
+    """One listing's edit: what would be sent, or why nothing would be.
+
+    ``changes`` is ``{field: value}`` as the form holds them. Only fields whose
+    value actually differs from the row are kept - a form saved untouched is
+    not a write of the values it opened with.
     """
     item = item or {}
-    field = "priceCad"
     listing_id = cs_edit.listing_id(item)
-    #  A zero is not an id (see cs_edit.is_id): addressing /api/data/product/0
-    #  would be a write at a record that cannot exist.
-    entry = {"field": field, "label": field_label(field),
-             "card": str(item.get("name") or item.get("title") or "").strip(),
-             "id": listing_id if cs_edit.is_id(listing_id) else ""}
-    if not cs_proof.settled(field, proofs):
-        return {"why": ("%s has not been proven writable on this site, so "
-                        "nothing is sent. Run \"Prove a field can be written\" "
-                        "for %s first: a write path with no proof behind it is "
-                        "exactly what must not exist."
-                        % (field_label(field), field_label(field).lower())),
-                "card": entry["card"], "id": entry["id"], "field": field}
+    card = str(item.get("name") or item.get("title") or "").strip()
+    entry = {"id": listing_id if cs_edit.is_id(listing_id) else "",
+             "card": card, "fields": []}
     if not entry["id"]:
         return {"why": ("The list carries no record id for %s, so there is no "
                         "record to address. Nothing was sent."
-                        % (entry["card"] or "that listing")),
-                "card": entry["card"], "id": "", "field": field}
-    why = refuse_reason(field, price)
-    if why:
-        return {"why": why, "card": entry["card"], "id": entry["id"],
-                "field": field}
-    entry["price"] = money(price)
-    old = cs_edit.price_number(item)
-    entry["old"] = "" if old is None else "%.2f" % old
+                        % (card or "that listing")),
+                "card": card, "id": "", "fields": []}
+    if not proofs or not writable_fields(proofs):
+        return {"why": ("No field has been proven writable on this site, so "
+                        "nothing is sent. Run \"Prove a field can be written\" "
+                        "first."), "card": card, "id": entry["id"],
+                "fields": []}
+    wanted = []
+    for field, value in (changes or {}).items():
+        field = str(field or "")
+        if field not in KNOWN_FIELDS:
+            continue
+        old = _row_value(item, field)
+        new = clean(field, value)
+        #  An untouched field is not a change, however it is spelled: the form
+        #  opens on the row's own values, and comparing the cleaned forms is
+        #  what keeps "8.5" from reading as a change of "8.50".
+        if not new and not str(value or "").strip():
+            continue
+        if old and cs_proof.same(field, new, old):
+            continue
+        if not new and old:
+            #  Cleared on purpose: refused per field, with the reason.
+            return {"why": refuse_reason(field, "", proofs) or
+                    ("%s cannot be emptied from here." % field_label(field)),
+                    "card": card, "id": entry["id"], "fields": []}
+        why = refuse_reason(field, value, proofs)
+        if why:
+            return {"why": why, "card": card, "id": entry["id"],
+                    "fields": []}
+        wanted.append({"field": field, "label": field_label(field),
+                       "old": old, "value": new})
+    if not wanted:
+        return {"why": "", "card": card, "id": entry["id"], "fields": [],
+                "same": True}
+    entry["fields"] = wanted
     return entry
 
 
-def describe(entry):
+def plan(item, price, proofs=None):
+    """:func:`plan_update` for the one field a quick price change touches."""
+    entry = plan_update(item, {"priceCad": price}, proofs)
+    entry.update(field="priceCad", label="Price")
+    #  The price dialog needs both numbers even when nothing would be sent:
+    #  "already shows 1.00" is a sentence built from them.
+    entry.setdefault("old", _row_value(item, "priceCad"))
+    entry.setdefault("price", clean("priceCad", price))
+    if entry.get("fields"):
+        change = entry["fields"][0]
+        entry.update(old=change["old"], price=change["value"])
+    return entry
+
+
+def describe(entry, change=None):
     """``old -> new`` in the words the confirmation uses."""
     entry = entry or {}
-    old = entry.get("old") or "no price on the list"
-    return "%s:  %s  ->  %s" % (entry.get("card") or "That listing",
-                                old, entry.get("price") or "?")
+    if change is None:
+        old = entry.get("old") or "no price on the list"
+        return "%s:  %s  ->  %s" % (entry.get("card") or "That listing",
+                                    old, entry.get("price") or "?")
+    return "%s:  %s  ->  %s" % (
+        change.get("label") or field_label(change.get("field")),
+        change.get("old") or "(empty)",
+        change.get("value") if not isinstance(change.get("value"), str)
+        else (change["value"] or "(empty)"))
+
+
+def describe_lines(entry):
+    """Every change in a plan, one per line, for a confirmation."""
+    return [describe(entry, change) for change in (entry or {}).get("fields")]
 
 
 def url_for(listing_id, base="https://canadianshopper.ca"):
@@ -175,13 +342,16 @@ def _snippet(body, limit=240):
     return text[:limit] + ("\u2026" if len(text) > limit else "")
 
 
-def send_price(url, cookie, price, opener=None, timeout=25):
-    """``PATCH`` one record with one price; ``(status, body)``, never raises."""
+def send_fields(url, cookie, payload, opener=None, timeout=25):
+    """``PATCH`` one record with the changed fields; ``(status, body)``.
+
+    The body is exactly what the caller built - one field for a price, or the
+    handful a form changed - and never a whole record read back from the site.
+    """
     if opener is not None:
-        return opener(url, cookie, price)
-    import json
+        return opener(url, cookie, payload)
     request = urllib.request.Request(
-        url, data=json.dumps({"priceCad": price}).encode("utf-8"),
+        url, data=json.dumps(payload).encode("utf-8"),
         method="PATCH",
         headers={"User-Agent": "Mozilla/5.0 (AlexCollect-GUI)",
                  "Accept": "application/json",
@@ -201,39 +371,49 @@ def send_price(url, cookie, price, opener=None, timeout=25):
         return 0, str(exc)
 
 
-def write(url, cookie, price, expect_id="", expect_old=None, listing=None,
-          field="priceCad", proofs=None, fetch=None, send=None):
-    """Read the record, write one price, read it back. Never raises.
+#: The old name of the sender, kept because a caller (and a test) may name it.
+send_price = send_fields
 
-    ``expect_old`` is what the person was shown. The record is read first and a
-    price that no longer matches it stops the write there and then: a
-    confirmation is a promise about a number, not a licence to replace whatever
-    is there now.
+
+def update(url, cookie, changes, expect_id="", listing=None, proofs=None,
+           fetch=None, send=None, expected=None):
+    """Read the record, write the changed proven fields, read it back.
+
+    ``changes`` is ``{field: value}``; ``expected`` is what the row said those
+    fields held, used to refuse a write when the record has moved since. The
+    answer carries one verdict per field and one for the whole edit, so a form
+    that changed three things gets three answers rather than one guess.
     """
     fetch = fetch or cs_proof.read_record
-    send = send or send_price
+    send = send or send_fields
     listing = listing or {}
-    result = {"field": field, "label": field_label(field),
-              "url": url, "id": str(expect_id or ""),
+    expected = dict(expected or {})
+    result = {"url": url, "id": str(expect_id or ""),
               "card": str(listing.get("name") or listing.get("title") or ""),
-              "sent": "", "old": None, "after": None, "status": 0,
-              "verdict": "", "written": False, "steps": [], "why": ""}
-    if field not in PROVEN_FIELDS:
-        result.update(verdict="unproven",
-                      why="%s is not a field this app writes." % field_label(field))
+              "status": 0, "verdict": "", "written": False, "steps": [],
+              "fields": [], "why": ""}
+    prepared, refused = [], []
+    for field, value in (changes or {}).items():
+        field = str(field or "")
+        label = field_label(field)
+        why = refuse_reason(field, value, proofs)
+        if why:
+            refused.append({"field": field, "label": label, "why": why})
+            continue
+        prepared.append({"field": field, "label": label,
+                         "value": clean(field, value),
+                         "expected": expected.get(field)})
+    if refused:
+        result.update(verdict="unproven" if all(
+            "proven writable" in entry["why"] for entry in refused)
+            else "refused",
+            why=" ".join(entry["why"] for entry in refused))
+        result["fields"] = [dict(entry, verdict="refused") for entry in refused]
         return result
-    if not cs_proof.settled(field, proofs):
-        result.update(
-            verdict="unproven",
-            why=("%s has not been proven writable on this site, so nothing was "
-                 "sent. Run the field proof first." % field_label(field)))
+    if not prepared:
+        result.update(verdict="same", why="Nothing was changed, so nothing "
+                                           "was sent.")
         return result
-    why = refuse_reason(field, price)
-    if why:
-        result.update(verdict="refused", why=why)
-        return result
-    price = money(price)
-    result["sent"] = price
     if not url or not cs_edit.is_id(expect_id):
         result.update(verdict="unreadable",
                       why=("There is no record id to address, so nothing was "
@@ -246,115 +426,234 @@ def write(url, cookie, price, expect_id="", expect_old=None, listing=None,
     if record is None:
         result.update(verdict="unreadable",
                       why=("The record could not be read (%s), so nothing was "
-                           "written: the price that is there now cannot be "
+                           "written: the values that are there now cannot be "
                            "checked or compared."
                            % ("HTTP %s" % status if status else "no answer")))
         return result
 
     found_id = _record_id(record)
-    if not found_id:
-        result["steps"].append({"step": "the record names no id", "status": 200})
-        result.update(verdict="refused",
-                      why=("The record at that address does not name its own "
-                           "id, so this app cannot confirm it is the listing "
-                           "that was chosen. Nothing was written."))
-        return result
-    if str(found_id).strip() != str(expect_id).strip():
-        result["steps"].append({"step": "the record names %s" % found_id,
-                                "status": 200})
-        result.update(verdict="refused",
-                      why=("The record at that address says it is listing %s, "
-                           "not %s. Nothing was written: writing the wrong "
-                           "listing's price is the one mistake this path must "
-                           "never make." % (found_id, expect_id)))
-        return result
-
-    found, old = cs_proof.record_value(record, field)
-    if not found or old is None or str(old).strip() == "":
-        result.update(verdict="refused",
-                      why=("The record carries no %s to compare with, so this "
-                           "app cannot tell a write from a coincidence. "
-                           "Nothing was written." % field_label(field).lower()))
-        return result
-    result["old"] = old
-    if cs_proof.same(field, old, price):
-        result.update(verdict="same",
-                      why=("The listing already shows %s, so there is nothing "
-                           "to write." % money(old)))
-        return result
-    if expect_old not in (None, "") and not cs_proof.same(field, old,
-                                                          expect_old):
+    if not found_id or str(found_id).strip() != str(expect_id).strip():
+        result["steps"].append({"step": "the record names %s"
+                                % (found_id or "no id"), "status": 200})
         result.update(
-            verdict="changed",
-            why=("The listing's price is %s now, not the %s that was confirmed. "
-                 "Nothing was written - look at the new price and confirm "
-                 "again if it is still the one to replace."
-                 % (money(old), money(expect_old))))
+            verdict="refused",
+            why=("The record at that address says it is listing %s, not %s. "
+                 "Nothing was written: writing the wrong listing's details is "
+                 "the one mistake this path must never make."
+                 % (found_id or "(no id)", expect_id)))
         return result
 
-    written_status, written_body = send(url, cookie, price)
+    payload, plans = {}, []
+    for entry in prepared:
+        found, old = cs_proof.record_value(record, entry["field"])
+        if not found:
+            entry.update(old=None, verdict="refused",
+                         why=("The record does not carry %s, so a write to it "
+                              "cannot be read back. Nothing was sent."
+                              % entry["label"].lower()))
+            plans.append(entry)
+            continue
+        if cs_proof.same(entry["field"], old, entry["value"]):
+            entry.update(old=old, verdict="same",
+                         why="The record already holds that value.")
+            plans.append(entry)
+            continue
+        wanted = entry.get("expected")
+        if (entry["field"] in GUARDED and wanted not in (None, "")
+                and not cs_proof.same(entry["field"], old, wanted)):
+            entry.update(old=old, verdict="changed",
+                         why=("The record shows %s now, not the %s that was "
+                              "confirmed. Nothing was written for it."
+                              % (_value_text(entry["field"], old),
+                                 _value_text(entry["field"], wanted))))
+            plans.append(entry)
+            continue
+        entry["old"] = old
+        payload[entry["field"]] = entry["value"]
+        plans.append(entry)
+    result["fields"] = plans
+    if not payload:
+        verdicts = {entry["verdict"] for entry in plans}
+        if verdicts == {"same"}:
+            result.update(verdict="same",
+                          why=("The record already holds those values, so "
+                               "nothing was sent."))
+        elif verdicts == {"refused"}:
+            result.update(verdict="refused",
+                          why=" ".join(entry.get("why") or "" for entry in
+                                       plans))
+        else:
+            result.update(verdict="changed",
+                          why=" ".join(entry.get("why") or "" for entry in
+                                       plans))
+        return result
+
+    written_status, written_body = send(url, cookie, payload)
     result["status"] = written_status
-    result["steps"].append({"step": "PATCH %s" % field,
-                            "status": written_status, "sent": price,
+    result["steps"].append({"step": "PATCH %s" % ", ".join(payload),
+                            "status": written_status,
+                            "sent": dict(payload),
                             "body": "" if 200 <= written_status < 300
                             else _snippet(written_body)})
     if not 200 <= written_status < 300:
+        for entry in plans:
+            if entry["field"] in payload:
+                entry.update(verdict="refused",
+                             why=("The site refused the write (%s). The "
+                                  "listing still shows what it did."
+                                  % ("HTTP %s" % written_status
+                                     if written_status
+                                     else written_body or "no answer")))
         result.update(verdict="refused",
-                      why=("The site refused the write (%s). The listing still "
-                           "shows %s."
+                      why=("The site refused the write (%s). Nothing was "
+                           "changed for the field%s that were sent."
                            % ("HTTP %s" % written_status if written_status
-                              else written_body or "no answer", money(old))))
+                              else "no answer",
+                              "" if len(payload) == 1 else "s")))
         return result
 
     after_status, after_body = fetch(url, cookie)
     result["steps"].append({"step": "GET the record", "status": after_status})
     after_record = cs_proof._record(after_body) if after_status == 200 else None
     if after_record is None:
+        for entry in plans:
+            if entry["field"] in payload:
+                entry.update(verdict="unknown",
+                             why=("The write was accepted but could not be read "
+                                  "back, so the field is unconfirmed."))
         result.update(verdict="unknown",
                       why=("The site accepted the write but the record could "
-                           "not be read back (%s), so this app cannot say the "
-                           "price took. Check that listing on CanadianShopper."
+                           "not be read back (%s), so this app cannot say what "
+                           "the listing holds now. Check that listing on "
+                           "CanadianShopper."
                            % ("HTTP %s" % after_status if after_status
                               else "no answer")))
         return result
-    result["after"] = cs_proof.record_value(after_record, field)[1]
-    if cs_proof.same(field, result["after"], price):
-        result.update(verdict="written", written=True,
-                      why=("The record now shows %s, read back after the "
-                           "write." % money(result["after"])))
-    elif cs_proof.same(field, result["after"], old):
-        result.update(verdict="ignored",
-                      why=("The site answered %s but the record still shows %s: "
-                           "the write was accepted and the price was not "
-                           "kept. The listing is unchanged."
-                           % ("HTTP %s" % written_status, money(old))))
+
+    for entry in plans:
+        if entry["field"] not in payload:
+            continue
+        after = cs_proof.record_value(after_record, entry["field"])[1]
+        entry["after"] = after
+        if cs_proof.same(entry["field"], after, entry["value"]):
+            entry.update(verdict="written",
+                         why=_written_note(entry, after))
+        elif cs_proof.same(entry["field"], after, entry["old"]):
+            entry.update(verdict="ignored",
+                         why=("The site answered HTTP %s but the record still "
+                              "shows %s: the write was accepted and %s was not "
+                              "kept. The listing is unchanged."
+                              % (written_status,
+                                 _value_text(entry["field"], entry["old"]),
+                                 entry["label"].lower())))
+        else:
+            entry.update(verdict="written",
+                         why=("The record shows %s rather than the %s that was "
+                              "sent - the value was kept, and the site stored "
+                              "it its own way."
+                              % (_value_text(entry["field"], after),
+                                 _value_text(entry["field"], entry["value"]))))
+
+    verdicts = [entry.get("verdict") for entry in plans
+                if entry["field"] in payload]
+    written = [name for name in verdicts if name == "written"]
+    result["written"] = bool(written)
+    if verdicts and len(written) == len(verdicts):
+        result["verdict"] = "written"
+    elif written:
+        result["verdict"] = "partial"
+    elif verdicts and all(name == "ignored" for name in verdicts):
+        result["verdict"] = "ignored"
     else:
-        result.update(verdict="written", written=True,
-                      why=("The record shows %s rather than the %s that was "
-                           "sent - the price was kept, and the site stored it "
-                           "its own way." % (money(result["after"]), price)))
+        result["verdict"] = "ignored"
+    result["why"] = " ".join(entry.get("why") or "" for entry in plans
+                             if entry["field"] in payload)
+    return result
+
+
+def _written_note(entry, after):
+    label = entry.get("label") or field_label(entry.get("field"))
+    return ("%s now reads %s, read back after the write."
+            % (label, _value_text(entry.get("field"), after)))
+
+
+def _value_text(field, value):
+    """A value as a sentence quotes it, short for words nobody reads in full."""
+    if value is None:
+        return "nothing"
+    if field == "priceCad":
+        return money(value) or str(value)
+    if field == "description":
+        text = " ".join(str(value).split())
+        return "%r and %d more characters" % (text[:60], len(text) - 60) \
+            if len(text) > 60 else repr(text)
+    text = str(value)
+    return text if len(text) <= 80 else "%s\u2026" % text[:80]
+
+
+def write(url, cookie, price, expect_id="", expect_old=None, listing=None,
+          field="priceCad", proofs=None, fetch=None, send=None):
+    """One field, the quick way - :func:`update` with a single change.
+
+    Kept as its own function because it is what the price-only callers use (a
+    bulk reprice, a one-line price change) and because its answer is one
+    field's, not a form's.
+    """
+    result = update(url, cookie, {field: price}, expect_id=expect_id,
+                    listing=listing, proofs=proofs, fetch=fetch, send=send,
+                    expected={field: expect_old})
+    if len(result.get("fields") or []) == 1:
+        entry = result["fields"][0]
+        result.update(old=entry.get("old"), after=entry.get("after"),
+                      sent=entry.get("value"),
+                      why=entry.get("why") or result.get("why"))
+        if (entry.get("verdict") and result.get("verdict") != "unproven"):
+            #  One field's answer is that field's verdict - except when the
+            #  field was never sent at all, which "unproven" already says.
+            result["verdict"] = entry["verdict"]
+            result["written"] = entry["verdict"] == "written"
+    result["field"] = field
+    result["label"] = field_label(field)
     return result
 
 
 def sentence(result):
     """One line for the console, in the words the outcome deserves."""
     result = result or {}
-    label = result.get("label") or field_label(result.get("field"))
     card = result.get("card") or "that listing"
     verdict = result.get("verdict")
+    fields = [entry for entry in result.get("fields") or []]
+    labels = ", ".join(entry.get("label") or field_label(entry.get("field"))
+                       for entry in fields) or "The change"
     if verdict == "written":
-        return ("%s now shows %s on CanadianShopper (your website was not "
-                "touched)." % (card, money(result.get("after"))))
+        written = [entry for entry in fields
+                   if entry.get("verdict") == "written"]
+        if len(fields) == 1 and written:
+            return ("%s: %s (your website was not touched)."
+                    % (card, written[0].get("why") or "the value was written"))
+        return ("%s changed on CanadianShopper (%s; your website was not "
+                "touched)." % (card, labels))
+    if verdict == "partial":
+        kept = ", ".join(entry.get("label") for entry in fields
+                         if entry.get("verdict") == "written")
+        lost = ", ".join(entry.get("label") for entry in fields
+                         if entry.get("verdict") != "written")
+        return ("%s: %s now, %s not kept - see the lines above."
+                % (card, kept or "nothing", lost or "nothing"))
     if verdict == "same":
-        return "%s already shows %s; nothing was sent." % (
-            card, money(result.get("old")))
-    if verdict == "changed":
-        return ("Not written for %s: %s" % (card, result.get("why")))
+        return "%s already holds those values; nothing was sent." % card
+    if verdict in ("changed",):
+        return "Not written for %s: %s" % (card, result.get("why"))
     if verdict == "ignored":
-        return ("Not changed for %s: %s" % (card, result.get("why")))
+        return ("Not changed for %s: the site answered HTTP 200 and kept the "
+                "old value - the write was accepted and not kept, so the "
+                "listing is unchanged." % card)
+    if verdict == "unknown":
+        return ("%s: the write was accepted but not readable back, so nothing "
+                "here can say it took. Check that listing on CanadianShopper."
+                % card)
     if verdict == "unproven":
-        return ("No price was written: %s is not proven writable yet."
-                % label)
+        return "No change was written: %s" % result.get("why")
     if verdict == "refused":
         return "Not changed for %s: %s" % (card, result.get("why"))
     return ("%s: %s" % (card, result.get("why") or "the write's outcome is "

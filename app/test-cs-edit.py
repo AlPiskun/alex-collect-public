@@ -2392,6 +2392,171 @@ def test_the_edit_button_takes_the_price_road():
               for _tag, text in app.lines), str(app.lines[-3:]))
     harness._BOX.askyesno = lambda *a, **k: True
 
+
+def test_a_form_of_every_proven_field():
+    """The panel's own form: one row per field, open only where a proof is.
+
+    The price write proved the road, and the road is the record's - so the
+    title, the description, the stock count and the main photo travel it too,
+    each behind the proof that settled it. What this checks is that the form
+    is that map: a proven field can be typed in, an unproven one is shown
+    with the button that would prove it, and only the fields changed are sent.
+    """
+    print()
+    print("== 5m. a form of every proven field ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+    row = {"id": "a2304e72dbca4e678e7111d011ade22d", "product_id": 0,
+           "title": "#006/196 Wurmple SWSH11: Lost Origin - Pokemon TCG",
+           "sku": "PKM-006", "status": "active", "inventory": 1,
+           "price": "1.00"}
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        read_into(app, folder, parent, payload=[row])
+    select(parent, "Wurmple")
+
+    (folder / "cs-field-proofs.json").write_text(json.dumps({
+        "priceCad": {"at": "2026-11-02 15:34:38", "proven": True,
+                     "verdict": "written", "restored": True,
+                     "listing": row["id"], "title": "Wurmple"},
+        "title": {"at": "2026-11-02 16:02:11", "proven": True,
+                  "verdict": "written", "restored": True,
+                  "listing": row["id"], "title": "Wurmple"}}),
+        encoding="utf-8")
+
+    sent, questions, shown = [], [], []
+    old_title = row["title"]
+    new_title = "#006/196 Wurmple SWSH11: Lost Origin - Pokemon TCG (NM)"
+
+    def press(window):
+        """Fill the proven title in, then press the form's write button."""
+        for widget in window.walk():
+            var = widget.cget("textvariable") if isinstance(
+                widget, gui.ttk.Entry) else ""
+            if var and hasattr(var, "get") and var.get() == old_title:
+                var.set(new_title)
+        button = next((w for w in window.walk()
+                       if isinstance(w, gui.ttk.Button) and
+                       str(w.cget("text")) == "Write the changed fields"), None)
+        if button is not None:
+            button.invoke()
+
+    harness._BOX.shown[:] = []
+    harness._BOX.askyesno = lambda title, question, **k: (
+        questions.append((title, question)) or True)
+    harness.PICKER["press"] = press
+
+    def fake_update(url, cookie_, changes, **kwargs):
+        sent.append((url, dict(changes), kwargs))
+        return {"verdict": "written", "written": True,
+                "card": "Wurmple", "id": row["id"],
+                "fields": [{"field": "title", "label": "Title",
+                            "verdict": "written", "old": old_title,
+                            "value": new_title, "after": new_title,
+                            "why": "Title now reads the new value."}]}
+
+    try:
+        with patch.object(gui, "BASE", folder), \
+                patch.object(gui, "CS_COOKIE_FILE", cookie), \
+                patch.object(gui, "in_background", sync_background), \
+                patch.object(cs_record, "update", fake_update):
+            find(parent, gui.ttk.Button,
+                 "Edit the record's fields...").invoke()
+    finally:
+        harness.PICKER["press"] = lambda window: None
+
+    check("the form opens on the record's own id and writes what changed",
+          len(sent) == 1 and sent[0][0].endswith(row["id"]), str(sent[:1]))
+    check("only the field that was typed in is sent",
+          len(sent) == 1 and list(sent[0][1]) == ["title"], str(sent[:1]))
+    check("and the record's own id is the address, not a product id",
+          sent and sent[0][2].get("expect_id") == row["id"] and
+          "/api/data/product/" in sent[0][0] and
+          "/api/products/" not in sent[0][0], str(sent[:1]))
+    check("the row's old value travels with the write, for the guard",
+          sent and sent[0][2].get("expected", {}).get("title") == old_title,
+          str(sent[:1]))
+    check("the confirmation names every change",
+          questions and new_title in questions[0][1], str(questions[:1]))
+    check("and it says the website is not touched",
+          questions and "website" in questions[0][1], str(questions[:1]))
+    check("the console says what changed, once",
+          any("Title" in text or "title" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+
+    #  A field with no proof is on the form, greyed, with the way to prove it:
+    #  a form that hid it would say the app writes less than it does.
+    shown_form = {}
+
+    def look(window):
+        shown_form["labels"] = [str(w.cget("text")) for w in window.walk()
+                                if isinstance(w, gui.ttk.Label)]
+        shown_form["buttons"] = [str(w.cget("text")) for w in window.walk()
+                                 if isinstance(w, gui.ttk.Button)]
+
+    harness.PICKER["press"] = look
+    try:
+        with patch.object(gui, "BASE", folder), \
+                patch.object(gui, "in_background", sync_background):
+            find(parent, gui.ttk.Button,
+                 "Edit the record's fields...").invoke()
+    finally:
+        harness.PICKER["press"] = lambda window: None
+    check("the unproven fields are on the form, named",
+          any("Description" in text for text in shown_form.get("labels", []))
+          and any("Main photo" in text
+                  for text in shown_form.get("labels", [])),
+          str(shown_form.get("labels")))
+    check("each one offers the proof that would open it",
+          shown_form.get("buttons", []).count("Prove this field...") == 3,
+          str(shown_form.get("buttons")))
+    check("and the form says what is proven and what is never sent",
+          any("Proven writable here" in text and "never sent" in text
+              for text in shown_form.get("labels", [])),
+          str(shown_form.get("labels")))
+
+    #  A long field the stock list does not carry: proven, so typeable - and
+    #  the form has to say that typing there replaces the whole description,
+    #  because the empty box is not the same fact as an empty description.
+    proofs = json.loads((folder / "cs-field-proofs.json").read_text())
+    proofs["description"] = {"at": "2026-11-02 16:20:00", "proven": True,
+                             "verdict": "written", "restored": True,
+                             "listing": row["id"], "title": "Wurmple"}
+    (folder / "cs-field-proofs.json").write_text(json.dumps(proofs),
+                                                 encoding="utf-8")
+    shown_form.clear()
+    harness.PICKER["press"] = look
+    try:
+        with patch.object(gui, "BASE", folder), \
+                patch.object(gui, "in_background", sync_background):
+            find(parent, gui.ttk.Button,
+                 "Edit the record's fields...").invoke()
+    finally:
+        harness.PICKER["press"] = lambda window: None
+    check("a proven field the row does not carry is typeable all the same",
+          any("Description" in text for text in shown_form.get("labels", [])),
+          str(shown_form.get("labels")))
+    check("and the form says typing there replaces the whole description",
+          any("replaces the whole description" in text
+              for text in shown_form.get("labels", [])),
+          str(shown_form.get("labels")))
+    check("while the photo, still unproven, offers its proof",
+          shown_form.get("buttons", []).count("Prove this field...") == 2,
+          str(shown_form.get("buttons")))
+
+
 def test_the_panel_quotes_the_readers_resolution():
     """A read that asked and got nothing back says so, on the console.
 
@@ -3077,6 +3242,7 @@ def main():
     test_the_panel_writes_a_proof()
     test_the_panel_sets_a_proven_price()
     test_the_edit_button_takes_the_price_road()
+    test_a_form_of_every_proven_field()
     test_the_panel_quotes_the_readers_resolution()
     test_the_evidence_outlives_the_window()
     test_the_panel_reads_and_lists()

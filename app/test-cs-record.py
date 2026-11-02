@@ -53,7 +53,7 @@ class Site:
     """A record, and the three ways a site answers a price write."""
 
     def __init__(self, record=None, keep=True, refuse=(), normalise=None,
-                 fail_reads=(), id_in_record=True):
+                 fail_reads=(), id_in_record=True, unkeeps=()):
         self.record = dict(RECORD if record is None else record)
         if not id_in_record:
             self.record.pop("id", None)
@@ -61,6 +61,7 @@ class Site:
         self.refuse = set(refuse)
         self.normalise = normalise
         self.fail_reads = set(fail_reads)      # which read number fails
+        self.unkeeps = set(unkeeps)            # accepted, not kept
         self.reads = 0
         self.sent = []
 
@@ -71,13 +72,17 @@ class Site:
         import json
         return 200, json.dumps(self.record)
 
-    def send(self, url, cookie, price):
-        self.sent.append(price)
+    def send(self, url, cookie, payload):
+        self.sent.append(dict(payload))
         if "price" in self.refuse:
             return 403, "<html>denied</html>"
         if self.keep:
-            self.record["priceCad"] = (self.normalise
-                                       if self.normalise is not None else price)
+            for field, value in payload.items():
+                if field in self.unkeeps:
+                    continue
+                self.record[field] = (self.normalise
+                                      if (self.normalise is not None and
+                                          field == "priceCad") else value)
         return 200, '{"ok": true}'
 
 
@@ -91,7 +96,7 @@ def test_only_a_proven_field_is_written():
           result["verdict"] == "unproven" and site.sent == [] and
           site.reads == 0, str(result["verdict"]))
     check("and the answer says to run the proof, not to retry",
-          "Run the field proof first" in result["why"], result["why"])
+          "Prove a field can be written" in result["why"], result["why"])
 
     result = cs_record.write(URL, "", "1.01", expect_id=LISTING_ID,
                              proofs=PROOFS, field="inventory",
@@ -101,7 +106,7 @@ def test_only_a_proven_field_is_written():
           str(result["verdict"]))
     check("the proof of another field does not open this one",
           not cs_record.plan({"id": LISTING_ID}, "1.01",
-                             {"title": {"proven": True}}).get("price"), "")
+                             {"title": {"proven": True}}).get("fields"), "")
 
     stale = {"priceCad": dict(PROOFS["priceCad"], proven=False)}
     result = cs_record.write(URL, "", "1.01", expect_id=LISTING_ID,
@@ -160,7 +165,7 @@ def test_a_price_that_is_written():
     check("the site kept the new price", site.record["priceCad"] == "1.01",
           str(site.record["priceCad"]))
     check("exactly one write was made, carrying one price",
-          site.sent == ["1.01"], str(site.sent))
+          site.sent == [{"priceCad": "1.01"}], str(site.sent))
     check("the record was read before the write and again after it",
           [step["step"] for step in result["steps"]] ==
           ["GET the record", "PATCH priceCad", "GET the record"],
@@ -180,7 +185,7 @@ def test_a_price_that_is_written():
     check("the price that is already there is not sent again",
           result["verdict"] == "same" and site.sent == [], str(result["verdict"]))
     check("and the answer says there was nothing to write",
-          "nothing to write" in result["why"], result["why"])
+          "already holds that value" in result["why"], result["why"])
 
     site = Site()
     result = cs_record.write(URL, "", "2.00", expect_id=LISTING_ID,
@@ -365,9 +370,9 @@ def test_the_comparison_panel_s_plan():
                 return 404, "<html>no such record</html>"
             return 200, json.dumps(self.records[url])
 
-        def send(self, url, cookie, price):
-            self.sent.append((url, price))
-            self.records[url]["priceCad"] = price
+        def send(self, url, cookie, payload):
+            self.sent.append((url, dict(payload)))
+            self.records[url].update(payload)
             return 200, '{"ok": true}'
 
     second_id = "b1234567890abcdef"
@@ -384,10 +389,11 @@ def test_the_comparison_panel_s_plan():
           [result["verdict"] for result in results] == ["written", "written"],
           str([result["verdict"] for result in results]))
     check("and each one sent its own price to its own record",
-          site.sent == [(URL, "2.00"), (second_url, "6.00")], str(site.sent))
+          site.sent == [(URL, {"priceCad": "2.00"}),
+                        (second_url, {"priceCad": "6.00"})], str(site.sent))
 
     failing = Shelf({URL: RECORD})
-    failing.send = lambda url, cookie, price: (200, '{"ok": true}')
+    failing.send = lambda url, cookie, payload: (200, '{"ok": true}')
     results = cs_record.write_all(items[:1], "", proofs=PROOFS,
                                   fetch=failing.fetch, send=failing.send)
     check("a run where the site keeps nothing reports it, card by card",
@@ -417,6 +423,123 @@ def test_the_comparison_panel_s_plan():
           ["unproven", "unproven"], "")
 
 
+
+def test_every_proven_field_can_be_written():
+    print()
+    print("== 10. a form's worth of proven fields ==")
+    record = dict(RECORD, title="Wurmple SWSH11", description="Sharp corners.")
+    site = Site(record=record)
+    proofs = {field: {"proven": True, "verdict": "written", "restored": True,
+                      "at": "2026-11-02 15:34:38"} for field in
+              ("priceCad", "title", "description", "inventory")}
+    result = cs_record.update(
+        URL, "", {"priceCad": "2.50", "title": "Wurmple SWSH11 Lost Origin",
+                  "inventory": "3"},
+        expect_id=LISTING_ID, listing={"id": LISTING_ID, "name": "Wurmple"},
+        proofs=proofs, fetch=site.fetch, send=site.send)
+    check("every proven field in the form is written in one request",
+          result["verdict"] == "written" and len(site.sent) == 1,
+          str(result["verdict"]))
+    check("and only the fields that changed are in the body",
+          sorted(site.sent[0]) == ["inventory", "priceCad", "title"],
+          str(site.sent))
+    check("each field gets its own answer",
+          {entry["field"]: entry["verdict"] for entry in result["fields"]} ==
+          {"priceCad": "written", "title": "written", "inventory": "written"},
+          str(result["fields"]))
+    check("the record really holds all three",
+          (site.record["priceCad"], site.record["title"],
+           site.record["inventory"]) == ("2.50", "Wurmple SWSH11 Lost Origin",
+                                         3), str(site.record))
+    check("and the sentence names them",
+          "changed on CanadianShopper" in cs_record.sentence(result) and
+          "Price" in cs_record.sentence(result), cs_record.sentence(result))
+
+    print()
+    print("== 11. what a form may not send ==")
+    unlocked = {"priceCad": proofs["priceCad"],
+                "title": {"proven": False, "verdict": "ignored"}}
+    site = Site(record=record)
+    result = cs_record.update(URL, "", {"priceCad": "2.50", "title": "New"},
+                              expect_id=LISTING_ID, proofs=unlocked,
+                              fetch=site.fetch, send=site.send)
+    check("a field with no proof stops the whole write before it is sent",
+          result["verdict"] == "unproven" and site.sent == [],
+          str(result["verdict"]))
+    check("and the answer names the field that is not proven",
+          "Title has not been proven" in result["why"], result["why"])
+    state = cs_record.refuse_reason("status", "active", proofs)
+    check("state is refused outright, with the reason a proof cannot settle it",
+          "archiving" in state, state)
+    check("a field a form does not know is refused by name",
+          "not a field" in cs_record.refuse_reason("colour", "red", proofs), "")
+    check("an untouched form is planned as nothing to send",
+          cs_record.plan_update({"id": LISTING_ID, "price": "1.00",
+                                 "name": "Wurmple"}, {"priceCad": "1.00"},
+                                proofs).get("same") is True, "")
+    check("a title pasted past a marketplace's limit is refused first",
+          "longer than 80" in cs_record.refuse_reason("title", "x" * 81,
+                                                      proofs), "")
+    check("an empty title is refused",
+          "needs a title" in cs_record.refuse_reason("title", "   ", proofs), "")
+    check("a negative stock count is refused",
+          "whole number" in cs_record.refuse_reason("inventory", "-2", proofs),
+          "")
+    check("a photo that is not a web address is refused",
+          "not a photo" in cs_record.refuse_reason(
+              "primaryImageUrl", "x.webp",
+              {**proofs, "primaryImageUrl": {"proven": True}}), "")
+    check("the evidence sentence names what is open and what is locked",
+          "price" in cs_record.evidence_note(unlocked) and
+          "title" in cs_record.evidence_note(unlocked), "")
+    check("with nothing proven it says the path is closed",
+          "will not write" in cs_record.evidence_note({}), "")
+
+    print()
+    print("== 12. one field kept, another not ==")
+    site = Site(record=record, unkeeps=("title",))
+    result = cs_record.update(
+        URL, "", {"priceCad": "2.50", "title": "New title"},
+        expect_id=LISTING_ID, proofs=proofs, fetch=site.fetch, send=site.send)
+    check("a partly-kept write is called partial, not written",
+          result["verdict"] == "partial" and result["written"],
+          str(result["verdict"]))
+    check("the field the site kept says so, and the one it dropped says so",
+          {entry["field"]: entry["verdict"] for entry in result["fields"]} ==
+          {"priceCad": "written", "title": "ignored"}, str(result["fields"]))
+    check("the sentence names both sides",
+          "Price now" in cs_record.sentence(result) and
+          "Title not kept" in cs_record.sentence(result),
+          cs_record.sentence(result))
+
+    print()
+    print("== 13. a value that moved since the form was opened ==")
+    site = Site(record=dict(record, priceCad=9.99))
+    result = cs_record.update(
+        URL, "", {"priceCad": "2.50"}, expect_id=LISTING_ID, proofs=proofs,
+        expected={"priceCad": "1.00"}, fetch=site.fetch, send=site.send)
+    check("a price changed in the dashboard is not overwritten",
+          result["verdict"] == "changed" and site.sent == [],
+          str(result["verdict"]))
+    check("and the answer shows both numbers",
+          "9.99" in result["why"] and "1.00" in result["why"], result["why"])
+    site = Site(record=record)
+    result = cs_record.update(
+        URL, "", {"title": "New title"}, expect_id=LISTING_ID, proofs=proofs,
+        expected={"title": "Something else entirely"},
+        fetch=site.fetch, send=site.send)
+    check("a title changed elsewhere is not overwritten either",
+          result["verdict"] == "changed" and site.sent == [],
+          str(result["verdict"]))
+    result = cs_record.update(
+        URL, "", {"primaryImageUrl": "https://cs.example/api/file/new.webp"},
+        expect_id=LISTING_ID, proofs={**proofs, "primaryImageUrl":
+                                      proofs["priceCad"]},
+        expected={"primaryImageUrl": "https://shop.example/old.jpg"},
+        fetch=Site(record=record).fetch, send=Site().send)
+    check("the photo is not blocked by the row's own different URL",
+          result["verdict"] != "changed", str(result["verdict"]))
+
 def main():
     test_only_a_proven_field_is_written()
     test_the_price_that_is_sent()
@@ -424,6 +547,7 @@ def main():
     test_what_the_site_answers()
     test_the_address_is_the_records_own()
     test_the_comparison_panel_s_plan()
+    test_every_proven_field_can_be_written()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))

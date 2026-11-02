@@ -99,10 +99,13 @@ app/:
                                    accepted and ignored / refused" verdict, a
                                    saved proof file and a record of what is
                                    proven
-  cs_record.py                     write a price a proof settled at one
-                                   CanadianShopper listing's own record: one
-                                   field, the record's own id, the confirmed
-                                   price checked first and the answer read back
+  cs_record.py                     write the fields a proof settled at one
+                                   CanadianShopper listing's own record - price,
+                                   title, description, stock and main photo,
+                                   each gated on its own proof: the record's own
+                                   id, the confirmed values checked first, only
+                                   the changed fields sent, every answer read
+                                   back field by field
   photo_unsquare.py                crop a square, padded listing photo back to
                                    the card's own shape before uploading it
   sold-everywhere.py              sale checklist workflow

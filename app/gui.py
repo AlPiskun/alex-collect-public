@@ -2028,6 +2028,7 @@ TOOLTIPS = {
     "Open the last list": "Open the page written by the last selection (or the newest one on disk); nothing is read again",
     "Save a read diagnosis...": "Write one small text file for a plugin report: the read's own output, the progress phases it reported, one listing row and the detail response its lookup would have read - sanitised, with no cookie, token or password in it",
     "Write the proof": "Write one field on the selected CanadianShopper listing, read the record back, and put the old value back - a real change for the seconds it takes, and the only way to prove the site honours that field; one field, one listing, and nothing on your website",
+    "Edit the record's fields...": "Edit this listing's own record - price, title, description, stock count and main photo, each one open only when a saved proof shows the site keeps it, and only the fields you change are sent, then read back; no product id is used and your website is never touched",
     "Set the selected listing's price...": "Set the price on the selected listing's own record - one field, at the record's own id, with the new price read back afterwards; offered only for a field a proof has settled, so it works on listings that carry no product id, and your website is never touched",
     "Choose the cards:": "What decides which unlisted cards come first - dearest, newest, oldest, cheapest, or in the order typed below; the choice is remembered",
     "Only this category:": "Leave blank to choose from the whole catalogue; type part of a category's name (hockey) to choose only from products filed under it",
@@ -2094,6 +2095,8 @@ TOOLTIPS = {
     "Use this image": "Take the picture selected above as this card's image",
     "Another scan...": "Load a different scan when the image is not on these sheets",
     # -- dialogs ----------------------------------------------------------
+    "Write the changed fields": "Send the fields you changed to this listing's own record on CanadianShopper, then read them back; fields you left alone are not sent",
+    "Prove this field...": "Close this form and prove the field chosen beside \"Write the proof\" - one value written, read back, and put back; a proof is what opens the field here",
     "Cancel": "Close this window and change nothing",
     "Close": "Close this window",
     "Not now": "Skip this offer; nothing is changed",
@@ -8867,11 +8870,9 @@ def build_csledit(parent, app):
         editable, total = cs_edit.product_id_counts(items)
         note = "%d listings read from CanadianShopper." % total
         load(items, note)
-        price_open = cs_proof.settled("priceCad",
-                                      cs_proof.load_proofs(BASE))
         say("CanadianShopper: %d listings read; %s. Type a card's name to "
             "find one." % (total, cs_edit.editable_note(
-                editable, total, price_proven=price_open)),
+                editable, total, writable=open_field_labels())),
             "ok")
         resolution = cs_edit.resolution_counts(last_tool_output(app))
         if resolution:
@@ -9146,26 +9147,38 @@ def build_csledit(parent, app):
                 needed=CS_PRODUCT_ID_VERSION, works=False,
                 reader_text=state.get("output") or last_tool_output(app),
                 stages=state.get("stages") or [],
-                price_proven=price_is_open())
-            say("%s: a title, stock count or state cannot be sent for it: %s "
-                "Nothing was sent." % (named, said), "err")
+                writable=open_field_labels())
+            say("%s: a title, stock count or state cannot be sent through the "
+                "plugin for it: %s Nothing was sent." % (named, said), "err")
             summary.configure(text="No listing in this read has a product "
                                    "id, so nothing can be sent.")
-            if price_is_open():
-                #  One field does not need the product id, and leaving this
+            open_fields = cs_record.writable_fields(cs_proof.load_proofs(BASE))
+            if open_fields:
+                #  These fields do not need the product id, and leaving this
                 #  question as "open the dashboard" is how a row that can be
-                #  repriced sends its owner to another website instead.
+                #  written sends its owner to another website instead.
+                only_price = open_fields == ("priceCad",)
+                words = cs_edit.field_words(
+                    [cs_record.field_label(field) for field in open_fields])
                 if messagebox.askyesno(
-                        "Set the price here instead?",
+                        "Set the price here instead?" if only_price else
+                        "Edit the record's fields here instead?",
                         "%s\n\nNo listing in this read carried a usable "
                         "product id, so a title, stock count or state cannot "
-                        "be sent - reading them again would return the same "
-                        "list.\n\nIts price can be set: it is written to the "
+                        "be sent through the plugin - reading them again would "
+                        "return the same list.\n\n%s %s written to the "
                         "listing's own record, which a proof settled, and read "
-                        "back afterwards. Your website is not touched.\n\n"
-                        "Nothing was changed. Set the price now?" % named,
+                        "back afterwards. No product id is involved, and your "
+                        "website is not touched.\n\nNothing was changed. "
+                        "%s now?" % (named, words[:1].upper() + words[1:],
+                                     "is" if only_price else "are",
+                                     "Set the price" if only_price else
+                                     "Edit the fields"),
                         parent=box.winfo_toplevel()):
-                    set_the_price()
+                    if only_price:
+                        set_the_price()
+                    else:
+                        edit_fields()
                 return False
             if messagebox.askyesno(
                     "That listing has to be changed on the site",
@@ -9364,9 +9377,15 @@ def build_csledit(parent, app):
         app.wait_window(top)
         return result if result["done"] else None
 
-    def price_is_open():
-        """Whether a saved proof lets this panel write a price."""
-        return cs_proof.settled("priceCad", cs_proof.load_proofs(BASE))
+    def open_field_labels():
+        """Every field a saved proof settled, by the name the form uses.
+
+        Read from the proofs each time rather than remembered: a field proven
+        while the window is open is writable on the next click, and the
+        sentences that say what can be written are built from this list.
+        """
+        return [cs_record.field_label(field) for field in
+                cs_record.writable_fields(cs_proof.load_proofs(BASE))]
 
     def edit_selected():
         item = selected()
@@ -9375,28 +9394,40 @@ def build_csledit(parent, app):
         window = box.winfo_toplevel()
         #  The edit form writes through the plugin, which sends a product id.
         #  A row with none cannot use it - and opening the form anyway is what
-        #  ends in "closed without saving". The price is written to the row's
-        #  own record, so when that is proven, that is the road offered.
-        if not cs_edit.product_id(item) and price_is_open():
-            say("%s has no product id, so a title, stock count or state cannot "
-                "be sent for it - but its price can: that is written to the "
-                "listing's own record." % (item.get("name") or "That listing"),
+        #  ends in "closed without saving". A proven field is written to the
+        #  row's own record, so that is the road offered - and the sentence
+        #  names every field a proof has settled, not the price alone.
+        open_fields = cs_record.writable_fields(cs_proof.load_proofs(BASE))
+        if not cs_edit.product_id(item) and open_fields:
+            only_price = open_fields == ("priceCad",)
+            words = cs_edit.field_words(
+                [cs_record.field_label(field) for field in open_fields])
+            named = item.get("name") or "That listing"
+            say("%s has no product id, so the plugin's edit form cannot send "
+                "anything for it - but %s %s written to the listing's own "
+                "record." % (named, words, "is" if only_price else "are"),
                 "dim")
-            if messagebox.askyesno(
-                    "Set the price instead?",
-                    "%s\n\nThe plugin's edit form needs a product id, and the "
+            body = ("%s\n\nThe plugin's edit form needs a product id, and the "
                     "list has none for this listing - so a title, stock count "
-                    "or state cannot be sent from here.\n\nIts price can: it "
-                    "is written to the listing's own record (proven on this "
-                    "shop), read back afterwards, and your website is not "
-                    "touched.\n\nSet the price now?"
-                    % (item.get("name") or "That listing"),
+                    "or state cannot be sent through it.\n\n%s %s written to "
+                    "the listing's own record (proven on this shop), read back "
+                    "afterwards, and your website is not touched.\n\n%s now?"
+                    % (named, words[:1].upper() + words[1:],
+                       "is" if only_price else "are",
+                       "Set the price" if only_price else "Edit the fields"))
+            if messagebox.askyesno(
+                    "Set the price instead?" if only_price else
+                    "Edit the record's fields instead?", body,
                     parent=box.winfo_toplevel()):
-                set_the_price()
+                if only_price:
+                    set_the_price()
+                else:
+                    edit_fields()
             else:
-                say("Nothing was written. \"Set the selected listing's "
-                    "price...\" is the button that reaches this row.",
-                    "dim")
+                say("Nothing was written. \"%s\" is the button that reaches "
+                    "this row." % ("Set the selected listing's price..."
+                                   if only_price else
+                                   "Edit the record's fields..."), "dim")
             return
         answers = ask_edit(item)
         if answers is None:
@@ -9716,6 +9747,212 @@ def build_csledit(parent, app):
             summary.configure(text=cs_record.sentence(result))
 
         in_background(app, work, done)
+
+    def edit_fields():
+        """Every field this panel may write, each one behind its own proof.
+
+        The form is the map of what a proof settled: price, title, description,
+        stock count and the main photo, addressed by the record's own id and
+        never by a product id. A proven field can be typed in; a field with no
+        proof is shown greyed with the button that would prove it, because a
+        form that hid it would say the app writes less than it does, and a form
+        that let it be typed would send what the site has never kept.
+        """
+        if not state["items"]:
+            messagebox.showinfo(
+                "Nothing read yet",
+                "Read CanadianShopper's listings first: a field is written to "
+                "one listing's own record, so it needs a listing.",
+                parent=box.winfo_toplevel())
+            return
+        item = selected()
+        if item is None:
+            return
+        listing_id = cs_edit.listing_id(item)
+        if not cs_edit.is_id(listing_id):
+            messagebox.showinfo(
+                "That listing has no record id",
+                "The list carries no id for that listing, so there is no "
+                "record to address.\n\nNothing was written.",
+                parent=box.winfo_toplevel())
+            return
+        proofs = cs_proof.load_proofs(BASE)
+        open_fields = cs_record.writable_fields(proofs)
+        if not open_fields:
+            messagebox.showinfo(
+                "No field has been proven writable yet",
+                "Nothing was sent. This panel writes a field only after a "
+                "proof shows the site keeps it and gives the old value "
+                "back.\n\nRun \"Prove a field can be written\" with a field "
+                "chosen - it writes one value, reads it back, and puts it "
+                "back - and then that field opens here.",
+                parent=box.winfo_toplevel())
+            say("No field was written: no proof is saved on this machine. Run "
+                "the proof for the field first.", "err")
+            return
+        top = tk.Toplevel(app)
+        top.title("Edit the fields on CanadianShopper")
+        top.transient(app)
+        top.geometry("700x480")
+        top.grab_set()
+        body = ttk.Frame(top)
+        body.pack(fill="both", expand=True, padx=10, pady=(10, 4))
+        body.columnconfigure(1, weight=1)
+        ttk.Label(body, text=str(item.get("name") or "That listing"),
+                  wraplength=660, font=("", 10, "bold")).grid(
+            row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        vars_, boxes, row = {}, {}, 1
+        for field in cs_record.KNOWN_FIELDS:
+            label = cs_record.field_label(field)
+            ttk.Label(body, text=label + ":").grid(row=row, column=0,
+                                                   sticky="nw", pady=3)
+            current = cs_record.current_value(item, field)
+            var = tk.StringVar(master=body, value=current)
+            vars_[field] = var
+            if field in open_fields:
+                if field == "description":
+                    #  A description is a paragraph, not a field: one line
+                    #  cut off at the first full stop is not the listing's.
+                    text_box = tk.Text(body, height=5, width=58, wrap="word")
+                    text_box.insert("1.0", current)
+                    text_box.grid(row=row, column=1, sticky="ew", pady=3)
+                    boxes[field] = text_box
+                else:
+                    boxes[field] = ttk.Entry(body, textvariable=var, width=58)
+                    boxes[field].grid(row=row, column=1, sticky="ew", pady=3)
+            else:
+                locked = ttk.Entry(body, width=58)
+                locked.insert(0, "no proof yet - this field is never sent")
+                locked.configure(state="disabled")
+                locked.grid(row=row, column=1, sticky="ew", pady=3)
+                ttk.Button(body, text="Prove this field...",
+                           command=lambda f=field: prove_from_form(f)
+                           ).grid(row=row, column=2, padx=(6, 0), pady=3)
+            row += 1
+        #  A row can be missing a long field the record holds - the stock list
+        #  carries a description only when the reader sends one. Saying so is
+        #  the difference between "this listing has no description" and "what
+        #  you type here replaces it", and the two are not the same edit.
+        if boxes.get("description") and not vars_["description"].get().strip():
+            ttk.Label(body, text="The description is not on the row this list "
+                      "carries: what you type here replaces the whole "
+                      "description on the record.", wraplength=660,
+                      justify="left").grid(row=row, column=0, columnspan=3,
+                                           sticky="w", pady=(6, 0))
+            row += 1
+        ttk.Label(body, text=cs_record.evidence_note(proofs), wraplength=660,
+                  justify="left").grid(row=row, column=0, columnspan=3,
+                                       sticky="w", pady=(8, 2))
+
+        def prove_from_form(field):
+            #  The proof is the only door into a field, so the locked row's
+            #  button is that door: close the form, choose the field beside
+            #  the proof button, and let the proof ask its own question.
+            top.destroy()
+            proof_var.set(cs_proof.field_label(field))
+            prove_field()
+
+        def collect():
+            changes = {}
+            for field in open_fields:
+                if field == "description":
+                    changes[field] = boxes[field].get("1.0", "end-1c")
+                else:
+                    changes[field] = vars_[field].get()
+            return changes
+
+        def submit():
+            entry = cs_record.plan_update(item, collect(), proofs)
+            if entry.get("why"):
+                messagebox.showinfo("Not written", entry["why"], parent=top)
+                return
+            if entry.get("same"):
+                messagebox.showinfo(
+                    "Nothing to change",
+                    "Every proven field is exactly as the record already "
+                    "holds it, so nothing would be sent.", parent=top)
+                return
+            count = len(entry["fields"])
+            question = ("%s\n\n%s\n\nThis writes %d field%s - only the ones "
+                        "changed - to the listing's own record on "
+                        "CanadianShopper, then reads them back.\n\nYour "
+                        "website, its prices and its stock are not touched, "
+                        "and no product id is involved: the record's own id is "
+                        "the address.\n\nWrite it now?"
+                        % (entry["card"] or "That listing",
+                           "\n".join(cs_record.describe_lines(entry)),
+                           count, "" if count == 1 else "s"))
+            if not ask_yes("Write these fields?", question):
+                say("The fields were not confirmed; nothing was written.",
+                    "dim")
+                return
+            top.destroy()
+            url = cs_record.url_for(entry["id"], CS_HOME)
+            cookie = load_cookie_text() or ""
+            changes = {change["field"]: change["value"]
+                       for change in entry["fields"]}
+            expected = {change["field"]: change["old"]
+                        for change in entry["fields"]}
+            labels = ", ".join(change["label"].lower()
+                               for change in entry["fields"])
+            say("Writing %s to %s on CanadianShopper..."
+                % (labels, entry["card"] or "that listing"), "cmd")
+            summary.configure(text="Writing %s..." % labels)
+
+            def work():
+                return cs_record.update(url, cookie, changes,
+                                        expect_id=entry["id"], listing=item,
+                                        proofs=proofs, expected=expected)
+
+            def done(result, error):
+                if error is not None:
+                    say("The fields could not be written: %s. Nothing was "
+                        "changed." % error, "err")
+                    summary.configure(text="The fields could not be written: "
+                                           "%s" % error)
+                    return
+                say(cs_record.sentence(result),
+                    "ok" if result.get("written") else "err")
+                if result.get("written"):
+                    #  The row on screen becomes the listing as it now stands,
+                    #  field by field, so what the panel shows is what the site
+                    #  read back.
+                    kept = {}
+                    for change in result.get("fields") or []:
+                        if change.get("verdict") != "written":
+                            continue
+                        field = change.get("field")
+                        if field == "priceCad":
+                            kept["price"] = cs_record.money(change.get("after"))
+                        elif field in ("title", "description",
+                                       "primaryImageUrl"):
+                            kept[field] = change.get("after")
+                        elif field == "inventory":
+                            kept["inventory"] = change.get("after")
+                    updated = cs_edit.apply_to_item(item, kept)
+                    state["items"] = [
+                        updated if (row is item or (
+                            str(row.get("id")) == str(item.get("id")))) else row
+                        for row in state["items"]]
+                    run_search()
+                summary.configure(text=cs_record.sentence(result))
+
+            in_background(app, work, done)
+
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=10, pady=(4, 10))
+        ttk.Button(buttons, text="Write the changed fields",
+                   command=submit).pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=top.destroy).pack(
+            side="right", padx=8)
+        top.protocol("WM_DELETE_WINDOW", top.destroy)
+        attach_tooltips(top)
+        app.wait_window(top)
+
+    fields_btn = ttk.Button(filter_row, text="Edit the record's fields...",
+                            command=edit_fields)
+    fields_btn.pack(side="left", padx=(8, 0))
+    add_tooltip(fields_btn, TOOLTIPS["Edit the record's fields..."])
 
     price_btn = ttk.Button(filter_row, text="Set the selected listing's price...",
                            command=set_the_price)
