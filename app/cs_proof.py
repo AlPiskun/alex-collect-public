@@ -294,6 +294,97 @@ def staged_photo(folder, title=""):
     return ""
 
 
+#: The keys a listing record or a reader's row may carry its photos under.
+#: ``primaryImageUrl`` is deliberately not one of them: that is the photo the
+#: listing shows *now*, so it is what a proof puts back, never what it writes.
+PHOTO_KEYS = ("images", "photos", "gallery", "imageUrls", "imageUrl", "image")
+
+#: Where the site's own uploads live. The image staging step posts a squared
+#: photo and the site answers with this path, so a URL holding it is a photo
+#: that is already on CanadianShopper - and one that shows this card.
+HOSTED_PHOTO = "/api/file/"
+
+
+def absolute_photo(url, base="https://canadianshopper.ca"):
+    """A photo address as a web address, whenever the site gave only a path.
+
+    The staging step's own CSV says ``/api/file/<name>``: it is the right photo
+    and the right site, and the record wants the whole address, so the site is
+    put on the front here instead of at four call sites.
+    """
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    if text.startswith("//"):
+        return "https:" + text
+    if text.startswith("/"):
+        return str(base or "").rstrip("/") + text
+    return text
+
+
+def _photo_values(container):
+    """Every photo address in one row or record, in the order it was given."""
+    found = []
+    for key, value in (container or {}).items():
+        if str(key).casefold() not in tuple(k.casefold() for k in PHOTO_KEYS):
+            continue
+        entries = value if isinstance(value, (list, tuple)) else [value]
+        for entry in entries:
+            if isinstance(entry, dict):
+                entry = entry.get("src") or entry.get("url") or ""
+            text = str(entry or "").strip()
+            if text:
+                found.append(text)
+    return found
+
+
+def primary_photo(item=None, record=None):
+    """The photo the listing shows now, from the record when there is one."""
+    if record:
+        found, value = record_value(record, "primaryImageUrl")
+        if found and str(value or "").strip():
+            return absolute_photo(value)
+    for text in _photo_values(item):
+        return absolute_photo(text)
+    return ""
+
+
+def photo_candidates(item=None, record=None, staged=""):
+    """Every photo a proof could safely write, best first, with where it came from.
+
+    A proof of the main photo must write a picture of *the same card*, because
+    the listing really shows it for the seconds the proof runs. Three sources
+    meet that test, and all three are things this app can point at:
+
+    * the **staged photo** - the image staging step's own upload of this card
+      (``/api/file/...``), which is what the CSV row already carries;
+    * the **listing's own gallery** - the squared photos the plugin uploaded
+      for this very listing, which the reader reports on its row and which a
+      record may carry under ``images`` and similar keys;
+    * anything the person pastes.
+
+    The photo the listing shows now is never a candidate: writing it would
+    prove nothing, and it is the value a proof has to put back.
+    """
+    current = primary_photo(item=item, record=record).rstrip("/")
+    seen, found = set(), []
+
+    def add(url, source):
+        text = absolute_photo(url)
+        key = text.rstrip("/")
+        if not text or key == current or key in seen:
+            return
+        seen.add(key)
+        found.append({"url": text, "source": source})
+
+    add(staged, "the image staging step's photo of this card")
+    for text in _photo_values(record or {}):
+        add(text, "a photo on this listing's own record")
+    for text in _photo_values(item or {}):
+        add(text, "a photo this listing already shows")
+    return found
+
+
 def read_record(url, cookie="", opener=None, timeout=25):
     """``(status, body_text)`` for one detail request; never raises."""
     status, _content_type, body = cs_edit.fetch_detail(

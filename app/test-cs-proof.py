@@ -351,6 +351,72 @@ def test_the_photo_comes_from_the_staging_step():
               "https://cs.example/api/file/other.webp", "")
 
 
+def test_the_photos_a_proof_may_write():
+    """The squared photos on the site, offered by the app instead of pasted.
+
+    The plugin uploads the squared images, so the safest picture to prove the
+    main-photo field with is one of those: the staging step's own upload for
+    this card, or a photo the listing already shows. The one photo that must
+    never be offered is the one the listing shows *now* - writing it would prove
+    nothing, and it is what the proof has to put back.
+    """
+    print()
+    print("== 8b. which photo the proof may write ==")
+    row = {"id": "a" * 32,
+           "images": ["https://cs.example/api/file/current.webp",
+                      "/api/file/back.webp",
+                      {"src": "/api/file/detail.webp"}]}
+    candidates = cs_proof.photo_candidates(item=row)
+    check("the listing's own photos are offered, with their source",
+          [entry["url"] for entry in candidates] ==
+          ["https://canadianshopper.ca/api/file/back.webp",
+           "https://canadianshopper.ca/api/file/detail.webp"],
+          str(candidates))
+    check("and a bare path is given the site on the front",
+          all(entry["url"].startswith("https://canadianshopper.ca/api/file/")
+              for entry in candidates), str(candidates))
+    check("the photo the listing shows now is never a candidate",
+          not any("current.webp" in entry["url"] for entry in candidates), "")
+
+    staged = cs_proof.photo_candidates(item=row, staged="/api/file/staged.webp")
+    check("a staged photo comes first: it is the step's own upload",
+          staged[0]["url"] ==
+          "https://canadianshopper.ca/api/file/staged.webp" and
+          "staging" in staged[0]["source"], str(staged[:1]))
+    check("and a photo offered twice is offered once",
+          len({entry["url"] for entry in staged}) == len(staged), str(staged))
+    check("a staged photo the listing already shows is dropped",
+          [entry["url"] for entry in
+           cs_proof.photo_candidates(
+               item={"images": ["https://cs.example/api/file/one.webp"]},
+               staged="https://cs.example/api/file/one.webp")] == [],
+          "")
+
+    record = {"id": "a" * 32,
+              "primaryImageUrl": "https://cs.example/api/file/primary.webp",
+              "images": ["https://cs.example/api/file/gallery.webp",
+                         "https://cs.example/api/file/primary.webp"]}
+    check("a record's own gallery is offered, and its primary is not",
+          [entry["url"] for entry in cs_proof.photo_candidates(record=record)]
+          == ["https://cs.example/api/file/gallery.webp"], "")
+    check("the record is what says which photo is the main one",
+          cs_proof.primary_photo(record=record) ==
+          "https://cs.example/api/file/primary.webp", "")
+    check("with no record, the row's first photo stands in for it",
+          cs_proof.primary_photo(item=row) ==
+          "https://cs.example/api/file/current.webp", "")
+    check("no photos at all is no candidates, not an invented one",
+          cs_proof.photo_candidates(item={"id": "a"}) == [], "")
+    check("a photo address is made whole the same way everywhere",
+          cs_proof.absolute_photo("/api/file/x.webp") ==
+          "https://canadianshopper.ca/api/file/x.webp" and
+          cs_proof.absolute_photo("//cdn.example/x.webp") ==
+          "https://cdn.example/x.webp" and
+          cs_proof.absolute_photo("https://cs.example/x.webp") ==
+          "https://cs.example/x.webp" and
+          cs_proof.absolute_photo("") == "", "")
+
+
 def test_the_report():
     print()
     print("== 9. the file the author is handed ==")
@@ -436,6 +502,7 @@ def main():
     test_what_a_field_plan_says()
     test_a_field_that_is_written()
     test_the_photo_comes_from_the_staging_step()
+    test_the_photos_a_proof_may_write()
     test_the_report()
     test_what_the_app_remembers()
     print()

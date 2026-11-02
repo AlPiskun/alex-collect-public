@@ -2120,6 +2120,8 @@ TOOLTIPS = {
     "Use this image": "Take the picture selected above as this card's image",
     "Another scan...": "Load a different scan when the image is not on these sheets",
     # -- dialogs ----------------------------------------------------------
+    "Use this photo": "Write the photo selected above to this listing's main photo for the seconds the proof runs, read the record back, then put the old photo back",
+    "Paste an address...": "Type the address of a photo of this card - a staged one, or one CanadianShopper already hosts - instead of choosing from the list",
     "Write the changed fields": "Send the fields you changed to this listing's own record on CanadianShopper, then read them back; fields you left alone are not sent",
     "Prove this field...": "Close this form and prove the field chosen beside \"Write the proof\" - one value written, read back, and put back; a proof is what opens the field here",
     "Cancel": "Close this window and change nothing",
@@ -9510,6 +9512,80 @@ def build_csledit(parent, app):
             "nothing was sent." % what, "err")
         return False
 
+    def choose_proof_photo(candidates, current):
+        """Which photo the proof writes - chosen, not guessed.
+
+        The squared photos on CanadianShopper were uploaded by the plugin, so
+        the safest picture to prove the field with is one of those: the staging
+        step's own upload for this card, or a photo this listing already shows.
+        They are offered as a list, because picking a card's photo out of a
+        paste box is exactly where the wrong card lands on a listing - and the
+        address can still be pasted for anything the list does not know.
+
+        Returns the address, ``""`` when the paste box was left empty, and
+        ``None`` when the question was closed.
+        """
+        parent = box.winfo_toplevel()
+        if not candidates:
+            return str(simpledialog.askstring(
+                "The staged photo URL",
+                "The address of the staged photo of this card - the one the "
+                "image staging step prepared. It replaces the listing's main "
+                "photo for the seconds the proof runs and is then put back, so "
+                "it has to show the same card.\n\nNo staged photo was found "
+                "for this card in the batch folder: run the image staging "
+                "step, or paste the address here.",
+                initialvalue="", parent=parent) or "").strip()
+        top = tk.Toplevel(parent)
+        top.title("Which photo?")
+        top.transient(parent)
+        top.geometry("780x460")
+        top.grab_set()
+        body = ttk.Frame(top)
+        body.pack(fill="both", expand=True, padx=10, pady=(10, 4))
+        ttk.Label(body, text="The listing shows this photo now:",
+                  font=("", 9, "bold")).pack(anchor="w")
+        ttk.Label(body, text=current or "(the list carries no photo for it)",
+                  wraplength=740, justify="left").pack(anchor="w", pady=(0, 8))
+        ttk.Label(body, text="A proof writes one of these, reads the record "
+                  "back, and puts the old photo back. Each one is a picture of "
+                  "this card, already on CanadianShopper:", wraplength=740,
+                  justify="left").pack(anchor="w", pady=(0, 6))
+        var = tk.StringVar(master=body, value=candidates[0]["url"])
+        for candidate in candidates:
+            ttk.Radiobutton(
+                body, text="%s\n%s" % (candidate["source"].capitalize(),
+                                        candidate["url"]),
+                variable=var, value=candidate["url"]).pack(anchor="w", pady=2)
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=10, pady=(4, 10))
+        chosen = {"url": None}
+
+        def use_this():
+            chosen["url"] = str(var.get() or "").strip()
+            top.destroy()
+
+        def paste_one():
+            top.destroy()
+            chosen["url"] = str(simpledialog.askstring(
+                "The staged photo URL",
+                "The address of a photo of this card - the staging step's own "
+                "upload, or one CanadianShopper already hosts. It replaces the "
+                "listing's main photo for the seconds the proof runs and is "
+                "then put back, so it has to show the same card.",
+                initialvalue="", parent=parent) or "").strip()
+
+        ttk.Button(buttons, text="Use this photo",
+                   command=use_this).pack(side="right")
+        ttk.Button(buttons, text="Paste an address...",
+                   command=paste_one).pack(side="right", padx=8)
+        ttk.Button(buttons, text="Cancel", command=top.destroy).pack(
+            side="right", padx=8)
+        top.protocol("WM_DELETE_WINDOW", top.destroy)
+        attach_tooltips(top)
+        app.wait_window(top)
+        return chosen["url"]
+
     def open_field_labels():
         """Every field a saved proof settled, by the name the form uses.
 
@@ -10140,37 +10216,38 @@ def build_csledit(parent, app):
             return
         staged_url = ""
         if field == "primaryImageUrl":
-            #  The image staging step's own output is the only safe photo to
-            #  write: it is this card, already prepared for the site, so the
-            #  seconds the listing shows it are seconds it shows the same card.
-            staged = cs_proof.staged_photo(
+            #  The squared photos on the site were uploaded by the plugin, so
+            #  the safest picture to prove this field with is one of those: the
+            #  staging step's own upload for this card, or a photo the listing
+            #  already shows (the reader reports the gallery on its row). The
+            #  person picks, and can still paste an address the list does not
+            #  know. Every candidate is a picture of the same card, because the
+            #  listing really shows it for the seconds the proof runs.
+            staged = cs_proof.absolute_photo(cs_proof.staged_photo(
                 canadianshopper_results_dir(app),
-                str(item.get("name") or ""))
-            if staged.startswith("/"):
-                #  An older staging run wrote the address without the site on
-                #  the front; the record wants a web address, and this is the
-                #  same file on the same site.
-                staged = CS_HOME + staged
+                str(item.get("name") or "")))
             if staged:
                 say("The staged photo for this card is %s." % staged, "dim")
-            staged_url = str(simpledialog.askstring(
-                "The staged photo URL",
-                "The address of the staged photo of this card - the one the "
-                "image staging step prepared. It replaces the listing's main "
-                "photo for the seconds the proof runs and is then put back, so "
-                "it has to show the same card."
-                + ("" if staged else
-                   "\n\nNo staged photo was found for this card in the "
-                   "pipeline folder: run the image staging step, or paste the "
-                   "address here."),
-                initialvalue=staged,
-                parent=box.winfo_toplevel()) or "").strip()
+            candidates = cs_proof.photo_candidates(item=item, staged=staged)
+            current_photo = cs_proof.primary_photo(item=item)
+            for candidate in candidates:
+                say("  the proof could write %s (%s)"
+                    % (candidate["url"], candidate["source"]), "dim")
+            staged_url = choose_proof_photo(candidates, current_photo)
+            if staged_url is None:
+                say("No photo was chosen, so nothing was written.", "dim")
+                return
             if not staged_url:
                 say("No staged photo URL was given, so nothing was written.",
                     "dim")
                 return
         label = cs_proof.field_label(field)
         named = str(item.get("name") or "that listing")
+        if field == "primaryImageUrl" and staged_url:
+            #  The picture, not only the field: a proof of the main photo puts
+            #  a different image on a live listing, so the confirmation names
+            #  exactly which one before anything is sent.
+            named = "%s\n\nThe photo written: %s" % (named, staged_url)
         if not ask_yes(
                 "Write a proof to one listing?",
                 "%s\n\nThis writes one field - %s - on CanadianShopper, reads "
