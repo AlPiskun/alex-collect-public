@@ -1147,7 +1147,10 @@ def diagnosis_text(row=None, output="", stages=(), plugin="", command="",
     lines.append("Phases the reader reported: %s" %
                  (", ".join(str(stage) for stage in stages) if stages else
                   "(none)"))
-    lines.append(phases_note(stages, missed))
+    lines.append(phases_note(
+        stages, missed,
+        site_silent=bool(resolution and resolution["usable"] == 0 and
+                         resolution["empty"])))
     if resolution:
         lines.append(resolution_note(resolution))
         if resolution["usable"] == 0 and resolution["empty"]:
