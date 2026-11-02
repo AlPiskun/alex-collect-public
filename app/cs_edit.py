@@ -1174,12 +1174,16 @@ def methods_note(probe):
     if not status:
         return ("The vendor's own route could not be asked which methods it "
                 "accepts (%s). Nothing was changed, and this says nothing "
-                "either way." % (probe.get("note") or "no answer"))
+                "either way - so no write is attempted on it, and none is "
+                "designed from it." % (probe.get("note") or "no answer"))
     if not allowed:
         return ("The vendor's own route answered HTTP %s without an Allow "
                 "header, so it does not say which methods it accepts - some "
                 "sites answer OPTIONS that way without meaning the route is "
-                "read-only. Inconclusive; nothing was changed." % status)
+                "read-only, and a 204 on OPTIONS is one of the ways a server "
+                "says \"handled\" without listing anything. Inconclusive; "
+                "nothing was changed, no write is attempted on it, and none "
+                "is designed from it - the question stays open." % status)
     writable = [name for name in allowed if name in WRITE_METHODS]
     if any(name in ("PATCH", "PUT") for name in writable):
         return ("**The vendor's own route states it accepts %s.** That settles "

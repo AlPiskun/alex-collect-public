@@ -733,9 +733,12 @@ answer:
   still unproven, and the core says so rather than acting on it.
 - `Allow: GET, HEAD` only - the route is read-only and "not editable on
   CanadianShopper" is final for title, price and state.
-- `405`, `501` or no `Allow` header - inconclusive. Many servers answer
-  `OPTIONS` that way without meaning the route is read-only, so the core
-  reports it as unanswered, never as a refusal.
+- `405`, `501`, or `204`/`200` with no `Allow` header - inconclusive. Many
+  servers answer `OPTIONS` that way without meaning the route is read-only
+  (`204 No Content` is a common "handled, nothing to say"), so the core reports
+  it as unanswered, never as a refusal - and never as permission. No write is
+  attempted on such an answer and none is designed from it; the question stays
+  open.
 - No answer at all (offline, refused) - said to say nothing either way.
 
 `OPTIONS` carries no body: it cannot change a listing, and the file says so
@@ -774,7 +777,10 @@ again, the additive shape agreed on is an optional report with one entry per
 failed listing - `listing_id`, `kind` (`http` / `transport` / `json` / `empty`),
 `http_status` where there is one, and a short sanitized reason - leaving the
 `Stock resolution` line byte-identical and changing neither the resolver nor
-caching. It is not written before a re-read shows the failures repeat.
+caching. It is not written before a re-read shows the failures repeat: a
+2,596-row read that reported 8 hard failures and then, read again, reported
+2,596 HTTP 200s and 0 failures is exactly the transient case this rule is for,
+and no report was added for it.
 
 **The console can say whether the lookups ran.** The reader's phases are
 evidence, not decoration: a read whose `ids` stage was reported and came back

@@ -1283,6 +1283,24 @@ def test_the_diagnosis_file():
           "Inconclusive" in cs_edit.methods_note(refused) and
           "nothing was changed" in cs_edit.methods_note(refused),
           cs_edit.methods_note(refused))
+    check("and an inconclusive answer licenses no write at all",
+          "no write is attempted" in cs_edit.methods_note(refused) and
+          "question stays open" in cs_edit.methods_note(refused),
+          cs_edit.methods_note(refused))
+
+    #  The shop's real answer: 204 on OPTIONS, no Allow header at all. Not a
+    #  refusal and not permission - the one thing it must not be read as is
+    #  either of those.
+    real = {"status": 204, "allow": [], "allow_header": "", "note": ""}
+    real_note = cs_edit.methods_note(real)
+    check("a 204 with no Allow header is called inconclusive, not read-only",
+          "Inconclusive" in real_note and "read-only" in real_note and
+          "does not say which methods" in real_note, real_note)
+    check("and it names 204 on OPTIONS as a way of saying handled",
+          "204 on OPTIONS" in real_note, real_note)
+    check("and it adds no write path and says the question stays open",
+          "none is designed from it" in real_note and
+          "question stays open" in real_note, real_note)
     writable = cs_edit.methods_note({"status": 200,
                                      "allow": ["GET", "HEAD", "PATCH"]})
     check("PATCH advertised settles the method, and says only that",
@@ -1302,6 +1320,9 @@ def test_the_diagnosis_file():
           "read-only" in read_only and "final answer" in read_only, read_only)
     check("a request that could not be made says nothing either way",
           "says nothing either way" in cs_edit.methods_note(
+              {"status": 0, "allow": [], "note": "dns"}), "")
+    check("and licenses no write either",
+          "no write is attempted" in cs_edit.methods_note(
               {"status": 0, "allow": [], "note": "dns"}), "")
 
     probed = cs_edit.diagnosis_text(
