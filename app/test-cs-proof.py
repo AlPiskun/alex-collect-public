@@ -280,6 +280,57 @@ def test_a_field_that_is_written():
           result.get("why"))
 
 
+def test_the_photo_comes_from_the_staging_step():
+    print()
+    print("== 8b. the staged photo the image step prepared ==")
+    import csv as _csv
+
+    def write(folder, name, rows):
+        path = folder / name
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = _csv.DictWriter(
+                handle, fieldnames=["title", "image_url", "price_cad"])
+            writer.writeheader()
+            writer.writerows(rows)
+        return path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        old = write(folder, "canadianshopper_import_20260101_01_of_01.csv",
+                    [{"title": RECORD["title"],
+                      "image_url": "https://cs.example/api/file/old.webp",
+                      "price_cad": "1250.00"}])
+        import os
+        os.utime(old, (1_700_000_000, 1_700_000_000))
+        write(folder, "canadianshopper_import_20260201_01_of_01.csv",
+              [{"title": "Another card",
+                "image_url": "https://cs.example/api/file/other.webp",
+                "price_cad": "5.00"}])
+        check("the staged photo is found for the card's own title",
+              cs_proof.staged_photo(folder, RECORD["title"]) ==
+              "https://cs.example/api/file/old.webp",
+              cs_proof.staged_photo(folder, RECORD["title"]))
+        check("a title that is not the same words is not the same card",
+              cs_proof.staged_photo(folder, "Jim Pappin") == "", "")
+        check("the newest batch is read first",
+              cs_proof.staged_photo(folder, "Another card") ==
+              "https://cs.example/api/file/other.webp", "")
+
+        staged = write(folder, "canadianshopper_import_20260301_01_of_01.csv",
+                       [{"title": RECORD["title"],
+                         "image_url": "https://shop.example/pappin.jpg",
+                         "price_cad": "1250.00"}])
+        os.utime(staged, (1_800_000_000, 1_800_000_000))
+        check("a row the staging step has not rewritten is not a staged photo",
+              cs_proof.staged_photo(folder, RECORD["title"]) ==
+              "https://cs.example/api/file/old.webp", "")
+        check("a folder with no batch in it answers nothing",
+              cs_proof.staged_photo(Path(tmp) / "no-batches",
+                                    RECORD["title"]) == "", "")
+        check("no title is no answer, not the first row",
+              cs_proof.staged_photo(folder, "") == "", "")
+
+
 def test_the_report():
     print()
     print("== 9. the file the author is handed ==")
@@ -364,6 +415,7 @@ def test_what_the_app_remembers():
 def main():
     test_what_a_field_plan_says()
     test_a_field_that_is_written()
+    test_the_photo_comes_from_the_staging_step()
     test_the_report()
     test_what_the_app_remembers()
     print()

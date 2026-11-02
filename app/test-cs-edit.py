@@ -2046,19 +2046,46 @@ def test_the_panel_writes_a_proof():
     proof_box = next(widget for widget in parent.walk()
                      if isinstance(widget, gui.ttk.Combobox) and
                      "Main photo" in (widget.cget("values") or ()))
+    opened = {}
+
+    def fake_askstring(title, question, **kwargs):
+        opened.update(dict(kwargs, title=title, question=question))
+        return kwargs.get("initialvalue") or ""
+
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/stock.py"), \
             patch.object(gui, "CS_COOKIE_FILE", cookie), \
             patch.object(gui, "in_background", sync_background), \
             patch.object(gui, "open_path", lambda path: True), \
             patch.object(gui, "simpledialog") as dialog, \
+            patch.object(cs_proof, "staged_photo",
+                         lambda folder, title: ""), \
             patch.object(cs_proof, "prove", fake_prove):
-        dialog.askstring = lambda *a, **k: "https://cs.example/staged.webp"
+        dialog.askstring = fake_askstring
         proof_box._kw["textvariable"].set("Main photo")
         find(parent, gui.ttk.Button, "Write the proof").invoke()
-    check("a photo proof is given the staged photo URL, and nothing else",
+    check("with no staged photo on disk the proof asks for the address",
+          "run the image staging step" in opened.get("question", ""),
+          str(opened.get("question")))
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(gui, "simpledialog") as dialog, \
+            patch.object(cs_proof, "staged_photo",
+                         lambda folder, title:
+                         "https://cs.example/api/file/staged.webp"), \
+            patch.object(cs_proof, "prove", fake_prove):
+        dialog.askstring = fake_askstring
+        find(parent, gui.ttk.Button, "Write the proof").invoke()
+    check("the image staging step's own photo is what the proof offers first",
+          opened.get("initialvalue") ==
+          "https://cs.example/api/file/staged.webp", str(opened))
+    check("and it is the address written, on the same one field",
           asked[-1]["field"] == "primaryImageUrl" and
-          asked[-1]["staged"] == "https://cs.example/staged.webp",
+          asked[-1]["staged"] == "https://cs.example/api/file/staged.webp",
           str(asked[-1]))
 
     #  Nothing read: a proof of nothing is worse than a word.

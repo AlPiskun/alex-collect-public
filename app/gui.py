@@ -9459,12 +9459,25 @@ def build_csledit(parent, app):
             return
         staged_url = ""
         if field == "primaryImageUrl":
+            #  The image staging step's own output is the only safe photo to
+            #  write: it is this card, already prepared for the site, so the
+            #  seconds the listing shows it are seconds it shows the same card.
+            staged = cs_proof.staged_photo(
+                app.settings.get("pipeline_dir", str(WORK)),
+                str(item.get("name") or ""))
+            if staged:
+                say("The staged photo for this card is %s." % staged, "dim")
             staged_url = str(simpledialog.askstring(
                 "The staged photo URL",
-                "Paste the address of the staged photo of this card - the one "
-                "the image staging step prepared.\n\nIt replaces the "
-                "listing's main photo for the seconds the proof runs and is "
-                "then put back, so it has to show the same card.",
+                "The address of the staged photo of this card - the one the "
+                "image staging step prepared. It replaces the listing's main "
+                "photo for the seconds the proof runs and is then put back, so "
+                "it has to show the same card."
+                + ("" if staged else
+                   "\n\nNo staged photo was found for this card in the "
+                   "pipeline folder: run the image staging step, or paste the "
+                   "address here."),
+                initialvalue=staged,
                 parent=box.winfo_toplevel()) or "").strip()
             if not staged_url:
                 say("No staged photo URL was given, so nothing was written.",

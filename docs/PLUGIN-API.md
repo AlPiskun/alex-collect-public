@@ -785,7 +785,10 @@ edit panel - runs exactly that proof:
   on the title (cut first when the title is near a marketplace's limit), one
   dated marker line on the description, one more card on the count, and for the
   main photo a URL from the image staging step that shows the same card, since
-  a proof must not show a shopper a different picture;
+  a proof must not show a shopper a different picture. That URL is found in the
+  pipeline folder's staged `canadianshopper_import_*.csv` (the newest batch
+  first, by the card's exact title, and only an `/api/file/` row the staging
+  step has already rewritten), or pasted by hand when no staged row exists;
 - the record is read first and the plan is made from **that** read, so a value
   changed in the dashboard while the panel was open is never "restored" to an
   older one;

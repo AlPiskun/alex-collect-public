@@ -34,6 +34,7 @@ that leaves the field proven, ignored, refused, or still unknown.
 """
 from __future__ import annotations
 
+import csv
 import json
 import urllib.error
 import urllib.request
@@ -231,6 +232,55 @@ def plan(field, record, staged_url="", now=None):
                 "back.")
     return {"field": field, "label": label, "old": old, "trial": trial,
             "restore": old, "note": note}
+
+
+#: What the image staging step writes its rows into. The staging command takes
+#: the batch's import CSV and rewrites each row's ``image_url`` to the hosted
+#: square photo it uploaded, so a row still pointing at the website is a row
+#: that has not been staged.
+STAGED_PATTERN = "canadianshopper_import_*.csv"
+STAGED_PHOTO = "/api/file/"
+
+
+def _fold(text):
+    return " ".join(str(text or "").split()).casefold()
+
+
+def staged_photo(folder, title=""):
+    """The staged photo URL a batch's CSV holds for one card, or ``""``.
+
+    The image staging step uploads a square photo and rewrites the import row's
+    ``image_url`` to the hosted file (``/api/file/...``). That address is what a
+    photo proof writes: it is the same card's picture, already prepared for
+    CanadianShopper, so replacing the listing's main photo with it for the
+    seconds a proof runs shows a shopper the card and not a stand-in.
+
+    Only an exact title matches, and only an address the staging step produced:
+    a row still carrying the website's own URL has not been staged, and picking
+    between two similar titles is how one card's photo lands on another.
+    """
+    wanted = _fold(title)
+    if not wanted:
+        return ""
+    folder = Path(folder or ".")
+    try:
+        files = sorted(folder.glob(STAGED_PATTERN),
+                       key=lambda path: path.stat().st_mtime, reverse=True)
+    except OSError:
+        return ""
+    for path in files[:8]:
+        try:
+            with path.open(newline="", encoding="utf-8-sig",
+                           errors="replace") as handle:
+                for row in csv.DictReader(handle):
+                    url = str((row or {}).get("image_url") or "").strip()
+                    if STAGED_PHOTO not in url:
+                        continue
+                    if _fold((row or {}).get("title")) == wanted:
+                        return url
+        except (OSError, csv.Error, TypeError):
+            continue
+    return ""
 
 
 def read_record(url, cookie="", opener=None, timeout=25):
