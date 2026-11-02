@@ -1,4 +1,4 @@
-Alex Collect 3.21 — public core package
+Alex Collect 3.22 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -99,6 +99,10 @@ app/:
                                    accepted and ignored / refused" verdict, a
                                    saved proof file and a record of what is
                                    proven
+  cs_record.py                     write a price a proof settled at one
+                                   CanadianShopper listing's own record: one
+                                   field, the record's own id, the confirmed
+                                   price checked first and the answer read back
   photo_unsquare.py                crop a square, padded listing photo back to
                                    the card's own shape before uploading it
   sold-everywhere.py              sale checklist workflow

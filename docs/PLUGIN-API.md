@@ -809,12 +809,39 @@ every status and what it settles, with no cookie, token or password - and
 put back**. A refusal, an ignored write or a failed restore replaces that entry:
 a proof that stopped being true is worse than none.
 
-What a proof licenses is narrow: a `written`-and-restored field is the evidence
-the listing-record write path below needs **for that field**, and nothing is
-written beyond the proof itself. The edit panel still writes through
-`marketplace.listing_update` and `/api/products/<product_id>/`; no bulk,
-unattended or per-field write is added on the strength of a proof, and a field
-no proof has settled stays read-only.
+**What a proof licenses: the price write path.** `priceCad` has that evidence
+on this shop - a proof written to `/api/data/product/a2304e72…`, read back as
+`1.01`, restored to `1`, and read back again as `1` - so the price is the one
+field the app writes on the listing-record road (`cs_record.py`). Every write
+on it is gated on the proof file, not on a version number:
+
+- **no saved proof, no write.** `cs-field-proofs.json` is read before every
+  write; a field whose last proof was refused, ignored or failed to restore is
+  not written. Delete the file and the path closes again.
+- **the record's own id is the address**, and the record must name that same
+  id. A record at that address naming a different id - or no id at all - is
+  never written, however sure the panel is about the listing.
+- **the price the person confirmed must still be there.** The record is read
+  before the write; if it now shows another price, nothing is sent and the
+  panel says what it found. A confirmation about `8.50` can never become a
+  write of something else.
+- **one field, one request:** the body is `{"priceCad": "12.50"}` and nothing
+  else, so no other field can move with a price.
+- **read back after the write.** `written` means the record shows the new
+  price; a 2xx whose read-back still shows the old value is reported as
+  *ignored*; a write whose read-back cannot be read is *unknown*, and says so
+  rather than claiming success.
+- **a zero price is refused** (a marketplace zero is almost always a mistake),
+  and the website is never touched.
+
+It is offered in two places - the CanadianShopper edit panel for one listing
+(the road that works when the vendor reports no product id), and the stock
+comparison panel for every compared card whose price differs (each written and
+read back on its own, one listing at a time, so a wrong id cannot take a run
+with it). The edit panel still writes title, stock and state through
+`marketplace.listing_update` and `/api/products/<product_id>/`; those fields
+stay read-only on the record road until each one has its own proof, and no
+unattended or scheduled write is added for any field.
 
 **A hard-failure report, if the failures turn out to be deterministic.** The
 counts do not say which listings failed, and a read caches no failures, so a

@@ -45,6 +45,7 @@ harness = load_harness()
 gui = harness.gui
 import cs_edit                                        # noqa: E402
 import cs_proof                                       # noqa: E402
+import cs_record                                      # noqa: E402
 import stock_compare                                  # noqa: E402
 
 #  A list as plugin 1.0.31 reports it: every listing keeps its own catalogue
@@ -1097,7 +1098,7 @@ def test_the_diagnosis_file():
                                   stages=["read", "ids"], plugin="1.0.38",
                                   command="cs-stock.py --stock-out cs-stock.json",
                                   detail=detail, total=2596, editable=0,
-                                  app_version="3.21")
+                                  app_version="3.22")
     check("the file carries the reader's own count line",
           "2596 listings, 0 with a real product id" in text, "")
     check("the app's own count is beside it, so the two can be compared",
@@ -1552,7 +1553,7 @@ def test_the_real_diagnosis_from_the_shop():
                 "--cookie-file cookie.txt",
         detail={"url": cs_edit.detail_url(row["id"]), "status": 200,
                 "content_type": "application/json", "body": json.dumps(record)},
-        total=2596, editable=0, app_version="3.21",
+        total=2596, editable=0, app_version="3.22",
         source="the read this window made at 2026-11-02 13:03:59")
 
     check("the file no longer carries the progress markers",
@@ -2131,6 +2132,137 @@ def test_the_panel_writes_a_proof():
     harness._BOX.askyesno = lambda *a, **k: False
     #  Leave the module's dialog answers as the rest of the suite expects them.
 
+
+
+def test_the_panel_sets_a_proven_price():
+    """The price button: one listing, one field, and only after a proof.
+
+    The proof button settles the field; this one uses it. What the checks are
+    about is that the price is not a way around the rule - no proof means no
+    write, the record's own id is the address, and the answer the panel shows
+    is the price the record really holds afterwards.
+    """
+    print()
+    print("== 5k. the panel sets a price the proof settled ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+    rows = [{"id": "a2304e72dbca4e678e7111d011ade22d", "product_id": 0,
+             "title": "Wurmple SWSH11: Lost Origin", "sku": "PKM-006",
+             "status": "active", "inventory": 1, "price": "1.00"}]
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    def read_rows():
+        with patch.object(gui, "TOOL_ACTION",
+                          lambda action: "/plugins/cs/stock.py"), \
+                patch.object(gui, "CS_COOKIE_FILE", cookie), \
+                patch.object(gui, "in_background", sync_background), \
+                patch.object(gui, "BASE", folder):
+            find(parent, gui.ttk.Button,
+                 "Read CanadianShopper's listings").invoke()
+            run = app.runs[-1]
+            Path(run["args"][1]).write_text(json.dumps({"items": rows}),
+                                           encoding="utf-8")
+            run["on_done"](0)
+        listing_box = next(widget for widget in parent.walk()
+                           if isinstance(widget, gui.tk.Listbox))
+        listing_box.selection_set(0)
+        return listing_box
+
+    read_rows()
+    button = find(parent, gui.ttk.Button, "Set the selected listing's price...")
+    check("the panel offers to set the selected listing's price",
+          button is not None, "")
+
+    said, asked, written = [], [], []
+    harness._BOX.shown[:] = []
+    harness._BOX.askyesno = lambda *a, **k: asked.append(a) or True
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "simpledialog") as dialog, \
+            patch.object(cs_record, "write", lambda *a, **k: written.append(
+                (a, k)) or {"verdict": "written", "written": True,
+                            "after": 2.5, "old": 1.0, "field": "priceCad",
+                            "label": "Price", "id": rows[0]["id"]}):
+        dialog.askstring = lambda *a, **k: "2.50"
+        button.invoke()
+    check("without a saved proof the price is not written",
+          not written and not asked, str(written))
+    check("and the panel says which proof settles it",
+          harness._BOX.shown and
+          "Prove a field can be written" in str(harness._BOX.shown[0][1]),
+          str(harness._BOX.shown[:1]))
+
+    (folder / "cs-field-proofs.json").write_text(
+        json.dumps({"priceCad": {"at": "2026-11-02 15:34:38", "proven": True,
+                                 "verdict": "written", "restored": True,
+                                 "listing": rows[0]["id"],
+                                 "title": "Wurmple"}}), encoding="utf-8")
+    written[:] = []
+    asked[:] = []
+    harness._BOX.shown[:] = []
+    app.lines[:] = []
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "simpledialog") as dialog, \
+            patch.object(cs_record, "write", lambda *a, **k: written.append(
+                (a, k)) or {"verdict": "written", "written": True,
+                            "after": 2.5, "old": 1.0, "field": "priceCad",
+                            "label": "Price", "id": rows[0]["id"]}):
+        dialog.askstring = lambda *a, **k: "2.50"
+        button.invoke()
+    check("a proven price is written once, after a question",
+          len(written) == 1 and asked, str(written))
+    check("addressed at the record's own id, with the old price expected",
+          written and written[0][0][0] ==
+          "https://canadianshopper.ca/api/data/product/"
+          "a2304e72dbca4e678e7111d011ade22d" and
+          written[0][1].get("expect_id") == rows[0]["id"] and
+          written[0][1].get("expect_old") == "1.00", str(written))
+    check("the question names the price change and the promise",
+          asked and "1.00" in str(asked[0]) and "2.50" in str(asked[0]) and
+          "no product id" in str(asked[0]), str(asked))
+    check("only the one field is sent", written and
+          written[0][1].get("field", "priceCad") == "priceCad", "")
+    check("the console says what the site shows now",
+          any("2.50" in text for _tag, text in app.lines), str(app.lines[-4:]))
+
+    #  The price that is already there is not a change.
+    written[:] = []
+    said[:] = []
+    harness._BOX.shown[:] = []
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "simpledialog") as dialog, \
+            patch.object(cs_record, "write", lambda *a, **k: written.append(a)):
+        #  The panel applied the written price to the row, so the listing now
+        #  reads 2.50 - and that is the price it must refuse to write again.
+        dialog.askstring = lambda *a, **k: "2.50"
+        button.invoke()
+    check("typing the price the listing already has writes nothing",
+          not written and harness._BOX.shown, str(written))
+    check("and it says there is nothing to change",
+          "already shows" in str(harness._BOX.shown[0][1]),
+          str(harness._BOX.shown[:1]))
+
+    #  A zero is refused before anything is asked.
+    written[:] = []
+    harness._BOX.shown[:] = []
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "simpledialog") as dialog, \
+            patch.object(cs_record, "write", lambda *a, **k: written.append(a)):
+        dialog.askstring = lambda *a, **k: "0"
+        button.invoke()
+    check("a zero price is refused with the reason",
+          not written and harness._BOX.shown and
+          "zero" in str(harness._BOX.shown[0][1]).lower(),
+          str(harness._BOX.shown[:1]))
+    harness._BOX.askyesno = lambda *a, **k: False
 
 def test_the_panel_quotes_the_readers_resolution():
     """A read that asked and got nothing back says so, on the console.
@@ -2815,6 +2947,7 @@ def main():
     test_the_editing_panel_says_what_stopped_a_read()
     test_the_panel_writes_a_diagnosis()
     test_the_panel_writes_a_proof()
+    test_the_panel_sets_a_proven_price()
     test_the_panel_quotes_the_readers_resolution()
     test_the_evidence_outlives_the_window()
     test_the_panel_reads_and_lists()

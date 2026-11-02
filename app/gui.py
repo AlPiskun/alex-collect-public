@@ -54,6 +54,7 @@ import photo_thumbs
 import sale_preview
 import cs_edit
 import cs_proof
+import cs_record
 import cs_listing
 import cs_products
 import stock_compare
@@ -75,7 +76,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.21"
+VERSION = "3.22"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -2027,6 +2028,7 @@ TOOLTIPS = {
     "Open the last list": "Open the page written by the last selection (or the newest one on disk); nothing is read again",
     "Save a read diagnosis...": "Write one small text file for a plugin report: the read's own output, the progress phases it reported, one listing row and the detail response its lookup would have read - sanitised, with no cookie, token or password in it",
     "Write the proof": "Write one field on the selected CanadianShopper listing, read the record back, and put the old value back - a real change for the seconds it takes, and the only way to prove the site honours that field; one field, one listing, and nothing on your website",
+    "Set the selected listing's price...": "Set the price on the selected listing's own record - one field, at the record's own id, with the new price read back afterwards; offered only for a field a proof has settled, so it works on listings that carry no product id, and your website is never touched",
     "Choose the cards:": "What decides which unlisted cards come first - dearest, newest, oldest, cheapest, or in the order typed below; the choice is remembered",
     "Only this category:": "Leave blank to choose from the whole catalogue; type part of a category's name (hockey) to choose only from products filed under it",
     "These cards first:": "Titles, SKUs or product ids separated by commas, in the order you want them listed - used by \u201cIn the order I type\u201d, and anything not found is named on the console",
@@ -2035,6 +2037,8 @@ TOOLTIPS = {
     "Open the eBay listing page": "Open your eBay active-listings page in the browser, where the readings come from and where a listing is made",
     "Compare stock with eBay": "Read your eBay active listings with your session cookie and list only the cards whose numbers disagree",
     "Compare stock with Facebook": "Read your Facebook selling page with your session cookie and list only the cards whose numbers disagree",
+    "Set CanadianShopper to the website's prices...": "For every compared card whose price differs, set CanadianShopper's price to the website's - always shown and confirmed first, written to each listing's own record, and only for a field a proof has settled; your website is never touched",
+    "Reprice the selected cards...": "Set CanadianShopper's price to the website's for just the rows selected, after a confirmation listing them",
     "Set CanadianShopper to the website's counts...": "The usual fix: for every card whose two counts differ, set CanadianShopper's count to the website's count - always shown and confirmed first, write permission only",
     "Fix the selected cards...": "Set CanadianShopper to the website's count for just the rows selected in the list, after a confirmation listing them",
     "Set the website to the selected cards' counts...": "The reverse fix: set the website's stock count to the count the other site reports, for the selected cards - always shown and confirmed first; needs WooCommerce keys with Read/Write access",
@@ -6611,6 +6615,137 @@ def build_stock(parent, app):
                      cwd=app.settings.get("pipeline_dir", str(WORK)),
                      on_done=lambda rc: set_arrived(rc, plan, out, action))
 
+    # ------------------------------------------------------------- repricing
+    def reprice(rows_wanted):
+        """Set CanadianShopper's prices to the website's - on the proven field.
+
+        The comparison already holds both prices, so this is the one place
+        where a whole run of price differences can be looked at before any of
+        them is written. It writes through the listing's own record
+        (``cs_record``), one listing at a time, only because a proof settled
+        ``priceCad`` on this shop; and every listing is read back after its
+        write, so the answer is what the site shows, not what was sent.
+
+        ``rows_wanted`` is the pairs to consider. The counters beside the list
+        are counts of stock, so a card whose counts agree but whose price does
+        not is still in the pairs - which is exactly why this takes the pairs
+        rather than the rows on screen.
+        """
+        pairs = state.get("pairs") or []
+        if not pairs:
+            messagebox.showinfo(
+                "Nothing compared yet",
+                "Press Compare first: a price is written from what the two "
+                "sides say about each card. Nothing was sent.",
+                parent=box.winfo_toplevel())
+            return
+        proofs = cs_proof.load_proofs(BASE)
+        if not cs_proof.settled("priceCad", proofs):
+            messagebox.showinfo(
+                "The price has not been proven writable yet",
+                "Nothing was sent. Repricing writes each listing's own record, "
+                "and that is only done for a field a proof has settled.\n\n"
+                "Run \"Prove a field can be written\" with Price chosen in the "
+                "CanadianShopper panel - it writes one cent more, reads the "
+                "record back, and puts it back - and then this button will set "
+                "prices.", parent=box.winfo_toplevel())
+            app.console_line(
+                "No price was written: priceCad has no saved proof on this "
+                "machine. Run the Price proof first.", "err")
+            return
+        if rows_wanted:
+            #  A row is about one website product, and the pair behind it is
+            #  what holds both prices: match on the product id the row names.
+            wanted = {str(row.get("woo_id")) for row in rows_wanted
+                      if row.get("woo_id") is not None}
+            pairs = [pair for pair in pairs
+                     if str((pair.get("woo") or {}).get("id")) in wanted]
+        found = cs_record.price_plan(pairs, state.get("catalog"), proofs)
+        items = found["items"]
+        notes = found.get("notes") or {}
+        if not items:
+            text = ("No compared card has a price that differs from the "
+                    "website's.")
+            if notes.get("no_listing_price"):
+                text += (" %d listing%s reported no price at all - a reader "
+                         "older than plugin 1.0.28 does not send one, and a "
+                         "price is not guessed." %
+                         (notes["no_listing_price"],
+                          "" if notes["no_listing_price"] == 1 else "s"))
+            messagebox.showinfo("Nothing to reprice", text,
+                                parent=box.winfo_toplevel())
+            return
+        lines = cs_record.plan_lines(found)
+        question = ("Direction: your website's price  ->  %s. Your website is "
+                    "not changed.\n\n%s\n\n%s\n\nOnly those prices change: no "
+                    "title, stock or state is sent, and each price is read back "
+                    "after it is written.\n\n%s\n\nWrite them now?"
+                    % (state["label"], cs_record.plan_summary(found,
+                                                              state["label"]),
+                       "\n".join(lines),
+                       cs_record.note_for("priceCad", proofs)))
+        if not messagebox.askyesno(
+                "Set %s's prices to the website's?" % state["label"],
+                question, parent=box.winfo_toplevel()):
+            app.console_line("The prices were not confirmed; nothing was "
+                             "written.", "dim")
+            return
+        cookie = load_cookie_text() or ""
+        summary.configure(text="Setting %d price%s on %s..." %
+                               (len(items), "" if len(items) == 1 else "s",
+                                state["label"]))
+        app.console_line(
+            "Setting %d %s price%s from your website (your website is not "
+            "changed)..." % (len(items), state["label"],
+                             "" if len(items) == 1 else "s"), "cmd")
+
+        def work():
+            return cs_record.write_all(items, cookie, proofs=proofs)
+
+        def arrived(results, error):
+            if error is not None:
+                app.console_line("The prices could not be written: %s. "
+                                 "Nothing was changed by this attempt." % error,
+                                 "err")
+                summary.configure(text="The prices could not be written: %s"
+                                   % error)
+                return
+            shown = 0
+            for result in results:
+                if result.get("written"):
+                    if shown < 20:
+                        app.console_line(cs_record.sentence(result), "ok")
+                        shown += 1
+                    continue
+                app.console_line(cs_record.sentence(result), "err")
+            written, unchanged, failed = cs_record.tally(results)
+            if written > shown:
+                app.console_line("  ... and %d more set." % (written - shown),
+                                 "dim")
+            text = cs_record.tally_text(results, state["label"])
+            summary.configure(text=text + " Compare again to confirm.")
+            app.console_line(text + " Compare again to confirm.",
+                             "ok" if not failed else "err")
+
+        in_background(app, work, arrived)
+
+    def reprice_all():
+        reprice(None)
+
+    def reprice_selected():
+        rows = selected_rows()
+        if not rows:
+            messagebox.showinfo(
+                "Which cards?",
+                "Select the cards to reprice in the list. A card whose counts "
+                "agree but whose price differs is not in this list - it is not "
+                "a stock difference - so selecting every row still reprices "
+                "only the cards shown; to reprice everything that differs, use "
+                "\"Set CanadianShopper to the website's prices...\".",
+                parent=box.winfo_toplevel())
+            return
+        reprice(rows)
+
     def set_all():
         run_set([row for row in state["rows"]
                  if row["kind"] == stock_compare.FIX])
@@ -8499,9 +8634,16 @@ def build_stock(parent, app):
                command=open_on_website).pack(side="left", padx=6)
     third = ttk.Frame(action_row)
     third.pack(anchor="w", pady=(3, 0))
-    ttk.Button(third, text="List the selected cards on CanadianShopper...",
+    ttk.Button(third, text="Set CanadianShopper to the website's prices...",
+               style="Task.TButton",
+               command=reprice_all).pack(side="left")
+    ttk.Button(third, text="Reprice the selected cards...",
+               command=reprice_selected).pack(side="left", padx=6)
+    third_l = ttk.Frame(action_row)
+    third_l.pack(anchor="w", pady=(3, 0))
+    ttk.Button(third_l, text="List the selected cards on CanadianShopper...",
                style="Task.TButton", command=list_selected).pack(side="left")
-    ttk.Button(third, text="List every website-only card...",
+    ttk.Button(third_l, text="List every website-only card...",
                command=list_every_website_only_card).pack(side="left", padx=6)
     fifth = ttk.Frame(action_row)
     fifth.pack(anchor="w", pady=(3, 0))
@@ -9419,6 +9561,113 @@ def build_csledit(parent, app):
 
         in_background(app, work, done)
 
+    def set_the_price():
+        """Set one listing's price on its own record - the proven field.
+
+        This is the short road the proof opened: the listing's own id, one
+        field, nothing about a product. It is offered beside the edit form
+        because it is the one that works on a listing the vendor gives no
+        product id for. Every rule lives in cs_record: a field no proof settled
+        is not sent, the record must name the id that was asked for, and the
+        price is read back after the write.
+        """
+        if not state["items"]:
+            messagebox.showinfo(
+                "Nothing read yet",
+                "Read CanadianShopper's listings first: a price is written to "
+                "one listing's own record, so it needs a listing.",
+                parent=box.winfo_toplevel())
+            return
+        item = selected()
+        if item is None:
+            return
+        proofs = cs_proof.load_proofs(BASE)
+        if not cs_proof.settled("priceCad", proofs):
+            messagebox.showinfo(
+                "The price has not been proven writable yet",
+                "Nothing was sent. This panel writes a price only after a "
+                "proof shows the site keeps it and gives the old one back.\n\n"
+                "Run \"Prove a field can be written\" with Price chosen - it "
+                "writes one cent more, reads it back, and puts it back - and "
+                "then this button will set prices.",
+                parent=box.winfo_toplevel())
+            say("No price was written: priceCad has no saved proof on this "
+                "machine. Run the Price proof first.", "err")
+            return
+        current = cs_edit.price_text(item)
+        wanted = simpledialog.askstring(
+            "Set the price on CanadianShopper",
+            "%s\n\nNew price in CAD (numbers only, such as 8.50):"
+            % (item.get("name") or "That listing"),
+            initialvalue=current, parent=box.winfo_toplevel())
+        if wanted is None:
+            say("The price was not entered; nothing was written.", "dim")
+            return
+        entry = cs_record.plan(item, str(wanted).strip(), proofs)
+        if entry.get("why"):
+            messagebox.showinfo("Not written", entry["why"],
+                                parent=box.winfo_toplevel())
+            say("No price was written: %s" % entry["why"], "err")
+            return
+        if entry.get("old") and entry.get("old") == entry.get("price"):
+            messagebox.showinfo(
+                "Nothing to change",
+                "%s already shows %s." % (entry["card"] or "That listing",
+                                          entry["price"]),
+                parent=box.winfo_toplevel())
+            return
+        question = ("%s\n\nThis writes one field - the price - to the "
+                    "listing's own record on CanadianShopper, then reads it "
+                    "back.\n\nYour website, its prices and its stock are not "
+                    "touched, and no product id is involved: the record's own "
+                    "id is the address.\n\n%s\n\nWrite it now?"
+                    % (cs_record.describe(entry),
+                       cs_record.note_for("priceCad", proofs)))
+        if not ask_yes("Set this listing's price?", question):
+            say("The price was not confirmed; nothing was written.", "dim")
+            return
+        url = cs_record.url_for(entry["id"], CS_HOME)
+        cookie = load_cookie_text() or ""
+        say("Setting %s to %s on CanadianShopper..."
+            % (entry["card"] or "that listing", entry["price"]), "cmd")
+        summary.configure(text="Setting the price on CanadianShopper...")
+
+        def work():
+            return cs_record.write(url, cookie, entry["price"],
+                                   expect_id=entry["id"],
+                                   expect_old=entry.get("old"),
+                                   listing=item, proofs=proofs)
+
+        def done(result, error):
+            if error is not None:
+                say("The price could not be written: %s. Nothing was changed."
+                    % error, "err")
+                summary.configure(text="The price could not be written: %s"
+                                   % error)
+                return
+            say(cs_record.sentence(result),
+                "ok" if result.get("written") else "err")
+            if result.get("verdict") == "written":
+                #  The row on screen becomes the listing as it now stands, the
+                #  same way an edit through the plugin does, so the price the
+                #  panel shows is the price the site holds.
+                updated = cs_edit.apply_to_item(
+                    item, {"price": cs_record.money(result.get("after")),
+                           "title": str(item.get("name") or "")})
+                state["items"] = [
+                    updated if (row is item or (
+                        str(row.get("id")) == str(item.get("id")))) else row
+                    for row in state["items"]]
+                run_search()
+            summary.configure(text=cs_record.sentence(result))
+
+        in_background(app, work, done)
+
+    price_btn = ttk.Button(filter_row, text="Set the selected listing's price...",
+                           command=set_the_price)
+    price_btn.pack(side="left", padx=(8, 0))
+    add_tooltip(price_btn, TOOLTIPS["Set the selected listing's price..."])
+
     diagnosis_btn = ttk.Button(filter_row, text="Save a read diagnosis...",
                                command=save_diagnosis)
     diagnosis_btn.pack(side="left", padx=(8, 0))
@@ -9539,6 +9788,12 @@ def build_csledit(parent, app):
                 say("Could not save the proof: %s" % exc, "err")
             cs_proof.remember(BASE, result, listing=item)
             summary.configure(text=cs_proof.sentence(result))
+            if cs_proof.proven(result):
+                #  The sentence that matters next: this panel can now write
+                #  that field, and only because the record showed it kept it.
+                say("%s can now be set from this panel: the proof is saved "
+                    "beside the app, and every write made on it is read back."
+                    % cs_proof.field_label(result.get("field")), "ok")
             if saved is not None:
                 say("Proof saved: %s (no cookie, token or password is in it)."
                     % saved, "dim")
