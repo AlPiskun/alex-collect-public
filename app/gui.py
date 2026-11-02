@@ -55,6 +55,7 @@ import sale_preview
 import cs_edit
 import cs_proof
 import cs_record
+import cs_stage
 import cs_listing
 import cs_products
 import stock_compare
@@ -2029,6 +2030,7 @@ TOOLTIPS = {
     "Combine now": "Join the CSVs now, after the preview",
     "Stage the photos": "Square, host and wire the batch photos through the plugin",
     "Stage the photos (square + host + rewrite CSVs)": "Square the photos, host them and rewrite the CSVs with their URLs",
+    "Preview the staging (no upload)": "Ask the plugin what it would do with this batch - which front it finds for each row, which is already staged and which would fail - without uploading anything; no CSV is changed",
     "Import / publish drafts": "Import the batch and preview or publish the vendor drafts",
     "Preview drafts": "Show what would be published; nothing is changed",
     "Publish ready drafts": "Publish the ready drafts after typing PUBLISH to confirm",
@@ -5633,7 +5635,7 @@ def build_stage(parent, app):
     box = ttk.Frame(parent)
     box.pack(fill="x")
 
-    def go():
+    def go(dry=False):
         results = canadianshopper_results_dir(app)
         ready = canadianshopper_ready_dir(app)
         sources = sorted(results.glob("canadianshopper_import_*.csv"))
@@ -5643,6 +5645,34 @@ def build_stage(parent, app):
                 "Run the card pipeline first. Its current CSV batch will be "
                 "saved in %s." % results, parent=app)
             return
+        action = TOOL_ACTION(cs_stage.ACTION)
+        if action:
+            #  The plugin reports every row now, so the panel names the cards
+            #  that failed instead of only what the exit code said. Its answer
+            #  is written beside the batch and read once the run is over.
+            stage_out = results / "photo-stage.json"
+            try:
+                stage_out.unlink()
+            except FileNotFoundError:
+                pass
+            args = cs_stage.args(
+                results, stage_out, ready_dir=ready,
+                cookie_file=(CS_COOKIE_FILE if CS_COOKIE_FILE.is_file()
+                             else None), dry_run=dry)
+            app.console_line(
+                ("Checking %d CSV%s - nothing will be uploaded..."
+                 % (len(sources), "" if len(sources) == 1 else "s"))
+                if dry else
+                ("Staging %d CSV%s: squaring each front, uploading it and "
+                 "rewriting the ready CSVs..."
+                 % (len(sources), "" if len(sources) == 1 else "s")), "cmd")
+            app.run_tool(action, args,
+                         "Preview the photos" if dry else "Stage the photos",
+                         cwd=app.settings.get("pipeline_dir", str(WORK)),
+                         on_done=lambda rc: arrived(rc, stage_out, sources, dry))
+            return
+        #  A plugin older than 1.0.40 answers with an exit code and no per-row
+        #  report; the command it documents is the one that still works.
         args = ["--mode", "prepare", "-y",
                 "--cookie-file", str(CS_COOKIE_FILE),
                 "--ready-dir", str(ready),
@@ -5655,10 +5685,49 @@ def build_stage(parent, app):
                      cwd=app.settings.get("pipeline_dir", str(WORK)),
                      on_done=lambda rc: rc == 0 and _after_stage(sources))
 
-    def _after_stage(sources):
+    def arrived(rc, stage_out, sources, dry):
+        """Say what the plugin reported, per card, and go on when it may.
+
+        A partial batch (exit 1) is not a failed batch: the rows it staged are
+        on the site and their CSVs are written, so the history is updated and
+        only the failed rows are named. Exit 2 is fatal - the plugin then puts
+        its own reason in the same file, quoted rather than guessed at.
+        """
+        stage = cs_stage.read_stage(stage_out)
+        said = cs_stage.report(stage, rc, dry_run=dry)
+        for tag, text in said["lines"]:
+            app.console_line(text, tag)
+        if not said["known"]:
+            app.console_line(
+                "The staging step finished (exit %s) without writing its "
+                "answer to %s, so nothing can be said per card."
+                % (rc, stage_out), "err")
+        if dry:
+            app.console_line(
+                "Nothing was uploaded and no CSV was changed. When the preview "
+                "looks right, press \"Stage the photos (square + host + "
+                "rewrite CSVs)\" without the preview.", "dim")
+            return False
+        if not cs_stage.exit_is_ok(rc):
+            return False
+        _after_stage(sources, cs_stage.output_paths(stage, stage_out.parent))
+        return True
+
+    def _after_stage(sources, outputs=None):
         ready = canadianshopper_ready_dir(app)
-        staged = [ready / source.name for source in sources
-                  if (ready / source.name).is_file()]
+        if outputs:
+            #  The plugin said which CSVs it wrote; a name guessed from the
+            #  source would miss a batch it renamed or an output it refused.
+            paths = [Path(path) for path in outputs]
+            staged = [path for path in paths if path.is_file()]
+            missing = [path for path in paths if not path.is_file()]
+            for path in missing:
+                app.console_line(
+                    "The staging step reported %s as written, but it is not "
+                    "there." % path, "err")
+        else:
+            staged = [ready / source.name for source in sources
+                      if (ready / source.name).is_file()]
         if not staged:
             app.console_line("Staging finished but no current CSVs were found in %s." % ready,
                              "err")
@@ -5672,6 +5741,11 @@ def build_stage(parent, app):
     row.pack(anchor="w", pady=4)
     ttk.Button(row, text="Stage the photos (square + host + rewrite CSVs)",
                style="Task.TButton", command=go).pack(side="left")
+    if TOOL_ACTION(cs_stage.ACTION):
+        preview = ttk.Button(row, text="Preview the staging (no upload)",
+                             command=lambda: go(dry=True))
+        preview.pack(side="left", padx=(8, 0))
+        add_tooltip(preview, TOOLTIPS["Preview the staging (no upload)"])
     ttk.Button(box, text="Open the cs-ready folder",
                command=lambda: open_path(canadianshopper_ready_dir(app))).pack(
                    anchor="w")
