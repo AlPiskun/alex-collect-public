@@ -697,6 +697,24 @@ nesting stop early. A `Product-reference keys:` line says, for the row, which
 id-shaped keys are present, empty, or holding `0` - which is the first thing to
 check when a read has no ids.
 
+The detail record is shown **key by key** (sixty with their values, the rest by
+name) rather than counted, because the question it answers is *does this record
+name a product anywhere* - and a reference sitting at key 30 of 38 is exactly
+what a key count throws away. One line then says which of its keys name a
+product (`product`, `productId`, `productData`, any spelling) and what each
+holds, or states that none of them does - which means the reader cannot resolve
+the listing from that endpoint at all. An empty `sku` on the row is called out
+too: a reader resolving by exact SKU has nothing to match on, and that costs no
+request failures.
+
+**A read's account is kept beside the list.** The app records the run's output
+(up to 200,000 characters), the progress stages and the exact command in
+`cs-stock-meta.json` next to `cs-stock.json`. A diagnosis written after the
+window that made the read has closed therefore still quotes the run, and a
+command recovered from the app's own log fills in for lists read before this
+was kept. When the read's account really is missing, the file says so instead
+of claiming the reader printed nothing.
+
 **When the vendor's data carries no product reference at all.** The reader can
 be perfectly correct and still deliver no product ids: 1.0.34's own console
 line reported *2,587 listings, 0 with a real product id, 2,587 without the key,

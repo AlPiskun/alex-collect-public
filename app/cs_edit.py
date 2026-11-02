@@ -779,17 +779,26 @@ def sanitize(value, limit=40, depth=0, max_items=12):
     if isinstance(value, dict):
         if depth >= 3:
             return "object(%d keys)" % len(value)
+        pairs = list(value.items())
         lines = []
-        for index, (key, item) in enumerate(value.items()):
-            if index >= max_items:
-                lines.append("... %d more key(s)" % (len(value) - max_items))
-                break
+        for key, item in pairs[:max_items]:
             name = str(key)
             if _SECRET_KEY.search(name):
                 lines.append("%s: (hidden - it is not part of the question)" % name)
                 continue
             lines.append("%s: %s" % (name, sanitize(item, limit, depth + 1,
                                                     max_items)))
+        if len(pairs) > max_items:
+            #  The *names* of what was not shown are the question, when the
+            #  question is "does this record name a product at all" - a
+            #  response whose product reference sits at key 30 of 38 is exactly
+            #  the evidence a count of hidden keys throws away. A key name is
+            #  not a secret; its value is, and values stay cut.
+            rest = [str(key) for key, _ in pairs[max_items:]]
+            shown = rest[:80]
+            lines.append("... %d more key(s), names only: %s%s"
+                         % (len(rest), ", ".join(shown),
+                            "" if len(rest) <= 80 else ", ..."))
         return "{\n" + "\n".join("  " * (depth + 1) + line for line in lines) \
             + "\n" + "  " * depth + "}"
     if isinstance(value, (list, tuple)):
@@ -836,6 +845,37 @@ def product_reference_keys(row):
                 state = "present"
             keys.append((str(key), state))
     return keys
+
+
+def productish_keys(row):
+    """Every key whose name mentions a product, with a shape for its value.
+
+    ``product_reference_keys`` answers the narrow question - is there a key
+    that *is* a product id. This answers the wider one a reader's author needs
+    next: does the record mention a product at all, under ``product``,
+    ``productId``, ``productData`` or a spelling the exact list misses. A
+    record naming none of them anywhere is the answer to "can the reader
+    resolve one from here", and it is a different answer from "the value was
+    empty".
+    """
+    found = []
+    for key, value in (row or {}).items():
+        name = str(key)
+        shape = "".join(char for char in name.lower() if char.isalnum())
+        if "product" not in shape:
+            continue
+        if isinstance(value, dict):
+            state = "a record with %d key(s)" % len(value)
+        elif isinstance(value, (list, tuple)):
+            state = "a list of %d" % len(value)
+        elif value in (None, ""):
+            state = "empty"
+        elif not isinstance(value, bool) and str(value).strip() in ("0", "0.0"):
+            state = "zero - not an id"
+        else:
+            state = sanitize(value, 40)
+        found.append((name, state))
+    return found
 
 
 def listing_id(item):
@@ -914,22 +954,35 @@ def fetch_detail(url, cookie="", timeout=25, opener=None):
         return 0, "", str(exc)
 
 
-def _body_for_diagnosis(body, limit=40):
-    """A response body as a sanitised structure when it is JSON, text if not."""
-    text = str(body or "")
+def parsed_body(body):
+    """A response body as data when it is JSON, or ``None`` when it is not."""
     try:
-        parsed = json.loads(text)
+        return json.loads(str(body or ""))
     except (ValueError, TypeError):
+        return None
+
+
+def _body_for_diagnosis(body, limit=40):
+    """A response body as a sanitised structure when it is JSON, text if not.
+
+    The detail record is the one whose key *names* matter most - a reader
+    resolving a product reads exactly this, and where a product reference sits
+    in it is the whole question - so it keeps sixty keys with their values
+    rather than the twelve a catalogue row gets, and names the rest.
+    """
+    parsed = parsed_body(body)
+    if parsed is None:
+        text = str(body or "")
         snippet = text.strip().replace("\r", " ")
         return ("not JSON (%d characters): %s" %
                 (len(text), snippet[:240] + ("\u2026" if len(snippet) > 240
                                              else "")))
-    return sanitize(parsed, limit)
+    return sanitize(parsed, limit, max_items=60)
 
 
 def diagnosis_text(row=None, output="", stages=(), plugin="", command="",
                    detail=None, total=0, editable=0, now=None,
-                   app_version=""):
+                   app_version="", source=""):
     """The three things a plugin author needs, in one file they can read.
 
     Written because a round trip with the reader's author ended in *"send the
@@ -944,6 +997,8 @@ def diagnosis_text(row=None, output="", stages=(), plugin="", command="",
         lines.append("Alex Collect: %s" % app_version)
     lines.append("Plugin: %s" % (plugin or "(version not readable)"))
     lines.append("Command the app ran: %s" % (command or "(not recorded)"))
+    if source:
+        lines.append("Where this list came from: %s" % source)
     lines.append("")
     lines.append("The app's count: %d listing(s), %d with a usable product id."
                  % (int(total or 0), int(editable or 0)))
@@ -960,7 +1015,8 @@ def diagnosis_text(row=None, output="", stages=(), plugin="", command="",
     lines.append(phases_note(stages, missed))
     lines.append("")
     lines.append("--- the reader's complete output " + "-" * 20)
-    lines.append(str(output or "(nothing was printed)").rstrip())
+    lines.append(str(output or "(no console output was kept for this list - "
+                              "see where it came from, above)").rstrip())
     lines.append("")
     if row is not None:
         lines.append("--- one catalogue row, sanitised " + "-" * 18)
@@ -972,6 +1028,14 @@ def diagnosis_text(row=None, output="", stages=(), plugin="", command="",
             lines.append("Product-reference keys: none - no key in this row "
                          "names a product, not even as a zero")
         lines.append(sanitize(row))
+        if isinstance(row, dict) and "sku" in row and \
+                not str(row.get("sku") or "").strip():
+            #  The reader resolves a listing to its product by its SKU first,
+            #  and an empty one leaves nothing to match on - which is one way
+            #  ids go missing while every request still answers 200.
+            lines.append("The listing's SKU is empty: a reader that resolves a "
+                         "product by exact SKU has nothing to match on here, "
+                         "which is one way ids go missing with no failure line")
         lines.append("")
     if detail:
         lines.append("--- the detail request the reader's lookup would make "
@@ -981,6 +1045,17 @@ def diagnosis_text(row=None, output="", stages=(), plugin="", command="",
                                       detail.get("content_type") or
                                       "(no content type)"))
         lines.append(_body_for_diagnosis(detail.get("body")))
+        named = productish_keys(parsed_body(detail.get("body")))
+        if named:
+            lines.append("Keys in that response that name a product: " +
+                         "; ".join("%s (%s)" % (key, state)
+                                   for key, state in named))
+        else:
+            lines.append("No key in that response names a product - not "
+                         "product, not productId, not any spelling of one - so "
+                         "a reader cannot resolve this listing's product from "
+                         "this endpoint at all: the reference lives somewhere "
+                         "the stock reader never asks.")
         lines.append("")
     lines.append("Nothing in this file is a cookie, a token or a password: "
                  "values under those names are hidden, and long text is cut.")

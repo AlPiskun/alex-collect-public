@@ -350,6 +350,27 @@ def log(line):
         pass
 
 
+def command_from_log(title, path=None):
+    """The command the last run called ``title`` was started with, from the log.
+
+    The runner writes ``START <title> | <command>`` before every run, so a
+    diagnosis written after the window that made the read has closed can still
+    say which command produced the list on screen - which is what turns "the
+    app does not pass that flag" from a recollection into a line in the file.
+    """
+    marker = "START %s | " % title
+    try:
+        text = Path(path or LOG_FILE).read_text(encoding="utf-8",
+                                                errors="replace")
+    except OSError:
+        return ""
+    for line in reversed(text.splitlines()):
+        at = line.find(marker)
+        if at >= 0:
+            return line[at + len(marker):].strip()
+    return ""
+
+
 def at_end_of_console(view, tolerance=0.001):
     """Whether the console's visible window reaches its end.
 
@@ -8602,10 +8623,21 @@ def build_csledit(parent, app):
     meta_file = BASE / "cs-stock-meta.json"
 
     def write_meta(count):
+        """Remember which read this list is - and the run's own account of it.
+
+        The plugin version and the count were enough to describe the list on
+        screen. A diagnosis needs more: the run's output and the stages it
+        reported are the two things a reader's author asks for first, and the
+        two things a window cannot supply once it has closed. Kept here, beside
+        the list, and capped - this is evidence, not a log file.
+        """
         try:
             meta_file.write_text(json.dumps(
                 {"plugin": plugin_version(), "count": count,
-                 "at": datetime.now().isoformat(timespec="seconds")}),
+                 "at": datetime.now().isoformat(timespec="seconds"),
+                 "command": str(state.get("command") or ""),
+                 "stages": list(state.get("stages") or [])[:40],
+                 "output": str(state.get("output") or "")[-200000:]}),
                 encoding="utf-8")
         except OSError:
             pass
@@ -8674,17 +8706,20 @@ def build_csledit(parent, app):
                 "Could not read CanadianShopper's listings",
                 why + "\n\nNothing was changed.", parent=box.winfo_toplevel())
             return False
-        write_meta(len(items))
         state["read"] = "live"
         #  The read's own words, kept for the sentence a no-id list gets: the
         #  reader's count line is quoted from here rather than from whatever
         #  run happens to be in the runner when a button is pressed. Its
         #  progress phases are kept with them, because they are what tells
-        #  "the lookups ran" apart from "they never started".
+        #  "the lookups ran" apart from "they never started" - and the command
+        #  is kept because "no flag was passed" is a fact only if the file that
+        #  says so is the one the app ran.
         state["output"] = last_tool_output(app)
         state["stages"] = app.stages_seen() if hasattr(app, "stages_seen") \
             else []
-        state["command"] = getattr(getattr(app, "runner", None), "cmd", "")
+        state["command"] = str(getattr(getattr(app, "runner", None), "cmd",
+                                       "") or "")
+        write_meta(len(items))
         editable, total = cs_edit.product_id_counts(items)
         note = "%d listings read from CanadianShopper." % total
         load(items, note)
@@ -8717,6 +8752,13 @@ def build_csledit(parent, app):
                 stages=state.get("stages") or [])
             if said:
                 say(said[:1].upper() + said[1:], "err")
+                #  The next thing anyone does with a read like this is report
+                #  it, and the report needs three things that are easier to
+                #  collect now than to explain later.
+                say("Press \"Save a read diagnosis...\" to put that "
+                    "evidence in one file for the plugin's author: the read's "
+                    "output, the phases it reported, one listing and that "
+                    "listing's detail response.", "dim")
         pending, state["then"] = state["then"], None
         if pending is not None:
             pending(items)
@@ -9289,8 +9331,34 @@ def build_csledit(parent, app):
             item = {"value": item}
         listing_id = cs_edit.listing_id(item)
         plugin = plugin_version()
-        output = state.get("output") or last_tool_output(app)
-        stages = state.get("stages") or []
+        #  Which read this file is about decides where its evidence comes from.
+        #  A list read in this window has its run to hand; the list on disk was
+        #  read by a window that may be gone, and what it printed was kept
+        #  beside it - while whatever the runner holds now may belong to a
+        #  different tool entirely.
+        meta = read_meta()
+        if state.get("read") == "live":
+            output = str(state.get("output") or "")
+            stages = list(state.get("stages") or [])
+            command = str(state.get("command") or "")
+            at = str(meta.get("at") or "").strip().replace("T", " ")
+            source = ("the read this window made%s" % (" at %s" % at if at
+                                                       else ""))
+        else:
+            output = str(meta.get("output") or "")
+            stages = list(meta.get("stages") or [])
+            command = str(meta.get("command") or "")
+            at = str(meta.get("at") or "").strip().replace("T", " ")
+            source = ("the last read on disk%s%s" %
+                      (" at %s" % at if at else "",
+                       ", by plugin %s" % meta["plugin"]
+                       if meta.get("plugin") else ""))
+            if not output:
+                source += (", and this app did not keep that run's console "
+                           "output, phases or command - reading the listings "
+                           "again with this panel open writes all three into "
+                           "the next diagnosis")
+        command = command or command_from_log("CanadianShopper listings")
         editable, total = cs_edit.product_id_counts(state["items"])
         cookie = load_cookie_text() or ""
         url = cs_edit.detail_url(listing_id, CS_HOME)
@@ -9307,10 +9375,8 @@ def build_csledit(parent, app):
                           "body": "the request failed: %s" % error}
             text = cs_edit.diagnosis_text(
                 row=item, output=output, stages=stages, plugin=plugin,
-                command=state.get("command") or
-                getattr(getattr(app, "runner", None), "cmd", ""),
-                detail=detail or {}, total=total, editable=editable,
-                app_version=VERSION)
+                command=command, detail=detail or {}, total=total,
+                editable=editable, app_version=VERSION, source=source)
             path = cs_edit.diagnosis_path(BASE)
             try:
                 path.write_text(text, encoding="utf-8")

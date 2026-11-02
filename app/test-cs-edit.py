@@ -626,6 +626,9 @@ def test_a_read_with_no_product_ids_at_all():
     check("and the console explains it is the reader, not this list",
           any("reader is not reporting one" in text
               for _tag, text in app.lines), str(app.lines[-3:]))
+    check("and points at the one button that gathers the evidence for it",
+          any('Press "Save a read diagnosis..."' in text
+              for _tag, text in app.lines), str(app.lines[-3:]))
 
     find(parent, gui.ttk.Button, "Search").invoke()
     select(parent, "Watson")          # archived, so a change is available
@@ -1121,11 +1124,71 @@ def test_the_diagnosis_file():
           third != first and third.name.endswith("-2.txt") and
           first.read_text(encoding="utf-8") == "one",
           "%s / %s" % (first.name, third.name))
+    #  A real diagnosis came back with "... 26 more key(s)" where the answer
+    #  was: a 38-key detail record, and the product reference could have been
+    #  in any of the hidden ones. A cap that hides a key name hides the answer.
+    wide = {"id": "a2304e72dbca", "title": "Wurmple", "category": "cards"}
+    for number in range(1, 31):
+        wide["field%02d" % number] = number
+    wide["productId"] = "the-product"
+    wide["sessionToken"] = "abc123"
+    body = cs_edit._body_for_diagnosis(json.dumps(wide))
+    check("a 38-key detail record is shown key by key, not counted",
+          "productId:" in body and "field30:" in body, body[-300:])
+    check("and its secret is still hidden at key 35",
+          "abc123" not in body and "sessionToken: (hidden" in body,
+          body[-200:])
+    narrow = cs_edit.sanitize(dict(("k%02d" % n, n) for n in range(20)))
+    check("a capped record names what it did not print",
+          "... 8 more key(s), names only:" in narrow and "k19" in narrow and
+          "k12: int" not in narrow, narrow)
+
+    #  ---- does the record name a product anywhere, or nowhere at all
+    found = cs_edit.productish_keys({"productId": "9", "product": {"id": 1},
+                                     "category": "x", "products": [1, 2]})
+    check("every key mentioning a product is found, in any spelling",
+          [key for key, _state in found] == ["productId", "product",
+                                             "products"], str(found))
+    check("and what it holds is described, not pasted",
+          found[0][1] == 'str(1) "9"' and
+          found[1][1] == "a record with 1 key(s)" and
+          found[2][1] == "a list of 2", str(found))
+    check("a record naming no product says so rather than saying nothing",
+          cs_edit.productish_keys({"id": "a", "category": "b"}) == [], "")
+    silent = cs_edit.diagnosis_text(
+        row={"id": "a", "sku": ""}, detail={"url": "u", "status": 200,
+                                            "body": json.dumps({"id": "a"})})
+    check("a detail response with no product key is called that in the file",
+          "No key in that response names a product" in silent, silent)
+    named = cs_edit.diagnosis_text(
+        row={"id": "a", "sku": "OPC-1"},
+        detail={"url": "u", "status": 200,
+                "body": json.dumps({"id": "a", "productId": "9"})})
+    check("and one that does names the key and what is in it",
+          "Keys in that response that name a product: productId" in named,
+          named)
+
+    #  ---- the row's SKU is what a reader resolves by: empty is a fact
+    check("an empty SKU on the row is said to be empty, with why it matters",
+          "The listing's SKU is empty" in silent and
+          "exact SKU" in silent, silent)
+    check("a row with a SKU is not told it has none",
+          "SKU is empty" not in named, named)
+    check("and a row that carries no SKU key at all says nothing about it",
+          "SKU is empty" not in cs_edit.diagnosis_text(row={"id": "a"}), "")
     check("a body that is not JSON is described instead of pasted whole",
           "not JSON" in cs_edit._body_for_diagnosis("<html>denied</html>"), "")
     check("an empty detail is not invented",
           "the detail request" not in cs_edit.diagnosis_text(row=row),
           "")
+    check("a file written from a read this window made says so",
+          "Where this list came from: the read this window made" in
+          cs_edit.diagnosis_text(row=row, source="the read this window made"),
+          "")
+    thin = cs_edit.diagnosis_text(row=row)
+    check("a file with no output does not claim the reader printed nothing",
+          "no console output was kept for this list" in thin and
+          "nothing was printed" not in thin, thin)
 
 
 def test_plugin_1_0_35():
@@ -1455,6 +1518,121 @@ def test_the_panel_writes_a_diagnosis():
           str(harness._BOX.shown[0][1]), str(harness._BOX.shown))
     check("and writes no file at all",
           not list(folder2.glob("cs-read-diagnosis-*.txt")), "")
+
+
+def test_the_evidence_outlives_the_window():
+    """A diagnosis written after a restart still has the run's own account.
+
+    The first real diagnosis came back with "(not recorded)", "(no console
+    output was kept)" and "(none)" against a list of 2,596 rows: the panel had
+    restored the last read from disk, so the window had no run to quote - and
+    its author's three questions went unanswered again. A read now keeps its
+    output, its stages and its command beside the list it wrote.
+    """
+    print()
+    print("== 5i. the read's evidence outlives the window ==")
+    folder, app, parent = build_panel()
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    output = ("stock.list: 3 listings, 0 with a real product id, 3 without the "
+              "key, 0 reported as 0")
+
+    def fake_detail(url, cookie_text="", **kwargs):
+        return (200, "application/json", json.dumps({"id": "a", "sku": "S1"}))
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "in_background", sync_background):
+        app.stages_seen = lambda: ["read", "ids"]
+        app.runner = SimpleNamespace(
+            output=output, cmd="python cs-stock.py --stock-out x")
+        find(parent, gui.ttk.Button,
+             "Read CanadianShopper's listings").invoke()
+        run = app.runs[-1]
+        Path(run["args"][1]).write_text(json.dumps({"items": LISTINGS}),
+                                        encoding="utf-8")
+        run["on_done"](0)
+
+    kept = json.loads((folder / "cs-stock-meta.json").read_text(encoding="utf-8"))
+    check("the run's output, its stages and its command are kept by the list",
+          kept.get("output") == output and kept.get("stages") == ["read", "ids"]
+          and "cs-stock.py" in str(kept.get("command")), str(kept))
+
+    def press(panel):
+        """Press the button and return the file *this* press wrote.
+
+        Two files can be written in the same second and this filesystem can
+        give them the same mtime, so the new one is the one that was not there
+        before rather than whichever sorts last.
+        """
+        before = set(folder.glob("cs-read-diagnosis-*.txt"))
+        find(panel, gui.ttk.Button, "Save a read diagnosis...").invoke()
+        written = set(folder.glob("cs-read-diagnosis-*.txt")) - before
+        return max(written, key=lambda item: item.name).read_text(
+            encoding="utf-8") if written else ""
+
+    #  A new window: nothing in it ran, and the list is the one on disk.
+    app2 = harness.FakeApp(folder)
+    parent2 = harness.FakeWidget()
+    with patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(cs_edit, "fetch_detail", fake_detail):
+        gui.build_csledit(parent2, app2)
+        text = press(parent2)
+    check("a fresh window's diagnosis still quotes the run's own output",
+          output in text, text[:600])
+    check("and still says which phases the reader reported",
+          "Phases the reader reported: read, ids" in text and
+          "the lookups ran" in text, text[:600])
+    check("and the command, so 'no flag was passed' is in the file",
+          "cs-stock.py --stock-out x" in text and
+          "(not recorded)" not in text, text[:400])
+    check("it says the list came from disk, not from this window",
+          "Where this list came from: the last read on disk" in text, text[:400])
+    check("and that read's count line is answered by its phases, not guessed",
+          "cannot say whether its lookups ran" not in text, text[:600])
+
+    #  A list read before the app kept any of it: the log still has the
+    #  command, and the file says plainly that the rest was not kept.
+    (folder / "cs-stock-meta.json").write_text(json.dumps(
+        {"plugin": "1.0.38", "count": len(LISTINGS),
+         "at": "2026-11-02T11:16:38"}), encoding="utf-8")
+    log = folder / "gui-log.txt"
+    log.write_text(
+        "[2026-11-02 11:00:00] START CanadianShopper listings | py cs-stock.py"
+        " --stock-out old.json\n"
+        "[2026-11-02 11:16:37] START CanadianShopper listings | py cs-stock.py"
+        " --stock-out new.json --cookie-file cookie.txt\n"
+        "[2026-11-02 11:20:00] START Something else | py other.py\n",
+        encoding="utf-8")
+    check("the last command of that read is taken from the app's log",
+          gui.command_from_log("CanadianShopper listings", path=log)
+          .endswith("--cookie-file cookie.txt"),
+          gui.command_from_log("CanadianShopper listings", path=log))
+    check("a log with no such run answers nothing",
+          gui.command_from_log("Nothing ran", path=log) == "", "")
+    check("a missing log answers nothing rather than raising",
+          gui.command_from_log("CanadianShopper listings",
+                               path=folder / "none.log") == "", "")
+
+    parent3 = harness.FakeWidget()
+    with patch.object(gui, "LOG_FILE", log), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(cs_edit, "fetch_detail", fake_detail):
+        gui.build_csledit(parent3, harness.FakeApp(folder))
+        old_text = press(parent3)
+    check("an older list's command still comes from the log",
+          "--cookie-file cookie.txt" in old_text, old_text[:400])
+    check("and the file says the app kept none of that read's output",
+          "did not keep that run's console output" in old_text and
+          "reading the listings again" in old_text, old_text[:600])
 
 
 def test_the_panel_reads_and_lists():
@@ -1972,6 +2150,7 @@ def main():
     test_the_list_says_which_plugin_read_it()
     test_the_editing_panel_says_what_stopped_a_read()
     test_the_panel_writes_a_diagnosis()
+    test_the_evidence_outlives_the_window()
     test_the_panel_reads_and_lists()
     test_the_edit_form()
     test_the_panel_refuses_what_it_cannot_do()

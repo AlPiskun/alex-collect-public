@@ -82,7 +82,9 @@ app/:
                                    it there, and write the one-file read
                                    diagnosis a plugin author asks for: the run's
                                    output, its progress phases, one sanitised
-                                   row and that listing's detail response
+                                   row and that listing's detail response, key
+                                   by key, with a line naming any product key
+                                   it has or saying it has none
   photo_unsquare.py                crop a square, padded listing photo back to
                                    the card's own shape before uploading it
   sold-everywhere.py              sale checklist workflow
