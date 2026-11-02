@@ -1142,7 +1142,7 @@ def test_the_diagnosis_file():
                                   stages=["read", "ids"], plugin="1.0.38",
                                   command="cs-stock.py --stock-out cs-stock.json",
                                   detail=detail, total=2596, editable=0,
-                                  app_version="3.22")
+                                  app_version="3.23")
     check("the file carries the reader's own count line",
           "2596 listings, 0 with a real product id" in text, "")
     check("the app's own count is beside it, so the two can be compared",
@@ -1597,7 +1597,7 @@ def test_the_real_diagnosis_from_the_shop():
                 "--cookie-file cookie.txt",
         detail={"url": cs_edit.detail_url(row["id"]), "status": 200,
                 "content_type": "application/json", "body": json.dumps(record)},
-        total=2596, editable=0, app_version="3.22",
+        total=2596, editable=0, app_version="3.23",
         source="the read this window made at 2026-11-02 13:03:59")
 
     check("the file no longer carries the progress markers",
@@ -2620,6 +2620,109 @@ def test_the_panel_shows_the_whole_read():
           len(cs_edit.search(rows, "SKU-25")) >= 1, "")
 
 
+
+def test_the_shop_is_reached_only_with_the_plugin():
+    """No plugin, no proof and no write: the plugin owns the site's API.
+
+    These four features - the proof, the price, the record's fields and the
+    diagnosis probe - talk to CanadianShopper's own API from this app. That is
+    the plugin's conversation: it holds the session and the actions the vendor
+    documents, and a core that reached past it would be writing to a live shop
+    on an arrangement nobody installed. So without the plugin each button says
+    so and sends nothing - it does not try and fail, and it never asks for a
+    value it would then have nowhere to send.
+    """
+    print()
+    print("== 5o. the shop is reached only while the plugin is installed ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+    rows = [{"id": "a2304e72dbca4e678e7111d011ade22d", "product_id": 4321,
+             "title": "#006/196 Wurmple SWSH11: Lost Origin - Pokemon TCG",
+             "sku": "PKM-006", "status": "active", "inventory": 1,
+             "price": "1.00"}]
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        read_into(app, folder, parent, payload=rows)
+    select(parent, "Wurmple")
+    (folder / "cs-field-proofs.json").write_text(
+        json.dumps({"priceCad": {"at": "2026-11-02 15:34:38", "proven": True,
+                                 "verdict": "written", "restored": True,
+                                 "listing": rows[0]["id"],
+                                 "title": "Wurmple"}}), encoding="utf-8")
+
+    said, written, proved, opened, typed = [], [], [], [], []
+    harness._BOX.shown[:] = []
+    harness._BOX.showinfo = lambda *a, **k: said.append(a)
+    harness.PICKER["press"] = lambda window: opened.append(window)
+    app.cs_addon = False
+    try:
+        with patch.object(gui, "BASE", folder), \
+                patch.object(gui, "CS_COOKIE_FILE", cookie), \
+                patch.object(gui, "cs_addon_present", lambda: False), \
+                patch.object(gui, "in_background", sync_background), \
+                patch.object(gui, "simpledialog") as dialog, \
+                patch.object(cs_record, "write",
+                             lambda *a, **k: written.append((a, k))), \
+                patch.object(cs_record, "update",
+                             lambda *a, **k: written.append((a, k))), \
+                patch.object(cs_record, "send_fields",
+                             lambda *a, **k: written.append((a, k))), \
+                patch.object(cs_proof, "prove",
+                             lambda *a, **k: proved.append((a, k))):
+            dialog.askstring = lambda *a, **k: typed.append(a) or "2.50"
+            find(parent, gui.ttk.Button,
+                 "Set the selected listing's price...").invoke()
+            check("with no plugin the price button asks for nothing",
+                  not typed, str(typed))
+            check("and writes nothing", not written, str(written))
+            check("and says the plugin is what talks to the shop",
+                  said and "CanadianShopper plugin" in str(said[-1]),
+                  str(said[-1:]))
+            check("and puts the refusal on the console",
+                  any("which is not installed; nothing was sent" in text
+                      for _tag, text in app.lines), str(app.lines[-2:]))
+
+            said[:] = []
+            before = len(opened)
+            find(parent, gui.ttk.Button,
+                 "Edit the record's fields...").invoke()
+            check("with no plugin the field form does not open",
+                  len(opened) == before, str(opened[before:]))
+            check("and nothing is written from it", not written, str(written))
+
+            said[:] = []
+            find(parent, gui.ttk.Button, "Write the proof").invoke()
+            check("with no plugin a proof is not written",
+                  not proved, str(proved))
+            check("and the button says why",
+                  said and "CanadianShopper plugin" in str(said[-1]),
+                  str(said[-1:]))
+
+            said[:] = []
+            find(parent, gui.ttk.Button,
+                 "Save a read diagnosis...").invoke()
+            check("with no plugin the diagnosis probe is not run either",
+                  said and "CanadianShopper plugin" in str(said[-1]),
+                  str(said[-1:]))
+    finally:
+        app.cs_addon = True
+        harness._BOX.showinfo = lambda *a, **k: (
+            harness._BOX.shown.append(("showinfo", a)))
+        harness.PICKER["press"] = lambda window: None
+
+
 def test_the_panel_quotes_the_readers_resolution():
     """A read that asked and got nothing back says so, on the console.
 
@@ -3307,6 +3410,7 @@ def main():
     test_the_edit_button_takes_the_price_road()
     test_a_form_of_every_proven_field()
     test_the_panel_shows_the_whole_read()
+    test_the_shop_is_reached_only_with_the_plugin()
     test_the_panel_quotes_the_readers_resolution()
     test_the_evidence_outlives_the_window()
     test_the_panel_reads_and_lists()

@@ -869,6 +869,20 @@ through `marketplace.listing_update` and `/api/products/<product_id>/` for rows
 that have a product id - two roads to the same listing, and the record road
 needs no id at all. No unattended or scheduled write is added for any field.
 
+**The core's own calls are gated on the plugin being installed.** Four
+features in this core talk to the site's API directly rather than through an
+action: the field proof (`cs_proof.py`), the record write path
+(`cs_record.py`), its bulk use in the comparison panel's *Set CanadianShopper
+to the website's prices...*, and the read-only diagnosis probe
+(`GET`/`OPTIONS` on a listing's record). The plugin is what owns that
+conversation - it holds the session cookie and the actions the vendor
+documents - so all four are offered **only while the plugin is installed**
+(`gui.cs_plugin_installed`): without it each button says the plugin is what
+talks to the shop and sends nothing, instead of reaching past the plugin to
+an API nobody installed. That is the rule for anything new here that would
+touch the vendor's API: it belongs in the plugin as an action, not in the
+core.
+
 **A hard-failure report, if the failures turn out to be deterministic.** The
 counts do not say which listings failed, and a read caches no failures, so a
 re-read repeats every unresolved detail request. If the same listings fail

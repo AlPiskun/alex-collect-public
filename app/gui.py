@@ -76,7 +76,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.22"
+VERSION = "3.23"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -245,6 +245,29 @@ def cs_addon_present():
             return False
     return ((BASE / "addon-canadianshopper.txt").is_file() and
             all((BASE / n).is_file() for n in CS_ADDON_TOOLS))
+
+def cs_plugin_installed(app=None):
+    """Whether the CanadianShopper plugin is there to talk to the shop.
+
+    The plugin owns the shop's session and the actions that call its API. The
+    proof, the record write, the reprice and the diagnosis probe are the same
+    conversation held by this app, so they are offered only while the plugin is
+    installed - ``app.cs_addon`` is what the window found at startup, and the
+    folder is checked again for a plugin removed (or never installed) since.
+    """
+    if getattr(app, "cs_addon", False):
+        return True
+    return cs_addon_present()
+
+
+def cs_plugin_note(what=""):
+    """What a button says when the plugin that owns the site is not installed."""
+    return ("%s needs the CanadianShopper plugin: it is the piece that talks "
+            "to your shop, and it is not installed (or its files are "
+            "missing).\n\nNothing was read and nothing was written. Install "
+            "the plugin from the Plugins panel and this button will work."
+            % (what or "This"))
+
 
 SETTINGS_FILE = BASE / "gui-settings.json"
 LOG_FILE = BASE / "gui-log.txt"
@@ -6634,6 +6657,19 @@ def build_stock(parent, app):
         not is still in the pairs - which is exactly why this takes the pairs
         rather than the rows on screen.
         """
+        if not cs_plugin_installed(app):
+            #  The proof and the record write reach the shop's API directly,
+            #  and the plugin is what owns that conversation - so this button
+            #  is offered only while the plugin is installed.
+            messagebox.showinfo(
+                "The CanadianShopper plugin is not installed",
+                cs_plugin_note("Setting prices on CanadianShopper"),
+                parent=box.winfo_toplevel())
+            app.console_line(
+                "No price was written: the CanadianShopper plugin is not "
+                "installed, and it is the piece that talks to the shop.",
+                "err")
+            return
         pairs = state.get("pairs") or []
         if not pairs:
             messagebox.showinfo(
@@ -9389,6 +9425,17 @@ def build_csledit(parent, app):
         app.wait_window(top)
         return result if result["done"] else None
 
+    def plugin_ready(what):
+        """Say why a button that talks to the shop cannot run, or say yes."""
+        if cs_plugin_installed(app):
+            return True
+        messagebox.showinfo("The CanadianShopper plugin is not installed",
+                            cs_plugin_note(what),
+                            parent=box.winfo_toplevel())
+        say("%s needs the CanadianShopper plugin, which is not installed; "
+            "nothing was sent." % what, "err")
+        return False
+
     def open_field_labels():
         """Every field a saved proof settled, by the name the form uses.
 
@@ -9572,6 +9619,8 @@ def build_csledit(parent, app):
         Everything written is sanitised, so the file can be pasted into a
         conversation without handing over a session.
         """
+        if not plugin_ready("Reading a listing for a diagnosis"):
+            return
         if not state["items"]:
             messagebox.showinfo(
                 "Nothing read yet",
@@ -9668,6 +9717,8 @@ def build_csledit(parent, app):
         is not sent, the record must name the id that was asked for, and the
         price is read back after the write.
         """
+        if not plugin_ready("Setting a price"):
+            return
         if not state["items"]:
             messagebox.showinfo(
                 "Nothing read yet",
@@ -9770,6 +9821,8 @@ def build_csledit(parent, app):
         form that hid it would say the app writes less than it does, and a form
         that let it be typed would send what the site has never kept.
         """
+        if not plugin_ready("Writing a listing's fields"):
+            return
         if not state["items"]:
             messagebox.showinfo(
                 "Nothing read yet",
@@ -9984,6 +10037,8 @@ def build_csledit(parent, app):
         old value showing again after the restore. One listing, one field, and
         a value that says what it is for the seconds it is on the listing.
         """
+        if not plugin_ready("Writing a proof"):
+            return
         if not state["items"]:
             messagebox.showinfo(
                 "Nothing read yet",
