@@ -477,6 +477,26 @@ def zero_product_id_note(count, total):
                "" if total == 1 else "s", "stock.set"))
 
 
+def address_gap(items):
+    """A sentence for a read in which **no** listing carries its own address.
+
+    Every row still opens something - the panel falls back to the vendor's
+    store with the card on the clipboard - but one listing having no address
+    and a whole read having none are different reports. The reader that sends
+    an address for every listing is the version this app was told to expect;
+    one that sends none is worth the same report a read with no product ids
+    gets, said once instead of at every button.
+    """
+    rows = [row for row in items or [] if isinstance(row, dict)]
+    if not rows or any(link(row) for row in rows):
+        return ""
+    return ("No listing in that read carried its own address (%d listing%s), "
+            "so a row opens the vendor's store with the card on the clipboard "
+            "instead of its page. A reader that reports each listing's url "
+            "opens it directly - worth reporting with the plugin's version and "
+            "its own count line." % (len(rows), "" if len(rows) == 1 else "s"))
+
+
 def product_id_counts(items):
     """How many listings carry a product id, and how many there are.
 
@@ -489,7 +509,23 @@ def product_id_counts(items):
     return len([row for row in rows if product_id(row)]), len(rows)
 
 
-def editable_note(editable, total):
+def field_words(labels):
+    """``Price``, ``Price and Title``, ``Price, Title and Stock`` - in words.
+
+    The sentences that name what can be written are built from the proofs that
+    exist, not from a fixed list of three: a field that was proven after this
+    sentence was written must not be described as impossible.
+    """
+    words = [str(label).strip().lower() for label in labels or []
+             if str(label).strip()]
+    if not words:
+        return ""
+    if len(words) == 1:
+        return words[0]
+    return "%s and %s" % (", ".join(words[:-1]), words[-1])
+
+
+def editable_note(editable, total, price_proven=False, writable=None):
     """How much of a read the editor can actually write, in words.
 
     Three different situations, and they must not read alike: a list where
@@ -497,15 +533,33 @@ def editable_note(editable, total):
     - which is not 2,541 listings that cannot be edited but a reader that is
     not reporting product ids at all. Telling someone to change 2,541 listings
     in the dashboard when the reading is what is missing would be advice that
-    costs them an evening.
+    costs an evening.
+
+    ``writable`` is the labels of the fields a saved proof settled, and
+    ``price_proven`` says the same for the price alone (the older spelling).
+    Then "none can be edited here" stops being true, and the sentence has to
+    say which fields the plugin cannot send and which ones the record the row
+    already addresses will keep - because that list grows as proofs are made.
     """
     editable, total = int(editable or 0), int(total or 0)
+    given = [str(label) for label in (writable or []) if str(label).strip()]
+    if not given and price_proven:
+        given = ["Price"]
+    open_words = field_words(given)
+    open_verb = "is" if len(given) == 1 else "are"
     if not total:
         return "none to edit"
     if editable == total:
         return ("every one with a product id, so every one can be edited "
                 "here")
     if not editable:
+        if open_words:
+            return ("none of them with a product id, so no title, stock count "
+                    "or state can be sent through the plugin yet - it is not "
+                    "reporting one for any listing, and reading them again "
+                    "will not change that. The listing's own record is a "
+                    "different road: %s %s written there and can be set from "
+                    "here" % (open_words, open_verb))
         return ("none of them with a product id, so none can be edited here "
                 "yet - the plugin is not reporting one for any listing, and "
                 "reading them again will not change that")
@@ -1449,7 +1503,8 @@ def uneditable_note(failures=0):
 
 
 def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True,
-                   reader_text="", stages=None):
+                   reader_text="", stages=None, price_proven=False,
+                   writable=None):
     """The whole sentence for a read nothing can be written from, or "".
 
     Said once, where it can be read, instead of three paragraphs in three
@@ -1465,9 +1520,13 @@ def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True,
     if zeros:
         said = zero_product_id_note(zeros, total)
     else:
+        #  The edit form sends a product id; the price does not. Saying "the
+        #  edit buttons cannot send anything" was true until the price write
+        #  path existed, and is now the sentence that would stop somebody
+        #  using the button that works.
         said = ("No listing in that read carried a product id, so the edit "
-                "buttons cannot send anything: the plugin's reader is not "
-                "reporting one.")
+                "form cannot send a title, a stock count or a state: the "
+                "plugin's reader is not reporting one.")
     said_by_reader = reader_says_note(reader_text)
     #  The reader's own phases decide *which read this was*, so when they were
     #  reported they are used instead of the general sentence - and a reader
@@ -1496,6 +1555,25 @@ def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True,
     if works:
         parts.append("Searching, opening a listing and editing in the vendor "
                      "dashboard all still work.")
+    given = [str(label) for label in (writable or []) if str(label).strip()]
+    if not given and price_proven:
+        given = ["Price"]
+    if given:
+        #  These fields are not waiting on the reader: a proven field is
+        #  written to the listing's own record, at the id this row already
+        #  carries, so naming the price alone would be a half-truth the day a
+        #  second field is proven.
+        open_words = field_words(given)
+        if given == ["Price"]:
+            parts.append("The price is the exception: it is written to the "
+                         "listing's own record, which has been proven, so "
+                         "\"Set the selected listing's price...\" works on "
+                         "this row now.")
+        else:
+            parts.append("The listing's own fields are the exception: %s are "
+                         "written to the listing's own record, which a proof "
+                         "settled, so \"Edit the record's fields...\" works "
+                         "on this row now." % open_words)
     return " ".join(part for part in parts if part)
 
 
@@ -1630,6 +1708,12 @@ def apply_to_item(item, entry):
         item["price"] = entry["price"]
     if "inventory" in entry:
         item["qty"] = int(entry["inventory"])
+    if "description" in entry:
+        item["description"] = entry["description"]
+    if "primaryImageUrl" in entry and entry["primaryImageUrl"]:
+        #  The row's photo is a list, so the written URL replaces the one the
+        #  panel was showing rather than sitting beside it.
+        item["images"] = [entry["primaryImageUrl"]]
     if "status" in entry:
         item["status"] = entry["status"]
     return item

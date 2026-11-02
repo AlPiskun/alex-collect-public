@@ -1,4 +1,4 @@
-Alex Collect 3.20 — public core package
+Alex Collect 3.22 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -92,6 +92,20 @@ app/:
                                    question left for the vendor, and that
                                    question put to the route itself with one
                                    read-only OPTIONS request
+  cs_proof.py                      prove which fields of one CanadianShopper
+                                   listing the site really writes: one field,
+                                   one listing, written at the record's own id,
+                                   read back, and put back - with a "written /
+                                   accepted and ignored / refused" verdict, a
+                                   saved proof file and a record of what is
+                                   proven
+  cs_record.py                     write the fields a proof settled at one
+                                   CanadianShopper listing's own record - price,
+                                   title, description, stock and main photo,
+                                   each gated on its own proof: the record's own
+                                   id, the confirmed values checked first, only
+                                   the changed fields sent, every answer read
+                                   back field by field
   photo_unsquare.py                crop a square, padded listing photo back to
                                    the card's own shape before uploading it
   sold-everywhere.py              sale checklist workflow

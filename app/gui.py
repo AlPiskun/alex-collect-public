@@ -53,6 +53,8 @@ import market_stock
 import photo_thumbs
 import sale_preview
 import cs_edit
+import cs_proof
+import cs_record
 import cs_listing
 import cs_products
 import stock_compare
@@ -74,7 +76,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.20"
+VERSION = "3.22"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -2025,6 +2027,9 @@ TOOLTIPS = {
     "Save the limit": "Remember this number in User Settings, where the same value is used by Fill your eBay store every time it chooses",
     "Open the last list": "Open the page written by the last selection (or the newest one on disk); nothing is read again",
     "Save a read diagnosis...": "Write one small text file for a plugin report: the read's own output, the progress phases it reported, one listing row and the detail response its lookup would have read - sanitised, with no cookie, token or password in it",
+    "Write the proof": "Write one field on the selected CanadianShopper listing, read the record back, and put the old value back - a real change for the seconds it takes, and the only way to prove the site honours that field; one field, one listing, and nothing on your website",
+    "Edit the record's fields...": "Edit this listing's own record - price, title, description, stock count and main photo, each one open only when a saved proof shows the site keeps it, and only the fields you change are sent, then read back; no product id is used and your website is never touched",
+    "Set the selected listing's price...": "Set the price on the selected listing's own record - one field, at the record's own id, with the new price read back afterwards; offered only for a field a proof has settled, so it works on listings that carry no product id, and your website is never touched",
     "Choose the cards:": "What decides which unlisted cards come first - dearest, newest, oldest, cheapest, or in the order typed below; the choice is remembered",
     "Only this category:": "Leave blank to choose from the whole catalogue; type part of a category's name (hockey) to choose only from products filed under it",
     "These cards first:": "Titles, SKUs or product ids separated by commas, in the order you want them listed - used by \u201cIn the order I type\u201d, and anything not found is named on the console",
@@ -2033,6 +2038,8 @@ TOOLTIPS = {
     "Open the eBay listing page": "Open your eBay active-listings page in the browser, where the readings come from and where a listing is made",
     "Compare stock with eBay": "Read your eBay active listings with your session cookie and list only the cards whose numbers disagree",
     "Compare stock with Facebook": "Read your Facebook selling page with your session cookie and list only the cards whose numbers disagree",
+    "Set CanadianShopper to the website's prices...": "For every compared card whose price differs, set CanadianShopper's price to the website's - always shown and confirmed first, written to each listing's own record, and only for a field a proof has settled; your website is never touched",
+    "Reprice the selected cards...": "Set CanadianShopper's price to the website's for just the rows selected, after a confirmation listing them",
     "Set CanadianShopper to the website's counts...": "The usual fix: for every card whose two counts differ, set CanadianShopper's count to the website's count - always shown and confirmed first, write permission only",
     "Fix the selected cards...": "Set CanadianShopper to the website's count for just the rows selected in the list, after a confirmation listing them",
     "Set the website to the selected cards' counts...": "The reverse fix: set the website's stock count to the count the other site reports, for the selected cards - always shown and confirmed first; needs WooCommerce keys with Read/Write access",
@@ -2088,6 +2095,8 @@ TOOLTIPS = {
     "Use this image": "Take the picture selected above as this card's image",
     "Another scan...": "Load a different scan when the image is not on these sheets",
     # -- dialogs ----------------------------------------------------------
+    "Write the changed fields": "Send the fields you changed to this listing's own record on CanadianShopper, then read them back; fields you left alone are not sent",
+    "Prove this field...": "Close this form and prove the field chosen beside \"Write the proof\" - one value written, read back, and put back; a proof is what opens the field here",
     "Cancel": "Close this window and change nothing",
     "Close": "Close this window",
     "Not now": "Skip this offer; nothing is changed",
@@ -6609,6 +6618,137 @@ def build_stock(parent, app):
                      cwd=app.settings.get("pipeline_dir", str(WORK)),
                      on_done=lambda rc: set_arrived(rc, plan, out, action))
 
+    # ------------------------------------------------------------- repricing
+    def reprice(rows_wanted):
+        """Set CanadianShopper's prices to the website's - on the proven field.
+
+        The comparison already holds both prices, so this is the one place
+        where a whole run of price differences can be looked at before any of
+        them is written. It writes through the listing's own record
+        (``cs_record``), one listing at a time, only because a proof settled
+        ``priceCad`` on this shop; and every listing is read back after its
+        write, so the answer is what the site shows, not what was sent.
+
+        ``rows_wanted`` is the pairs to consider. The counters beside the list
+        are counts of stock, so a card whose counts agree but whose price does
+        not is still in the pairs - which is exactly why this takes the pairs
+        rather than the rows on screen.
+        """
+        pairs = state.get("pairs") or []
+        if not pairs:
+            messagebox.showinfo(
+                "Nothing compared yet",
+                "Press Compare first: a price is written from what the two "
+                "sides say about each card. Nothing was sent.",
+                parent=box.winfo_toplevel())
+            return
+        proofs = cs_proof.load_proofs(BASE)
+        if not cs_proof.settled("priceCad", proofs):
+            messagebox.showinfo(
+                "The price has not been proven writable yet",
+                "Nothing was sent. Repricing writes each listing's own record, "
+                "and that is only done for a field a proof has settled.\n\n"
+                "Run \"Prove a field can be written\" with Price chosen in the "
+                "CanadianShopper panel - it writes one cent more, reads the "
+                "record back, and puts it back - and then this button will set "
+                "prices.", parent=box.winfo_toplevel())
+            app.console_line(
+                "No price was written: priceCad has no saved proof on this "
+                "machine. Run the Price proof first.", "err")
+            return
+        if rows_wanted:
+            #  A row is about one website product, and the pair behind it is
+            #  what holds both prices: match on the product id the row names.
+            wanted = {str(row.get("woo_id")) for row in rows_wanted
+                      if row.get("woo_id") is not None}
+            pairs = [pair for pair in pairs
+                     if str((pair.get("woo") or {}).get("id")) in wanted]
+        found = cs_record.price_plan(pairs, state.get("catalog"), proofs)
+        items = found["items"]
+        notes = found.get("notes") or {}
+        if not items:
+            text = ("No compared card has a price that differs from the "
+                    "website's.")
+            if notes.get("no_listing_price"):
+                text += (" %d listing%s reported no price at all - a reader "
+                         "older than plugin 1.0.28 does not send one, and a "
+                         "price is not guessed." %
+                         (notes["no_listing_price"],
+                          "" if notes["no_listing_price"] == 1 else "s"))
+            messagebox.showinfo("Nothing to reprice", text,
+                                parent=box.winfo_toplevel())
+            return
+        lines = cs_record.plan_lines(found)
+        question = ("Direction: your website's price  ->  %s. Your website is "
+                    "not changed.\n\n%s\n\n%s\n\nOnly those prices change: no "
+                    "title, stock or state is sent, and each price is read back "
+                    "after it is written.\n\n%s\n\nWrite them now?"
+                    % (state["label"], cs_record.plan_summary(found,
+                                                              state["label"]),
+                       "\n".join(lines),
+                       cs_record.note_for("priceCad", proofs)))
+        if not messagebox.askyesno(
+                "Set %s's prices to the website's?" % state["label"],
+                question, parent=box.winfo_toplevel()):
+            app.console_line("The prices were not confirmed; nothing was "
+                             "written.", "dim")
+            return
+        cookie = load_cookie_text() or ""
+        summary.configure(text="Setting %d price%s on %s..." %
+                               (len(items), "" if len(items) == 1 else "s",
+                                state["label"]))
+        app.console_line(
+            "Setting %d %s price%s from your website (your website is not "
+            "changed)..." % (len(items), state["label"],
+                             "" if len(items) == 1 else "s"), "cmd")
+
+        def work():
+            return cs_record.write_all(items, cookie, proofs=proofs)
+
+        def arrived(results, error):
+            if error is not None:
+                app.console_line("The prices could not be written: %s. "
+                                 "Nothing was changed by this attempt." % error,
+                                 "err")
+                summary.configure(text="The prices could not be written: %s"
+                                   % error)
+                return
+            shown = 0
+            for result in results:
+                if result.get("written"):
+                    if shown < 20:
+                        app.console_line(cs_record.sentence(result), "ok")
+                        shown += 1
+                    continue
+                app.console_line(cs_record.sentence(result), "err")
+            written, unchanged, failed = cs_record.tally(results)
+            if written > shown:
+                app.console_line("  ... and %d more set." % (written - shown),
+                                 "dim")
+            text = cs_record.tally_text(results, state["label"])
+            summary.configure(text=text + " Compare again to confirm.")
+            app.console_line(text + " Compare again to confirm.",
+                             "ok" if not failed else "err")
+
+        in_background(app, work, arrived)
+
+    def reprice_all():
+        reprice(None)
+
+    def reprice_selected():
+        rows = selected_rows()
+        if not rows:
+            messagebox.showinfo(
+                "Which cards?",
+                "Select the cards to reprice in the list. A card whose counts "
+                "agree but whose price differs is not in this list - it is not "
+                "a stock difference - so selecting every row still reprices "
+                "only the cards shown; to reprice everything that differs, use "
+                "\"Set CanadianShopper to the website's prices...\".",
+                parent=box.winfo_toplevel())
+            return
+        reprice(rows)
+
     def set_all():
         run_set([row for row in state["rows"]
                  if row["kind"] == stock_compare.FIX])
@@ -8497,9 +8637,16 @@ def build_stock(parent, app):
                command=open_on_website).pack(side="left", padx=6)
     third = ttk.Frame(action_row)
     third.pack(anchor="w", pady=(3, 0))
-    ttk.Button(third, text="List the selected cards on CanadianShopper...",
+    ttk.Button(third, text="Set CanadianShopper to the website's prices...",
+               style="Task.TButton",
+               command=reprice_all).pack(side="left")
+    ttk.Button(third, text="Reprice the selected cards...",
+               command=reprice_selected).pack(side="left", padx=6)
+    third_l = ttk.Frame(action_row)
+    third_l.pack(anchor="w", pady=(3, 0))
+    ttk.Button(third_l, text="List the selected cards on CanadianShopper...",
                style="Task.TButton", command=list_selected).pack(side="left")
-    ttk.Button(third, text="List every website-only card...",
+    ttk.Button(third_l, text="List every website-only card...",
                command=list_every_website_only_card).pack(side="left", padx=6)
     fifth = ttk.Frame(action_row)
     fifth.pack(anchor="w", pady=(3, 0))
@@ -8724,7 +8871,8 @@ def build_csledit(parent, app):
         note = "%d listings read from CanadianShopper." % total
         load(items, note)
         say("CanadianShopper: %d listings read; %s. Type a card's name to "
-            "find one." % (total, cs_edit.editable_note(editable, total)),
+            "find one." % (total, cs_edit.editable_note(
+                editable, total, writable=open_field_labels())),
             "ok")
         resolution = cs_edit.resolution_counts(last_tool_output(app))
         if resolution:
@@ -8744,6 +8892,11 @@ def build_csledit(parent, app):
             #  listing by its product id, so they are the rows that cannot be
             #  edited until another read resolves them.
             say(stock_compare.lookup_note(missed, total, panel="edit"), "warn")
+        no_address = cs_edit.address_gap(items)
+        if no_address:
+            #  Once, after the read: a whole read without addresses is the
+            #  reader's gap, not something to discover by pressing Open.
+            say(no_address, "warn")
         shared = cs_edit.shared_product_note(items)
         if shared:
             #  Said after every read, not before a write: plugin 1.0.35 resolves
@@ -8993,11 +9146,40 @@ def build_csledit(parent, app):
                 state["items"], plugin=plugin_version(),
                 needed=CS_PRODUCT_ID_VERSION, works=False,
                 reader_text=state.get("output") or last_tool_output(app),
-                stages=state.get("stages") or [])
-            say("%s cannot be changed from here: %s Nothing was sent."
-                % (named, said), "err")
+                stages=state.get("stages") or [],
+                writable=open_field_labels())
+            say("%s: a title, stock count or state cannot be sent through the "
+                "plugin for it: %s Nothing was sent." % (named, said), "err")
             summary.configure(text="No listing in this read has a product "
                                    "id, so nothing can be sent.")
+            open_fields = cs_record.writable_fields(cs_proof.load_proofs(BASE))
+            if open_fields:
+                #  These fields do not need the product id, and leaving this
+                #  question as "open the dashboard" is how a row that can be
+                #  written sends its owner to another website instead.
+                only_price = open_fields == ("priceCad",)
+                words = cs_edit.field_words(
+                    [cs_record.field_label(field) for field in open_fields])
+                if messagebox.askyesno(
+                        "Set the price here instead?" if only_price else
+                        "Edit the record's fields here instead?",
+                        "%s\n\nNo listing in this read carried a usable "
+                        "product id, so a title, stock count or state cannot "
+                        "be sent through the plugin - reading them again would "
+                        "return the same list.\n\n%s %s written to the "
+                        "listing's own record, which a proof settled, and read "
+                        "back afterwards. No product id is involved, and your "
+                        "website is not touched.\n\nNothing was changed. "
+                        "%s now?" % (named, words[:1].upper() + words[1:],
+                                     "is" if only_price else "are",
+                                     "Set the price" if only_price else
+                                     "Edit the fields"),
+                        parent=box.winfo_toplevel()):
+                    if only_price:
+                        set_the_price()
+                    else:
+                        edit_fields()
+                return False
             if messagebox.askyesno(
                     "That listing has to be changed on the site",
                     "%s\n\nNo listing in this read carried a usable product "
@@ -9195,11 +9377,58 @@ def build_csledit(parent, app):
         app.wait_window(top)
         return result if result["done"] else None
 
+    def open_field_labels():
+        """Every field a saved proof settled, by the name the form uses.
+
+        Read from the proofs each time rather than remembered: a field proven
+        while the window is open is writable on the next click, and the
+        sentences that say what can be written are built from this list.
+        """
+        return [cs_record.field_label(field) for field in
+                cs_record.writable_fields(cs_proof.load_proofs(BASE))]
+
     def edit_selected():
         item = selected()
         if item is None:
             return
         window = box.winfo_toplevel()
+        #  The edit form writes through the plugin, which sends a product id.
+        #  A row with none cannot use it - and opening the form anyway is what
+        #  ends in "closed without saving". A proven field is written to the
+        #  row's own record, so that is the road offered - and the sentence
+        #  names every field a proof has settled, not the price alone.
+        open_fields = cs_record.writable_fields(cs_proof.load_proofs(BASE))
+        if not cs_edit.product_id(item) and open_fields:
+            only_price = open_fields == ("priceCad",)
+            words = cs_edit.field_words(
+                [cs_record.field_label(field) for field in open_fields])
+            named = item.get("name") or "That listing"
+            say("%s has no product id, so the plugin's edit form cannot send "
+                "anything for it - but %s %s written to the listing's own "
+                "record." % (named, words, "is" if only_price else "are"),
+                "dim")
+            body = ("%s\n\nThe plugin's edit form needs a product id, and the "
+                    "list has none for this listing - so a title, stock count "
+                    "or state cannot be sent through it.\n\n%s %s written to "
+                    "the listing's own record (proven on this shop), read back "
+                    "afterwards, and your website is not touched.\n\n%s now?"
+                    % (named, words[:1].upper() + words[1:],
+                       "is" if only_price else "are",
+                       "Set the price" if only_price else "Edit the fields"))
+            if messagebox.askyesno(
+                    "Set the price instead?" if only_price else
+                    "Edit the record's fields instead?", body,
+                    parent=box.winfo_toplevel()):
+                if only_price:
+                    set_the_price()
+                else:
+                    edit_fields()
+            else:
+                say("Nothing was written. \"%s\" is the button that reaches "
+                    "this row." % ("Set the selected listing's price..."
+                                   if only_price else
+                                   "Edit the record's fields..."), "dim")
+            return
         answers = ask_edit(item)
         if answers is None:
             say("The edit was closed without saving; nothing was written.",
@@ -9417,10 +9646,470 @@ def build_csledit(parent, app):
 
         in_background(app, work, done)
 
+    def set_the_price():
+        """Set one listing's price on its own record - the proven field.
+
+        This is the short road the proof opened: the listing's own id, one
+        field, nothing about a product. It is offered beside the edit form
+        because it is the one that works on a listing the vendor gives no
+        product id for. Every rule lives in cs_record: a field no proof settled
+        is not sent, the record must name the id that was asked for, and the
+        price is read back after the write.
+        """
+        if not state["items"]:
+            messagebox.showinfo(
+                "Nothing read yet",
+                "Read CanadianShopper's listings first: a price is written to "
+                "one listing's own record, so it needs a listing.",
+                parent=box.winfo_toplevel())
+            return
+        item = selected()
+        if item is None:
+            return
+        proofs = cs_proof.load_proofs(BASE)
+        if not cs_proof.settled("priceCad", proofs):
+            messagebox.showinfo(
+                "The price has not been proven writable yet",
+                "Nothing was sent. This panel writes a price only after a "
+                "proof shows the site keeps it and gives the old one back.\n\n"
+                "Run \"Prove a field can be written\" with Price chosen - it "
+                "writes one cent more, reads it back, and puts it back - and "
+                "then this button will set prices.",
+                parent=box.winfo_toplevel())
+            say("No price was written: priceCad has no saved proof on this "
+                "machine. Run the Price proof first.", "err")
+            return
+        current = cs_edit.price_text(item)
+        wanted = simpledialog.askstring(
+            "Set the price on CanadianShopper",
+            "%s\n\nNew price in CAD (numbers only, such as 8.50):"
+            % (item.get("name") or "That listing"),
+            initialvalue=current, parent=box.winfo_toplevel())
+        if wanted is None:
+            say("The price was not entered; nothing was written.", "dim")
+            return
+        entry = cs_record.plan(item, str(wanted).strip(), proofs)
+        if entry.get("why"):
+            messagebox.showinfo("Not written", entry["why"],
+                                parent=box.winfo_toplevel())
+            say("No price was written: %s" % entry["why"], "err")
+            return
+        if entry.get("old") and entry.get("old") == entry.get("price"):
+            messagebox.showinfo(
+                "Nothing to change",
+                "%s already shows %s." % (entry["card"] or "That listing",
+                                          entry["price"]),
+                parent=box.winfo_toplevel())
+            return
+        question = ("%s\n\nThis writes one field - the price - to the "
+                    "listing's own record on CanadianShopper, then reads it "
+                    "back.\n\nYour website, its prices and its stock are not "
+                    "touched, and no product id is involved: the record's own "
+                    "id is the address.\n\n%s\n\nWrite it now?"
+                    % (cs_record.describe(entry),
+                       cs_record.note_for("priceCad", proofs)))
+        if not ask_yes("Set this listing's price?", question):
+            say("The price was not confirmed; nothing was written.", "dim")
+            return
+        url = cs_record.url_for(entry["id"], CS_HOME)
+        cookie = load_cookie_text() or ""
+        say("Setting %s to %s on CanadianShopper..."
+            % (entry["card"] or "that listing", entry["price"]), "cmd")
+        summary.configure(text="Setting the price on CanadianShopper...")
+
+        def work():
+            return cs_record.write(url, cookie, entry["price"],
+                                   expect_id=entry["id"],
+                                   expect_old=entry.get("old"),
+                                   listing=item, proofs=proofs)
+
+        def done(result, error):
+            if error is not None:
+                say("The price could not be written: %s. Nothing was changed."
+                    % error, "err")
+                summary.configure(text="The price could not be written: %s"
+                                   % error)
+                return
+            say(cs_record.sentence(result),
+                "ok" if result.get("written") else "err")
+            if result.get("verdict") == "written":
+                #  The row on screen becomes the listing as it now stands, the
+                #  same way an edit through the plugin does, so the price the
+                #  panel shows is the price the site holds.
+                updated = cs_edit.apply_to_item(
+                    item, {"price": cs_record.money(result.get("after")),
+                           "title": str(item.get("name") or "")})
+                state["items"] = [
+                    updated if (row is item or (
+                        str(row.get("id")) == str(item.get("id")))) else row
+                    for row in state["items"]]
+                run_search()
+            summary.configure(text=cs_record.sentence(result))
+
+        in_background(app, work, done)
+
+    def edit_fields():
+        """Every field this panel may write, each one behind its own proof.
+
+        The form is the map of what a proof settled: price, title, description,
+        stock count and the main photo, addressed by the record's own id and
+        never by a product id. A proven field can be typed in; a field with no
+        proof is shown greyed with the button that would prove it, because a
+        form that hid it would say the app writes less than it does, and a form
+        that let it be typed would send what the site has never kept.
+        """
+        if not state["items"]:
+            messagebox.showinfo(
+                "Nothing read yet",
+                "Read CanadianShopper's listings first: a field is written to "
+                "one listing's own record, so it needs a listing.",
+                parent=box.winfo_toplevel())
+            return
+        item = selected()
+        if item is None:
+            return
+        listing_id = cs_edit.listing_id(item)
+        if not cs_edit.is_id(listing_id):
+            messagebox.showinfo(
+                "That listing has no record id",
+                "The list carries no id for that listing, so there is no "
+                "record to address.\n\nNothing was written.",
+                parent=box.winfo_toplevel())
+            return
+        proofs = cs_proof.load_proofs(BASE)
+        open_fields = cs_record.writable_fields(proofs)
+        if not open_fields:
+            messagebox.showinfo(
+                "No field has been proven writable yet",
+                "Nothing was sent. This panel writes a field only after a "
+                "proof shows the site keeps it and gives the old value "
+                "back.\n\nRun \"Prove a field can be written\" with a field "
+                "chosen - it writes one value, reads it back, and puts it "
+                "back - and then that field opens here.",
+                parent=box.winfo_toplevel())
+            say("No field was written: no proof is saved on this machine. Run "
+                "the proof for the field first.", "err")
+            return
+        top = tk.Toplevel(app)
+        top.title("Edit the fields on CanadianShopper")
+        top.transient(app)
+        top.geometry("700x480")
+        top.grab_set()
+        body = ttk.Frame(top)
+        body.pack(fill="both", expand=True, padx=10, pady=(10, 4))
+        body.columnconfigure(1, weight=1)
+        ttk.Label(body, text=str(item.get("name") or "That listing"),
+                  wraplength=660, font=("", 10, "bold")).grid(
+            row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        vars_, boxes, row = {}, {}, 1
+        for field in cs_record.KNOWN_FIELDS:
+            label = cs_record.field_label(field)
+            ttk.Label(body, text=label + ":").grid(row=row, column=0,
+                                                   sticky="nw", pady=3)
+            current = cs_record.current_value(item, field)
+            var = tk.StringVar(master=body, value=current)
+            vars_[field] = var
+            if field in open_fields:
+                if field == "description":
+                    #  A description is a paragraph, not a field: one line
+                    #  cut off at the first full stop is not the listing's.
+                    text_box = tk.Text(body, height=5, width=58, wrap="word")
+                    text_box.insert("1.0", current)
+                    text_box.grid(row=row, column=1, sticky="ew", pady=3)
+                    boxes[field] = text_box
+                else:
+                    boxes[field] = ttk.Entry(body, textvariable=var, width=58)
+                    boxes[field].grid(row=row, column=1, sticky="ew", pady=3)
+            else:
+                locked = ttk.Entry(body, width=58)
+                locked.insert(0, "no proof yet - this field is never sent")
+                locked.configure(state="disabled")
+                locked.grid(row=row, column=1, sticky="ew", pady=3)
+                ttk.Button(body, text="Prove this field...",
+                           command=lambda f=field: prove_from_form(f)
+                           ).grid(row=row, column=2, padx=(6, 0), pady=3)
+            row += 1
+        #  A row can be missing a long field the record holds - the stock list
+        #  carries a description only when the reader sends one. Saying so is
+        #  the difference between "this listing has no description" and "what
+        #  you type here replaces it", and the two are not the same edit.
+        if boxes.get("description") and not vars_["description"].get().strip():
+            ttk.Label(body, text="The description is not on the row this list "
+                      "carries: what you type here replaces the whole "
+                      "description on the record.", wraplength=660,
+                      justify="left").grid(row=row, column=0, columnspan=3,
+                                           sticky="w", pady=(6, 0))
+            row += 1
+        ttk.Label(body, text=cs_record.evidence_note(proofs), wraplength=660,
+                  justify="left").grid(row=row, column=0, columnspan=3,
+                                       sticky="w", pady=(8, 2))
+
+        def prove_from_form(field):
+            #  The proof is the only door into a field, so the locked row's
+            #  button is that door: close the form, choose the field beside
+            #  the proof button, and let the proof ask its own question.
+            top.destroy()
+            proof_var.set(cs_proof.field_label(field))
+            prove_field()
+
+        def collect():
+            changes = {}
+            for field in open_fields:
+                if field == "description":
+                    changes[field] = boxes[field].get("1.0", "end-1c")
+                else:
+                    changes[field] = vars_[field].get()
+            return changes
+
+        def submit():
+            entry = cs_record.plan_update(item, collect(), proofs)
+            if entry.get("why"):
+                messagebox.showinfo("Not written", entry["why"], parent=top)
+                return
+            if entry.get("same"):
+                messagebox.showinfo(
+                    "Nothing to change",
+                    "Every proven field is exactly as the record already "
+                    "holds it, so nothing would be sent.", parent=top)
+                return
+            count = len(entry["fields"])
+            question = ("%s\n\n%s\n\nThis writes %d field%s - only the ones "
+                        "changed - to the listing's own record on "
+                        "CanadianShopper, then reads them back.\n\nYour "
+                        "website, its prices and its stock are not touched, "
+                        "and no product id is involved: the record's own id is "
+                        "the address.\n\nWrite it now?"
+                        % (entry["card"] or "That listing",
+                           "\n".join(cs_record.describe_lines(entry)),
+                           count, "" if count == 1 else "s"))
+            if not ask_yes("Write these fields?", question):
+                say("The fields were not confirmed; nothing was written.",
+                    "dim")
+                return
+            top.destroy()
+            url = cs_record.url_for(entry["id"], CS_HOME)
+            cookie = load_cookie_text() or ""
+            changes = {change["field"]: change["value"]
+                       for change in entry["fields"]}
+            expected = {change["field"]: change["old"]
+                        for change in entry["fields"]}
+            labels = ", ".join(change["label"].lower()
+                               for change in entry["fields"])
+            say("Writing %s to %s on CanadianShopper..."
+                % (labels, entry["card"] or "that listing"), "cmd")
+            summary.configure(text="Writing %s..." % labels)
+
+            def work():
+                return cs_record.update(url, cookie, changes,
+                                        expect_id=entry["id"], listing=item,
+                                        proofs=proofs, expected=expected)
+
+            def done(result, error):
+                if error is not None:
+                    say("The fields could not be written: %s. Nothing was "
+                        "changed." % error, "err")
+                    summary.configure(text="The fields could not be written: "
+                                           "%s" % error)
+                    return
+                say(cs_record.sentence(result),
+                    "ok" if result.get("written") else "err")
+                if result.get("written"):
+                    #  The row on screen becomes the listing as it now stands,
+                    #  field by field, so what the panel shows is what the site
+                    #  read back.
+                    kept = {}
+                    for change in result.get("fields") or []:
+                        if change.get("verdict") != "written":
+                            continue
+                        field = change.get("field")
+                        if field == "priceCad":
+                            kept["price"] = cs_record.money(change.get("after"))
+                        elif field in ("title", "description",
+                                       "primaryImageUrl"):
+                            kept[field] = change.get("after")
+                        elif field == "inventory":
+                            kept["inventory"] = change.get("after")
+                    updated = cs_edit.apply_to_item(item, kept)
+                    state["items"] = [
+                        updated if (row is item or (
+                            str(row.get("id")) == str(item.get("id")))) else row
+                        for row in state["items"]]
+                    run_search()
+                summary.configure(text=cs_record.sentence(result))
+
+            in_background(app, work, done)
+
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=10, pady=(4, 10))
+        ttk.Button(buttons, text="Write the changed fields",
+                   command=submit).pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=top.destroy).pack(
+            side="right", padx=8)
+        top.protocol("WM_DELETE_WINDOW", top.destroy)
+        attach_tooltips(top)
+        app.wait_window(top)
+
+    fields_btn = ttk.Button(filter_row, text="Edit the record's fields...",
+                            command=edit_fields)
+    fields_btn.pack(side="left", padx=(8, 0))
+    add_tooltip(fields_btn, TOOLTIPS["Edit the record's fields..."])
+
+    price_btn = ttk.Button(filter_row, text="Set the selected listing's price...",
+                           command=set_the_price)
+    price_btn.pack(side="left", padx=(8, 0))
+    add_tooltip(price_btn, TOOLTIPS["Set the selected listing's price..."])
+
     diagnosis_btn = ttk.Button(filter_row, text="Save a read diagnosis...",
                                command=save_diagnosis)
     diagnosis_btn.pack(side="left", padx=(8, 0))
     add_tooltip(diagnosis_btn, TOOLTIPS["Save a read diagnosis..."])
+
+    def prove_field():
+        """Write one field, read it back, and put it back - the proof.
+
+        A field is not proven by a route advertising a method, nor by a write
+        the site accepts: only by a value the record shows afterwards, and the
+        old value showing again after the restore. One listing, one field, and
+        a value that says what it is for the seconds it is on the listing.
+        """
+        if not state["items"]:
+            messagebox.showinfo(
+                "Nothing read yet",
+                "Read CanadianShopper's listings first: a proof writes one "
+                "field on one listing, so it needs a listing to address.",
+                parent=box.winfo_toplevel())
+            return
+        item = selected()
+        if item is None:
+            return
+        listing_id = cs_edit.listing_id(item)
+        if not listing_id:
+            messagebox.showinfo(
+                "That listing has no id",
+                "The list carries no id for that listing, so there is no "
+                "record this app could address.\n\nNothing was written.",
+                parent=box.winfo_toplevel())
+            return
+        field = cs_proof.field_for(str(proof_var.get() or ""))
+        if field not in cs_proof.FIELD_LABELS:
+            messagebox.showinfo(
+                "Which field?",
+                "Choose the field to prove from the list beside the button. "
+                "Nothing was written.", parent=box.winfo_toplevel())
+            return
+        staged_url = ""
+        if field == "primaryImageUrl":
+            #  The image staging step's own output is the only safe photo to
+            #  write: it is this card, already prepared for the site, so the
+            #  seconds the listing shows it are seconds it shows the same card.
+            staged = cs_proof.staged_photo(
+                app.settings.get("pipeline_dir", str(WORK)),
+                str(item.get("name") or ""))
+            if staged:
+                say("The staged photo for this card is %s." % staged, "dim")
+            staged_url = str(simpledialog.askstring(
+                "The staged photo URL",
+                "The address of the staged photo of this card - the one the "
+                "image staging step prepared. It replaces the listing's main "
+                "photo for the seconds the proof runs and is then put back, so "
+                "it has to show the same card."
+                + ("" if staged else
+                   "\n\nNo staged photo was found for this card in the "
+                   "pipeline folder: run the image staging step, or paste the "
+                   "address here."),
+                initialvalue=staged,
+                parent=box.winfo_toplevel()) or "").strip()
+            if not staged_url:
+                say("No staged photo URL was given, so nothing was written.",
+                    "dim")
+                return
+        label = cs_proof.field_label(field)
+        named = str(item.get("name") or "that listing")
+        if not ask_yes(
+                "Write a proof to one listing?",
+                "%s\n\nThis writes one field - %s - on CanadianShopper, reads "
+                "the record back, and puts the old value back. It is a real "
+                "change to a live listing for the few seconds it takes, and it "
+                "is the only way to know whether the site honours that field."
+                "\n\nThe record's own id is the address. No product id is "
+                "used, no other field is sent, and your website is not "
+                "touched.\n\nWrite the proof now?" % (named, label)):
+            say("The proof was not confirmed; nothing was written.", "dim")
+            return
+        url = cs_edit.detail_url(listing_id, CS_HOME)
+        cookie = load_cookie_text() or ""
+        say("Proving %s on %s: writing one field, reading it back, putting it "
+            "back..." % (label.lower(), named), "cmd")
+        summary.configure(text="Proving %s on %s..." % (label.lower(), named))
+
+        def work():
+            return cs_proof.prove(field, url, cookie, staged_url=staged_url,
+                                  listing=item)
+
+        def done(result, error):
+            if error is not None:
+                say("The proof could not run: %s. Nothing was written." % error,
+                    "err")
+                summary.configure(text="The proof could not run: %s" % error)
+                return
+            good = cs_proof.proven(result)
+            say(cs_proof.sentence(result), "ok" if good else "err")
+            if result.get("verdict") == "written" and result.get("restored"):
+                #  This is the sentence a write path may be built on, so it
+                #  says outright what was settled and that it was put back.
+                say("%s is settled: the record kept the new value and the old "
+                    "one came back. That is the evidence an edit needs."
+                    % cs_proof.field_label(result.get("field")), "ok")
+            elif result.get("verdict") == "written":
+                say("The old value was not read back after the restore. Check "
+                    "that listing on CanadianShopper before anything else.",
+                    "err")
+            elif result.get("verdict") == "ignored":
+                say("The site answered but did not keep the value, so a write "
+                    "path must not be built on a 200 for %s alone."
+                    % cs_proof.field_label(result.get("field")), "dim")
+            text = cs_proof.report_text(result, listing=item,
+                                        app_version=VERSION)
+            path = cs_proof.proof_path(BASE)
+            saved = None
+            try:
+                path.write_text(text, encoding="utf-8")
+                saved = path
+            except OSError as exc:
+                say("Could not save the proof: %s" % exc, "err")
+            cs_proof.remember(BASE, result, listing=item)
+            summary.configure(text=cs_proof.sentence(result))
+            if cs_proof.proven(result):
+                #  The sentence that matters next: this panel can now write
+                #  that field, and only because the record showed it kept it.
+                say("%s can now be set from this panel: the proof is saved "
+                    "beside the app, and every write made on it is read back."
+                    % cs_proof.field_label(result.get("field")), "ok")
+            if saved is not None:
+                say("Proof saved: %s (no cookie, token or password is in it)."
+                    % saved, "dim")
+                if not open_path(saved):
+                    messagebox.showinfo(
+                        "Proof written",
+                        "Saved to:\n%s\n\nAttach it to the plugin report if "
+                        "the field is not honoured." % saved,
+                        parent=box.winfo_toplevel())
+
+        in_background(app, work, done)
+
+    proof_row = ttk.Frame(box)
+    proof_row.pack(anchor="w", pady=(4, 0))
+    ttk.Label(proof_row, text="Prove a field can be written:").pack(side="left")
+    proof_var = tk.StringVar(master=proof_row,
+                             value=cs_proof.field_label("priceCad"))
+    proof_box = ttk.Combobox(proof_row, textvariable=proof_var,
+                             state="readonly", width=14,
+                             values=cs_proof.labels())
+    proof_box.pack(side="left", padx=(6, 0))
+    prove_btn = ttk.Button(proof_row, text="Write the proof",
+                           command=prove_field)
+    prove_btn.pack(side="left", padx=(6, 0))
+    add_tooltip(prove_btn, TOOLTIPS["Write the proof"])
 
     list_frame = ttk.Frame(box)
     listing = tk.Listbox(list_frame, height=9, exportselection=False)

@@ -44,6 +44,8 @@ def load_harness():
 harness = load_harness()
 gui = harness.gui
 import cs_edit                                        # noqa: E402
+import cs_proof                                       # noqa: E402
+import cs_record                                      # noqa: E402
 import stock_compare                                  # noqa: E402
 
 #  A list as plugin 1.0.31 reports it: every listing keeps its own catalogue
@@ -615,6 +617,34 @@ def test_a_read_with_no_product_ids_at_all():
           cs_edit.nothing_editable(nothing) and
           not cs_edit.nothing_editable(items()) and
           not cs_edit.nothing_editable([]), "")
+    #  Once a proof has settled the price, "none can be edited here" is a
+    #  sentence that stops someone using the button that works: the price is
+    #  written to the record these rows already address.
+    proven = cs_edit.editable_note(0, len(nothing), price_proven=True)
+    check("with the price proven, the note names the fields that are blocked",
+          "no title, stock count or state" in proven, proven)
+    check("and says the price can be set from here",
+          "price" in proven and "can be set from here" in proven, proven)
+    check("without a proof it does not promise a price write",
+          "can be set from here" not in cs_edit.editable_note(0, len(nothing)),
+          cs_edit.editable_note(0, len(nothing)))
+    unaddressed = [{"id": row["id"], "title": row["title"]}
+                   for row in nothing]
+    check("a read with no listing addresses says so once, for the reader",
+          "No listing in that read carried its own address" in
+          cs_edit.address_gap(unaddressed) and
+          "1 listing)" in cs_edit.address_gap(unaddressed[:1]) and
+          cs_edit.address_gap(
+              [{"id": "a", "url": "https://cs.example/l/a"}]) == "",
+          cs_edit.address_gap(unaddressed)[:120])
+    gap = cs_edit.product_id_gap(nothing, plugin="1.0.39", works=False,
+                                 price_proven=True)
+    check("the gap sentence names the fields the plugin cannot send",
+          "cannot send a title, a stock count or a state" in gap, gap[:200])
+    check("and no longer claims no edit button can send anything",
+          "edit buttons cannot send anything" not in gap, gap[:200])
+    check("it points at the price button that does reach the row",
+          "Set the selected listing's price" in gap, gap[-300:])
 
     folder, app, parent = build_panel()
     with patch.object(gui, "TOOL_ACTION",
@@ -1096,7 +1126,7 @@ def test_the_diagnosis_file():
                                   stages=["read", "ids"], plugin="1.0.38",
                                   command="cs-stock.py --stock-out cs-stock.json",
                                   detail=detail, total=2596, editable=0,
-                                  app_version="3.20")
+                                  app_version="3.22")
     check("the file carries the reader's own count line",
           "2596 listings, 0 with a real product id" in text, "")
     check("the app's own count is beside it, so the two can be compared",
@@ -1551,7 +1581,7 @@ def test_the_real_diagnosis_from_the_shop():
                 "--cookie-file cookie.txt",
         detail={"url": cs_edit.detail_url(row["id"]), "status": 200,
                 "content_type": "application/json", "body": json.dumps(record)},
-        total=2596, editable=0, app_version="3.20",
+        total=2596, editable=0, app_version="3.22",
         source="the read this window made at 2026-11-02 13:03:59")
 
     check("the file no longer carries the progress markers",
@@ -1936,6 +1966,595 @@ def test_the_panel_writes_a_diagnosis():
           str(harness._BOX.shown[0][1]), str(harness._BOX.shown))
     check("and writes no file at all",
           not list(folder2.glob("cs-read-diagnosis-*.txt")), "")
+
+
+def test_the_panel_writes_a_proof():
+    """The proof button: one field on the listing on screen, put back.
+
+    The same rule as the diagnosis button - the person who has just been asked
+    "does the site honour this field" should not have to build the request by
+    hand - but this one *writes*, so what it writes has to be one field, on one
+    listing, addressed by the record's own id, and put back; and what it says
+    afterwards must never call a field proven when the record did not keep it.
+    """
+    print()
+    print("== 5i. the proof button writes one field and puts it back ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    rows = [{"id": "94b93f6040f5401daabaa9c936efa5a7", "product_id": 0,
+             "sku": "OPC1973-74-112", "title": "Jim Pappin #112",
+             "status": "active", "inventory": 1, "price": "12.50"}]
+    asked, questions = [], []
+
+    def fake_prove(field, url, cookie="", staged_url="", listing=None):
+        asked.append({"field": field, "url": url, "staged": staged_url,
+                      "listing": dict(listing or {})})
+        return {"field": field, "label": cs_proof.field_label(field),
+                "verdict": "written", "written": True, "restored": True,
+                "old": 12.5, "trial": "12.51", "restore": 12.5,
+                "after": "12.51", "final": 12.5, "status": 200,
+                "restore_status": 200, "url": url,
+                "why": "The site accepted the price and the record shows it.",
+                "steps": [{"step": "GET the record", "status": 200}],
+                "at": "2026-11-02 09:00:00"}
+
+    def yes(title, question, **kwargs):
+        questions.append((title, question))
+        return True
+
+    harness._BOX.shown[:] = []
+    harness._BOX.askyesno = yes
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(cs_proof, "prove", fake_prove):
+        find(parent, gui.ttk.Button,
+             "Read CanadianShopper's listings").invoke()
+        run = app.runs[-1]
+        Path(run["args"][1]).write_text(json.dumps({"items": rows}),
+                                       encoding="utf-8")
+        run["on_done"](0)
+        listing_box = next(widget for widget in parent.walk()
+                           if isinstance(widget, gui.tk.Listbox))
+        listing_box.selection_set(0)
+        app.lines[:] = []
+        find(parent, gui.ttk.Button, "Write the proof").invoke()
+
+    check("the field chooser offers every field a proof can settle",
+          any(set(cs_proof.labels()) <= set(widget.cget("values") or ())
+              for widget in parent.walk()
+              if isinstance(widget, gui.ttk.Combobox)),
+          str([widget.cget("values") for widget in parent.walk()
+               if isinstance(widget, gui.ttk.Combobox)]))
+    check("pressing it writes exactly one field on the listing on screen",
+          len(asked) == 1 and asked[0]["field"] == "priceCad",
+          str(asked))
+    check("and addresses the record's own id, never a product id",
+          asked[0]["url"] == "https://canadianshopper.ca/api/data/product/"
+          "94b93f6040f5401daabaa9c936efa5a7" and
+          "product_id" not in asked[0]["url"], str(asked[0]["url"]))
+    check("the question says it is a real change and what is not touched",
+          questions and "record's own id" in questions[0][1] and
+          "No product id is used" in questions[0][1] and
+          "website is not touched" in questions[0][1], str(questions))
+
+    proof_files = sorted(folder.glob("cs-proof-*.txt"))
+    check("a proof file is written beside the app", len(proof_files) == 1,
+          str(proof_files))
+    text = proof_files[0].read_text(encoding="utf-8") if proof_files else ""
+    check("with the listing, the field and the record's address in it",
+          "94b93f6040f5401daabaa9c936efa5a7" in text and
+          "Price (priceCad)" in text and
+          "/api/data/product/94b93f6040f5401daabaa9c936efa5a7" in text,
+          text[:400])
+    check("the cookie is used but never written into it",
+          "secret-value" not in text, text[:400])
+    check("what is settled is said out loud on the console",
+          any("is settled" in line for _tag, line in app.lines),
+          str(app.lines[-6:]))
+    check("and the console says where the proof went",
+          any("Proof saved" in line for _tag, line in app.lines),
+          str(app.lines[-6:]))
+    saved = cs_proof.load_proofs(folder)
+    check("the field is remembered as proven",
+          cs_proof.settled("priceCad", saved), str(saved))
+
+    #  The main photo is proven with a staged photo of the same card, so the
+    #  button asks for that address and passes it through.
+    proof_box = next(widget for widget in parent.walk()
+                     if isinstance(widget, gui.ttk.Combobox) and
+                     "Main photo" in (widget.cget("values") or ()))
+    opened = {}
+
+    def fake_askstring(title, question, **kwargs):
+        opened.update(dict(kwargs, title=title, question=question))
+        return kwargs.get("initialvalue") or ""
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(gui, "simpledialog") as dialog, \
+            patch.object(cs_proof, "staged_photo",
+                         lambda folder, title: ""), \
+            patch.object(cs_proof, "prove", fake_prove):
+        dialog.askstring = fake_askstring
+        proof_box._kw["textvariable"].set("Main photo")
+        find(parent, gui.ttk.Button, "Write the proof").invoke()
+    check("with no staged photo on disk the proof asks for the address",
+          "run the image staging step" in opened.get("question", ""),
+          str(opened.get("question")))
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(gui, "simpledialog") as dialog, \
+            patch.object(cs_proof, "staged_photo",
+                         lambda folder, title:
+                         "https://cs.example/api/file/staged.webp"), \
+            patch.object(cs_proof, "prove", fake_prove):
+        dialog.askstring = fake_askstring
+        find(parent, gui.ttk.Button, "Write the proof").invoke()
+    check("the image staging step's own photo is what the proof offers first",
+          opened.get("initialvalue") ==
+          "https://cs.example/api/file/staged.webp", str(opened))
+    check("and it is the address written, on the same one field",
+          asked[-1]["field"] == "primaryImageUrl" and
+          asked[-1]["staged"] == "https://cs.example/api/file/staged.webp",
+          str(asked[-1]))
+
+    #  Nothing read: a proof of nothing is worse than a word.
+    folder2, app2, parent2 = build_panel()
+    harness._BOX.shown[:] = []
+    harness._BOX.askyesno = lambda *a, **k: True
+    find(parent2, gui.ttk.Button, "Write the proof").invoke()
+    check("with nothing read it asks for a read instead of writing",
+          harness._BOX.shown and
+          "Read CanadianShopper's listings first" in
+          str(harness._BOX.shown[0][1]), str(harness._BOX.shown))
+    check("and writes no proof at all",
+          not list(folder2.glob("cs-proof-*.txt")), "")
+
+    #  A row with no id cannot be addressed - and a proof is a write, so it is
+    #  refused before anything is sent rather than guessed at.
+    folder3, app3, parent3 = build_panel()
+    cookie3 = folder3 / "cookie.txt"
+    cookie3.write_text("session_token=secret-value\n", encoding="utf-8")
+    harness._BOX.shown[:] = []
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie3), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(cs_proof, "prove", fake_prove):
+        find(parent3, gui.ttk.Button,
+             "Read CanadianShopper's listings").invoke()
+        run = app3.runs[-1]
+        Path(run["args"][1]).write_text(
+            json.dumps({"items": [{"name": "A row with no id",
+                                   "status": "active", "price": "5.00"}]}),
+            encoding="utf-8")
+        run["on_done"](0)
+        before = len(asked)
+        find(parent3, gui.ttk.Button, "Write the proof").invoke()
+    check("a listing with no record id is refused, not guessed at",
+          any("no id" in str(payload) for _kind, payload in harness._BOX.shown),
+          str(harness._BOX.shown))
+    check("and nothing was written for it", len(asked) == before, str(asked))
+    check("no proof file was made for it either",
+          not list(folder3.glob("cs-proof-*.txt")), "")
+    harness._BOX.askyesno = lambda *a, **k: False
+    #  Leave the module's dialog answers as the rest of the suite expects them.
+
+
+
+def test_the_panel_sets_a_proven_price():
+    """The price button: one listing, one field, and only after a proof.
+
+    The proof button settles the field; this one uses it. What the checks are
+    about is that the price is not a way around the rule - no proof means no
+    write, the record's own id is the address, and the answer the panel shows
+    is the price the record really holds afterwards.
+    """
+    print()
+    print("== 5k. the panel sets a price the proof settled ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+    rows = [{"id": "a2304e72dbca4e678e7111d011ade22d", "product_id": 0,
+             "title": "Wurmple SWSH11: Lost Origin", "sku": "PKM-006",
+             "status": "active", "inventory": 1, "price": "1.00"}]
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    def read_rows():
+        with patch.object(gui, "TOOL_ACTION",
+                          lambda action: "/plugins/cs/stock.py"), \
+                patch.object(gui, "CS_COOKIE_FILE", cookie), \
+                patch.object(gui, "in_background", sync_background), \
+                patch.object(gui, "BASE", folder):
+            find(parent, gui.ttk.Button,
+                 "Read CanadianShopper's listings").invoke()
+            run = app.runs[-1]
+            Path(run["args"][1]).write_text(json.dumps({"items": rows}),
+                                           encoding="utf-8")
+            run["on_done"](0)
+        listing_box = next(widget for widget in parent.walk()
+                           if isinstance(widget, gui.tk.Listbox))
+        listing_box.selection_set(0)
+        return listing_box
+
+    read_rows()
+    button = find(parent, gui.ttk.Button, "Set the selected listing's price...")
+    check("the panel offers to set the selected listing's price",
+          button is not None, "")
+
+    said, asked, written = [], [], []
+    harness._BOX.shown[:] = []
+    harness._BOX.askyesno = lambda *a, **k: asked.append(a) or True
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "simpledialog") as dialog, \
+            patch.object(cs_record, "write", lambda *a, **k: written.append(
+                (a, k)) or {"verdict": "written", "written": True,
+                            "after": 2.5, "old": 1.0, "field": "priceCad",
+                            "label": "Price", "id": rows[0]["id"]}):
+        dialog.askstring = lambda *a, **k: "2.50"
+        button.invoke()
+    check("without a saved proof the price is not written",
+          not written and not asked, str(written))
+    check("and the panel says which proof settles it",
+          harness._BOX.shown and
+          "Prove a field can be written" in str(harness._BOX.shown[0][1]),
+          str(harness._BOX.shown[:1]))
+
+    (folder / "cs-field-proofs.json").write_text(
+        json.dumps({"priceCad": {"at": "2026-11-02 15:34:38", "proven": True,
+                                 "verdict": "written", "restored": True,
+                                 "listing": rows[0]["id"],
+                                 "title": "Wurmple"}}), encoding="utf-8")
+    written[:] = []
+    asked[:] = []
+    harness._BOX.shown[:] = []
+    app.lines[:] = []
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "simpledialog") as dialog, \
+            patch.object(cs_record, "write", lambda *a, **k: written.append(
+                (a, k)) or {"verdict": "written", "written": True,
+                            "after": 2.5, "old": 1.0, "field": "priceCad",
+                            "label": "Price", "id": rows[0]["id"]}):
+        dialog.askstring = lambda *a, **k: "2.50"
+        button.invoke()
+    check("a proven price is written once, after a question",
+          len(written) == 1 and asked, str(written))
+    check("addressed at the record's own id, with the old price expected",
+          written and written[0][0][0] ==
+          "https://canadianshopper.ca/api/data/product/"
+          "a2304e72dbca4e678e7111d011ade22d" and
+          written[0][1].get("expect_id") == rows[0]["id"] and
+          written[0][1].get("expect_old") == "1.00", str(written))
+    check("the question names the price change and the promise",
+          asked and "1.00" in str(asked[0]) and "2.50" in str(asked[0]) and
+          "no product id" in str(asked[0]), str(asked))
+    check("only the one field is sent", written and
+          written[0][1].get("field", "priceCad") == "priceCad", "")
+    check("the console says what the site shows now",
+          any("2.50" in text for _tag, text in app.lines), str(app.lines[-4:]))
+
+    #  The price that is already there is not a change.
+    written[:] = []
+    said[:] = []
+    harness._BOX.shown[:] = []
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "simpledialog") as dialog, \
+            patch.object(cs_record, "write", lambda *a, **k: written.append(a)):
+        #  The panel applied the written price to the row, so the listing now
+        #  reads 2.50 - and that is the price it must refuse to write again.
+        dialog.askstring = lambda *a, **k: "2.50"
+        button.invoke()
+    check("typing the price the listing already has writes nothing",
+          not written and harness._BOX.shown, str(written))
+    check("and it says there is nothing to change",
+          "already shows" in str(harness._BOX.shown[0][1]),
+          str(harness._BOX.shown[:1]))
+
+    #  A zero is refused before anything is asked.
+    written[:] = []
+    harness._BOX.shown[:] = []
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "simpledialog") as dialog, \
+            patch.object(cs_record, "write", lambda *a, **k: written.append(a)):
+        dialog.askstring = lambda *a, **k: "0"
+        button.invoke()
+    check("a zero price is refused with the reason",
+          not written and harness._BOX.shown and
+          "zero" in str(harness._BOX.shown[0][1]).lower(),
+          str(harness._BOX.shown[:1]))
+    harness._BOX.askyesno = lambda *a, **k: False
+
+
+def test_the_edit_button_takes_the_price_road():
+    """A row the plugin cannot address is offered its price, not a dead end.
+
+    This is the console that prompted it: a read of 2,596 listings with no
+    product ids, *Edit the selected listing...*, and a form closed without
+    saving - while the price was already proven and writable on that very row.
+    Nothing here may open the four-field form for such a row.
+    """
+    print()
+    print("== 5l. Edit on a row with no product id goes to the price ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+    rows = [{"id": "a2304e72dbca4e678e7111d011ade22d", "product_id": 0,
+             "title": "#006/196 Wurmple SWSH11: Lost Origin - Pokemon TCG",
+             "sku": "PKM-006", "status": "active", "inventory": 1,
+             "price": "1.00"}]
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        read_into(app, folder, parent, payload=rows)
+    select(parent, "Wurmple")
+
+    said, written, asked = [], [], []
+    harness._BOX.shown[:] = []
+    harness._BOX.askyesno = lambda title, question, **k: (
+        asked.append((title, question)) or True)
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "simpledialog") as dialog, \
+            patch.object(cs_record, "write", lambda *a, **k: written.append(
+                (a, k)) or {"verdict": "written", "written": True,
+                            "after": 2.5, "old": 1.0, "field": "priceCad",
+                            "label": "Price", "id": rows[0]["id"]}):
+        dialog.askstring = lambda *a, **k: "2.50"
+        find(parent, gui.ttk.Button, "Edit the selected listing",
+             exact=False).invoke()
+    check("with no proof the edit form still opens, as it always did",
+          not written, str(written))
+
+    (folder / "cs-field-proofs.json").write_text(
+        json.dumps({"priceCad": {"at": "2026-11-02 15:34:38", "proven": True,
+                                 "verdict": "written", "restored": True,
+                                 "listing": rows[0]["id"],
+                                 "title": "Wurmple"}}), encoding="utf-8")
+    written[:] = []
+    asked[:] = []
+    harness._BOX.shown[:] = []
+    app.lines[:] = []
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "simpledialog") as dialog, \
+            patch.object(cs_record, "write", lambda *a, **k: written.append(
+                (a, k)) or {"verdict": "written", "written": True,
+                            "after": 2.5, "old": 1.0, "field": "priceCad",
+                            "label": "Price", "id": rows[0]["id"]}):
+        dialog.askstring = lambda *a, **k: "2.50"
+        find(parent, gui.ttk.Button, "Edit the selected listing",
+             exact=False).invoke()
+    check("with the price proven, Edit offers the price instead of the form",
+          asked and "price" in asked[0][0].lower(), str(asked))
+    check("and the question says which fields the plugin cannot send",
+          asked and "title, stock count or state" in str(asked[0][1]),
+          str(asked[:1]))
+    check("the price is then written to the record, once",
+          len(written) == 1 and written[0][0][0].endswith(rows[0]["id"]),
+          str(written))
+    check("the console never says the edit was closed without saving",
+          not any("closed without saving" in text for _tag, text in app.lines),
+          str(app.lines[-4:]))
+
+    #  Declining is a real answer: nothing written, and the way in is named.
+    written[:] = []
+    app.lines[:] = []
+    harness._BOX.askyesno = lambda *a, **k: False
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "simpledialog") as dialog, \
+            patch.object(cs_record, "write", lambda *a, **k: written.append(a)):
+        dialog.askstring = lambda *a, **k: "2.50"
+        find(parent, gui.ttk.Button, "Edit the selected listing",
+             exact=False).invoke()
+    check("declining writes nothing", not written, str(written))
+    check("and points at the button that does reach the row",
+          any("Set the selected listing's price" in text
+              for _tag, text in app.lines), str(app.lines[-3:]))
+    harness._BOX.askyesno = lambda *a, **k: True
+
+
+def test_a_form_of_every_proven_field():
+    """The panel's own form: one row per field, open only where a proof is.
+
+    The price write proved the road, and the road is the record's - so the
+    title, the description, the stock count and the main photo travel it too,
+    each behind the proof that settled it. What this checks is that the form
+    is that map: a proven field can be typed in, an unproven one is shown
+    with the button that would prove it, and only the fields changed are sent.
+    """
+    print()
+    print("== 5m. a form of every proven field ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+    row = {"id": "a2304e72dbca4e678e7111d011ade22d", "product_id": 0,
+           "title": "#006/196 Wurmple SWSH11: Lost Origin - Pokemon TCG",
+           "sku": "PKM-006", "status": "active", "inventory": 1,
+           "price": "1.00"}
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        read_into(app, folder, parent, payload=[row])
+    select(parent, "Wurmple")
+
+    (folder / "cs-field-proofs.json").write_text(json.dumps({
+        "priceCad": {"at": "2026-11-02 15:34:38", "proven": True,
+                     "verdict": "written", "restored": True,
+                     "listing": row["id"], "title": "Wurmple"},
+        "title": {"at": "2026-11-02 16:02:11", "proven": True,
+                  "verdict": "written", "restored": True,
+                  "listing": row["id"], "title": "Wurmple"}}),
+        encoding="utf-8")
+
+    sent, questions, shown = [], [], []
+    old_title = row["title"]
+    new_title = "#006/196 Wurmple SWSH11: Lost Origin - Pokemon TCG (NM)"
+
+    def press(window):
+        """Fill the proven title in, then press the form's write button."""
+        for widget in window.walk():
+            var = widget.cget("textvariable") if isinstance(
+                widget, gui.ttk.Entry) else ""
+            if var and hasattr(var, "get") and var.get() == old_title:
+                var.set(new_title)
+        button = next((w for w in window.walk()
+                       if isinstance(w, gui.ttk.Button) and
+                       str(w.cget("text")) == "Write the changed fields"), None)
+        if button is not None:
+            button.invoke()
+
+    harness._BOX.shown[:] = []
+    harness._BOX.askyesno = lambda title, question, **k: (
+        questions.append((title, question)) or True)
+    harness.PICKER["press"] = press
+
+    def fake_update(url, cookie_, changes, **kwargs):
+        sent.append((url, dict(changes), kwargs))
+        return {"verdict": "written", "written": True,
+                "card": "Wurmple", "id": row["id"],
+                "fields": [{"field": "title", "label": "Title",
+                            "verdict": "written", "old": old_title,
+                            "value": new_title, "after": new_title,
+                            "why": "Title now reads the new value."}]}
+
+    try:
+        with patch.object(gui, "BASE", folder), \
+                patch.object(gui, "CS_COOKIE_FILE", cookie), \
+                patch.object(gui, "in_background", sync_background), \
+                patch.object(cs_record, "update", fake_update):
+            find(parent, gui.ttk.Button,
+                 "Edit the record's fields...").invoke()
+    finally:
+        harness.PICKER["press"] = lambda window: None
+
+    check("the form opens on the record's own id and writes what changed",
+          len(sent) == 1 and sent[0][0].endswith(row["id"]), str(sent[:1]))
+    check("only the field that was typed in is sent",
+          len(sent) == 1 and list(sent[0][1]) == ["title"], str(sent[:1]))
+    check("and the record's own id is the address, not a product id",
+          sent and sent[0][2].get("expect_id") == row["id"] and
+          "/api/data/product/" in sent[0][0] and
+          "/api/products/" not in sent[0][0], str(sent[:1]))
+    check("the row's old value travels with the write, for the guard",
+          sent and sent[0][2].get("expected", {}).get("title") == old_title,
+          str(sent[:1]))
+    check("the confirmation names every change",
+          questions and new_title in questions[0][1], str(questions[:1]))
+    check("and it says the website is not touched",
+          questions and "website" in questions[0][1], str(questions[:1]))
+    check("the console says what changed, once",
+          any("Title" in text or "title" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+
+    #  A field with no proof is on the form, greyed, with the way to prove it:
+    #  a form that hid it would say the app writes less than it does.
+    shown_form = {}
+
+    def look(window):
+        shown_form["labels"] = [str(w.cget("text")) for w in window.walk()
+                                if isinstance(w, gui.ttk.Label)]
+        shown_form["buttons"] = [str(w.cget("text")) for w in window.walk()
+                                 if isinstance(w, gui.ttk.Button)]
+
+    harness.PICKER["press"] = look
+    try:
+        with patch.object(gui, "BASE", folder), \
+                patch.object(gui, "in_background", sync_background):
+            find(parent, gui.ttk.Button,
+                 "Edit the record's fields...").invoke()
+    finally:
+        harness.PICKER["press"] = lambda window: None
+    check("the unproven fields are on the form, named",
+          any("Description" in text for text in shown_form.get("labels", []))
+          and any("Main photo" in text
+                  for text in shown_form.get("labels", [])),
+          str(shown_form.get("labels")))
+    check("each one offers the proof that would open it",
+          shown_form.get("buttons", []).count("Prove this field...") == 3,
+          str(shown_form.get("buttons")))
+    check("and the form says what is proven and what is never sent",
+          any("Proven writable here" in text and "never sent" in text
+              for text in shown_form.get("labels", [])),
+          str(shown_form.get("labels")))
+
+    #  A long field the stock list does not carry: proven, so typeable - and
+    #  the form has to say that typing there replaces the whole description,
+    #  because the empty box is not the same fact as an empty description.
+    proofs = json.loads((folder / "cs-field-proofs.json").read_text())
+    proofs["description"] = {"at": "2026-11-02 16:20:00", "proven": True,
+                             "verdict": "written", "restored": True,
+                             "listing": row["id"], "title": "Wurmple"}
+    (folder / "cs-field-proofs.json").write_text(json.dumps(proofs),
+                                                 encoding="utf-8")
+    shown_form.clear()
+    harness.PICKER["press"] = look
+    try:
+        with patch.object(gui, "BASE", folder), \
+                patch.object(gui, "in_background", sync_background):
+            find(parent, gui.ttk.Button,
+                 "Edit the record's fields...").invoke()
+    finally:
+        harness.PICKER["press"] = lambda window: None
+    check("a proven field the row does not carry is typeable all the same",
+          any("Description" in text for text in shown_form.get("labels", [])),
+          str(shown_form.get("labels")))
+    check("and the form says typing there replaces the whole description",
+          any("replaces the whole description" in text
+              for text in shown_form.get("labels", [])),
+          str(shown_form.get("labels")))
+    check("while the photo, still unproven, offers its proof",
+          shown_form.get("buttons", []).count("Prove this field...") == 2,
+          str(shown_form.get("buttons")))
 
 
 def test_the_panel_quotes_the_readers_resolution():
@@ -2620,6 +3239,10 @@ def main():
     test_the_list_says_which_plugin_read_it()
     test_the_editing_panel_says_what_stopped_a_read()
     test_the_panel_writes_a_diagnosis()
+    test_the_panel_writes_a_proof()
+    test_the_panel_sets_a_proven_price()
+    test_the_edit_button_takes_the_price_road()
+    test_a_form_of_every_proven_field()
     test_the_panel_quotes_the_readers_resolution()
     test_the_evidence_outlives_the_window()
     test_the_panel_reads_and_lists()

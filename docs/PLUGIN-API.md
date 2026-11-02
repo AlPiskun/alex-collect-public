@@ -770,6 +770,105 @@ refuses an ambiguous match, sends only fields proven accepted, and leaves the
 existing `/api/products/<product_id>/` behaviour untouched for records that do
 carry an explicit product reference. Until then the updater does not change.
 
+**Proving a field, one listing at a time.** A `PATCH` that advertises itself,
+or a vendor's own tool seen writing a field, settles the method and that one
+field; every other field still needs the controlled, reversible change above.
+**Prove a field can be written** - beside **Save a read diagnosis...** in the
+edit panel - runs exactly that proof:
+
+- one listing, chosen in the list, addressed at
+  `/api/data/product/<listing-id>`: the record's own id, never called
+  `product_id`, and never the product id from `/api/products/<product_id>/`;
+- exactly one field per run: `priceCad`, `title`, `description`, `inventory`, or
+  `primaryImageUrl`;
+- the trial value is marked and reversible - a cent above the price, ` PROOF`
+  on the title (cut first when the title is near a marketplace's limit), one
+  dated marker line on the description, one more card on the count, and for the
+  main photo a URL from the image staging step that shows the same card, since
+  a proof must not show a shopper a different picture. That URL is found in the
+  pipeline folder's staged `canadianshopper_import_*.csv` (the newest batch
+  first, by the card's exact title, and only an `/api/file/` row the staging
+  step has already rewritten), or pasted by hand when no staged row exists;
+- the record is read first and the plan is made from **that** read, so a value
+  changed in the dashboard while the panel was open is never "restored" to an
+  older one;
+- `status` is never proven: archiving a live listing and putting it back is not
+  the same record it was, and a visibility change is not something a proof
+  should do to a live listing to find out;
+- the old value is written back and the record is read a third time, so the
+  verdict separates the three answers a site gives: **written** (the record
+  shows the trial value), **ignored** (the site answered 200 and the record did
+  not change - a 200 is never proof on its own), and **refused** (not a 2xx),
+  plus unreadable/unknown when a read fails. A write that cannot be read back
+  is not called proven, and the old value is put back anyway.
+
+Each proof writes a small `cs-proof-<date>.txt` beside the app - the listing,
+the record's address, the field, before / wrote / read back / put back / final,
+every status and what it settles, with no cookie, token or password - and
+`cs-field-proofs.json` remembers which fields the last proof left written **and
+put back**. A refusal, an ignored write or a failed restore replaces that entry:
+a proof that stopped being true is worse than none.
+
+**What a proof licenses: the record write path.** `priceCad` has that evidence
+on this shop - a proof written to `/api/data/product/a2304e72…`, read back as
+`1.01`, restored to `1`, and read back again as `1` - so the price is the one
+field confirmed written on the listing-record road (`cs_record.py`) today. The
+road itself is not the price's: every field the proof module can settle -
+`priceCad`, `title`, `description`, `inventory` and `primaryImageUrl` - travels
+it, and each one opens only when its own proof is saved, so the list of
+writable fields is whatever `cs-field-proofs.json` says it is. `status` never
+travels it (`cs_proof.UNPROVABLE`), for the reason the proof module gives.
+Every write on it is gated on the proof file, not on a version number:
+
+- **no saved proof, no write.** `cs-field-proofs.json` is read before every
+  write; a field whose last proof was refused, ignored or failed to restore is
+  not written. Delete the file and the path closes again.
+- **the record's own id is the address**, and the record must name that same
+  id. A record at that address naming a different id - or no id at all - is
+  never written, however sure the panel is about the listing.
+- **the values the person confirmed must still be there.** The record is read
+  before the write; if it now shows another price, title, description or stock
+  count, nothing is sent and the panel says what it found. A confirmation
+  about `8.50` can never become a write of something else. (The main photo is
+  exempt from that comparison, not from the read: a catalogue row carries the
+  shop's own URL while the record carries the site's hosted file, so a
+  difference there is normal - the read-back still proves what happened.)
+- **only the changed fields are sent, in one request.** A form saved untouched
+  sends nothing; a form that changed the price and the title sends
+  `{"priceCad": "12.50", "title": "..."}` and nothing else, so no field can
+  move with another.
+- **read back after the write, field by field.** `written` means the record
+  shows the new value for that field; a 2xx whose read-back still shows the old
+  one is reported as *ignored* for that field and the edit as *partial* if
+  another field was kept; a write whose read-back cannot be read is *unknown*,
+  and says so rather than claiming success.
+- **a zero price is refused** (a marketplace zero is almost always a mistake),
+  and so is a negative or non-whole stock count, an empty or over-80-character
+  title, a description emptied by accident, and a main photo that is not an
+  `http(s)` address. The website is never touched.
+
+A row the plugin cannot address is routed, not dead-ended: with at least one
+proven field, **Edit the selected listing...** says that the plugin's edit form
+cannot send a title, stock count or state and offers the record road instead -
+the price dialog when the price is all that is proven, the field form when more
+is - and the read's summary names the fields that are blocked rather than
+saying "none can be edited here".
+A read in which no listing carries its own address is reported once as a reader
+gap - the same way a read with no product ids is - so the vendor's author gets
+the version and count line that explains it.
+
+The price is offered in two places - the CanadianShopper edit panel for one
+listing (the road that works when the vendor reports no product id), and the
+stock comparison panel for every compared card whose price differs (each
+written and read back on its own, one listing at a time, so a wrong id cannot
+take a run with it). The edit panel's **Edit the record's fields...** is the
+form for all five: every provable field on one screen, filled with what the row
+says it holds, a proven field typeable, an unproven one greyed with **Prove
+this field...** beside it. The edit panel still writes title, stock and state
+through `marketplace.listing_update` and `/api/products/<product_id>/` for rows
+that have a product id - two roads to the same listing, and the record road
+needs no id at all. No unattended or scheduled write is added for any field.
+
 **A hard-failure report, if the failures turn out to be deterministic.** The
 counts do not say which listings failed, and a read caches no failures, so a
 re-read repeats every unresolved detail request. If the same listings fail

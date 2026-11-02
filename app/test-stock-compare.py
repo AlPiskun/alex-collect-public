@@ -516,6 +516,125 @@ def test_panel():
           not listing.items, str(listing.items))
 
 
+
+def test_the_panel_reprices_a_proven_field():
+    """Repricing: the price difference is the reason, the proof is the gate.
+
+    The list on the panel is about stock, so a card whose counts agree but
+    whose price does not is still a card to reprice - which is why this button
+    works from the pairs and not from the rows. What it must never do is write
+    without a proof, write a card whose website price is unreadable, or write
+    anything at all before the question was answered.
+    """
+    print()
+    print("== 8j. the panel reprices what differs, once it is proven ==")
+    folder, app, parent = build_panel()
+    products = [
+        {"id": 11, "name": "1989 O-Pee-Chee Wayne Gretzky #1", "sku": "GR-1",
+         "manage_stock": True, "stock_quantity": 2, "type": "simple",
+         "price": "12.50"},
+        {"id": 12, "name": "1966-67 Topps Bobby Orr #35", "sku": "BO-35",
+         "manage_stock": True, "stock_quantity": 1, "type": "simple",
+         "price": "40.00"},
+    ]
+    listings = [
+        {"id": "cs-a", "title": "1989 O-Pee-Chee Wayne Gretzky #1",
+         "sku": "GR-1", "inventory": 2, "price": "8.50"},
+        {"id": "cs-b", "title": "1966-67 Topps Bobby Orr #35", "sku": "BO-35",
+         "inventory": 1, "price": "40.00"},
+    ]
+
+    def fetch_ok(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    compare = find(parent, gui.ttk.Button, "Compare stock", exact=False)
+    out = folder / "cs-stock.json"
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_ok), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        compare.invoke()
+        out.write_text(json.dumps({"items": listings}), encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+    listing = next((w for w in parent.walk()
+                    if isinstance(w, gui.tk.Listbox)), None)
+    check("a card whose counts agree is not on the stock list",
+          listing is not None and not listing.items,
+          str(listing and listing.items))
+
+    button = find(parent, gui.ttk.Button,
+                  "Set CanadianShopper to the website's prices...")
+    check("the panel offers to set the site's prices", button is not None, "")
+
+    said, asked, sent = [], [], []
+    harness._BOX.showinfo = lambda *a, **k: said.append(a)
+    harness._BOX.askyesno = lambda *a, **k: asked.append(a) or True
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui.cs_record, "write_all",
+                         lambda *a, **k: sent.append((a, k)) or []):
+        button.invoke()
+    check("with no proof nothing is sent", not sent and said, str(sent))
+    check("and it says which proof has to run first",
+          "Prove a field can be written" in str(said), str(said[-1:]))
+    check("and asks nothing about writing", not asked, str(asked))
+
+    proof_folder = folder
+    (proof_folder / "cs-field-proofs.json").write_text(
+        json.dumps({"priceCad": {"at": "2026-11-02 15:34:38",
+                                 "proven": True, "verdict": "written",
+                                 "restored": True, "listing": "cs-a",
+                                 "title": "Gretzky"}}), encoding="utf-8")
+    said[:] = []
+    asked[:] = []
+    sent[:] = []
+    cookie = proof_folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui.cs_record, "write_all",
+                         lambda *a, **k: sent.append((a, k)) or [
+                             {"verdict": "written", "written": True,
+                              "card": "1989 O-Pee-Chee Wayne Gretzky #1",
+                              "field": "priceCad", "label": "Price",
+                              "after": 12.5, "old": 8.5}]):
+        button.invoke()
+    check("a proven price asks first, naming the change",
+          asked and "8.50" in asked[0][1] and "12.50" in asked[0][1],
+          str(asked))
+    check("the question says the website is not changed",
+          asked and "Your website is not changed" in str(asked[0]),
+          str(asked[0]))
+    items = sent[0][0][0] if sent else []
+    check("only the card whose price differs is written",
+          [item["id"] for item in items] == ["cs-a"], str(items))
+    check("with the website's price and the old one for the confirmation",
+          items and (items[0]["old"], items[0]["price"]) == ("8.50", "12.50"),
+          str(items))
+    check("the write is given the proof and the person's session",
+          sent and sent[0][1] and sent[0][1].get("proofs") and
+          sent[0][0][1] == "session_token=secret-value", str(sent[0][1]))
+
+    said[:] = []
+    asked[:] = []
+    app.lines[:] = []
+    harness._BOX.askyesno = lambda *a, **k: False
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui.cs_record, "write_all",
+                         lambda *a, **k: sent.append((a, k)) or []):
+        before = len(sent)
+        button.invoke()
+    check("declining writes nothing",
+          len(sent) == before and
+          any("not confirmed" in text for _tag, text in app.lines),
+          str(app.lines[-2:]))
+    harness._BOX.askyesno = lambda *a, **k: True
+    harness._BOX.showinfo = lambda *a, **k: None
+
 def test_the_cookies_canadian_shopper_is_told_about():
     print()
     print("== 8b. the stock read is told which cookie to use ==")
@@ -4467,6 +4586,7 @@ def main():
     test_differences()
     test_words()
     test_panel()
+    test_the_panel_reprices_a_proven_field()
     test_the_cookies_canadian_shopper_is_told_about()
     test_one_card()
     test_actions()
