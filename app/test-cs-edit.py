@@ -626,6 +626,9 @@ def test_a_read_with_no_product_ids_at_all():
     check("and the console explains it is the reader, not this list",
           any("reader is not reporting one" in text
               for _tag, text in app.lines), str(app.lines[-3:]))
+    check("and points at the one button that gathers the evidence for it",
+          any('Press "Save a read diagnosis..."' in text
+              for _tag, text in app.lines), str(app.lines[-3:]))
 
     find(parent, gui.ttk.Button, "Search").invoke()
     select(parent, "Watson")          # archived, so a change is available
@@ -912,6 +915,686 @@ def test_what_the_read_did_carry():
           str(len(listing_box(parent).items)))
 
 
+def test_the_readers_own_numbers():
+    """The run that started this: 2,596 listings, 0 with a real product id.
+
+    Plugin 1.0.38 printed its own line for exactly that -
+    ``stock.list: 2596 listings, 0 with a real product id, 2596 without the
+    key, 0 reported as 0`` - and the panel's answer has to quote it: the
+    numbers are what a defect report is built from, and "without the key" is a
+    different problem from a reader writing a placeholder zero.
+    """
+    print()
+    print("== 5d4. what the reader said it found ==")
+    line = ("stock.list: 2596 listings, 0 with a real product id, 2596 "
+            "without the key, 0 reported as 0")
+    check("the reader's count line is read as four numbers",
+          cs_edit.reader_id_counts(line) == (2596, 0, 2596, 0),
+          str(cs_edit.reader_id_counts(line)))
+    check("a line for one listing is read too",
+          cs_edit.reader_id_counts(
+              "stock.list: 1 listing, 0 with a real product id, 1 without "
+              "the key, 0 reported as 0") == (1, 0, 1, 0), "")
+    check("a console with no such line says nothing rather than inventing one",
+          cs_edit.reader_id_counts("Stock read finished.") is None and
+          cs_edit.reader_says_note("Stock read finished.") == "", "")
+
+    said = cs_edit.reader_says_note(line)
+    check("the sentence quotes the reader's own numbers",
+          "2596 listings" in said and "0 with a real product id" in said and
+          "2596 without the key at all" in said and
+          "0 reported as 0" in said, said)
+
+    rows = [{"id": "a%04d" % n, "sku": "OPC73-%d" % n,
+             "url": "https://canadianshopper.ca/l/%d" % n,
+             "title": "card %d" % n} for n in range(2596)]
+    gap = cs_edit.product_id_gap(rows, plugin="1.0.38", needed="1.0.34",
+                                 reader_text=line)
+    check("the gap sentence carries the reader's line", said in gap, gap)
+    check("and says this read was not the list-only one",
+          "not the fast, list-only one" in gap and
+          "never asks for that flag" in gap, gap)
+    check("so the lookups are the thing to report, not the shop",
+          "came back empty" in gap, gap)
+    check("the version sentence is still there, after it",
+          gap.index(said) < gap.index("defect in the reader"), gap)
+    check("and what still works comes last",
+          gap.index("came back empty") < gap.index("still work"), gap)
+
+    #  A read whose lookups failed says that instead - the two sentences point
+    #  at different things, and only one of them is a plugin defect.
+    failed = cs_edit.ids_were_asked_for_note(text_has_lookups=True)
+    check("a read with failed lookups names the failures",
+          "reports failures above" in failed and
+          "came back empty" not in failed, failed)
+    check("and a read without any says the lookups never ran or came back "
+          "empty",
+          "either did not run or came back empty" in
+          cs_edit.ids_were_asked_for_note(False), "")
+
+    #  The comparison panel asks for the list-only read. Its rows come back
+    #  with no ids by design, and this sentence must never be printed there.
+    check("a gap with no reader line says nothing about which read it was",
+          "list-only" not in cs_edit.product_id_gap(rows, plugin="1.0.38",
+                                                   needed="1.0.34"), "")
+
+
+def test_the_diagnosis_file():
+    """The three things the plugin's author asked for, and the sanitiser.
+
+    A round trip with the reader's author ended in *send the console output,
+    whether the ids phase appeared, and one row with its detail response* -
+    the plugin could not reproduce 0 ids, which means the next answer has to
+    be evidence rather than another theory. Everything below is what makes
+    that file safe to paste: the row's shape without its secrets, and a detail
+    request that answers instead of raising.
+    """
+    print()
+    print("== 5d5. the file a plugin author asked for ==")
+
+    #  ---- the sanitiser: shapes, not accounts
+    secret = cs_edit.sanitize({"sessionToken": "abc123", "title": "Walt Tkaczuk"})
+    check("a key that names a secret has its value hidden, not printed",
+          "hidden" in secret and "abc123" not in secret, secret)
+    long_text = cs_edit.sanitize({"title": "W" * 120})
+    check("a long string is cut, and still says how long it was",
+          "str(120)" in long_text and "W" * 60 not in long_text and
+          "\u2026" in long_text, long_text)
+    check("a zero is kept as a zero: that is the question being asked",
+          "product_id: int 0" in cs_edit.sanitize({"product_id": 0}), "")
+    many = cs_edit.sanitize({"images": list(range(30))})
+    check("a long list is capped and says how many were left out",
+          "... 18 more" in many and "29" not in many, many)
+    deep = cs_edit.sanitize({"a": {"b": {"c": {"d": "e"}}}})
+    check("nesting stops at three, as an object with a key count",
+          "object(1 keys)" in deep and "d:" not in deep, deep)
+
+    #  ---- which key (if any) is the product reference
+    check("a key holding zero is reported as a key - and as not an id",
+          cs_edit.product_reference_keys({"product_id": 0}) ==
+          [("product_id", "zero - not an id")], "")
+    check("a real id is reported present",
+          cs_edit.product_reference_keys({"product_id": "4321"}) ==
+          [("product_id", "present")], "")
+    check("an empty key is told apart from a missing one",
+          cs_edit.product_reference_keys({"product_id": ""}) ==
+          [("product_id", "empty")], "")
+    check("a row with no product key at all reports nothing",
+          cs_edit.product_reference_keys({"id": "a1", "sku": "X"}) == [], "")
+    check("the camel-case spelling is found too",
+          cs_edit.product_reference_keys({"productId": 7}) ==
+          [("productId", "present")], "")
+
+    #  ---- whether the reader's own progress says its lookups ran
+    ran = cs_edit.phases_note(["read", "ids"])
+    check("a reported ids phase means the lookups ran",
+          "the lookups ran" in ran and "not usable" in ran, ran)
+    failed = cs_edit.phases_note(["read", "ids"], 3)
+    check("and with failures said, it says some of them failed",
+          "some of them failed" in failed and "not usable" not in failed,
+          failed)
+    missing = cs_edit.phases_note(["read", "list"])
+    check("phases without an id phase mean the lookups never started",
+          "did not run at all" in missing and "ids" not in missing, missing)
+    none = cs_edit.phases_note([])
+    check("a reader that reports no phases is said to report none",
+          "no progress phases at all" in none, none)
+
+    #  ---- the one address, and the listing id it is built from
+    check("the detail address is the one the plugin's reader uses",
+          cs_edit.detail_url("94b93f60") ==
+          "https://canadianshopper.ca/api/data/product/94b93f60", "")
+    check("a base with a trailing slash does not double it",
+          cs_edit.detail_url("abc", base="https://x.example/") ==
+          "https://x.example/api/data/product/abc", "")
+    check("no listing id, no address to call",
+          cs_edit.detail_url("") == "", "")
+    check("a row's own id is not its product id",
+          cs_edit.listing_id({"id": "14effcaceb8a", "product_id": 4321}) ==
+          "14effcaceb8a", "")
+
+    #  ---- one request, answering instead of raising
+    seen = []
+
+    def opener(url, cookie):
+        seen.append((url, cookie))
+        return 200, "application/json", '{"product": {"id": "999"}}'
+
+    check("the request is made and its answer handed back",
+          cs_edit.fetch_detail("https://cs.example/api/data/product/x",
+                              "session_token=z", opener=opener) ==
+          (200, "application/json", '{"product": {"id": "999"}}'), "")
+    check("and it was made with the person's own session",
+          seen and seen[0][1] == "session_token=z", str(seen))
+    check("no address, no request at all",
+          cs_edit.fetch_detail("", "cookie", opener=opener) == (0, "", "") and
+          len(seen) == 1, str(seen))
+
+    def refusing(url, cookie):
+        raise OSError("no route to host")
+
+    import urllib.error
+    with patch.object(urllib.request, "urlopen",
+                      side_effect=urllib.error.URLError("dns")):
+        answer = cs_edit.fetch_detail("https://cs.example/api/data/product/x")
+    check("a request that cannot be made is an answer, never an exception",
+          answer[0] == 0 and "dns" in answer[2], str(answer))
+
+    #  ---- the file itself
+    row = {"id": "94b93f6040f5401daabaa9c936efa5a7", "product_id": 0,
+           "sku": "OPC1973-74-112", "sessionToken": "abc123",
+           "title": "1973-74 O-Pee-Chee Jim Pappin #112", "images": []}
+    output = ("stock.list: 2596 listings, 0 with a real product id, 2596 "
+              "without the key, 0 reported as 0\nStock resolution: 2596 "
+              "detail requests, 0 usable references, 2596 HTTP 200s without a "
+              "usable reference, 0 ambiguous SKUs, 0 hard failures")
+    detail = {"url": cs_edit.detail_url("94b93f60"), "status": 200,
+              "content_type": "application/json",
+              "body": json.dumps({"product": {"id": "999"}, "sku": "OPC-1",
+                                  "owner": {"email": "a@b.c"}})}
+    text = cs_edit.diagnosis_text(row=row, output=output,
+                                  stages=["read", "ids"], plugin="1.0.38",
+                                  command="cs-stock.py --stock-out cs-stock.json",
+                                  detail=detail, total=2596, editable=0,
+                                  app_version="3.20")
+    check("the file carries the reader's own count line",
+          "2596 listings, 0 with a real product id" in text, "")
+    check("the app's own count is beside it, so the two can be compared",
+          "2596 listing(s), 0 with a usable product id" in text, "")
+    check("the phases are in it, with the sentence they mean",
+          "Phases the reader reported: read, ids" in text and
+          "the lookups ran" in text, "")
+    check("so is the row, with every product-reference key priced",
+          "product_id (zero - not an id)" in text and "sku:" in text, "")
+    check("and the detail request, with its status and its answer",
+          "GET https://canadianshopper.ca/api/data/product/94b93f60" in text
+          and "HTTP 200, application/json" in text and
+          'product:' in text, "")
+    check("the command the app ran is in it, because the flag matters",
+          "cs-stock.py --stock-out cs-stock.json" in text, "")
+    check("and nothing in it is a session: the token and the email are gone",
+          "abc123" not in text and "a@b.c" not in text, "")
+    folder_of_test = Path(tempfile.mkdtemp())
+    first = cs_edit.diagnosis_path(folder_of_test)
+    second = cs_edit.diagnosis_path(folder_of_test)
+    check("before anything is written, two calls name the same file",
+          first == second and first.name.startswith("cs-read-diagnosis-") and
+          first.name.endswith(".txt"), "%s / %s" % (first.name, second.name))
+    first.write_text("one", encoding="utf-8")
+    third = cs_edit.diagnosis_path(folder_of_test)
+    check("after one is written, the next goes beside it, nothing replaced",
+          third != first and third.name.endswith("-2.txt") and
+          first.read_text(encoding="utf-8") == "one",
+          "%s / %s" % (first.name, third.name))
+    #  A real diagnosis came back with "... 26 more key(s)" where the answer
+    #  was: a 38-key detail record, and the product reference could have been
+    #  in any of the hidden ones. A cap that hides a key name hides the answer.
+    wide = {"id": "a2304e72dbca", "title": "Wurmple", "category": "cards"}
+    for number in range(1, 31):
+        wide["field%02d" % number] = number
+    wide["productId"] = "the-product"
+    wide["sessionToken"] = "abc123"
+    body = cs_edit._body_for_diagnosis(json.dumps(wide))
+    check("a 38-key detail record is shown key by key, not counted",
+          "productId:" in body and "field30:" in body, body[-300:])
+    check("and its secret is still hidden at key 35",
+          "abc123" not in body and "sessionToken: (hidden" in body,
+          body[-200:])
+    narrow = cs_edit.sanitize(dict(("k%02d" % n, n) for n in range(20)))
+    check("a capped record names what it did not print",
+          "... 8 more key(s), names only:" in narrow and "k19" in narrow and
+          "k12: int" not in narrow, narrow)
+
+    #  ---- does the record name a product anywhere, or nowhere at all
+    found = cs_edit.productish_keys({"productId": "9", "product": {"id": 1},
+                                     "category": "x", "products": [1, 2]})
+    check("every key mentioning a product is found, in any spelling",
+          [key for key, _state in found] == ["productId", "product",
+                                             "products"], str(found))
+    check("and what it holds is described, not pasted",
+          found[0][1] == 'str(1) "9"' and
+          found[1][1] == "a record with 1 key(s)" and
+          found[2][1] == "a list of 2", str(found))
+    check("a record naming no product says so rather than saying nothing",
+          cs_edit.productish_keys({"id": "a", "category": "b"}) == [], "")
+    silent = cs_edit.diagnosis_text(
+        row={"id": "a", "sku": ""}, detail={"url": "u", "status": 200,
+                                            "body": json.dumps({"id": "a"})})
+    check("a detail response with no product key is called that in the file",
+          "No key in that response names a product" in silent, silent)
+    named = cs_edit.diagnosis_text(
+        row={"id": "a", "sku": "OPC-1"},
+        detail={"url": "u", "status": 200,
+                "body": json.dumps({"id": "a", "productId": "9"})})
+    check("and one that does names the key, what is in it, and that it holds "
+          "an id",
+          "Keys in that response that mention a product: productId" in named and
+          "one of them holds an id: productId" in named, named)
+
+    nested = cs_edit.diagnosis_text(
+        row={"id": "a", "product": {"id": 1}, "product_id": 0})
+    check("a row naming its product in a key that is not an id says so",
+          "Also naming a product: product (a record with 1 key(s))" in nested,
+          nested)
+    check("and the id-shaped key is not printed twice",
+          "Also naming a product: product_id" not in nested, nested)
+    check("a row with no such key gets no extra line",
+          "Also naming a product" not in named, named)
+
+    #  The real 38-key record from this shop: two keys mention a product, both
+    #  null. Saying "names a product" about them would read as a lead.
+    cart = {"id": "a2304e72dbca", "title": "Wurmple", "sku": "",
+            "isDemoProduct": None, "productOptions": None,
+            "availableSizes": [], "tags": None}
+    cart_text = cs_edit.diagnosis_text(
+        row={"id": "a2304e72dbca", "sku": ""},
+        detail={"url": "u", "status": 200, "body": json.dumps(cart)})
+    check("a key like isDemoProduct is reported, but not as holding an id",
+          "isDemoProduct (empty)" in cart_text and
+          "productOptions (empty)" in cart_text and
+          "none of them holds an id" in cart_text, cart_text[-600:])
+
+    #  ---- the row's SKU is what a reader resolves by: empty is a fact
+    check("an empty SKU on the row is said to be empty - and not blamed",
+          "The listing's SKU is empty" in silent and
+          "not the reason an id is absent" in silent, silent)
+    check("a row with a SKU is not told it has none",
+          "SKU is empty" not in named, named)
+    check("and a row that carries no SKU key at all says nothing about it",
+          "SKU is empty" not in cs_edit.diagnosis_text(row={"id": "a"}), "")
+    check("the reader's resolution line is in the file, quoted",
+          "The reader's resolution line: Stock resolution: 2596 detail "
+          "requests" in text, text[:800])
+    check("and its numbers are turned into the sentence they mean",
+          "vendor's data rather than a defect in the reader" in text and
+          "no read of this shop produces a product id" in text, text[:900])
+    check("so the file never calls that read a reader defect",
+          "is a defect in the reader" not in text, text[:900])
+    check("and it says what that verdict costs: these rows cannot be edited",
+          "not something reading again can fix" in text and
+          "vendor dashboard" in text, text[:1200])
+    check("a detail response naming no product agrees with those counts",
+          "same answer as the reader's own resolution line" in text,
+          text[-500:])
+
+    #  A plugin that cannot print the counts is told which one does.
+    quiet = cs_edit.diagnosis_text(row=row, output="stock.list: 20 listings",
+                                   plugin="1.0.38")
+    check("a 1.0.38 read's missing resolution line names the version that "
+          "prints one",
+          "(none printed - plugin 1.0.39 prints its own resolution counts"
+          in quiet, quiet[:600])
+    plain = cs_edit.diagnosis_text(row=row, output="", plugin="1.0.39")
+    check("and a current one just says none was printed",
+          "The reader's resolution line: (none printed)" in plain and
+          "prints its own" not in plain, plain[:600])
+
+    #  ---- whether the vendor's own route can be written at all: asked, not assumed
+    check("an Allow header is read into method names, in a stable order",
+          cs_edit.allowed_methods("get, HEAD , patch") ==
+          ["GET", "HEAD", "PATCH"], cs_edit.allowed_methods("get, HEAD , patch"))
+    check("an empty header is no methods at all",
+          cs_edit.allowed_methods("") == [] and
+          cs_edit.allowed_methods(None) == [], "")
+
+    class FakeResponse:
+        status = 200
+        headers = {"Allow": "GET, HEAD, PATCH",
+                   "Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self, *_args):
+            return b"{}"
+
+    import urllib.request as urlreq
+    seen_requests = []
+
+    def answer(request, timeout=0):
+        seen_requests.append(request)
+        return FakeResponse()
+
+    with patch.object(urlreq, "urlopen", answer):
+        probe = cs_edit.fetch_options("https://cs.example/api/data/product/x",
+                                      "session_token=z")
+    check("the probe is an OPTIONS request - it asks, it does not write",
+          seen_requests and
+          seen_requests[0].get_method() == "OPTIONS",
+          str([r.get_method() for r in seen_requests]))
+    check("and the route's answer is kept as methods",
+          probe["allow"] == ["GET", "HEAD", "PATCH"] and probe["status"] == 200,
+          str(probe))
+
+    def error_opener(status, allow=""):
+        import email.message
+        import urllib.error
+        headers = email.message.Message()
+        if allow:
+            headers["Allow"] = allow
+        raise urllib.error.HTTPError("u", status, "no", headers, None)
+
+    refused = cs_edit.fetch_options("https://cs.example/x", opener=lambda *a: {
+        "status": 405, "allow": [], "allow_header": "", "note": "405"})
+    check("a 405 with no Allow header is inconclusive, never a refusal",
+          "Inconclusive" in cs_edit.methods_note(refused) and
+          "nothing was changed" in cs_edit.methods_note(refused),
+          cs_edit.methods_note(refused))
+    check("and an inconclusive answer licenses no write at all",
+          "no write is attempted" in cs_edit.methods_note(refused) and
+          "question stays open" in cs_edit.methods_note(refused),
+          cs_edit.methods_note(refused))
+
+    #  The shop's real answer: 204 on OPTIONS, no Allow header at all. Not a
+    #  refusal and not permission - the one thing it must not be read as is
+    #  either of those.
+    real = {"status": 204, "allow": [], "allow_header": "", "note": ""}
+    real_note = cs_edit.methods_note(real)
+    check("a 204 with no Allow header is called inconclusive, not read-only",
+          "Inconclusive" in real_note and "read-only" in real_note and
+          "does not say which methods" in real_note, real_note)
+    check("and it names 204 on OPTIONS as a way of saying handled",
+          "204 on OPTIONS" in real_note, real_note)
+    check("and it adds no write path and says the question stays open",
+          "none is designed from it" in real_note and
+          "question stays open" in real_note, real_note)
+    writable = cs_edit.methods_note({"status": 200,
+                                     "allow": ["GET", "HEAD", "PATCH"]})
+    check("PATCH advertised settles the method, and says only that",
+          "states it accepts PATCH" in writable and
+          "settles the method, not the fields" in writable and
+          "still unproven" in writable, writable)
+    check("and it does not offer a no-op write as proof of the fields",
+          "tolerated it" in writable and
+          "can accept a request and ignore a field" in writable and
+          "would confirm that" not in writable, writable)
+    check("while naming what would settle them",
+          "vendor's documentation" in writable and
+          "reversible change" in writable and
+          "timestamps included" in writable, writable)
+    read_only = cs_edit.methods_note({"status": 200, "allow": ["GET", "HEAD"]})
+    check("GET and HEAD alone mean read-only, and make the verdict final",
+          "read-only" in read_only and "final answer" in read_only, read_only)
+    check("a request that could not be made says nothing either way",
+          "says nothing either way" in cs_edit.methods_note(
+              {"status": 0, "allow": [], "note": "dns"}), "")
+    check("and licenses no write either",
+          "no write is attempted" in cs_edit.methods_note(
+              {"status": 0, "allow": [], "note": "dns"}), "")
+
+    probed = cs_edit.diagnosis_text(
+        row={"id": "a", "sku": "S1"},
+        detail={"url": "https://cs.example/api/data/product/a", "status": 200,
+                "content_type": "application/json", "body": '{"id": "a"}'},
+        probe={"status": 200, "allow": ["GET", "HEAD", "PATCH"],
+               "allow_header": "GET, HEAD, PATCH", "note": ""})
+    check("a diagnosis carries the probe and what it means",
+          "OPTIONS https://cs.example/api/data/product/a" in probed and
+          "Allow: GET, HEAD, PATCH" in probed and
+          "states it accepts PATCH" in probed, probed[-700:])
+    check("and says the probe itself changed nothing",
+          "carries no body" in probed and "nothing was changed" in probed, "")
+    check("no probe, no section",
+          "whether that record can be written" not in
+          cs_edit.diagnosis_text(row={"id": "a"}), "")
+
+    check("a body that is not JSON is described instead of pasted whole",
+          "not JSON" in cs_edit._body_for_diagnosis("<html>denied</html>"), "")
+    check("an empty detail is not invented",
+          "the detail request" not in cs_edit.diagnosis_text(row=row),
+          "")
+    check("a file written from a read this window made says so",
+          "Where this list came from: the read this window made" in
+          cs_edit.diagnosis_text(row=row, source="the read this window made"),
+          "")
+    thin = cs_edit.diagnosis_text(row=row)
+    check("a file with no output does not claim the reader printed nothing",
+          "no console output was kept for this list" in thin and
+          "nothing was printed" not in thin, thin)
+
+
+def test_the_readers_own_resolution_counts():
+    """Plugin 1.0.39's line: did the reader ask, and what did the answers hold.
+
+    Every round trip with this reader's author was spent on one ambiguity -
+    "0 ids and no failure line" is either the lookups never running, or every
+    one answering 200 without naming a product. The reader now says which, and
+    the app has to use it: a read whose answers all came back empty is the
+    vendor's data, not a defect in the reader, and telling the reader's author
+    to fix a fault the numbers rule out is how the next round trip is wasted.
+    """
+    print()
+    print("== 5d6. the reader's own resolution counts ==")
+    line = ("Stock resolution: 2596 detail requests, 0 usable references, 2596 "
+            "HTTP 200s without a usable reference, 0 ambiguous SKUs, 0 hard "
+            "failures")
+    counts = cs_edit.resolution_counts(line)
+    check("the five numbers are read from the reader's own line",
+          counts == {"requested": 2596, "usable": 0, "empty": 2596,
+                     "ambiguous": 0, "failed": 0}, str(counts))
+    check("the line itself is quoted, not rebuilt",
+          cs_edit.resolution_line("Stock read: ok\n" + line) == line, "")
+    check("a read with only the count line has no resolution line",
+          cs_edit.resolution_counts("stock.list: 3 listings, 0 with a real "
+                                    "product id") is None and
+          cs_edit.resolution_line("nothing") == "", "")
+    check("a one-listing read's singulars are read too",
+          cs_edit.resolution_counts(
+              "Stock resolution: 1 detail request, 1 usable reference, 0 HTTP "
+              "200s without a usable reference, 0 ambiguous SKUs, 0 hard "
+              "failures") == {"requested": 1, "usable": 1, "empty": 0,
+                              "ambiguous": 0, "failed": 0}, "")
+
+    vendor = cs_edit.resolution_note(counts)
+    check("all answers 200 and none naming a product is called the vendor's "
+          "data",
+          "vendor's data" in vendor and "defect in the reader" in vendor,
+          vendor)
+    check("and it says no read of this shop will produce an id",
+          "no read of this shop produces a product id" in vendor, vendor)
+    partial = cs_edit.resolution_note({
+        "requested": 6, "usable": 4, "empty": 1, "ambiguous": 1, "failed": 0})
+    check("a mixed read says how many became ids, and names the ambiguous one",
+          "turned 4 into usable product ids" in partial and
+          "1 listing was left without an id" in partial, partial)
+    none_asked = cs_edit.resolution_note({
+        "requested": 0, "usable": 0, "empty": 0, "ambiguous": 0, "failed": 0})
+    check("a read that asked for nothing says so",
+          "made no detail lookups at all" in none_asked, none_asked)
+    failed = cs_edit.resolution_note({
+        "requested": 2, "usable": 0, "empty": 0, "ambiguous": 0, "failed": 2})
+    check("hard failures alone are named as failures",
+          "2 detail requests failed outright" in failed, failed)
+    check("no line, no sentence",
+          cs_edit.resolution_note(None) == "", "")
+
+    #  ---- the version sentence must not contradict the reader's numbers
+    old_verdict = cs_edit.needed_version_note("1.0.34", "1.0.34")
+    check("without the counts, a current plugin is still pointed at a defect",
+          "defect in the reader" in old_verdict, old_verdict)
+    quiet = cs_edit.needed_version_note("1.0.34", "1.0.34", site_silent=True)
+    check("with the counts, the reader is not accused of a defect",
+          "defect in the reader" not in quiet and
+          "lookups ran" in quiet and "not the reader failing to try" in quiet,
+          quiet)
+    hint = cs_edit.needed_version_note("1.0.38", "1.0.34")
+    check("a plugin that cannot print the counts is told 1.0.39 does",
+          "1.0.39 prints the reader's own resolution counts" in hint, hint)
+    check("and one that can print them is not told to update",
+          "1.0.39 prints" not in cs_edit.needed_version_note("1.0.39",
+                                                            "1.0.34"), "")
+
+    #  ---- the whole sentence, on the read that started all of this
+    rows = [{"id": "a%04d" % n, "sku": "", "title": "card %d" % n}
+            for n in range(20)]
+    output = ("stock.list: 20 listings, 0 with a real product id, 20 without "
+              "the key, 0 reported as 0\nStock resolution: 20 detail "
+              "requests, 0 usable references, 20 HTTP 200s without a usable "
+              "reference, 0 ambiguous SKUs, 0 hard failures")
+    gap = cs_edit.product_id_gap(rows, plugin="1.0.39", needed="1.0.34",
+                                 reader_text=output, stages=["read", "ids"])
+    check("the gap sentence quotes the reader's resolution and calls it the "
+          "site",
+          "vendor's data" in gap and "no read of this shop" in gap, gap)
+    check("and no longer calls a read with those counts a reader defect",
+          "is a defect in the reader" not in gap and
+          "that is what to send with a report" not in gap, gap)
+    check("while keeping what still works last",
+          gap.index("still work") > gap.index("vendor's data"), gap)
+    check("and the phases are not said twice over the resolution line",
+          "so the lookups ran." in gap and
+          "the ids it sent back were not usable" not in gap, gap)
+    check("and it says plainly that reading again cannot fix these rows",
+          "not something reading again can fix" in gap and
+          "vendor dashboard" in gap and
+          "stock.set names the listing itself" in gap, gap)
+    check("while not claiming the stock write is known to work here",
+          "writes those to the listing itself" not in gap, gap)
+
+    #  The plugin's author confirmed the updater will not resolve a listing
+    #  without a product reference, so the sentence must not exist for a read
+    #  whose counts do not say the site is silent.
+    failed_only = cs_edit.product_id_gap(
+        rows, plugin="1.0.39", needed="1.0.34",
+        reader_text=("stock.list: 20 listings, 0 with a real product id, 20 "
+                     "without the key, 0 reported as 0\nStock resolution: 20 "
+                     "detail requests, 0 usable references, 0 HTTP 200s "
+                     "without a usable reference, 0 ambiguous SKUs, 20 hard "
+                     "failures"))
+    check("a read whose lookups failed is not told its records are silent",
+          "vendor's data" not in failed_only and
+          "not something reading again can fix" not in failed_only,
+          failed_only)
+    check("and its failures are named as the reason, with reading again "
+          "offered",
+          "20 detail requests failed outright" in failed_only and
+          "those failed lookups are why the ids are missing" in failed_only and
+          "reading again may resolve them" in failed_only.lower(), failed_only)
+
+    #  "hard failures" and "lookups failed" are two lines and must not be read
+    #  as each other: the second is the reader's older failure count.
+    check("the older failure line is still read, and a resolution line is not "
+          "mistaken for it",
+          stock_compare.failed_lookups("Stock read: 2 listings, 0 with a real "
+                                       "product id, 2 lookups failed") == 2 and
+          stock_compare.failed_lookups(line) == 0, "")
+
+
+def test_the_real_diagnosis_from_the_shop():
+    """The 1.0.39 file this shop produced, and what it exposed in the app.
+
+    Two things were wrong with the app's own file and one with its wording:
+    250 ``ALEX_COLLECT_PROGRESS:`` lines buried the three lines that matter,
+    eight failed lookups were folded into "the site names nothing" as though
+    their records had been read, and two keys that merely mention a product
+    (both null) were listed as though they were a lead. All three are fixed
+    here, against the exact counts and record the shop sent.
+    """
+    print()
+    print("== 5d7. the shop's real 1.0.39 diagnosis ==")
+    markers = "\n".join(
+        'ALEX_COLLECT_PROGRESS:{"stage": "ids", "index": %d, "total": 2596}'
+        % n for n in range(1, 251))
+    output = (markers + "\nstock.list: 2596 listings, 0 with a real product "
+              "id, 2596 without the key, 0 reported as 0\n"
+              "stock     : 2596 listing(s) written to cs-stock.json\n"
+              "Stock resolution: 2596 detail requests, 0 usable references, "
+              "2588 HTTP 200s without a usable reference, 0 ambiguous SKUs, "
+              "8 hard failures\n"
+              "Stock read: 2596 listings, 0 with a real product id, 8 lookups "
+              "failed")
+
+    spoken, omitted = cs_edit.without_progress(output)
+    check("the progress channel is cut out of what a person reads",
+          omitted == 250 and "ALEX_COLLECT_PROGRESS" not in spoken, str(omitted))
+    check("and every line the reader actually said is kept, and nothing else",
+          spoken.splitlines() == [
+              "stock.list: 2596 listings, 0 with a real product id, 2596 "
+              "without the key, 0 reported as 0",
+              "stock     : 2596 listing(s) written to cs-stock.json",
+              "Stock resolution: 2596 detail requests, 0 usable references, "
+              "2588 HTTP 200s without a usable reference, 0 ambiguous SKUs, "
+              "8 hard failures",
+              "Stock read: 2596 listings, 0 with a real product id, 8 lookups "
+              "failed"], spoken)
+
+    #  The record the shop's own site returned, key and all - 38 keys, and
+    #  every one of them about the listing rather than about a product.
+    record = {"id": "a2304e72dbca4e678e7111d011ade22d",
+              "createdAt": "2026-10-15T16:42:16Z",
+              "updatedAt": "2026-10-16T11:16:38.234Z",
+              "vendor": "fc5c0fd1fb80c161b529b0bb287dfd30",
+              "title": "#006/196 Wurmple SWSH11", "slug": "006-196-wurmple",
+              "description": "SWSH11: Lost Origin #006/196 Wurmple",
+              "primaryImageUrl": "https://cs/api/file/006.jpg",
+              "priceCad": 1, "inventory": 1, "status": "active",
+              "category": "f78bf500fcdc7507e4d32b8cb5b2b698",
+              "shipFromProvince": "ON", "shippingFlatCad": 4,
+              "freeShipping": False, "handlingDays": 2, "transitDays": 5,
+              "isFeatured": False, "featuredOrder": None, "isFlagged": False,
+              "titleFr": "Chenipotte", "descriptionFr": "Origine Perdue",
+              "rating2Count": None, "rating3Count": None, "totalReviews": None,
+              "rating5Count": None, "averageRating": None, "rating4Count": None,
+              "rating1Count": None, "isDemoProduct": None, "availableSizes": [],
+              "availableColors": [], "canadianOriginConfirmed": False,
+              "isMadeToOrder": False, "localPickup": False,
+              "productOptions": None, "shippingSettings": None, "tags": None}
+    row = {"name": "#006/196 Wurmple SWSH11", "sku": "", "qty": 1,
+           "id": "a2304e72dbca4e678e7111d011ade22d", "status": "active",
+           "price": "1.00", "images": ["https://cs/api/file/006.jpg"]}
+    text = cs_edit.diagnosis_text(
+        row=row, output=output, stages=["read", "ids"], plugin="1.0.39",
+        command="pythonw.exe -u cs-stock.py --stock-out cs-stock.json "
+                "--cookie-file cookie.txt",
+        detail={"url": cs_edit.detail_url(row["id"]), "status": 200,
+                "content_type": "application/json", "body": json.dumps(record)},
+        total=2596, editable=0, app_version="3.20",
+        source="the read this window made at 2026-11-02 13:03:59")
+
+    check("the file no longer carries the progress markers",
+          "ALEX_COLLECT_PROGRESS" not in text, "")
+    check("but says how many lines it left out, and why",
+          "250 progress-marker line(s) omitted" in text and
+          "not the reader's words" in text, "")
+    check("the reader's own lines survive intact",
+          "stock.list: 2596 listings" in text and
+          "Stock resolution: 2596 detail requests" in text and
+          "Stock read: 2596 listings, 0 with a real product id, 8 lookups "
+          "failed" in text, "")
+    check("the eight failed lookups are told apart from the silent answers",
+          "8 failed lookups are a separate matter" in text and
+          "a later read may still resolve them" in text, text[:2000])
+    check("and the consequence carves them out rather than giving up on them",
+          "8 listings are not covered by that" in text and
+          "read once more before giving up on them" in text, text[:2000])
+    check("the two product-ish keys are named but not offered as a lead",
+          "isDemoProduct (empty)" in text and
+          "none of them holds an id" in text, text[-900:])
+    check("and the reader's side is called settled, without settling editing",
+          "settles the reader's side" in text and
+          "nothing more to report about the resolver" in text and
+          "depends on the check below" in text, text[-1400:])
+    check("and the one question the file cannot answer is put to the vendor",
+          "the fields an edit changes" in text and
+          "/api/products/<product_id>/" in text and
+          "before the shop is written off as uneditable" in text,
+          text[-1400:])
+    check("the editable fields are named in the vendor's own spelling",
+          cs_edit.editable_shape(record) ==
+          ["title", "priceCad", "inventory", "status", "description",
+           "primaryImageUrl", "category"], str(cs_edit.editable_shape(record)))
+    check("a record with none of them raises no such question",
+          "fields an edit changes" not in cs_edit.diagnosis_text(
+              row={"id": "a"},
+              detail={"url": "u", "status": 200, "body": '{"id": "a"}'}), "")
+    check("nothing is called a reader defect anywhere in that file",
+          "defect in the reader" not in text.replace(
+              "rather than a defect in the reader", ""), "")
+
+
 def test_plugin_1_0_35():
     """2,587 listings, every one with a string product id, resolved by the reader.
 
@@ -1151,6 +1834,273 @@ def test_the_editing_panel_says_what_stopped_a_read():
           str(app.lines[-5:]))
     check("and a 1.0.36 read is not told to update anything",
           not said("1.0.36 or newer"), str(app.lines[-5:]))
+
+
+def test_the_panel_writes_a_diagnosis():
+    """The button: one file, from the read that is on screen.
+
+    The person who has just been asked for evidence should not have to copy a
+    console by hand - the panel already has the run's output, its phases and a
+    row, and can read the one detail response the reader's lookup would read.
+    """
+    print()
+    print("== 5h. the diagnosis button writes one file ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    zeroed = [{"id": "94b93f6040f5401daabaa9c936efa5a7", "product_id": 0,
+               "sku": "OPC1973-74-112", "title": "Jim Pappin #112",
+               "status": "active", "inventory": 1}]
+    output = ("stock.list: 1 listing, 0 with a real product id, 1 without the "
+              "key, 0 reported as 0")
+    asked = []
+
+    def fake_detail(url, cookie_text="", **kwargs):
+        asked.append(url)
+        return (200, "application/json", json.dumps({"product": {"id": "9"}}))
+
+    def fake_options(url, cookie_text="", **kwargs):
+        return {"status": 200, "allow": ["GET", "HEAD", "PATCH"],
+                "allow_header": "GET, HEAD, PATCH", "note": ""}
+
+    harness._BOX.shown[:] = []
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(cs_edit, "fetch_detail", fake_detail), \
+            patch.object(cs_edit, "fetch_options", fake_options):
+        app.stages_seen = lambda: ["read", "ids"]
+        app.runner = SimpleNamespace(output=output, cmd="cs-stock.py --stock-out x")
+        find(parent, gui.ttk.Button,
+             "Read CanadianShopper's listings").invoke()
+        run = app.runs[-1]
+        Path(run["args"][1]).write_text(json.dumps({"items": zeroed}),
+                                        encoding="utf-8")
+        run["on_done"](0)
+        app.lines[:] = []
+        find(parent, gui.ttk.Button,
+             "Save a read diagnosis...").invoke()
+
+    written = sorted(folder.glob("cs-read-diagnosis-*.txt"))
+    check("pressing it writes exactly one file, in the app's folder",
+          len(written) == 1, str(written))
+    text = written[0].read_text(encoding="utf-8") if written else ""
+    check("with the read's output, the phases and the listing's row in it",
+          output in text and "read, ids" in text and
+          "94b93f6040f5401daabaa9c936efa5a7" in text, text[:400])
+    check("and the detail request for the listing that was on screen",
+          asked == ["https://canadianshopper.ca/api/data/product/"
+                    "94b93f6040f5401daabaa9c936efa5a7"], str(asked))
+    check("the cookie is used but never written into the file",
+          "secret-value" not in text, text[:400])
+    check("the console says where it went, and that it is safe to send",
+          any("Diagnosis written" in line and "no cookie" in line
+              for _tag, line in app.lines), str(app.lines[-6:]))
+    check("the file answers whether the vendor's record can be written",
+          "Allow: GET, HEAD, PATCH" in text and
+          "states it accepts PATCH" in text and
+          "nothing was changed" in text, text[-800:])
+    check("and the console says what the route allows, read-only",
+          any("the vendor's own route for that listing accepts: GET, HEAD, "
+              "PATCH" in line for _tag, line in app.lines),
+          str(app.lines[-4:]))
+
+    #  A second press is a second piece of evidence: the same read diagnosed
+    #  later, or after a change - so the first file stays where it is.
+    with patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(cs_edit, "fetch_detail", fake_detail), \
+            patch.object(cs_edit, "fetch_options", fake_options):
+        find(parent, gui.ttk.Button, "Save a read diagnosis...").invoke()
+    again = sorted(folder.glob("cs-read-diagnosis-*.txt"))
+    check("pressing it again keeps both files instead of replacing the first",
+          len(again) == 2 and again[-1].read_text(encoding="utf-8"), str(again))
+
+    #  Nothing read yet: a file made of nothing would be worse than a word.
+    folder2, app2, parent2 = build_panel()
+    harness._BOX.shown[:] = []
+    find(parent2, gui.ttk.Button, "Save a read diagnosis...").invoke()
+    check("with nothing read, it asks for a read instead of writing",
+          harness._BOX.shown and
+          "Read CanadianShopper's listings first" in
+          str(harness._BOX.shown[0][1]), str(harness._BOX.shown))
+    check("and writes no file at all",
+          not list(folder2.glob("cs-read-diagnosis-*.txt")), "")
+
+
+def test_the_panel_quotes_the_readers_resolution():
+    """A read that asked and got nothing back says so, on the console.
+
+    The person reading the console is the one who would otherwise carry "still
+    no ids" to the plugin's author, so the reader's own counts belong there -
+    once, quoted, with the sentence they mean - and the "would have to update
+    the plugin" advice must not be printed over the top of them.
+    """
+    print()
+    print("== 5j. a read that asked and was answered with nothing ==")
+    folder, app, parent = build_panel()
+    line = ("Stock resolution: 20 detail requests, 0 usable references, 20 "
+            "HTTP 200s without a usable reference, 0 ambiguous SKUs, 0 hard "
+            "failures")
+    nothing = [{key: value for key, value in row.items() if key != "product_id"}
+               for row in LISTINGS]
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "plugin_version", lambda *a, **k: "1.0.39"):
+        find(parent, gui.ttk.Button,
+             "Read CanadianShopper's listings").invoke()
+        run = app.runs[-1]
+        Path(run["args"][1]).write_text(json.dumps({"items": nothing}),
+                                        encoding="utf-8")
+        app.runner = SimpleNamespace(
+            output=("stock.list: %d listings, 0 with a real product id"
+                    % len(nothing) + "\n" + line), cmd="cs-stock.py")
+        run["on_done"](0)
+
+    said = [text for _tag, text in app.lines]
+    check("the reader's own resolution line is quoted on the console",
+          any(text.startswith("The reader's own resolution line: Stock "
+                              "resolution: 20 detail requests") for text in said),
+          str(said[-5:]))
+    check("and the console says what those numbers mean",
+          any("vendor's data rather than a defect in the reader" in text
+              for text in said), str(said[-5:]))
+    check("a 1.0.39 read is not told to update the plugin",
+          not any("0.39 or newer" in text or "0.39 prints the reader" in text
+                  for text in said), str(said[-5:]))
+    check("and the rows are still on screen to read and open",
+          len(listing_box(parent).items) == len(nothing), "")
+
+
+def test_the_evidence_outlives_the_window():
+    """A diagnosis written after a restart still has the run's own account.
+
+    The first real diagnosis came back with "(not recorded)", "(no console
+    output was kept)" and "(none)" against a list of 2,596 rows: the panel had
+    restored the last read from disk, so the window had no run to quote - and
+    its author's three questions went unanswered again. A read now keeps its
+    output, its stages and its command beside the list it wrote.
+    """
+    print()
+    print("== 5i. the read's evidence outlives the window ==")
+    folder, app, parent = build_panel()
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    output = ("stock.list: 3 listings, 0 with a real product id, 3 without the "
+              "key, 0 reported as 0")
+
+    def fake_detail(url, cookie_text="", **kwargs):
+        return (200, "application/json", json.dumps({"id": "a", "sku": "S1"}))
+
+    def fake_options(url, cookie_text="", **kwargs):
+        return {"status": 204, "allow": ["GET", "HEAD"],
+                "allow_header": "GET, HEAD", "note": ""}
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "in_background", sync_background):
+        app.stages_seen = lambda: ["read", "ids"]
+        app.runner = SimpleNamespace(
+            output=output, cmd="python cs-stock.py --stock-out x")
+        find(parent, gui.ttk.Button,
+             "Read CanadianShopper's listings").invoke()
+        run = app.runs[-1]
+        Path(run["args"][1]).write_text(json.dumps({"items": LISTINGS}),
+                                        encoding="utf-8")
+        run["on_done"](0)
+
+    kept = json.loads((folder / "cs-stock-meta.json").read_text(encoding="utf-8"))
+    check("the run's output, its stages and its command are kept by the list",
+          kept.get("output") == output and kept.get("stages") == ["read", "ids"]
+          and "cs-stock.py" in str(kept.get("command")), str(kept))
+
+    def press(panel):
+        """Press the button and return the file *this* press wrote.
+
+        Two files can be written in the same second and this filesystem can
+        give them the same mtime, so the new one is the one that was not there
+        before rather than whichever sorts last.
+        """
+        before = set(folder.glob("cs-read-diagnosis-*.txt"))
+        find(panel, gui.ttk.Button, "Save a read diagnosis...").invoke()
+        written = set(folder.glob("cs-read-diagnosis-*.txt")) - before
+        return max(written, key=lambda item: item.name).read_text(
+            encoding="utf-8") if written else ""
+
+    #  A new window: nothing in it ran, and the list is the one on disk.
+    app2 = harness.FakeApp(folder)
+    parent2 = harness.FakeWidget()
+    with patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(cs_edit, "fetch_detail", fake_detail), \
+            patch.object(cs_edit, "fetch_options", fake_options):
+        gui.build_csledit(parent2, app2)
+        text = press(parent2)
+    check("a fresh window's diagnosis still quotes the run's own output",
+          output in text, text[:600])
+    check("and still says which phases the reader reported",
+          "Phases the reader reported: read, ids" in text and
+          "the lookups ran" in text, text[:600])
+    check("and the command, so 'no flag was passed' is in the file",
+          "cs-stock.py --stock-out x" in text and
+          "(not recorded)" not in text, text[:400])
+    check("it says the list came from disk, not from this window",
+          "Where this list came from: the last read on disk" in text, text[:400])
+    check("and that read's count line is answered by its phases, not guessed",
+          "cannot say whether its lookups ran" not in text, text[:600])
+
+    #  A list read before the app kept any of it: the log still has the
+    #  command, and the file says plainly that the rest was not kept.
+    (folder / "cs-stock-meta.json").write_text(json.dumps(
+        {"plugin": "1.0.38", "count": len(LISTINGS),
+         "at": "2026-11-02T11:16:38"}), encoding="utf-8")
+    log = folder / "gui-log.txt"
+    log.write_text(
+        "[2026-11-02 11:00:00] START CanadianShopper listings | py cs-stock.py"
+        " --stock-out old.json\n"
+        "[2026-11-02 11:16:37] START CanadianShopper listings | py cs-stock.py"
+        " --stock-out new.json --cookie-file cookie.txt\n"
+        "[2026-11-02 11:20:00] START Something else | py other.py\n",
+        encoding="utf-8")
+    check("the last command of that read is taken from the app's log",
+          gui.command_from_log("CanadianShopper listings", path=log)
+          .endswith("--cookie-file cookie.txt"),
+          gui.command_from_log("CanadianShopper listings", path=log))
+    check("a log with no such run answers nothing",
+          gui.command_from_log("Nothing ran", path=log) == "", "")
+    check("a missing log answers nothing rather than raising",
+          gui.command_from_log("CanadianShopper listings",
+                               path=folder / "none.log") == "", "")
+
+    parent3 = harness.FakeWidget()
+    with patch.object(gui, "LOG_FILE", log), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(cs_edit, "fetch_detail", fake_detail), \
+            patch.object(cs_edit, "fetch_options", fake_options):
+        gui.build_csledit(parent3, harness.FakeApp(folder))
+        old_text = press(parent3)
+    check("an older list's command still comes from the log",
+          "--cookie-file cookie.txt" in old_text, old_text[:400])
+    check("and the file says the app kept none of that read's output",
+          "did not keep that run's console output" in old_text and
+          "reading the listings again" in old_text, old_text[:600])
 
 
 def test_the_panel_reads_and_lists():
@@ -1662,9 +2612,16 @@ def main():
     test_a_reader_that_says_zero()
     test_the_version_that_reports_product_ids()
     test_what_the_read_did_carry()
+    test_the_readers_own_numbers()
+    test_the_diagnosis_file()
+    test_the_readers_own_resolution_counts()
+    test_the_real_diagnosis_from_the_shop()
     test_plugin_1_0_35()
     test_the_list_says_which_plugin_read_it()
     test_the_editing_panel_says_what_stopped_a_read()
+    test_the_panel_writes_a_diagnosis()
+    test_the_panel_quotes_the_readers_resolution()
+    test_the_evidence_outlives_the_window()
     test_the_panel_reads_and_lists()
     test_the_edit_form()
     test_the_panel_refuses_what_it_cannot_do()

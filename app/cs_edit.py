@@ -25,6 +25,9 @@ in this module touches a site.
 
 import json
 import re
+import urllib.error
+import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 import stock_compare
@@ -517,8 +520,14 @@ def editable_note(editable, total):
 #: like that gets: *update the plugin* or *this one is a defect*.
 PRODUCT_ID_VERSION = "1.0.34"
 
+#: The plugin version that prints the reader's own resolution counts. Written
+#: for exactly the question this shop's read could not answer - did the lookups
+#: run, and what did their answers hold - so an older one is told so.
+RESOLUTION_VERSION = "1.0.39"
 
-def needed_version_note(plugin="", needed=PRODUCT_ID_VERSION):
+
+def needed_version_note(plugin="", needed=PRODUCT_ID_VERSION,
+                        site_silent=False, failures=0):
     """Which plugin version reports real product ids, given what is installed.
 
     Three different situations and they must not read alike: an installed
@@ -536,10 +545,34 @@ def needed_version_note(plugin="", needed=PRODUCT_ID_VERSION):
         return ("Plugin %s or newer reports each listing's real product id."
                 % needed)
     if version_at_least(plugin, needed):
-        return ("The list was read by plugin %s, which does report real "
+        failures = int(failures or 0)
+        if failures and not site_silent:
+            #  The reader said its lookups failed outright, so "a defect in
+            #  the reader" would be the wrong report: the failing lookups are
+            #  the reason, and reading again is what may resolve them.
+            return ("The list was read by plugin %s, which does report real "
+                    "product ids, so this is not the reader failing to try: "
+                    "those failed lookups are why the ids are missing, and "
+                    "reading again may resolve them." % plugin)
+        if site_silent:
+            #  The reader's own counts say it asked and every answer came
+            #  back without a product reference, so the version sentence must
+            #  not send anybody to report a defect that the numbers rule out.
+            return ("The list was read by plugin %s, which does report real "
+                    "product ids - and its own resolution line says the "
+                    "lookups ran, so this is not an old list and not the "
+                    "reader failing to try." % plugin)
+        note = ("The list was read by plugin %s, which does report real "
                 "product ids, so a read without them is a defect in the "
                 "reader rather than a list that needs reading again - worth "
                 "reporting with the plugin's own console line." % plugin)
+        if not version_at_least(plugin, RESOLUTION_VERSION):
+            #  Before 1.0.39 the reader says nothing about its resolution, so
+            #  "defect" is the app's best guess rather than the reader's word.
+            note += (" Plugin %s prints the reader's own resolution counts "
+                     "for exactly this read, which says whether the lookups "
+                     "ran and what their answers held." % RESOLUTION_VERSION)
+        return note
     return ("The list was read by plugin %s, and %s or newer is the version "
             "that reports each listing's real product id - so updating the "
             "plugin is the fix." % (plugin, needed))
@@ -664,13 +697,766 @@ def shared_product_note(items, limit=3):
     return line
 
 
-def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True):
+#: The reader's own summary of what a read carried. Plugin 1.0.34 and later
+#: print it, and it is the one piece of evidence that tells the three ways this
+#: ends apart: no product reference in the vendor's data (``without the key``),
+#: a placeholder (``reported as 0``), or lookups that came back empty.
+_READER_COUNTS = re.compile(
+    r"(\d+)\s+listings?,\s*(\d+)\s+with a real product id,\s*"
+    r"(\d+)\s+without the key,\s*(\d+)\s+reported as 0",
+    re.IGNORECASE)
+
+
+def reader_id_counts(text):
+    """``(listings, with a real id, without the key, reported as 0)`` or None.
+
+    The reader's own numbers, quoted rather than recomputed: the app counts
+    the rows the reader emitted, and a reader that says the same thing in its
+    own line is agreeing with it - or, when the two disagree, saying something
+    worth reading.
+    """
+    found = _READER_COUNTS.findall(str(text or ""))
+    if not found:
+        return None
+    return tuple(int(value) for value in found[-1])
+
+
+def reader_says_note(text):
+    """One sentence quoting the reader's own count line, or "".
+
+    A read with no product ids is answered here with what the *reader* said it
+    found, because that is what a defect report is built from - and because
+    "without the key" is a different problem from "reported as 0": the first
+    is the vendor's data carrying no product reference, the second a reader
+    writing a placeholder it was told never to write.
+    """
+    counts = reader_id_counts(text)
+    if counts is None:
+        return ""
+    listings, real, missing, zeros = counts
+    said = ("The reader's own line says the same: %d listing%s, %d with a real "
+            "product id, %d without the key at all, %d reported as 0."
+            % (listings, "" if listings == 1 else "s", real, missing, zeros))
+    return said
+
+
+def ids_were_asked_for_note(text_has_lookups=False):
+    """Why a read that asked for product ids still has none.
+
+    The comparison panel asks the reader to skip product ids - it never reads
+    one - and this panel never does: resolving them is the whole point of its
+    read. So a read here with no ids either never ran the lookups or had every
+    one of them come back empty, and saying which read this was is the
+    difference between reporting a defect and chasing the wrong thing.
+    """
+    if text_has_lookups:
+        return ("This read asked for the lookups - the edit panel never asks "
+                "the reader to skip them - and it reports failures above, so "
+                "those listings are the ones that lost their id.")
+    return ("This read was not the fast, list-only one (the edit panel never "
+            "asks for that flag), so the reader's own lookups either did not "
+            "run or came back empty for every listing - and that, with the "
+            "reader's line above, is what to send with a report.")
+
+
+#: The reader's own resolution counts: detail requests made, usable
+#: references, HTTP 200s that named none, ambiguous SKUs and hard failures.
+#: Plugin 1.0.39 prints it after every successful ordinary read, and it is the
+#: one line that says whether a read with no ids *asked* and got nothing back.
+_RESOLUTION = re.compile(
+    r"Stock resolution:\s*"
+    r"(\d+)\s+detail requests?,\s*"
+    r"(\d+)\s+usable references?,\s*"
+    r"(\d+)\s+HTTP 200s? without a usable reference,\s*"
+    r"(\d+)\s+ambiguous SKUs?,\s*"
+    r"(\d+)\s+hard failures?", re.IGNORECASE)
+
+
+def resolution_line(text):
+    """The reader's own ``Stock resolution:`` line, or "" when it printed none."""
+    for line in reversed(str(text or "").splitlines()):
+        if "stock resolution:" in line.casefold():
+            return line.strip()
+    return ""
+
+
+def resolution_counts(text):
+    """The five numbers in the reader's resolution line, or ``None``.
+
+    ``requested`` includes failed attempts (the reader says so itself), so
+    ``empty`` is the number of answers that came back 200 and still named no
+    product - which is the count that decides whether a read with no ids is
+    the reader being wrong or the site's records being silent.
+    """
+    found = _RESOLUTION.findall(str(text or ""))
+    if not found:
+        return None
+    requested, usable, empty, ambiguous, failed = (int(value)
+                                                   for value in found[-1])
+    return {"requested": requested, "usable": usable, "empty": empty,
+            "ambiguous": ambiguous, "failed": failed}
+
+
+def resolution_note(counts, total=0):
+    """What the reader's own resolution counts mean, in one or two sentences.
+
+    The line exists because "0 ids and no failure line" was ambiguous between
+    three code paths. With it, the ambiguity is gone: a read whose every detail
+    answered 200 and named nothing is not a broken reader at all - it is a shop
+    whose records carry no product reference, and saying so is the difference
+    between a defect report and a dead end.
+    """
+    if not counts:
+        return ""
+    asked = int(counts.get("requested") or 0)
+    usable = int(counts.get("usable") or 0)
+    empty = int(counts.get("empty") or 0)
+    ambiguous = int(counts.get("ambiguous") or 0)
+    failed = int(counts.get("failed") or 0)
+    if not asked and not usable:
+        return ("The reader's own resolution line says it made no detail "
+                "lookups at all for this read, so its ids cannot have come "
+                "from one.")
+    vendor_side = usable == 0 and empty > 0
+    said = ""
+    if vendor_side:
+        said = ("The reader's own resolution line settles it: %d detail "
+                "%s made, %d of them answering HTTP 200 without a usable "
+                "reference%s. The reader looked and the site's own records "
+                "name no product, so this is the vendor's data rather than a "
+                "defect in the reader - and no read of this shop produces a "
+                "product id until those records carry one."
+                % (asked, "request was" if asked == 1 else "requests were",
+                   empty, "" if not failed else
+                   ", plus %d hard %s" % (failed, "failure" if failed == 1
+                                          else "failures")))
+        if failed:
+            #  Those listings are a different case: their records were never
+            #  read, so "the site names nothing" is not yet known about them.
+            said += (" The %d failed %s a separate matter - %s record was "
+                     "never read, so a later read may still resolve %s."
+                     % (failed, "lookup is" if failed == 1 else "lookups are",
+                        "that listing's" if failed == 1 else "those listings'",
+                        "it" if failed == 1 else "them"))
+    elif usable:
+        said = ("The reader's own resolution line says it made %d detail "
+                "%s and turned %d into %s."
+                % (asked, "request" if asked == 1 else "requests", usable,
+                   "a usable product id" if usable == 1
+                   else "usable product ids"))
+        if empty:
+            said += " %d of them answered without naming one." % empty
+    if ambiguous:
+        said += (" %d %s left without an id because more than one product "
+                 "matched its SKU." % (ambiguous,
+                                       "listing was" if ambiguous == 1
+                                       else "listings were"))
+    if failed and not vendor_side:
+        said += (" %d detail %s failed outright." %
+                 (failed, "request" if failed == 1 else "requests"))
+    return " ".join(said.split())
+
+
+#: Stage names a reader may use for its product-id phase. The plugin's own
+#: word is ``ids``; the others are the spellings a later reader might pick, and
+#: recognising a few costs nothing while missing one costs a wrong sentence.
+_ID_PHASES = ("ids", "id", "product-ids", "product_ids", "productids",
+              "resolving ids", "lookups")
+
+
+def phases_note(stages, lookups_failed=0, site_silent=False):
+    """What the reader's own progress phases say about whether it looked ids up.
+
+    This is the question that decided a round trip with the plugin's author:
+    the same reader resolves ids when the phase runs, so a read with none is
+    either *the lookups never ran* or *they ran and came back empty* - and the
+    progress markers the reader emits answer which. A reader that emits no
+    phases costs nothing but this sentence, which then says so instead of
+    guessing.
+    """
+    stages = [str(stage).strip() for stage in (stages or []) if str(stage).strip()]
+    if not stages:
+        return ("The reader reported no progress phases at all, so this "
+                "console cannot say whether its lookups ran.")
+    listed = ", ".join(stages)
+    if any(stage.casefold() in _ID_PHASES for stage in stages):
+        if site_silent:
+            #  The resolution line already says what the answers held; saying
+            #  it twice reads as two problems.
+            return ("The reader reported its product-id phase during this "
+                    "read (%s), so the lookups ran." % listed)
+        return ("The reader reported its product-id phase during this read "
+                "(%s), so the lookups ran%s." %
+                (listed, " and some of them failed" if lookups_failed else
+                 " - and the ids it sent back were not usable"))
+    return ("The reader reported these phases - %s - and never a product-id "
+            "phase, so its lookups did not run at all." % listed)
+
+
+#: Key names whose values are never put in a diagnosis file. The file is meant
+#: to be pasted into a conversation about a plugin, and a cookie or a token in
+#: it would be a login handed over by accident.
+_SECRET_KEY = re.compile(
+    r"token|cookie|secret|password|passwd|session|auth|credential|apikey|"
+    r"api_key|email|phone|address", re.IGNORECASE)
+
+
+def sanitize(value, limit=40, depth=0, max_items=12):
+    """A value reduced to what a plugin author needs and nothing more.
+
+    Key names, value types, lengths and short previews: enough to see whether a
+    product reference is there and in what shape, and not enough to be somebody's
+    account. Anything under a key that names a secret is hidden, strings are
+    cut, collections are capped, and nesting stops at ``depth`` 3.
+    """
+    if isinstance(value, dict):
+        if depth >= 3:
+            return "object(%d keys)" % len(value)
+        pairs = list(value.items())
+        lines = []
+        for key, item in pairs[:max_items]:
+            name = str(key)
+            if _SECRET_KEY.search(name):
+                lines.append("%s: (hidden - it is not part of the question)" % name)
+                continue
+            lines.append("%s: %s" % (name, sanitize(item, limit, depth + 1,
+                                                    max_items)))
+        if len(pairs) > max_items:
+            #  The *names* of what was not shown are the question, when the
+            #  question is "does this record name a product at all" - a
+            #  response whose product reference sits at key 30 of 38 is exactly
+            #  the evidence a count of hidden keys throws away. A key name is
+            #  not a secret; its value is, and values stay cut.
+            rest = [str(key) for key, _ in pairs[max_items:]]
+            shown = rest[:80]
+            lines.append("... %d more key(s), names only: %s%s"
+                         % (len(rest), ", ".join(shown),
+                            "" if len(rest) <= 80 else ", ..."))
+        return "{\n" + "\n".join("  " * (depth + 1) + line for line in lines) \
+            + "\n" + "  " * depth + "}"
+    if isinstance(value, (list, tuple)):
+        if depth >= 3:
+            return "list(%d)" % len(value)
+        items = [sanitize(item, limit, depth + 1, max_items)
+                 for item in list(value)[:max_items]]
+        if len(value) > max_items:
+            items.append("... %d more" % (len(value) - max_items))
+        if not items:
+            return "[]"
+        return "[\n" + "\n".join("  " * (depth + 1) + "  " * depth + item
+                                  for item in items) + "\n" + "  " * depth + "]"
+    if isinstance(value, str):
+        text = value.replace("\r", " ").replace("\n", " ").strip()
+        if len(text) > limit:
+            text = text[:max(1, limit - 1)] + "\u2026"
+        return 'str(%d) "%s"' % (len(value), text)
+    if isinstance(value, bool):
+        return "bool %s" % ("true" if value else "false")
+    if value is None:
+        return "null"
+    return "%s %s" % (type(value).__name__, value)
+
+
+def product_reference_keys(row):
+    """The id-shaped keys a row carries, and the ones it does not.
+
+    The question a plugin author asks first: is there a product reference in
+    this payload at all? A key that holds ``0`` is reported as one, because
+    zero is not an id and that difference has already cost one diagnosis.
+    """
+    keys = []
+    for key in (row or {}):
+        shape = "".join(char for char in str(key).lower() if char.isalnum())
+        if shape.endswith("productid") or shape in (
+                "productid", "postid", "wpid", "productidentifier"):
+            value = (row or {}).get(key)
+            if value in (None, ""):
+                state = "empty"
+            elif str(value).strip() in ("0", "0.0"):
+                state = "zero - not an id"
+            else:
+                state = "present"
+            keys.append((str(key), state))
+    return keys
+
+
+def productish_keys(row):
+    """Every key whose name mentions a product, with a shape for its value.
+
+    ``product_reference_keys`` answers the narrow question - is there a key
+    that *is* a product id. This answers the wider one a reader's author needs
+    next: does the record mention a product at all, under ``product``,
+    ``productId``, ``productData`` or a spelling the exact list misses. A
+    record naming none of them anywhere is the answer to "can the reader
+    resolve one from here", and it is a different answer from "the value was
+    empty".
+    """
+    found = []
+    for key, value in (row or {}).items():
+        name = str(key)
+        shape = "".join(char for char in name.lower() if char.isalnum())
+        if "product" not in shape:
+            continue
+        if isinstance(value, dict):
+            state = "a record with %d key(s)" % len(value)
+        elif isinstance(value, (list, tuple)):
+            state = "a list of %d" % len(value)
+        elif value in (None, ""):
+            state = "empty"
+        elif not isinstance(value, bool) and str(value).strip() in ("0", "0.0"):
+            state = "zero - not an id"
+        else:
+            state = sanitize(value, 40)
+        found.append((name, state))
+    return found
+
+
+#: The fields this record would have to carry for the vendor's own record to
+#: be the thing an edit writes. Named because a record that carries all of them
+#: is one the write path could address directly, which is a different (and much
+#: shorter) road than resolving a second identifier out of it.
+EDITABLE_FIELDS = ("title", "priceCad", "inventory", "status", "description",
+                   "primaryImageUrl", "category", "sku")
+
+
+def editable_shape(record):
+    """Which editable fields a detail record carries, in the vendor's spelling."""
+    if not isinstance(record, dict):
+        return []
+    folded = {str(key).casefold(): key for key in record}
+    return [folded[name.casefold()] for name in EDITABLE_FIELDS
+            if name.casefold() in folded]
+
+
+def listing_id(item):
+    """The listing's *own* id - the key the vendor's detail endpoint takes.
+
+    Not the product id: this is what names the page or the detail record, and
+    the two are different things on every one of these sites.
+    """
+    for key in ("id", "listing_id", "listingId", "listing"):
+        value = (item or {}).get(key)
+        if value in (None, "") or isinstance(value, (dict, list)):
+            continue
+        return str(value).strip()
+    return ""
+
+
+def detail_url(listing_id, base="https://canadianshopper.ca"):
+    """The vendor endpoint a reader's own lookup reads for one listing.
+
+    Kept in one place because the plugin names the same path in its own
+    diagnostics (``/api/data/product/<listing-id>``), and a diagnosis that
+    calls a different address than the reader does is evidence about the wrong
+    thing.
+    """
+    identifier = str(listing_id or "").strip()
+    if not identifier:
+        return ""
+    return "%s/api/data/product/%s" % (str(base or "").rstrip("/"), identifier)
+
+
+def diagnosis_path(folder, now=None):
+    """Where a diagnosis file goes: a dated name, an earlier one never lost.
+
+    Two presses in one minute are two pieces of evidence - a before and an
+    after, or two different listings - so the second gets its own file rather
+    than quietly replacing the first.
+    """
+    when = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
+    base = Path(folder) / ("cs-read-diagnosis-%s" % when)
+    path = base.with_suffix(".txt")
+    number = 2
+    while path.exists():
+        path = Path("%s-%d.txt" % (base, number))
+        number += 1
+    return path
+
+
+def fetch_detail(url, cookie="", timeout=25, opener=None):
+    """``(status, content_type, body_text)`` for one detail request; never raises.
+
+    Read-only, one request, the person's own session: what the plugin's reader
+    would have read, so its answer can be looked at instead of guessed. A
+    refusal is returned as a status and a body, not an exception - the status
+    is half the evidence.
+    """
+    if not url:
+        return 0, "", ""
+    if opener is not None:
+        return opener(url, cookie)
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "Mozilla/5.0 (AlexCollect-GUI)",
+                      "Accept": "application/json",
+                      "Cookie": str(cookie or "")})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read(200000).decode("utf-8", "replace")
+            return (getattr(response, "status", 200),
+                    response.headers.get("Content-Type", ""), body)
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read(200000).decode("utf-8", "replace")
+        except Exception:
+            body = ""
+        return exc.code, str(getattr(exc, "headers", "") or ""), body
+    except Exception as exc:
+        return 0, "", str(exc)
+
+
+#: Methods that mean "this route can be written", in the order they matter.
+WRITE_METHODS = ("PATCH", "PUT", "POST")
+
+
+def allowed_methods(header):
+    """The method names in an ``Allow`` header, uppercased and in a stable order."""
+    words = []
+    for part in str(header or "").replace(";", ",").split(","):
+        word = part.strip().upper()
+        if word and word not in words:
+            words.append(word)
+    known = [name for name in ("GET", "HEAD", "OPTIONS", "PATCH", "PUT",
+                               "POST", "DELETE") if name in words]
+    return known + [word for word in words if word not in known]
+
+
+def fetch_options(url, cookie="", timeout=15, opener=None):
+    """Ask a route which methods it accepts; never raises, never changes anything.
+
+    ``OPTIONS`` carries no body and asks the server what it supports, so it is
+    the one way to find out whether the record that holds a listing's editable
+    fields can be written *without* writing to it. A site that does not
+    implement OPTIONS answers 405/501 or omits ``Allow``; that is inconclusive
+    and is reported as such rather than as a refusal.
+    """
+    blank = {"status": 0, "allow": [], "allow_header": "", "note": ""}
+    if not url:
+        return dict(blank, note="no address to ask")
+    if opener is not None:
+        return opener(url, cookie)
+    request = urllib.request.Request(
+        url, method="OPTIONS",
+        headers={"User-Agent": "Mozilla/5.0 (AlexCollect-GUI)",
+                 "Accept": "application/json",
+                 "Cookie": str(cookie or "")})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            header = response.headers.get("Allow", "") or ""
+            return {"status": getattr(response, "status", 200),
+                    "allow": allowed_methods(header), "allow_header": header,
+                    "note": ""}
+    except urllib.error.HTTPError as exc:
+        header = ""
+        try:
+            header = (getattr(exc, "headers", None) or {}).get("Allow", "") or ""
+        except Exception:
+            header = ""
+        return {"status": exc.code, "allow": allowed_methods(header),
+                "allow_header": header,
+                "note": "" if header else str(exc.reason or exc)}
+    except Exception as exc:
+        return dict(blank, note=str(exc))
+
+
+def methods_note(probe):
+    """What an endpoint's advertised methods mean for editing one listing.
+
+    Two answers matter and one does not: a route that advertises ``PATCH`` or
+    ``PUT`` is one the vendor says can be written, which makes the listing id
+    enough to address it; a route that advertises only ``GET``/``HEAD`` is
+    read-only and the edit panel's verdict is final. Anything else - 405, 501,
+    no ``Allow`` header - is inconclusive and must not be read as either.
+    """
+    if not probe:
+        return ""
+    status = probe.get("status") or 0
+    allowed = list(probe.get("allow") or [])
+    if not status:
+        return ("The vendor's own route could not be asked which methods it "
+                "accepts (%s). Nothing was changed, and this says nothing "
+                "either way - so no write is attempted on it, and none is "
+                "designed from it." % (probe.get("note") or "no answer"))
+    if not allowed:
+        return ("The vendor's own route answered HTTP %s without an Allow "
+                "header, so it does not say which methods it accepts - some "
+                "sites answer OPTIONS that way without meaning the route is "
+                "read-only, and a 204 on OPTIONS is one of the ways a server "
+                "says \"handled\" without listing anything. Inconclusive; "
+                "nothing was changed, no write is attempted on it, and none "
+                "is designed from it - the question stays open." % status)
+    writable = [name for name in allowed if name in WRITE_METHODS]
+    if any(name in ("PATCH", "PUT") for name in writable):
+        return ("**The vendor's own route states it accepts %s.** That settles "
+                "the method, not the fields: the record it addresses holds a "
+                "listing's title, price, stock and state under the listing id "
+                "the reader already has, but which fields a write actually "
+                "honours is still unproven. An accepted no-op request would "
+                "show only that the route tolerated it - a server can accept a "
+                "request and ignore a field - so the field question needs the "
+                "vendor's documentation, a response schema that establishes "
+                "field behaviour, or a controlled, reversible change on a "
+                "listing set aside for it, read back before and after and "
+                "compared over the whole record, timestamps included."
+                % ", ".join(writable))
+    return ("The vendor's own route states it accepts only %s, so it is "
+            "read-only: the record that holds the listing's title, price and "
+            "state cannot be written there, and 'not editable on "
+            "CanadianShopper' is the final answer for those fields."
+            % ", ".join(allowed))
+
+
+def without_progress(text):
+    """``(spoken, omitted)`` for a tool's output with its progress markers cut.
+
+    A reader that emits the progress channel leaves those markers in the text
+    the app keeps, because the app keeps what the tool printed. They are the
+    window's progress bar, not the reader's words - 250 lines of
+    ``ALEX_COLLECT_PROGRESS:{"stage": "ids", ...}`` is what a diagnosis file
+    looks like with them left in, and the three lines that matter are lost
+    inside it. The count is returned so the file can say what it did not print.
+    """
+    kept, omitted = [], 0
+    for line in str(text or "").splitlines():
+        if "ALEX_COLLECT_PROGRESS:" in line:
+            omitted += 1
+            continue
+        kept.append(line.replace("\x1e", "").replace("\x1f", ""))
+    return "\n".join(kept).strip("\n"), omitted
+
+
+def parsed_body(body):
+    """A response body as data when it is JSON, or ``None`` when it is not."""
+    try:
+        return json.loads(str(body or ""))
+    except (ValueError, TypeError):
+        return None
+
+
+def _body_for_diagnosis(body, limit=40):
+    """A response body as a sanitised structure when it is JSON, text if not.
+
+    The detail record is the one whose key *names* matter most - a reader
+    resolving a product reads exactly this, and where a product reference sits
+    in it is the whole question - so it keeps sixty keys with their values
+    rather than the twelve a catalogue row gets, and names the rest.
+    """
+    parsed = parsed_body(body)
+    if parsed is None:
+        text = str(body or "")
+        snippet = text.strip().replace("\r", " ")
+        return ("not JSON (%d characters): %s" %
+                (len(text), snippet[:240] + ("\u2026" if len(snippet) > 240
+                                             else "")))
+    return sanitize(parsed, limit, max_items=60)
+
+
+def diagnosis_text(row=None, output="", stages=(), plugin="", command="",
+                   detail=None, total=0, editable=0, now=None,
+                   app_version="", source="", probe=None):
+    """The three things a plugin author needs, in one file they can read.
+
+    Written because a round trip with the reader's author ended in *"send the
+    console output, whether the ids phase appeared, and one row with its detail
+    response"*: everything here is evidence the app already has or can fetch
+    once, and none of it is a credential.
+    """
+    when = (now or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+    lines = ["CanadianShopper read diagnosis", "=" * 32,
+             "Written: %s" % when]
+    if app_version:
+        lines.append("Alex Collect: %s" % app_version)
+    lines.append("Plugin: %s" % (plugin or "(version not readable)"))
+    lines.append("Command the app ran: %s" % (command or "(not recorded)"))
+    if source:
+        lines.append("Where this list came from: %s" % source)
+    lines.append("")
+    lines.append("The app's count: %d listing(s), %d with a usable product id."
+                 % (int(total or 0), int(editable or 0)))
+    counts = reader_id_counts(output)
+    lines.append("The reader's own line: %s" % (
+        ("%d listings, %d with a real product id, %d without the key, %d "
+         "reported as 0" % counts) if counts else "(none printed)"))
+    resolution = resolution_counts(output)
+    resolution_said = resolution_line(output)
+    if resolution_said:
+        lines.append("The reader's resolution line: %s" % resolution_said)
+    elif plugin and not version_at_least(plugin, RESOLUTION_VERSION):
+        lines.append("The reader's resolution line: (none printed - plugin "
+                     "%s prints its own resolution counts for this read)"
+                     % RESOLUTION_VERSION)
+    else:
+        lines.append("The reader's resolution line: (none printed)")
+    missed = stock_compare.failed_lookups(output)
+    lines.append("Lookups the reader says failed: %s" %
+                 (missed if missed else "none said"))
+    lines.append("Phases the reader reported: %s" %
+                 (", ".join(str(stage) for stage in stages) if stages else
+                  "(none)"))
+    lines.append(phases_note(
+        stages, missed,
+        site_silent=bool(resolution and resolution["usable"] == 0 and
+                         resolution["empty"])))
+    if resolution:
+        lines.append(resolution_note(resolution))
+        if resolution["usable"] == 0 and resolution["empty"]:
+            #  The file is what somebody reads next month, so it carries the
+            #  consequence and not only the cause.
+            lines.append(uneditable_note(resolution["failed"]))
+    lines.append("")
+    lines.append("--- the reader's output, as it read on the console " + "-" * 6)
+    spoken, progress_lines = without_progress(output)
+    lines.append(spoken or "(no console output was kept for this list - see "
+                           "where it came from, above)")
+    if progress_lines:
+        lines.append("")
+        lines.append("(%d progress-marker line(s) omitted: they are the "
+                     "window's progress bar, not the reader's words. The "
+                     "phases they carried are listed above.)" % progress_lines)
+    lines.append("")
+    if row is not None:
+        lines.append("--- one catalogue row, sanitised " + "-" * 18)
+        references = product_reference_keys(row)
+        if references:
+            lines.append("Product-reference keys: " + ", ".join(
+                "%s (%s)" % (key, state) for key, state in references))
+        else:
+            lines.append("Product-reference keys: none - no key in this row "
+                         "names a product, not even as a zero")
+        lines.append(sanitize(row))
+        extra = [(key, state) for key, state in productish_keys(row)
+                 if key not in [name for name, _state in references]]
+        if extra:
+            #  A row may name its product in a key that is not an id at all -
+            #  a nested record, or a spelling the exact list does not know.
+            lines.append("Also naming a product: " +
+                         "; ".join("%s (%s)" % (key, state)
+                                   for key, state in extra))
+        if isinstance(row, dict) and "sku" in row and \
+                not str(row.get("sku") or "").strip():
+            #  The reader resolves a listing to its product by its SKU first,
+            #  and an empty one leaves nothing to match on - which is one way
+            #  ids go missing while every request still answers 200.
+            lines.append("The listing's SKU is empty. Plugin 1.0.39 resolves "
+                         "such a listing through its own detail request rather "
+                         "than by SKU, so a missing SKU is not the reason an "
+                         "id is absent here - the response's own keys are.")
+        lines.append("")
+    if detail:
+        lines.append("--- the detail request the reader's lookup would make "
+                     + "-" * 10)
+        lines.append("GET %s" % (detail.get("url") or "(no listing id)"))
+        lines.append("HTTP %s, %s" % (detail.get("status") or "(no answer)",
+                                      detail.get("content_type") or
+                                      "(no content type)"))
+        lines.append(_body_for_diagnosis(detail.get("body")))
+        named = productish_keys(parsed_body(detail.get("body")))
+        #  A key that *mentions* a product is not a key that holds one: this
+        #  vendor's record has isDemoProduct and productOptions, both null.
+        holds = [key for key, state in named
+                 if state.startswith(("str(", "int ", "float ")) and
+                 not state.startswith("zero")]
+        if named:
+            lines.append("Keys in that response that mention a product: " +
+                         "; ".join("%s (%s)" % (key, state)
+                                   for key, state in named) +
+                         (" - and %s holds an id: %s" %
+                          ("one of them" if len(holds) == 1
+                           else "%d of them" % len(holds), ", ".join(holds))
+                          if holds else
+                          " - none of them holds an id"))
+        else:
+            lines.append("No key in that response names a product - not "
+                         "product, not productId, not any spelling of one - so "
+                         "a reader cannot resolve this listing's product from "
+                         "this endpoint at all: the reference lives somewhere "
+                         "the stock reader never asks.")
+        shape = editable_shape(parsed_body(detail.get("body")))
+        if not holds and len(shape) >= 3:
+            #  Not a conclusion, a question worth putting in front of the
+            #  vendor: the record the reader already reads is keyed by the
+            #  listing id and holds the very fields an edit changes - while the
+            #  update action writes a different path, /api/products/<id>/.
+            lines.append("This endpoint's record carries %s - the fields an "
+                         "edit changes - and it is keyed by the listing's own "
+                         "id, while the plugin's update action writes "
+                         "/api/products/<product_id>/. Whether the vendor's "
+                         "own record is meant to be written directly is the "
+                         "one question this file cannot answer; it is worth "
+                         "asking before the shop is written off as uneditable."
+                         % ", ".join(shape))
+        if resolution and resolution["usable"] == 0 and resolution["empty"]:
+            lines.append("That is the same answer as the reader's own "
+                         "resolution line: %d lookups, %d answers and none "
+                         "naming a product. This settles the reader's side "
+                         "for these listings - the vendor's data carries no "
+                         "product reference to resolve, so there is nothing "
+                         "more to report about the resolver."
+                         % (resolution["requested"], resolution["empty"]))
+            lines.append("Whether those listings can still be edited depends "
+                         "on the check below, not on the reader: a record the "
+                         "vendor lets the app write can be edited without any "
+                         "product id at all.")
+        lines.append("")
+    if probe:
+        lines.append("--- whether that record can be written (a read-only "
+                     "check) " + "-" * 4)
+        lines.append("OPTIONS %s" % (detail.get("url") if detail else "") if
+                     detail and detail.get("url") else "OPTIONS (no address)")
+        if probe.get("status"):
+            lines.append("HTTP %s; Allow: %s" % (
+                probe.get("status"),
+                probe.get("allow_header") or "(no Allow header)"))
+        else:
+            lines.append("No answer: %s" % (probe.get("note") or "unknown"))
+        note = methods_note(probe)
+        if note:
+            lines.append(note.replace("**", ""))
+        lines.append("An OPTIONS request carries no body: nothing on the site "
+                     "was read beyond the answer to this question, and "
+                     "nothing was changed.")
+        lines.append("")
+    lines.append("Nothing in this file is a cookie, a token or a password: "
+                 "values under those names are hidden, and long text is cut.")
+    return "\n".join(lines)
+
+
+def uneditable_note(failures=0):
+    """What a shop whose records name no product means for the edit buttons.
+
+    Confirmed by the plugin's author for 1.0.39: ``marketplace.listing_update``
+    matches a listing by id, SKU or title but refuses to write without an
+    explicit product reference, and there is no server-side resolver behind it.
+    So a read in which no record names a product is not a list that a later
+    read fixes - those listings cannot have their title, price or state changed
+    from here at all, and saying "read again" would be advice that cannot work.
+    """
+    said = ("Editing one of these is not something reading again can fix: the "
+            "plugin's update action finds the listing but refuses to write "
+            "without an explicit product reference, and these records carry "
+            "none. Title, price and state have to be changed in the vendor "
+            "dashboard. Stock counts are the one exception in address: the "
+            "comparison panel's stock.set names the listing itself, so a "
+            "missing product id does not stand in its way.")
+    failures = int(failures or 0)
+    if failures:
+        said += (" %d %s not covered by that: %s lookup did not answer at "
+                 "all, so read once more before giving up on %s."
+                 % (failures, "listing is" if failures == 1
+                    else "listings are",
+                    "its" if failures == 1 else "their",
+                    "it" if failures == 1 else "them"))
+    return said
+
+
+def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True,
+                   reader_text="", stages=None):
     """The whole sentence for a read nothing can be written from, or "".
 
     Said once, where it can be read, instead of three paragraphs in three
-    places: what the reader did (a key holding 0, or no key at all), which
-    plugin version fixes it, and - for the console - what still works from
-    here. A read that can be written returns "" and says nothing.
+    places: what the reader did (a key holding 0, or no key at all), what its
+    own count line says when it printed one, which plugin version fixes it,
+    and - for the console - what still works from here. A read that can be
+    written returns "" and says nothing.
     """
     rows = list(items or [])
     if not rows or not nothing_editable(rows):
@@ -682,7 +1468,31 @@ def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True):
         said = ("No listing in that read carried a product id, so the edit "
                 "buttons cannot send anything: the plugin's reader is not "
                 "reporting one.")
-    parts = [said, needed_version_note(plugin, needed), identity_note(rows)]
+    said_by_reader = reader_says_note(reader_text)
+    #  The reader's own phases decide *which read this was*, so when they were
+    #  reported they are used instead of the general sentence - and a reader
+    #  that says nothing keeps the general one.
+    resolution = resolution_counts(reader_text)
+    site_silent = bool(resolution and resolution["usable"] == 0 and
+                       resolution["empty"] > 0)
+    phases = (phases_note(stages, stock_compare.failed_lookups(reader_text),
+                          site_silent=site_silent) if stages else "")
+    parts = [said, said_by_reader,
+             #  The general "they did not run or came back empty" sentence is
+             #  only worth printing while nobody knows which: phases and the
+             #  resolution line each answer it, and printing all three would
+             #  contradict the sentence that actually knows.
+             (ids_were_asked_for_note(
+                 bool(stock_compare.failed_lookups(reader_text)))
+              if said_by_reader and not phases and not resolution else ""),
+             phases,
+             resolution_note(resolution),
+             (uneditable_note() if site_silent else ""),
+             needed_version_note(
+                 plugin, needed, site_silent=site_silent,
+                 failures=(resolution["failed"] if resolution else
+                           stock_compare.failed_lookups(reader_text))),
+             identity_note(rows)]
     if works:
         parts.append("Searching, opening a listing and editing in the vendor "
                      "dashboard all still work.")

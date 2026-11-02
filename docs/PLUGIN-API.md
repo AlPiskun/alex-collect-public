@@ -651,6 +651,203 @@ updating the plugin is the fix, and from **1.0.34 or newer** it says the read is
 a defect in the reader worth reporting, because by then it is one. Nothing about
 a listing is changed either way.
 
+**The reader's own line is quoted.** A reader that summarises a read in the
+shape `stock.list: 2596 listings, 0 with a real product id, 2596 without the
+key, 0 reported as 0` has those four numbers repeated in the core's sentence,
+because they are what a defect report is built from - and because `without the
+key` and `reported as 0` are different bugs. The core also says which read it
+was: the comparison asks for `--no-product-lookups` (and its rows having no
+`product_id` is the flag working), while the edit panel never passes it and
+expects ids - so a read there with none means the lookups did not run or every
+one came back empty. A reader that prints no such line costs only the generic
+sentence; one that prints it makes the next report a one-liner.
+
+**The reader prints its own resolution counts.** From plugin **1.0.39** every
+successful ordinary read ends with a line like:
+
+```
+Stock resolution: 2596 detail requests, 0 usable references, 2596 HTTP 200s without a usable reference, 0 ambiguous SKUs, 0 hard failures
+```
+
+Detail requests include failed attempts; usable references come from detail
+responses (direct ids and cache hits do not inflate the HTTP counts); the older
+`Stock read: … lookups failed` line still comes last when anything failed; and
+the `ids` stage is still emitted even when nothing resolves. Its scope is
+confirmed and deliberately narrow:
+
+- a read whose **every** detail request failed at the transport level still
+  prints the line (`… 0 usable references, 0 HTTP 200s without a usable
+  reference, 0 ambiguous SKUs, N hard failures`), followed by the older failure
+  line - the catalogue read completed, only the lookups did not;
+- a read of an **empty catalogue** prints it too, all five numbers zero;
+- a **fatal** session or catalogue failure is a different path: the read ends
+  with its error, no resolution happened, and no line is printed;
+- a `--no-product-lookups` read is the comparison's own read: it performs no
+  detail lookup, its rows are expected to carry no ids, and the core never
+  prints the gap sentence for it. Whether that read also prints the resolution
+  line is the reader's business - the core only uses one when it is there.
+
+The core reads all five numbers, quotes the line verbatim in the console and in
+a diagnosis file, and - this is the part that matters - lets them decide who is
+being reported. A read whose every answer came back HTTP 200 and named no
+product is **the vendor's data, not a defect in the reader**: the core says so,
+names the counts it is relying on, and stops short of the "report this to the
+plugin's author" verdict it gives when the counts are absent. Before 1.0.39
+that verdict could only be a guess, so a current-but-older plugin (1.0.34 to
+1.0.38) is told that 1.0.39 prints the counts that settle it. An ambiguous SKU
+is named as one - more than one product matched, so no id was invented - and a
+hard failure is still a failure. A read that mixes both is said to be two
+things: the answers that came back 200 and named nothing are the vendor's data,
+while the ones whose request failed were never read at all and a re-read may
+still resolve them - so the "reading again cannot fix these" sentence carves
+them out rather than writing them off.
+
+**No server-side resolver behind the write.** `marketplace.listing_update`
+matches the listing by id, SKU or old title - and refuses a multi-match - but
+it will not write without an **explicit** product reference in that listing's
+own record: it PATCHes `/api/products/<product_id>/` and, if the matched
+record names none, it fails before any request rather than guessing. There is
+no listing-to-product resolution on the write path in 1.0.39, and the generic
+`/api/data/product/<listing-id>` record is not written to. Two consequences the
+core states rather than leaves to be discovered:
+
+- A read whose resolution line says every answer came back 200 and named no
+  product is **settled**, not pending: those listings cannot have their title,
+  price or state changed from the app, and reading again cannot change that.
+  The console says so in those words and points at the vendor dashboard.
+- **Stock counts are unaffected.** `stock.set` addresses the listing itself, so
+  the comparison panel still writes counts for exactly those listings.
+- If a vendor ever confirms that the write route accepts the listing id - or
+  that the reader may resolve it server-side and refuse a non-unique answer -
+  that is a new, verifiable contract and a change on both sides, not something
+  to infer from a GET response.
+
+**Asking the route instead of guessing.** One `OPTIONS` request to the same
+`/api/data/product/<listing-id>` address answers most of that question without
+writing anything, so **Save a read diagnosis...** makes it and records the
+answer:
+
+- `Allow: … PATCH …` (or `PUT`) - the vendor's own route states it accepts a
+  write, at the address the listing id already names. That is evidence the
+  product id is not needed *to address* the record; which fields it accepts is
+  still unproven, and the core says so rather than acting on it.
+- `Allow: GET, HEAD` only - the route is read-only and "not editable on
+  CanadianShopper" is final for title, price and state.
+- `405`, `501`, or `204`/`200` with no `Allow` header - inconclusive. Many
+  servers answer `OPTIONS` that way without meaning the route is read-only
+  (`204 No Content` is a common "handled, nothing to say"), so the core reports
+  it as unanswered, never as a refusal - and never as permission. No write is
+  attempted on such an answer and none is designed from it; the question stays
+  open.
+- No answer at all (offline, refused) - said to say nothing either way.
+
+`OPTIONS` carries no body: it cannot change a listing, and the file says so
+beside the answer. The probe is one extra request per diagnosis, never part of
+a read.
+
+**What each answer licenses, agreed with the plugin's author.** The method
+answer is a gate, not a decision to edit:
+
+- **`GET, HEAD` only** - no listing-record write path is added; "not editable on
+  CanadianShopper" is final for those fields.
+- **`405`, `501`, no `Allow`** - inconclusive; no write is attempted and none is
+  designed.
+- **`PATCH` or `PUT` advertised** - the method is established and the field
+  behaviour is not. The next step is a controlled proof, not an implementation.
+
+A no-op `PATCH` (carrying the values a listing already has) is **not** that
+proof on its own: a server can accept a request and silently ignore a field, so
+a 200 shows only that the route tolerated it. Field behaviour needs the vendor's
+documentation, a response schema that establishes it, or a controlled,
+reversible change on a listing set aside for the purpose - read back before and
+after and compared over the whole record, timestamps and unrelated fields
+included, since even a no-op request may have side effects.
+
+If that proof arrives, the work is a **listing-record write path**, kept
+distinct from the dual-ID one: it addresses `/api/data/product/<listing-id>`
+with the record's own id, never calls that id `product_id`, matches exactly and
+refuses an ambiguous match, sends only fields proven accepted, and leaves the
+existing `/api/products/<product_id>/` behaviour untouched for records that do
+carry an explicit product reference. Until then the updater does not change.
+
+**A hard-failure report, if the failures turn out to be deterministic.** The
+counts do not say which listings failed, and a read caches no failures, so a
+re-read repeats every unresolved detail request. If the same listings fail
+again, the additive shape agreed on is an optional report with one entry per
+failed listing - `listing_id`, `kind` (`http` / `transport` / `json` / `empty`),
+`http_status` where there is one, and a short sanitized reason - leaving the
+`Stock resolution` line byte-identical and changing neither the resolver nor
+caching. It is not written before a re-read shows the failures repeat: a
+2,596-row read that reported 8 hard failures and then, read again, reported
+2,596 HTTP 200s and 0 failures is exactly the transient case this rule is for,
+and no report was added for it.
+
+**The console can say whether the lookups ran.** The reader's phases are
+evidence, not decoration: a read whose `ids` stage was reported and came back
+with no usable product id is a different report from one whose stage never
+appeared at all, and only the reader can tell the two apart. The core records
+the `stage` names a read emits (from the progress markers above) and prints one
+of three sentences beside the count line:
+
+- the product-id stage appeared - *the lookups ran* (and, when the reader also
+  reported failed lookups, *some of them failed*);
+- stages appeared, none of them the product-id stage - *its lookups did not
+  run at all*;
+- no stages at all - *the console cannot say whether its lookups ran*.
+
+Recognised spellings are `ids`, `id`, `product-ids`, `product_ids`,
+`productids`, `resolving ids` and `lookups`, compared case-insensitively; `ids`
+is the one the shipped reader uses. A reader that stops emitting its stage
+makes the first question in a defect report unanswerable, so keep it.
+
+**One file, for the plugin's author.** When a read with no usable product ids
+has to be reported, the listing panel's **Save a read diagnosis...** button
+writes a single text file (`cs-read-diagnosis-<date>-<time>.txt` in the app's
+folder, with a number added rather than an earlier file replaced) that holds the
+three things a reader's author asks for: the run's
+complete console output, the progress stages it reported, the reader's own
+`Stock resolution:` line with the sentence it means, and one catalogue row
+together with the response from `GET <site>/api/data/product/<listing-id>` -
+the same endpoint the reader's own lookup reads, fetched once with the
+person's own cookie when the button is pressed. It is meant to be pasted into a
+conversation, so it is sanitised before it is written: any key naming a token,
+cookie, secret, password, session, credential, API key, e-mail, phone or
+address has its value replaced with *(hidden - it is not part of the question)*,
+strings are cut at 40 characters (their real length is kept), and lists and
+nesting stop early. A `Product-reference keys:` line says, for the row, which
+id-shaped keys are present, empty, or holding `0` - which is the first thing to
+check when a read has no ids.
+
+The detail record is shown **key by key** (sixty with their values, the rest by
+name) rather than counted, because the question it answers is *does this record
+name a product anywhere* - and a reference sitting at key 30 of 38 is exactly
+what a key count throws away. One line then lists the keys that *mention* a
+product (`product`, `productId`, `productData`, any spelling) and - separately -
+whether any of them actually holds an id, because `isDemoProduct: null` mentions
+a product and answers nothing. When none of them holds one, the file says the
+reader cannot resolve the listing from this endpoint, and, if the record also
+carries the fields an edit changes (`title`, `priceCad`, `inventory`, `status`,
+`description`, `primaryImageUrl`, `category`, `sku`) under the listing's own id,
+says so: that record being writable directly is the one question a diagnosis
+cannot answer, and it is worth asking before a shop is written off as uneditable.
+
+The file's copy of the console **leaves out the progress markers**, with a line
+saying how many were omitted. A 2,596-row read emits ~250
+`ALEX_COLLECT_PROGRESS:` lines; left in, they are the whole file and the five
+lines that matter are lost inside them. The markers are still parsed - the
+phases and counts come from them - they are simply not printed as if they were
+the reader's words. An empty `sku` on the row is noted but not blamed: a reader
+that has the listing id asks for that listing's detail, and the record's keys
+are what decide the answer.
+
+**A read's account is kept beside the list.** The app records the run's output
+(up to 200,000 characters), the progress stages and the exact command in
+`cs-stock-meta.json` next to `cs-stock.json`. A diagnosis written after the
+window that made the read has closed therefore still quotes the run, and a
+command recovered from the app's own log fills in for lists read before this
+was kept. When the read's account really is missing, the file says so instead
+of claiming the reader printed nothing.
+
 **When the vendor's data carries no product reference at all.** The reader can
 be perfectly correct and still deliver no product ids: 1.0.34's own console
 line reported *2,587 listings, 0 with a real product id, 2,587 without the key,
@@ -674,6 +871,11 @@ listings themselves:
   entry naming `id`, `sku`, `title`, `card` or `name` confirms the change just
   as a product id does, so a writer that resolves internally and reports what
   it resolved needs no change here.
+- **Editing is blocked by it, and said to be.** With no product reference in
+  any detail record, `marketplace.listing_update` refuses each of those
+  listings before writing, so the edit panel says reading again cannot fix
+  them and leaves title, price and state to the vendor dashboard. Stock counts
+  are the exception:
 - **Stock counts are not blocked by any of this.** The comparison panel's
   **Set CanadianShopper to the website's counts...** writes through `stock.set`,
   which addresses the listing rather than a product, so a shop whose reader

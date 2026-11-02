@@ -58,6 +58,7 @@ import cs_products
 import stock_compare
 import stock_write
 import doc_images
+import ebay_fill
 import order_pdf
 import quote as quote_model
 import quote_pdf
@@ -73,7 +74,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.19"
+VERSION = "3.20"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -247,6 +248,10 @@ SETTINGS_FILE = BASE / "gui-settings.json"
 LOG_FILE = BASE / "gui-log.txt"
 CHECKLIST = BASE / "sold-cards-checklist.csv"
 CS_COOKIE_FILE = BASE / "cookie.txt"
+#  eBay's own active-listings page, used when User Settings has no other. It
+#  is where the listing titles, SKUs and quantities this app reads live, and
+#  where the "Open the eBay listing page" button sends someone to sign in.
+EBAY_ACTIVE_URL = "https://www.ebay.ca/sh/lst/active"
 #  Which orders have already been turned into checklist rows. It is a
 #  cache, not a record: the checklist and the ledger stay the truth,
 #  and losing this file only means a preview shows older orders again.
@@ -343,6 +348,42 @@ def log(line):
                                    line))
     except Exception:
         pass
+
+
+def command_from_log(title, path=None):
+    """The command the last run called ``title`` was started with, from the log.
+
+    The runner writes ``START <title> | <command>`` before every run, so a
+    diagnosis written after the window that made the read has closed can still
+    say which command produced the list on screen - which is what turns "the
+    app does not pass that flag" from a recollection into a line in the file.
+    """
+    marker = "START %s | " % title
+    try:
+        text = Path(path or LOG_FILE).read_text(encoding="utf-8",
+                                                errors="replace")
+    except OSError:
+        return ""
+    for line in reversed(text.splitlines()):
+        at = line.find(marker)
+        if at >= 0:
+            return line[at + len(marker):].strip()
+    return ""
+
+
+def at_end_of_console(view, tolerance=0.001):
+    """Whether the console's visible window reaches its end.
+
+    ``view`` is Tk's ``yview()``: the first and last visible fractions of the
+    text. 1.0 at the end means the newest line is on screen, so new output may
+    scroll to it; anything less means the reader has scrolled up into the run
+    and the view is left where it is. A widget that cannot answer behaves as
+    it always did, because a display that fails must not stop a tool.
+    """
+    try:
+        return float(view[1]) >= 1.0 - float(tolerance)
+    except (TypeError, ValueError, IndexError, KeyError):
+        return True
 
 
 def open_path(path):
@@ -1174,6 +1215,43 @@ merges them into import-sized files (500 rows / 2 MB each), skipping
 titles that are already in an earlier file, so you never import the
 same card twice. The originals are kept."""
 
+DOCS["ebayfill"] = """\
+An eBay store holds a fixed number of active listings (250 on a free
+store), and it is worth more full of your dearest cards. Doing that by
+hand means opening the website's products, sorting by price, and working
+out which of the top ones are not on eBay yet.
+
+This panel does the arithmetic. It reads your whole website catalogue
+and your eBay active listings - live when eBay answers, from the page
+you saved when it does not - and keeps the dearest products that are not
+listed yet and fit under the limit. A card already on eBay is matched by
+SKU first and then by title, with the same matcher the stock comparison
+uses, so it is not offered twice.
+
+**Choose the cards** decides the order they are taken in, because the
+dearest card is not always the one a shop wants: *dearest first* (the
+default, and the most money for a fixed number of listings), *newest
+first* when a batch has just been made, *oldest first*, *cheapest
+first*, and *in the order I type* for a list of titles, SKUs or product
+ids typed into the box below - those cards first, in that order, and the
+rest after them. A typed card that is not there is named on the console
+rather than silently skipped. **Only this category** narrows the
+catalogue to products filed under one category of the website (part of
+its name is enough, and blank means all of it), and says how many
+products that left out.
+
+What it writes is the eBay Quick List page for those cards: one
+draggable, click-to-copy button per field (title, price, SKU, year,
+manufacturer, card number, player, set, condition, grade), each card's
+own website photos, and a link to the matching eBay template. The
+template pages for the sports involved are opened as well, once each.
+Card facts come from the product's own attributes; the marketplace
+defaults in User Settings fill in what a product does not say.
+
+Nothing is listed and nothing is changed - not on eBay, not on the
+website. The limit is remembered in User Settings, so both places show
+the same number.""" 
+
 DOCS["stage"] = """\
 The importer can only set ONE photo per card and cannot create the
 back-photo gallery row. So before importing, this step:
@@ -1944,6 +2022,15 @@ TOOLTIPS = {
     "Compare the whole catalogue instead": "Drop the one-card filter and compare everything",
     "Check the website's SKUs": "Read every product on the website and name the ones whose SKU does not say which printing the title is - the products that keep a card of the same name from being created; a bar says which page it is reading and which product it is fixing; nothing is changed until the fixes are shown and agreed to",
     "Compare the last read instead (no new read)": "Compare now against the CanadianShopper list already on disk from an earlier read - it is named with its age wherever its counts appear, so nothing is mistaken for a fresh count, and no read is started",
+    "Save the limit": "Remember this number in User Settings, where the same value is used by Fill your eBay store every time it chooses",
+    "Open the last list": "Open the page written by the last selection (or the newest one on disk); nothing is read again",
+    "Save a read diagnosis...": "Write one small text file for a plugin report: the read's own output, the progress phases it reported, one listing row and the detail response its lookup would have read - sanitised, with no cookie, token or password in it",
+    "Choose the cards:": "What decides which unlisted cards come first - dearest, newest, oldest, cheapest, or in the order typed below; the choice is remembered",
+    "Only this category:": "Leave blank to choose from the whole catalogue; type part of a category's name (hockey) to choose only from products filed under it",
+    "These cards first:": "Titles, SKUs or product ids separated by commas, in the order you want them listed - used by \u201cIn the order I type\u201d, and anything not found is named on the console",
+    "Find the cards to list next": "Read your website's catalogue and your eBay active listings, keep the dearest cards that are not on eBay yet and fit under your limit, and open the Quick List page for them - nothing is listed or changed",
+    "Active listings eBay allows:": "How many active listings your eBay account may hold (250 on a free store); the number of cards chosen is this minus what is already listed",
+    "Open the eBay listing page": "Open your eBay active-listings page in the browser, where the readings come from and where a listing is made",
     "Compare stock with eBay": "Read your eBay active listings with your session cookie and list only the cards whose numbers disagree",
     "Compare stock with Facebook": "Read your Facebook selling page with your session cookie and list only the cards whose numbers disagree",
     "Set CanadianShopper to the website's counts...": "The usual fix: for every card whose two counts differ, set CanadianShopper's count to the website's count - always shown and confirmed first, write permission only",
@@ -2398,13 +2485,24 @@ class App(tk.Tk):
         return "break"
 
     def console_write(self, chunk):
-        """Insert tool output and keep the newest prompt/reply in view."""
+        """Insert tool output, and follow it only if the reader is at the end.
+
+        A long read prints for minutes. Scrolling to the bottom on every line
+        is right while the newest line is what a person wants to see, and
+        wrong the moment they scroll up to read something: the view then keeps
+        yanking itself back down, and there is no way to read a line while the
+        run is going. So the end is followed only when the end was already in
+        view - the same rule a terminal has.
+        """
+        follow = at_end_of_console(self.console.yview())
         self.console.config(state="normal")
         self.console.insert("end", chunk)
         self.console.config(state="disabled")
-        self.console.see("end")
+        if follow:
+            self.console.see("end")
 
     def console_line(self, text, tag=None):
+        follow = at_end_of_console(self.console.yview())
         self.console.config(state="normal")
         self.console.insert("end", text + "\n", tag or ())
         # colour obvious problems
@@ -2416,7 +2514,8 @@ class App(tk.Tk):
             elif low.startswith(("ok ", "done", "session ok", "all checks")):
                 self.console.tag_add("ok", "end-2linestart", "end-1linestart")
         self.console.config(state="disabled")
-        self.console.see("end")
+        if follow:
+            self.console.see("end")
 
     def _send_input(self):
         text = self.inp.get().strip()
@@ -2493,6 +2592,13 @@ class App(tk.Tk):
         if getattr(self, "_progress_closed", True):
             self.progress_hide()
             return        # the run is over; no late event may redraw this
+        #  The stage names a tool reports are evidence, not decoration: a
+        #  plugin's own phases are how "the lookups ran" is told apart from
+        #  "they never started", and that question has cost one round trip
+        #  with the plugin's author already. Kept for the whole run, in the
+        #  order they arrived, without repeats.
+        if stage and stage not in self._run_stages:
+            self._run_stages.append(stage)
         if stage == "finish":
             self.progress_hide()
             self._progress_finished = True
@@ -2532,8 +2638,13 @@ class App(tk.Tk):
         except (AttributeError, tk.TclError):
             pass
 
+    def stages_seen(self):
+        """The stage names the last run reported, in order; [] if it said none."""
+        return list(getattr(self, "_run_stages", []) or [])
+
     def on_run_start(self, title, cmd):
         self._saw_dangling_prompt = False
+        self._run_stages = []
         self._hinted = set()
         self._progress_closed = False
         self._progress_finished = False
@@ -3297,7 +3408,8 @@ class App(tk.Tk):
 # ----------------------------------------------------------------- panels
 #  A panel = title + doc + controls. The same builder is used by the task
 #  menu, the tabs view and the wizard pages.
-PANEL_ORDER = ["cookie", "pipeline", "combine", "stage", "importpanel",
+PANEL_ORDER = ["cookie", "pipeline", "combine", "ebayfill", "stage",
+               "importpanel",
                "wire", "rerun", "sold", "checklist", "stock", "csedit",
                "zerostock", "ordersheet", "square",
                "newphotos", "ordertext", "quote", "markets", "logs",
@@ -3309,7 +3421,8 @@ PANEL_ORDER = ["cookie", "pipeline", "combine", "stage", "importpanel",
 #  built (PANEL_ORDER, PANEL_BUILDERS) so an old shortcut or a plugin that
 #  opens one by id keeps working.
 GROUPS_FULL = [("Sell to a customer", ["ordertext", "quote"]),
-               ("Sell a new batch", ["pipeline", "combine", "markets"]),
+               ("Sell a new batch", ["pipeline", "combine", "ebayfill",
+                                     "markets"]),
                ("After a sale", ["sold", "checklist", "stock", "csedit",
                                  "zerostock", "ordersheet"]),
                ("Photos", ["square", "rerun", "newphotos"])]
@@ -3324,13 +3437,15 @@ def groups_for(has_cs):
     if has_cs:
         return GROUPS_FULL
     return [("Sell to a customer", ["ordertext", "quote"]),
-            ("Sell a new batch", ["pipeline", "combine", "markets"]),
+            ("Sell a new batch", ["pipeline", "combine", "ebayfill",
+                                  "markets"]),
             ("After a sale", ["sold", "checklist", "ordersheet"]),
             ("Photos", ["square", "newphotos"])]
 TITLES = {
     "cookie": "User settings",
     "pipeline": "Run the card pipeline (new batch)",
     "combine": "Combine CSVs into import batches",
+    "ebayfill": "Fill your eBay store",
     "stage": "Stage the photos for the batch",
     "importpanel": "Import drafts / publish ready items",
     "wire": "Wire the photos (after the import)",
@@ -3353,6 +3468,7 @@ MENU_LABELS = {
     "cookie": "User settings",
     "pipeline": "Run the card pipeline",
     "combine": "Combine CSVs",
+    "ebayfill": "Fill the eBay store",
     "stage": "Stage the photos",
     "importpanel": "Import / publish drafts",
     "wire": "Wire the photos",
@@ -3375,6 +3491,7 @@ BLURBS = {
     "cookie": "Set your store, AI, marketplace, and folder preferences; manage connections.",
     "pipeline": "Turn card scans and AI descriptions into listing files.",
     "combine": "Merge the month's CSVs into 500-row import files.",
+    "ebayfill": "Pick the dearest cards that are not on eBay yet, up to your limit, and open the page that lists them.",
     "stage": "Square + host fronts and backs, rewrite the CSVs into cs-ready.",
     "importpanel": "Import the staged CSV on CanadianShopper, then preview drafts and publish ready items directly from Alex Collect.",
     "wire": "Attach the back photos and fix the main images after an import.",
@@ -4040,28 +4157,35 @@ def build_cookie(parent, app):
         text="Ask which cards to prepare for eBay after each card-listing run",
         variable=ebay_quicklist_var).grid(
             row=0, column=1, sticky="w", padx=3, pady=2)
-    field_row(ebay_box, 1, "Football template URL:", "ebay_template_football_url")
-    field_row(ebay_box, 2, "Baseball template URL:", "ebay_template_baseball_url")
-    field_row(ebay_box, 3, "Hockey template URL:", "ebay_template_hockey_url")
-    field_row(ebay_box, 4, "Basketball template URL (optional):",
+    #  How many cards "Fill your eBay store" may choose. It is the account's
+    #  own ceiling - 250 on a free store - so it is asked for once here and
+    #  read by that panel, which shows the same number beside its button.
+    field_row(ebay_box, 1, "Active listings the account allows:",
+              "ebay_listing_limit", width=8,
+              hint="250 on a free eBay store; used to work out how many cards "
+                   "are still worth listing.")
+    field_row(ebay_box, 2, "Football template URL:", "ebay_template_football_url")
+    field_row(ebay_box, 3, "Baseball template URL:", "ebay_template_baseball_url")
+    field_row(ebay_box, 4, "Hockey template URL:", "ebay_template_hockey_url")
+    field_row(ebay_box, 5, "Basketball template URL (optional):",
               "ebay_template_basketball_url")
-    field_row(ebay_box, 5, "Default template URL:", "ebay_template_default_url")
-    field_row(ebay_box, 6, "Image URL base (optional):", "ebay_image_base_url")
-    field_row(ebay_box, 7, "Default condition:", "ebay_default_condition")
-    field_row(ebay_box, 8, "Default year:", "ebay_default_year")
-    field_row(ebay_box, 9, "Default manufacturer:", "ebay_default_manufacturer")
-    field_row(ebay_box, 10, "Default card number:", "ebay_default_card_number")
-    field_row(ebay_box, 11, "Default player:", "ebay_default_player")
-    field_row(ebay_box, 12, "Default set:", "ebay_default_set")
-    field_row(ebay_box, 13, "Default grade:", "ebay_default_grade")
-    field_row(ebay_box, 14, "Default autographed value:",
+    field_row(ebay_box, 6, "Default template URL:", "ebay_template_default_url")
+    field_row(ebay_box, 7, "Image URL base (optional):", "ebay_image_base_url")
+    field_row(ebay_box, 8, "Default condition:", "ebay_default_condition")
+    field_row(ebay_box, 9, "Default year:", "ebay_default_year")
+    field_row(ebay_box, 10, "Default manufacturer:", "ebay_default_manufacturer")
+    field_row(ebay_box, 11, "Default card number:", "ebay_default_card_number")
+    field_row(ebay_box, 12, "Default player:", "ebay_default_player")
+    field_row(ebay_box, 13, "Default set:", "ebay_default_set")
+    field_row(ebay_box, 14, "Default grade:", "ebay_default_grade")
+    field_row(ebay_box, 15, "Default autographed value:",
               "ebay_default_autographed")
-    field_row(ebay_box, 15, "Fallback description:", "ebay_default_description")
+    field_row(ebay_box, 16, "Fallback description:", "ebay_default_description")
     ttk.Label(ebay_box, text=(
         "The eBay helper gathers copyable/draggable listing details and opens "
         "the selected sport template(s). It does not submit or publish listings."),
         style="Dim.TLabel", wraplength=720, justify="left").grid(
-            row=16, column=1, sticky="w", padx=3, pady=(0, 3))
+            row=17, column=1, sticky="w", padx=3, pady=(0, 3))
 
     group("facebook", "Facebook Marketplace export fields")
     facebook_box = ttk.Frame(box)
@@ -4220,6 +4344,22 @@ def build_cookie(parent, app):
                 "ebay_default_description"):
             app.settings[key] = setting_value(key)
         app.settings["ebay_quicklist_enabled"] = ebay_quicklist_var.get()
+        listing_text = fields["ebay_listing_limit"].get().strip()
+        try:
+            #  Blank is the free-store number, not an error: the field is
+            #  filled from the saved setting, and a settings file written
+            #  before this setting existed has nothing to fill it with.
+            listing_limit = (int(listing_text) if listing_text
+                             else ebay_fill.limit_of(""))
+            if listing_limit <= 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning(
+                "Invalid eBay listing limit",
+                "Active listings the account allows must be a positive whole "
+                "number - 250 on a free eBay store.")
+            return False
+        app.settings["ebay_listing_limit"] = listing_limit
         if hasattr(app, "_mode_var"):
             app._mode_var.set(startup_var.get())
         app.settings["store_name"] = store_var.get().strip()
@@ -4883,6 +5023,365 @@ def build_pipeline(parent, app):
                   "CanadianShopper plugin.")
     ttk.Label(box, text=next_steps, style="Dim.TLabel", wraplength=680,
               justify="left").pack(anchor="w", pady=(4, 0))
+
+
+def build_ebayfill(parent, app):
+    """Which cards go on eBay next, and the page that lists them.
+
+    eBay holds a fixed number of active listings, and the store is worth more
+    with the dearest cards in it. The two things that job needs - the
+    website's catalogue and the store's active listings - are both read here
+    already, so the panel does the choosing and writes the same drag-and-drop
+    page the batch's Quick List writes. Nothing is listed from here, and no
+    site is changed by any of it.
+    """
+    panel_header(parent, app, "ebayfill")
+    box = ttk.Frame(parent)
+    box.pack(fill="x")
+
+    state = {"running": False, "page": None}
+
+    #  -- what the pass is doing --------------------------------------------
+    progress_row = ttk.Frame(box)
+    progress_row.pack(anchor="w", pady=(3, 0))
+    progress = ttk.Progressbar(progress_row, length=240, maximum=100)
+    progress_text = ttk.Label(progress_row, text="", style="Dim.TLabel",
+                              wraplength=520, justify="left")
+    drawn = {"shown": False, "sweeping": False}
+
+    def show_progress(text, done=None, total=None):
+        """Put the bar on screen and say where the pass is; never raise."""
+        try:
+            if not drawn["shown"]:
+                progress.pack(side="left", padx=(0, 8))
+                progress_text.pack(side="left")
+                drawn["shown"] = True
+            if total:
+                if drawn["sweeping"]:
+                    progress.stop()
+                    drawn["sweeping"] = False
+                progress.configure(mode="determinate",
+                                   maximum=max(1, int(total)),
+                                   value=min(int(done or 0), int(total)))
+            else:
+                progress.configure(mode="indeterminate", value=0)
+                if not drawn["sweeping"]:
+                    progress.start(12)      # sweeps until a count arrives
+                    drawn["sweeping"] = True
+            progress_text.configure(text=text)
+        except Exception:
+            pass
+
+    def hide_progress():
+        try:
+            if drawn["sweeping"]:
+                progress.stop()
+            drawn["sweeping"] = False
+            if drawn["shown"]:
+                progress.pack_forget()
+                progress_text.pack_forget()
+                drawn["shown"] = False
+            progress_text.configure(text="")
+        except Exception:
+            pass
+
+    summary = ttk.Label(box, text="Nothing chosen yet.", style="Dim.TLabel",
+                        wraplength=780, justify="left")
+    summary.pack(anchor="w", pady=(3, 0))
+
+    def say(text, tag=""):
+        app.console_line(text, tag)
+
+    #  -- what decides which cards come first -------------------------------
+    #  Dearest is the default - a fixed number of listings is worth the most
+    #  money that way - but a shop filling a hole in a set wants the cards it
+    #  names, and a shop restocking wants the newest. The choice is remembered
+    #  with the other settings, and the category and typed boxes are read on
+    #  every run because they change with what is being listed today.
+    order_row = ttk.Frame(box)
+    order_row.pack(anchor="w", pady=(4, 0))
+    ttk.Label(order_row, text="Choose the cards:").pack(side="left")
+    sort_var = tk.StringVar(
+        master=order_row,
+        value=ebay_fill.sort_label(app.settings.get("ebay_fill_sort")))
+    sort_box = ttk.Combobox(order_row, textvariable=sort_var,
+                            state="readonly", width=22,
+                            values=ebay_fill.sort_labels())
+    sort_box.pack(side="left", padx=(6, 0))
+    add_tooltip(sort_box, TOOLTIPS["Choose the cards:"])
+
+    def remember_sort(_event=None):
+        """Store the order the moment it changes; choosing changes nothing else."""
+        key = ebay_fill.sort_key(str(sort_var.get() or ""))
+        if app.settings.get("ebay_fill_sort") == key:
+            return
+        app.settings["ebay_fill_sort"] = key
+        try:
+            save_settings(app.settings)
+        except Exception as exc:          # a read-only settings file
+            log("could not remember the eBay order: %s" % exc)
+
+    sort_box.bind("<<ComboboxSelected>>", remember_sort)
+
+    filter_row = ttk.Frame(box)
+    filter_row.pack(anchor="w", pady=(2, 0))
+    ttk.Label(filter_row, text="Only this category:").pack(side="left")
+    category_var = tk.StringVar(master=filter_row, value="")
+    category_entry = ttk.Entry(filter_row, textvariable=category_var, width=22)
+    category_entry.pack(side="left", padx=6)
+    add_tooltip(category_entry, TOOLTIPS["Only this category:"])
+
+    wanted_row = ttk.Frame(box)
+    wanted_row.pack(anchor="w", pady=(2, 0))
+    ttk.Label(wanted_row, text="These cards first:").pack(side="left")
+    wanted_var = tk.StringVar(master=wanted_row, value="")
+    wanted_entry = ttk.Entry(wanted_row, textvariable=wanted_var, width=52)
+    wanted_entry.pack(side="left", padx=6)
+    add_tooltip(wanted_entry, TOOLTIPS["These cards first:"])
+
+    #  -- the store's own listing limit -------------------------------------
+    limit_row = ttk.Frame(box)
+    limit_row.pack(anchor="w", pady=(4, 0))
+    ttk.Label(limit_row, text="Active listings eBay allows:").pack(side="left")
+    limit_var = tk.StringVar(
+        master=limit_row,
+        value=str(ebay_fill.limit_of(app.settings.get("ebay_listing_limit"))))
+    limit_entry = ttk.Entry(limit_row, textvariable=limit_var, width=6)
+    limit_entry.pack(side="left", padx=6)
+    add_tooltip(limit_entry, TOOLTIPS["Active listings eBay allows:"])
+
+    def save_limit(quiet=False):
+        """Remember the limit where every other setting lives."""
+        number = ebay_fill.limit_of(limit_var.get())
+        limit_var.set(str(number))
+        app.settings["ebay_listing_limit"] = number
+        try:
+            save_settings(app.settings)
+        except Exception as exc:          # a read-only settings file
+            log("could not remember the eBay listing limit: %s" % exc)
+        if not quiet:
+            summary.configure(text="eBay's limit is now %d active listings. "
+                                   "Choose the next cards to fill it."
+                                   % number)
+        return number
+
+    limit_save = ttk.Button(limit_row, text="Save the limit",
+                            command=lambda: save_limit())
+    limit_save.pack(side="left")
+    add_tooltip(limit_save, TOOLTIPS["Save the limit"])
+
+    #  -- choosing -----------------------------------------------------------
+    def ebay_items(cookie):
+        """The store's active listings, live first and a saved page after.
+
+        eBay refuses scripted reads often enough that the saved page is a
+        first-class source here, exactly as it is in the stock panel: a store
+        that cannot be read live is not a store with nothing in it.
+        """
+        url = str(app.settings.get("ebay_selling_url")
+                  or EBAY_ACTIVE_URL).strip()
+        try:
+            items, _pages, _text = market_stock.read_ebay(
+                market_stock.fetch, url, cookie)
+            return {"items": items, "source": "live"}
+        except market_stock.MarketError as exc:
+            found = market_stock.saved_page(
+                "ebay", market_stock.saved_page_dirs(BASE))
+            if found is None:
+                raise market_stock.MarketError(
+                    "eBay could not be read (%s), and no saved page of your "
+                    "active listings was found." % getattr(exc, "message",
+                                                           str(exc)),
+                    "Open your eBay active-listings page in the browser and "
+                    "save it (Ctrl+S); this panel finds the saved page itself.",
+                    kind=getattr(exc, "kind", ""))
+            #  Named with how many listings it holds and when it was saved: a
+            #  page from last week can miss cards listed since, and the list
+            #  that follows it would offer them again.
+            return {"items": found["items"],
+                    "source": "the saved page %s"
+                              % market_stock.describe_page(found)}
+
+    def find_cards():
+        if state["running"]:
+            say("A selection is already running; letting it finish.", "dim")
+            return
+        site, key, secret = read_woo_credentials(BASE / "woo-keys.txt")
+        if not (site and key and secret):
+            messagebox.showinfo(
+                "Fill your eBay store",
+                "This reads your website's products, so it needs the "
+                "WooCommerce keys in woo-keys.txt (lines 1-3).")
+            say("No WooCommerce keys saved, so the website's products cannot "
+                "be read.", "dim")
+            return
+        limit = save_limit(quiet=True)
+        #  The boxes are read here, on the window's own thread, and the values
+        #  travel to the background work: a Tk variable touched from another
+        #  thread is not a thing to do, however harmless a string looks.
+        criteria = {"sort": str(sort_var.get() or ""),
+                    "category": str(category_var.get() or ""),
+                    "wanted": str(wanted_var.get() or "")}
+        cookie_path = BASE / market_stock.site("ebay")["cookie"]
+        cookie = market_stock.read_cookie(cookie_path) if cookie_path.is_file() \
+            else ""
+        if not cookie:
+            messagebox.showinfo(
+                "Fill your eBay store",
+                "Reading your eBay listings needs the session cookie in %s.\n\n"
+                "Paste it there (User Settings has a button that opens the "
+                "file), or save your eBay active-listings page from the "
+                "browser: a saved page is read when the live page refuses."
+                % cookie_path.name)
+        state["running"] = True
+        say("Finding the cards your eBay store should hold next...", "cmd")
+        show_progress("Reading your eBay listings...")
+
+        def page_read(page_done, total_pages, products):
+            if total_pages:
+                text = ("Reading your website's products: page %d of %d, %d "
+                        "read..." % (page_done, total_pages, products))
+            else:
+                text = ("Reading your website's products: page %d, %d read so "
+                        "far..." % (page_done, products))
+            try:
+                app.after(0, lambda: show_progress(text, page_done,
+                                                   total_pages))
+            except Exception:
+                pass          # the window went away; the read still finishes
+
+        def work():
+            store = ebay_items(cookie)
+            try:
+                app.after(0, lambda: show_progress(
+                    "Reading your website's products..."))
+            except Exception:
+                pass
+            products = woo_create.read_all_products(
+                site, key, secret, progress=page_read)
+            #  The matching is the slow part: a catalogue against a store is
+            #  hundreds of thousands of cheap comparisons, and a second of it
+            #  on the window's own thread is a window that stops repainting.
+            try:
+                app.after(0, lambda: show_progress(
+                    "Choosing the cards that are not on eBay yet..."))
+            except Exception:
+                pass
+            answer = ebay_fill.plan(
+                products, store["items"], limit, sort=criteria["sort"],
+                only_category=criteria["category"],
+                wanted=criteria["wanted"])
+            return {"store": store, "products": products, "answer": answer}
+
+        def done(result, error):
+            hide_progress()
+            state["running"] = False
+            if error is not None:
+                message = getattr(error, "message", str(error))
+                hint = getattr(error, "hint", "")
+                say("Could not choose the cards: %s %s" % (message, hint), "err")
+                summary.configure(text="Nothing was chosen: %s" % message)
+                return
+            products = result["products"]
+            items = result["store"]["items"]
+            answer = result["answer"]
+            say("eBay: %d active listing(s) from %s; website: %d products."
+                % (len(items), result["store"]["source"], len(products)), "dim")
+            text = ebay_fill.summary(answer)
+            summary.configure(text=text)
+            say(text, "warn" if not answer["chosen"] else "ok")
+            if not answer["chosen"]:
+                return
+            values = [ebay_fill.values(product, app.settings)
+                      for product in answer["chosen"]]
+            page, _templates = ebay_fill.render(
+                answer["chosen"], app.settings, note=text)
+            #  The templates this selection uses: one per sport, in card order,
+            #  de-duplicated by render() itself.
+            path = ebay_fill.write_page(page, BASE / "ebay_fill")
+            state["page"] = path
+            say("Written: %s" % path, "dim")
+            for index, row in enumerate(values[:20], 1):
+                say("  %2d. $%-9s %s" % (index, row["price"], row["title"]),
+                    "dim")
+            if len(values) > 20:
+                say("  ... and %d more on the page." % (len(values) - 20), "dim")
+            if open_path(path):
+                say("Opened the page: one card at a time, copy the fields into "
+                    "an eBay template. Nothing was listed.", "ok")
+            else:
+                say("The page is written beside the app; open it from the "
+                    "button below.", "dim")
+            #  The templates are opened too, because that is where the fields
+            #  are pasted and the batch's own Quick List already does it: at
+            #  most one tab per sport the chosen cards belong to, never one per
+            #  card. Nothing is submitted by opening a page.
+            if _templates:
+                try:
+                    app.open_webpages(list(_templates))
+                    say("Opened %d eBay template page%s: %s. Nothing is "
+                        "submitted there without you." %
+                        (len(_templates), "" if len(_templates) == 1 else "s",
+                         ", ".join(sorted({ebay_fill.sport_of(product).title()
+                                           or "default"
+                                           for product in answer["chosen"]}))),
+                        "ok")
+                except Exception as exc:
+                    say("Could not open the template pages: %s" % exc, "err")
+            elif answer["chosen"]:
+                say("No eBay template is set for these cards: add one in User "
+                    "Settings (eBay) and the page opens it next time.", "dim")
+
+        in_background(app, work, done)
+
+    row = ttk.Frame(box)
+    row.pack(anchor="w", pady=(2, 0))
+    choose = ttk.Button(row, text="Find the cards to list next",
+                        style="Task.TButton", command=find_cards)
+    choose.pack(side="left")
+    add_tooltip(choose, TOOLTIPS["Find the cards to list next"])
+
+    def open_last():
+        page = state["page"]
+        if page is None or not Path(page).is_file():
+            folder = BASE / "ebay_fill"
+            pages = sorted(folder.glob("ebay_fill_*.html")) \
+                if folder.is_dir() else []
+            page = pages[-1] if pages else None
+        if page is None:
+            messagebox.showinfo("No list yet",
+                                "Choose the next cards first; the page is "
+                                "written then.", parent=box.winfo_toplevel())
+            return
+        open_path(page)
+
+    last_button = ttk.Button(row, text="Open the last list",
+                             command=open_last)
+    last_button.pack(side="left", padx=8)
+    add_tooltip(last_button, TOOLTIPS["Open the last list"])
+    ttk.Button(row, text="Open the eBay listing page",
+               command=lambda: app.open_webpages(
+                   [str(app.settings.get("ebay_selling_url")
+                        or EBAY_ACTIVE_URL)])).pack(side="left")
+    add_tooltip(row.winfo_children()[-1], TOOLTIPS["Open the eBay listing page"])
+
+    panel_note(box, (
+        "Reads your website's whole catalogue and your eBay store's active "
+        "listings, then keeps the cards that are not on eBay yet and fit "
+        "under your limit - in the order chosen above: dearest, newest, oldest, "
+        "cheapest, or the cards you type, one after another. A card already "
+        "there is matched by SKU first and then by title, so it is not offered "
+        "twice. *Only this category* narrows the catalogue to one category of "
+        "the website, and is blank for all of it.\n\n"
+        "The page it opens is the eBay Quick List for those cards: click a "
+        "field to copy it, drag it onto the eBay form, open the matching "
+        "template, and submit. The template pages for the sports your cards "
+        "belong to are opened too - at most a handful, never one per card. "
+        "Nothing is listed or changed by this panel.\n\n"
+        "Left out, and said on the console: cards with no price, cards the "
+        "website has none of, unpublished products, anything outside the "
+        "category you named, and anything already listed. The order and the "
+        "limit are remembered in User Settings."))
 
 
 def build_combine(parent, app):
@@ -8124,10 +8623,21 @@ def build_csledit(parent, app):
     meta_file = BASE / "cs-stock-meta.json"
 
     def write_meta(count):
+        """Remember which read this list is - and the run's own account of it.
+
+        The plugin version and the count were enough to describe the list on
+        screen. A diagnosis needs more: the run's output and the stages it
+        reported are the two things a reader's author asks for first, and the
+        two things a window cannot supply once it has closed. Kept here, beside
+        the list, and capped - this is evidence, not a log file.
+        """
         try:
             meta_file.write_text(json.dumps(
                 {"plugin": plugin_version(), "count": count,
-                 "at": datetime.now().isoformat(timespec="seconds")}),
+                 "at": datetime.now().isoformat(timespec="seconds"),
+                 "command": str(state.get("command") or ""),
+                 "stages": list(state.get("stages") or [])[:40],
+                 "output": str(state.get("output") or "")[-200000:]}),
                 encoding="utf-8")
         except OSError:
             pass
@@ -8196,14 +8706,38 @@ def build_csledit(parent, app):
                 "Could not read CanadianShopper's listings",
                 why + "\n\nNothing was changed.", parent=box.winfo_toplevel())
             return False
-        write_meta(len(items))
         state["read"] = "live"
+        #  The read's own words, kept for the sentence a no-id list gets: the
+        #  reader's count line is quoted from here rather than from whatever
+        #  run happens to be in the runner when a button is pressed. Its
+        #  progress phases are kept with them, because they are what tells
+        #  "the lookups ran" apart from "they never started" - and the command
+        #  is kept because "no flag was passed" is a fact only if the file that
+        #  says so is the one the app ran.
+        state["output"] = last_tool_output(app)
+        state["stages"] = app.stages_seen() if hasattr(app, "stages_seen") \
+            else []
+        state["command"] = str(getattr(getattr(app, "runner", None), "cmd",
+                                       "") or "")
+        write_meta(len(items))
         editable, total = cs_edit.product_id_counts(items)
         note = "%d listings read from CanadianShopper." % total
         load(items, note)
         say("CanadianShopper: %d listings read; %s. Type a card's name to "
             "find one." % (total, cs_edit.editable_note(editable, total)),
             "ok")
+        resolution = cs_edit.resolution_counts(last_tool_output(app))
+        if resolution:
+            #  The reader's own counts, quoted rather than paraphrased: they
+            #  are what tells "the lookups ran and the site named nothing"
+            #  apart from "they never ran", and the person reading this line is
+            #  the one who would otherwise have to report it.
+            say("The reader's own resolution line: %s"
+                % cs_edit.resolution_line(last_tool_output(app)), "dim")
+            if not cs_edit.nothing_editable(items):
+                note = cs_edit.resolution_note(resolution, total)
+                if note:
+                    say(note[:1].upper() + note[1:], "dim")
         missed = stock_compare.failed_lookups(last_tool_output(app))
         if missed:
             #  Those listings are in the list, but this panel addresses a
@@ -8225,9 +8759,18 @@ def build_csledit(parent, app):
             #  what still works. A read from plugin 1.0.34 or newer that has
             #  none is called a defect, because by then it is one.
             said = cs_edit.product_id_gap(
-                items, plugin=plugin_version(), needed=CS_PRODUCT_ID_VERSION)
+                items, plugin=plugin_version(), needed=CS_PRODUCT_ID_VERSION,
+                reader_text=last_tool_output(app),
+                stages=state.get("stages") or [])
             if said:
                 say(said[:1].upper() + said[1:], "err")
+                #  The next thing anyone does with a read like this is report
+                #  it, and the report needs three things that are easier to
+                #  collect now than to explain later.
+                say("Press \"Save a read diagnosis...\" to put that "
+                    "evidence in one file for the plugin's author: the read's "
+                    "output, the phases it reported, one listing and that "
+                    "listing's detail response.", "dim")
         pending, state["then"] = state["then"], None
         if pending is not None:
             pending(items)
@@ -8270,6 +8813,18 @@ def build_csledit(parent, app):
                      on_done=lambda rc: arrived(rc, out))
 
     # --------------------------------------------------------------- the list
+    def selected_raw():
+        """The clicked listing, quietly: ``None`` when nothing is clicked.
+
+        The diagnosis wants a row without asking a question first - a person
+        who pressed it with nothing selected gets the first row, not a dialog.
+        """
+        picked = listing.curselection()
+        if not picked or not state["rows"]:
+            return None
+        index = picked[0]
+        return state["rows"][index] if index < len(state["rows"]) else None
+
     def selected():
         picked = listing.curselection()
         if not picked or not state["rows"]:
@@ -8436,7 +8991,9 @@ def build_csledit(parent, app):
             #  work, and name the plugin version that fixes it.
             said = cs_edit.product_id_gap(
                 state["items"], plugin=plugin_version(),
-                needed=CS_PRODUCT_ID_VERSION, works=False)
+                needed=CS_PRODUCT_ID_VERSION, works=False,
+                reader_text=state.get("output") or last_tool_output(app),
+                stages=state.get("stages") or [])
             say("%s cannot be changed from here: %s Nothing was sent."
                 % (named, said), "err")
             summary.configure(text="No listing in this read has a product "
@@ -8762,6 +9319,108 @@ def build_csledit(parent, app):
     add_tooltip(read_btn,
                 "Read every listing on CanadianShopper, with its state and "
                 "stock, so it can be searched here; nothing is changed")
+
+    def save_diagnosis():
+        """Write the three things a plugin author asks for, in one file.
+
+        A read with no product ids came back from a reader its author could
+        not fault, and the next question was *the console output, whether the
+        ids phase appeared, and one row with its detail response*. The app has
+        all three - the run's own output, the stages it reported, one row - and
+        can read the one detail response the reader's lookup would have read.
+        Everything written is sanitised, so the file can be pasted into a
+        conversation without handing over a session.
+        """
+        if not state["items"]:
+            messagebox.showinfo(
+                "Nothing read yet",
+                "Read CanadianShopper's listings first: the diagnosis is made "
+                "from that read's own output.",
+                parent=box.winfo_toplevel())
+            return
+        item = selected_raw() or state["items"][0]
+        if not isinstance(item, dict):
+            item = {"value": item}
+        listing_id = cs_edit.listing_id(item)
+        plugin = plugin_version()
+        #  Which read this file is about decides where its evidence comes from.
+        #  A list read in this window has its run to hand; the list on disk was
+        #  read by a window that may be gone, and what it printed was kept
+        #  beside it - while whatever the runner holds now may belong to a
+        #  different tool entirely.
+        meta = read_meta()
+        if state.get("read") == "live":
+            output = str(state.get("output") or "")
+            stages = list(state.get("stages") or [])
+            command = str(state.get("command") or "")
+            at = str(meta.get("at") or "").strip().replace("T", " ")
+            source = ("the read this window made%s" % (" at %s" % at if at
+                                                       else ""))
+        else:
+            output = str(meta.get("output") or "")
+            stages = list(meta.get("stages") or [])
+            command = str(meta.get("command") or "")
+            at = str(meta.get("at") or "").strip().replace("T", " ")
+            source = ("the last read on disk%s%s" %
+                      (" at %s" % at if at else "",
+                       ", by plugin %s" % meta["plugin"]
+                       if meta.get("plugin") else ""))
+            if not output:
+                source += (", and this app did not keep that run's console "
+                           "output, phases or command - reading the listings "
+                           "again with this panel open writes all three into "
+                           "the next diagnosis")
+        command = command or command_from_log("CanadianShopper listings")
+        editable, total = cs_edit.product_id_counts(state["items"])
+        cookie = load_cookie_text() or ""
+        url = cs_edit.detail_url(listing_id, CS_HOME)
+        say("Reading one listing's detail to go with the diagnosis...", "dim")
+
+        def work():
+            #  Two read-only requests: the record itself, and one OPTIONS
+            #  question that asks the vendor's own route which methods it
+            #  accepts. The second is what settles whether that record can be
+            #  written at all - and it is answered without writing anything.
+            status, content_type, body = cs_edit.fetch_detail(url, cookie)
+            return {"url": url, "status": status,
+                    "content_type": content_type, "body": body,
+                    "probe": cs_edit.fetch_options(url, cookie)}
+
+        def done(detail, error):
+            if error is not None:
+                detail = {"url": url, "status": 0, "content_type": "",
+                          "body": "the request failed: %s" % error}
+            text = cs_edit.diagnosis_text(
+                row=item, output=output, stages=stages, plugin=plugin,
+                command=command, detail=detail or {}, total=total,
+                editable=editable, app_version=VERSION, source=source,
+                probe=(detail or {}).get("probe"))
+            path = cs_edit.diagnosis_path(BASE)
+            try:
+                path.write_text(text, encoding="utf-8")
+            except OSError as exc:
+                say("Could not write the diagnosis: %s" % exc, "err")
+                return
+            say("Diagnosis written: %s (no cookie, token or password is in "
+                "it)." % path, "ok")
+            probe = (detail or {}).get("probe") or {}
+            if probe.get("allow"):
+                #  The answer to "can this record be written at all" is worth
+                #  saying out loud, not only filing.
+                say("Asked read-only, the vendor's own route for that listing "
+                    "accepts: %s." % ", ".join(probe["allow"]), "dim")
+            if not open_path(path):
+                messagebox.showinfo(
+                    "Diagnosis written",
+                    "Saved to:\n%s\n\nAttach it to the plugin report."
+                    % path, parent=box.winfo_toplevel())
+
+        in_background(app, work, done)
+
+    diagnosis_btn = ttk.Button(filter_row, text="Save a read diagnosis...",
+                               command=save_diagnosis)
+    diagnosis_btn.pack(side="left", padx=(8, 0))
+    add_tooltip(diagnosis_btn, TOOLTIPS["Save a read diagnosis..."])
 
     list_frame = ttk.Frame(box)
     listing = tk.Listbox(list_frame, height=9, exportselection=False)
@@ -12295,6 +12954,7 @@ automatically."""
 
 PANEL_BUILDERS = {
     "cookie": build_cookie,
+    "ebayfill": build_ebayfill,
     "pipeline": build_pipeline,
     "combine": build_combine,
     "stage": build_stage,
