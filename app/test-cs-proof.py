@@ -670,14 +670,25 @@ def test_the_whole_listing_at_once():
         fetch=site.fetch, send=site.send)
     check("a skipped field is reported, not silently dropped",
           results[0]["verdict"] == "skipped" and
+          results[0]["settled_earlier"] is True and
           "settled by an earlier proof" in results[0]["why"],
           str(results[0]))
+    check("and it is said as done, not as a write that could not be read",
+          "was settled by an earlier proof" in cs_proof.sentence(results[0])
+          and "readable back" not in cs_proof.sentence(results[0]),
+          cs_proof.sentence(results[0]))
     check("and nothing at all was sent for it",
           not any("priceCad" in payload for payload in site.sent),
           str(site.sent[:2]))
+    sentence = cs_proof.listing_sentence(results)
     check("a settled field counts as done when the whole is counted",
-          "of %d fields are settled" % len(results) in
-          cs_proof.listing_sentence(results), cs_proof.listing_sentence(results))
+          "All %d fields are settled" % len(results) in sentence and
+          "1 already settled by an earlier proof" in sentence, sentence)
+    check("and it is not listed as needing attention",
+          "Price" not in ", ".join(result["label"] for result in
+                                   cs_proof.problem_results(results)),
+          str([result["label"]
+               for result in cs_proof.problem_results(results)]))
 
     print()
     print("== a photo field with no photo is not guessed at ==")
@@ -689,8 +700,12 @@ def test_the_whole_listing_at_once():
                      if result["field"] in cs_proof.photo_fields()]
     check("both photo fields are skipped, with the reason",
           all(result["verdict"] == "skipped" for result in photo_results) and
-          all("No photo of this card" in result["why"]
+          all("was not attempted: no photo of this card" in result["why"]
               for result in photo_results), str(photo_results))
+    check("and a skip for want of a photo is a problem, unlike a settled one",
+          len(cs_proof.problem_results(results)) == 2,
+          str([result["field"]
+               for result in cs_proof.problem_results(results)]))
     check("and the fields that are not photos are still proved",
           [result["verdict"] for result in results if result["field"] not in
            cs_proof.photo_fields()] == ["written"] * 4,
@@ -731,7 +746,7 @@ def test_the_whole_listing_at_once():
         fetch=site.fetch, send=site.send)
     text = cs_proof.listing_report_text(
         results, listing={"id": RECORD["id"], "name": RECORD["title"]},
-        app_version="3.24")
+        app_version="3.25")
     check("the file names every field that was tried",
           all(cs_proof.field_label(result["field"]) in text
               for result in results), "")
@@ -740,6 +755,131 @@ def test_the_whole_listing_at_once():
           "not allowed" in text, text[:400])
     check("it never carries the session cookie",
           "secret-session" not in text, "")
+
+
+def test_a_photo_of_the_wrong_card_is_never_chosen():
+    """The report: a Wurmple listing was proved with a 1978 baseball card.
+
+    Five fields were settled, so the run only had the gallery to prove - but it
+    still picked the photos, and the best-scoring row in the batch was a
+    different card entirely. The chooser shows a person the titles; the
+    automatic run has nobody looking, so a photo may only be written when the
+    app is sure it is this card.
+    """
+    print()
+    print("== never a photo of a different card ==")
+    wurmple = "#006/196 Wurmple SWSH11: Lost Origin - Pokémon TCG"
+    check("a baseball card from the same batch is not this card",
+          not cs_proof.same_card(
+              wurmple, "56 Syl Apps 1978-79 O-Pee-Chee Baseball Card"), "")
+    check("and neither is another Pokemon card from another set",
+          not cs_proof.same_card(wurmple, "Pikachu Base Set 58/102"), "")
+    check("the same card with a grade on the end is this card",
+          cs_proof.same_card(
+              wurmple, "#006/196 Wurmple SWSH11 Lost Origin Pokemon TCG EX-MT"),
+          "")
+    check("an empty title is never this card",
+          not cs_proof.same_card(wurmple, "") and
+          not cs_proof.same_card("", "anything"), "")
+
+    record = {"id": "a", "primaryImageUrl":
+              "https://canadianshopper.ca/api/file/wurmple-front.jpg",
+              "images": ["https://canadianshopper.ca/api/file/wurmple-front.jpg"]}
+    rows = [{"title": "56 Syl Apps 1978-79 O-Pee-Chee Baseball Card",
+             "url": "https://canadianshopper.ca/api/file/apps-front.jpg"},
+            {"title": "73 Pit Martin 1973-74 O-Pee-Chee",
+             "url": "https://canadianshopper.ca/api/file/pit-front.jpg"}]
+    photos = cs_proof.auto_photos(item={"name": wurmple}, record=record,
+                                  staged_rows=rows, siblings=[], card=wurmple)
+    check("with nothing of this card, no photo is chosen at all",
+          photos["main"] == "" and photos["gallery"] == "", str(photos))
+    check("and the reason names the closest row and how close it was",
+          "Syl Apps" in photos["why_main"] and "%" in photos["why_main"] and
+          "not this card" in photos["why_main"], photos["why_main"])
+    check("the reason says the photo chooser is the way through",
+          "photo chooser" in photos["why_main"], photos["why_main"])
+
+    #  A staged row that really is this card is used, and the same photo is
+    #  never chosen for both fields.
+    rows2 = [{"title": wurmple, "url":
+              "https://canadianshopper.ca/api/file/wurmple-back.jpg"},
+             {"title": "56 Syl Apps 1978-79 O-Pee-Chee Baseball Card",
+              "url": "https://canadianshopper.ca/api/file/apps-front.jpg"}]
+    photos = cs_proof.auto_photos(item={"name": wurmple},
+                                  record={"primaryImageUrl":
+                                          "https://cs/api/file/front.jpg"},
+                                  staged_rows=rows2, siblings=[], card=wurmple)
+    check("a staged row whose title is this card is used",
+          photos["main"].endswith("wurmple-back.jpg"), str(photos))
+    check("and a second photo of this card goes to the gallery",
+          cs_proof.auto_photos(
+              item={"name": wurmple},
+              record={"primaryImageUrl": "https://cs/api/file/front.jpg",
+                      "images": ["https://cs/api/file/front.jpg"]},
+              staged_rows=rows2 + [{"title": wurmple + " back",
+                                    "url": "https://cs/api/file/back2.jpg"}],
+              siblings=[], card=wurmple)["gallery"].endswith("back2.jpg"), "")
+    check("a photo already in the gallery is not added twice",
+          cs_proof.auto_photos(
+              item={"name": wurmple},
+              record={"primaryImageUrl": "https://cs/api/file/front.jpg",
+                      "images": ["https://cs/api/file/front.jpg",
+                                 "https://cs/api/file/wurmple-back.jpg"]},
+              staged_rows=rows2, siblings=[], card=wurmple)["gallery"] == "",
+          "")
+
+    print()
+    print("== the gallery's own key, whatever the site calls it ==")
+    for key in ("images", "galleryImages", "imageUrls", "gallery", "photos"):
+        found = dict(RECORD, **{key: ["https://cs/api/file/a.webp",
+                                      "https://cs/api/file/b.webp"]})
+        plan = cs_proof.plan("images", found,
+                             staged_url="https://cs/api/file/new.webp")
+        check("a gallery under %r is found and addressed by its own name"
+              % key, plan.get("key") == key and
+              plan["trial"][-1] == "https://cs/api/file/new.webp", str(plan)[:160])
+    check("a list that is not photos is not mistaken for a gallery",
+          cs_proof.gallery_key({"tags": ["vintage", "hockey"]}) == "", "")
+    check("and the main photo on its own is not a gallery",
+          cs_proof.gallery_key({"primaryImageUrl": "/api/file/a.webp"}) == "",
+          "")
+
+    site = Site(record=dict(RECORD, galleryImages=[
+        "https://cs/api/file/a.webp", "https://cs/api/file/b.webp"]),
+        honours=("priceCad", "title", "description", "inventory",
+                 "primaryImageUrl", "images", "galleryImages"))
+    url = "https://canadianshopper.ca/api/data/product/" + RECORD["id"]
+    result = cs_proof.prove("images", url, "secret-session",
+                            staged_url="https://cs/api/file/new.webp",
+                            fetch=site.fetch, send=site.send)
+    check("the gallery is written under the record's own key, not 'images'",
+          result["verdict"] == "written" and
+          [sorted(payload) for payload in site.sent] ==
+          [["galleryImages"], ["galleryImages"]], str(site.sent))
+    check("and the list came back exactly as it was",
+          site.record["galleryImages"] ==
+          ["https://cs/api/file/a.webp", "https://cs/api/file/b.webp"],
+          str(site.record["galleryImages"]))
+
+    print()
+    print("== a field the record does not have is not created by a proof ==")
+    no_gallery = {"id": "a", "title": "Wurmple", "priceCad": 1.0,
+                  "primaryImageUrl": "https://cs/api/file/front.jpg"}
+    plan = cs_proof.plan("images", no_gallery,
+                         staged_url="https://cs/api/file/new.webp")
+    check("the refusal names the keys the record really has",
+          "priceCad" in plan["why"] and "primaryImageUrl" in plan["why"] and
+          "carries no gallery" in plan["why"], plan["why"])
+    site = Site(record=dict(no_gallery))
+    result = cs_proof.prove("images", url, "secret-session",
+                            staged_url="https://cs/api/file/new.webp",
+                            fetch=site.fetch, send=site.send)
+    check("nothing is written when the field is not there",
+          not site.sent and result.get("plan_refused") is True, str(site.sent))
+    check("and the advice is not to sign in again - the record answered",
+          "sign in" not in cs_proof.advice(result).lower() and
+          "nothing to fix" in cs_proof.advice(result).lower(),
+          cs_proof.advice(result))
 
 
 def test_the_report():
@@ -753,7 +893,7 @@ def test_the_report():
     text = cs_proof.report_text(result, listing={"id": RECORD["id"],
                                                  "name": RECORD["title"]},
                                 when=datetime(2026, 11, 2, 14, 30, 5),
-                                app_version="3.24")
+                                app_version="3.25")
     check("it names the listing and the record's own id",
           RECORD["title"] in text and RECORD["id"] in text and
           "not a product id" in text, text[:400])
@@ -830,6 +970,7 @@ def main():
     test_the_photos_a_proof_may_write()
     test_the_gallery_proof()
     test_the_whole_listing_at_once()
+    test_a_photo_of_the_wrong_card_is_never_chosen()
     test_the_report()
     test_what_the_app_remembers()
     print()

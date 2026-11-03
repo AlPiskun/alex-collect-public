@@ -77,7 +77,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.24"
+VERSION = "3.25"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -10430,11 +10430,12 @@ def build_csledit(parent, app):
         if field == "images":
             #  A gallery proof adds one photo it does not already hold: the
             #  gallery's own photos are exactly what it must not write again.
-            have = set(cs_proof.gallery_keys(
-                ((answer or {}).get("record") or {}).get("images")))
+            record = (answer or {}).get("record") or {}
+            key = cs_proof.gallery_key(record) or "images"
+            have = {cs_proof.photo_id(url)
+                    for url in cs_proof.gallery_keys(record.get(key) or "")}
             candidates = [candidate for candidate in candidates
-                          if cs_proof.absolute_photo(
-                              candidate["url"]).rstrip("/") not in have]
+                          if cs_proof.photo_id(candidate["url"]) not in have]
         return candidates
 
     def save_proofs(results, item, one_file=True):
@@ -10679,21 +10680,27 @@ def build_csledit(parent, app):
 
         def work():
             answer = look()
-            photos = photo_choices(answer, item, "primaryImageUrl")
-            photo = photos[0]["url"] if photos else ""
-            gallery_photo = ""
-            if "images" in todo:
-                for candidate in photo_choices(answer, item, "images"):
-                    if candidate["url"] != photo:
-                        gallery_photo = candidate["url"]
-                        break
+            cache = answer.get("cache") or {}
+            #  A photo of *this card*, found rather than asked for - and never
+            #  a well-scoring row from the batch that is a different card. A
+            #  proof is written to a live listing: "O-Pee-Chee" in both titles
+            #  is not the same card, and the wrong picture is worse than no
+            #  photo proof at all.
+            photos = cs_proof.auto_photos(
+                item=item, record=answer.get("record"),
+                staged=cache.get("staged"), staged_rows=cache.get("rows"),
+                siblings=answer.get("siblings"), card=cache.get("card"))
+            photo = photos["main"]
+            gallery_photo = photos["gallery"] if "images" in todo else ""
+            reasons = {"primaryImageUrl": photos["why_main"],
+                       "images": photos["why_gallery"] or photos["why_main"]}
             #  Every field is passed, and the settled ones are *skipped*: the
             #  report is about the whole listing, so a field an earlier proof
             #  settled is counted as done rather than left out.
             results = cs_proof.prove_listing(
                 answer["address"], answer["cookie"], listing=item,
                 fields=everything, skip=settled_here, photo=photo,
-                gallery_photo=gallery_photo)
+                gallery_photo=gallery_photo, why=reasons)
             return {"results": results, "answer": answer, "photo": photo,
                     "gallery_photo": gallery_photo}
 
@@ -10706,15 +10713,25 @@ def build_csledit(parent, app):
             payload = payload or {}
             results = payload.get("results") or []
             for result in results:
-                good = cs_proof.proven(result)
+                #  A field an earlier proof settled is done, not broken: it
+                #  reads as settled, in the colour a settled field has.
+                good = cs_proof.settled_result(result)
                 say(cs_proof.sentence(result), "ok" if good else "err")
                 fix = cs_proof.advice(result)
                 if fix and not good:
                     say("  What to do: %s" % fix, "err")
-            if payload.get("photo"):
+            #  Only say which photo was written when one really was: a field
+            #  that was skipped never saw its photo, and naming it reads as a
+            #  write that did not happen.
+            settled_now = {result.get("field"): result for result in results}
+            main_result = settled_now.get("primaryImageUrl") or {}
+            gallery_result = settled_now.get("images") or {}
+            if payload.get("photo") and \
+                    main_result.get("verdict") != "skipped":
                 say("The photo used for the main photo was %s."
                     % payload["photo"], "dim")
-            if payload.get("gallery_photo"):
+            if payload.get("gallery_photo") and \
+                    gallery_result.get("verdict") != "skipped":
                 say("The photo added to the gallery was %s."
                     % payload["gallery_photo"], "dim")
             saved = save_proofs(results, item)

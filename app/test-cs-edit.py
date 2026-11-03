@@ -562,6 +562,126 @@ def test_every_field_is_proved_in_one_job():
     harness._BOX.askyesno = lambda *a, **k: True
 
 
+def test_a_settled_field_is_not_reported_as_broken():
+    """The run from the report, exactly: five settled, one gallery, and a
+    batch full of other people's cards.
+
+    What came back was "the write was accepted but not readable back" for five
+    fields that had not been written at all, "No field is settled" underneath
+    them, and two photos of *different cards* lined up for the gallery. Settled
+    is not broken, and a photo the app is not sure is this card is never
+    written to a live listing.
+    """
+    print()
+    print("== a settled field reads as settled, and never another card's photo ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    wurmple = "#006/196 Wurmple SWSH11: Lost Origin - Pokémon TCG"
+    rows = [{"id": "a2304e72dbca4e678e7111d011ade22d", "product_id": 0,
+             "sku": "PKM-SWSH11-006", "title": wurmple,
+             "status": "active", "inventory": 1, "price": "1.00"}]
+    record = json.dumps({
+        "id": rows[0]["id"], "title": wurmple, "priceCad": 1.0,
+        "inventory": 1, "description": "A card.",
+        "primaryImageUrl":
+            "https://canadianshopper.ca/api/file/wurmple-front.jpg"})
+    #  Every field but the gallery was settled by an earlier proof.
+    (folder / cs_proof.PROOFS_FILE).write_text(json.dumps({
+        field: {"at": "2026-11-02 15:34:38", "verdict": "written",
+                "restored": True, "proven": True, "listing": rows[0]["id"],
+                "title": wurmple}
+        for field in ("priceCad", "title", "description", "inventory",
+                      "primaryImageUrl")}), encoding="utf-8")
+    asked, questions = [], []
+    harness._BOX.shown[:] = []
+
+    def fake_prove(field, url, cookie="", staged_url="", listing=None,
+                   **kwargs):
+        asked.append({"field": field, "staged": staged_url})
+        return {"field": field, "label": cs_proof.field_label(field),
+                "verdict": "written", "written": True, "restored": True,
+                "status": 200, "restore_status": 200, "url": url,
+                "why": "the site's answer", "steps": [],
+                "at": "2026-11-03 07:24:03"}
+
+    def yes(title, question, **kwargs):
+        questions.append((title, question))
+        return True
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    harness._BOX.askyesno = yes
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(cs_proof, "staged_photo",
+                         lambda folder, title, extra_folders=(): ""), \
+            patch.object(cs_proof, "staged_photos",
+                         lambda folder, **kwargs: [
+                             {"title": "56 Syl Apps 1978-79 O-Pee-Chee "
+                                       "Baseball Card",
+                              "url": "https://canadianshopper.ca/api/file/"
+                                     "56-Syl-Apps-front.jpg"},
+                             {"title": "73 Pit Martin 1973-74 O-Pee-Chee",
+                              "url": "https://canadianshopper.ca/api/file/"
+                                     "73-Pit-Martin-front.jpg"}]), \
+            patch.object(cs_proof, "read_record",
+                         lambda url, cookie="": (200, record)), \
+            patch.object(cs_proof, "photo_alive",
+                         lambda url, **k: (False, "")), \
+            patch.object(cs_proof, "prove", fake_prove):
+        read_into(app, folder, parent, rows)
+        select(parent, "Wurmple")
+        app.lines[:] = []
+        find(parent, gui.ttk.Button, "Prove every field...").invoke()
+
+    check("the question names only the field that is left to prove",
+          questions and "Prove 1 field" in questions[0][0] and
+          "Already settled, so not written again: Price, Title, Description, "
+          "Stock, Main photo" in questions[0][1],
+          questions[0][1] if questions else "")
+    check("nothing at all was written - not a different card's photo either",
+          asked == [], str(asked))
+    check("a settled field reads as settled, not as unreadable",
+          any("Price was settled by an earlier proof" in line
+              for _tag, line in app.lines) and
+          not any("not readable back" in line for _tag, line in app.lines),
+          str(app.lines[:6]))
+    check("the gallery says the record has no gallery, and names its keys",
+          any("carries no gallery" in line and "primaryImageUrl" in line
+              for _tag, line in app.lines), str(app.lines[-4:]))
+    check("a skipped photo field does not claim its photo was written",
+          not any("The photo used" in line or "The photo added" in line
+                  for _tag, line in app.lines), str(app.lines[-6:]))
+    check("no other card's photo is used, named as written, or left behind",
+          not any("Syl-Apps" in line or "Pit-Martin" in line
+                  for _tag, line in app.lines) and
+          "Syl-Apps" not in json.dumps(asked), str(asked))
+    check("five fields are settled and one is not",
+          any("5 of 6 fields are settled" in line for _tag, line in app.lines)
+          and any("Gallery photos need" in line
+                  for _tag, line in app.lines), str(app.lines[-4:]))
+    check("and only the field that is missing is put in front of the person",
+          any(kind == "showwarning" and "Gallery photos" in str(payload)
+              for kind, payload in harness._BOX.shown) and
+          not any("Price" in str(payload) for _kind, payload
+                  in harness._BOX.shown),
+          str(harness._BOX.shown)[:400])
+    saved = cs_proof.load_proofs(folder)
+    check("the earlier proofs are still remembered",
+          all(cs_proof.settled(field, saved) for field in
+              ("priceCad", "title", "description", "inventory",
+               "primaryImageUrl")), str(sorted(saved)))
+    harness._BOX.askyesno = lambda *a, **k: True
+
+
 def test_the_12030_reproduction():
     """The row and the answer plugin 1.0.30 sends, end to end.
 
@@ -1298,7 +1418,7 @@ def test_the_diagnosis_file():
                                   stages=["read", "ids"], plugin="1.0.38",
                                   command="cs-stock.py --stock-out cs-stock.json",
                                   detail=detail, total=2596, editable=0,
-                                  app_version="3.24")
+                                  app_version="3.25")
     check("the file carries the reader's own count line",
           "2596 listings, 0 with a real product id" in text, "")
     check("the app's own count is beside it, so the two can be compared",
@@ -1753,7 +1873,7 @@ def test_the_real_diagnosis_from_the_shop():
                 "--cookie-file cookie.txt",
         detail={"url": cs_edit.detail_url(row["id"]), "status": 200,
                 "content_type": "application/json", "body": json.dumps(record)},
-        total=2596, editable=0, app_version="3.24",
+        total=2596, editable=0, app_version="3.25",
         source="the read this window made at 2026-11-02 13:03:59")
 
     check("the file no longer carries the progress markers",
@@ -3797,6 +3917,7 @@ def main():
     test_the_confirmation_says_what_will_change()
     test_the_plugins_answer_is_read_conservatively()
     test_every_field_is_proved_in_one_job()
+    test_a_settled_field_is_not_reported_as_broken()
     test_the_12030_reproduction()
     test_a_list_read_before_product_ids()
     test_a_read_with_no_product_ids_at_all()
