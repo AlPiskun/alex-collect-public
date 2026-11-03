@@ -1,4 +1,4 @@
-Alex Collect 3.34 — public core package
+Alex Collect 3.35 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -67,6 +67,12 @@ app/:
                                    in a typed order, within one category or all
                                    of them, and the Quick List page and
                                    template pages for them
+  ebay_skip.py                     the cards marked to skip in the Quick Lists,
+                                   kept in ebay-skips.json beside the app: a
+                                   marked card is left out of this page and every
+                                   later one until it is put back, and the two
+                                   Quick Lists (the batch's and the panel's) read
+                                   the one file
   stock_write.py                   write one stock count onto a website product,
                                    and confirm the site kept it
   woo_edit.py                      find one product on the website by name, SKU

@@ -89,6 +89,10 @@ try:
     import image_store
 except ImportError:                      # a bare batch folder with no app
     image_store = None
+try:
+    import ebay_skip
+except ImportError:                      # a bare batch folder with no app
+    ebay_skip = None
 
 USER_SETTINGS = load_user_settings(APP_DIR / "gui-settings.json")
 OUTPUT_DIR = SCRIPT_DIR / "output"
@@ -1240,18 +1244,29 @@ FIELDNAMES = [
 ]
 
 
+def card_sku(c):
+    """The SKU this card is given when the batch writes its CSV.
+
+    One definition, used twice: by :func:`build_rows`, where it becomes the
+    product's SKU, and by the eBay Quick List, where it is what a card marked
+    to skip is recognized by on every later batch. Two spellings of the same
+    SKU would mean a skip that stops working the moment the card is listed.
+    """
+    code = brand_code(c["brand"])
+    grade_component = grade_slug(c["grade"])  # e.g. "EX-5", "VG-3"
+    #  The printing is part of the SKU (see VARIETY_TOKENS): a dark back
+    #  and a light back of one card are two products, and one SKU for both
+    #  meant the second was skipped as already there.
+    sku_bits = ([code + c["year"], c["card_num"], c["last"],
+                 grade_component] + variety_tokens(c["seo_title"]))
+    return "-".join(bit for bit in (sku_component(piece)
+                                    for piece in sku_bits) if bit)
+
+
 def build_rows(cards_parsed, default_quantity=1):
     rows = []
     for c in cards_parsed:
-        code = brand_code(c["brand"])
-        grade_component = grade_slug(c["grade"])  # e.g. "EX-5", "VG-3"
-        #  The printing is part of the SKU (see VARIETY_TOKENS): a dark back
-        #  and a light back of one card are two products, and one SKU for both
-        #  meant the second was skipped as already there.
-        sku_bits = ([code + c["year"], c["card_num"], c["last"],
-                     grade_component] + variety_tokens(c["seo_title"]))
-        sku = "-".join(bit for bit in (sku_component(piece)
-                                       for piece in sku_bits) if bit)
+        sku = card_sku(c)
 
         price = math.ceil(c["price"]) if c["price"] else ""
         images = ", ".join(x for x in (c["front_img"], c["back_img"]) if x)
@@ -2915,6 +2930,70 @@ def _parse_ebay_card_selection(answer, count):
     return selected
 
 
+def _ebay_skip_state():
+    """The cards marked to skip, and the file they live in.
+
+    One file for both Quick Lists: the panel writes it and this reads it, so a
+    card declined there is not offered again here. A batch folder without the
+    app has no such module and no file, and then every card is offered exactly
+    as it was before.
+    """
+    if ebay_skip is None:
+        return {}, None
+    path = ebay_skip.path_for(APP_DIR)
+    return ebay_skip.load(path), path
+
+
+def _ebay_skip_card(card):
+    """A card in the shape the skip list keys on - its SKU, or its title."""
+    return {"sku": card_sku(card), "seo_title": card.get("seo_title")}
+
+
+def _ask_ebay_skips(chosen, skips, path):
+    """Offer to mark any of these cards to skip, now and in later batches.
+
+    Asked after the selection because the card being declined is the one just
+    looked at, and it is asked over the cards *chosen* so the numbering on
+    screen is the numbering answered. A mark that cannot be written is not a
+    mark: the card is left on this run's page and the failure is said out loud,
+    because a skip that only lasts until the next batch is worse than none.
+    """
+    if not chosen or ebay_skip is None:
+        return chosen, skips
+    print("\n  Mark any of these to skip - now and in every later batch?")
+    print("  A card marked here comes off this list too.")
+    for index, card in enumerate(chosen, 1):
+        print("  %d. %s" % (index, card.get("seo_title") or "(no title)"))
+    try:
+        answer = input("  Cards to skip [e.g. 2 or 1,3; Enter for none]: ").strip()
+    except (EOFError, OSError):
+        return chosen, skips
+    if not answer:
+        return chosen, skips
+    try:
+        selected = _parse_ebay_card_selection(answer, len(chosen))
+    except ValueError as exc:
+        print("  %s Nothing was marked." % exc)
+        return chosen, skips
+    if not selected:
+        return chosen, skips
+    wanted = [chosen[index] for index in selected]
+    marked = dict(skips or {})
+    for card in wanted:
+        marked = ebay_skip.mark(marked, ebay_skip.key_of(_ebay_skip_card(card)),
+                                _ebay_skip_card(card))
+    if not ebay_skip.save(path, marked):
+        print("  !! Could not write %s, so nothing was marked and every card "
+              "stays on this list." % path, file=sys.stderr)
+        return chosen, skips
+    for card in wanted:
+        print("    - %s  (marked to skip)" % (card.get("seo_title")
+                                              or "(no title)"))
+    print("  Saved in %s - the app's Skipped cards button can put one back." % path)
+    keep = [card for index, card in enumerate(chosen) if index not in selected]
+    return keep, marked
+
+
 def maybe_run_ebay_quicklist(cards_parsed):
     """Ask which cards to prepare for manual eBay listing and open template tabs."""
     if not USER_SETTINGS.get("ebay_quicklist_enabled", True) or not cards_parsed:
@@ -2936,15 +3015,37 @@ def maybe_run_ebay_quicklist(cards_parsed):
     if answer not in ("y", "yes"):
         print("  eBay Quick List skipped.")
         return
+    #  The cards marked to skip are not offered, and they are named rather
+    #  than silently missing: a list that is shorter than the batch without
+    #  saying why is a list nobody can check.
+    skips, skip_path = _ebay_skip_state()
+    offered, marked = [], []
+    for card in cards_parsed:
+        if ebay_skip is not None and ebay_skip.is_marked(
+                skips, ebay_skip.key_of(_ebay_skip_card(card))):
+            marked.append(card)
+        else:
+            offered.append(card)
+    if marked:
+        print("  %d card%s marked to skip %s not offered:" % (
+            len(marked), "" if len(marked) == 1 else "s",
+            "is" if len(marked) == 1 else "are"))
+        for card in marked:
+            print("    - %s" % (card.get("seo_title") or "(no title)"))
+        print("  (Skipped cards... in the app's Fill your eBay store panel "
+              "puts one back.)")
+    if not offered:
+        print("  Every card in this batch is marked to skip; nothing to prepare.")
+        return
     print("\nChoose cards to prepare (comma-separated numbers, ranges, or 'all'):")
-    for index, card in enumerate(cards_parsed, 1):
+    for index, card in enumerate(offered, 1):
         values = _ebay_quicklist_values(card)
         print("  %d. %s  —  $%s CAD  —  %s" % (
             index, values["title"], values["price"], values["sport"]))
     while True:
         try:
             selection = input("Cards [e.g. 1,3 or 2-4; Enter to cancel]: ")
-            selected = _parse_ebay_card_selection(selection, len(cards_parsed))
+            selected = _parse_ebay_card_selection(selection, len(offered))
             break
         except (ValueError, EOFError, OSError) as exc:
             if isinstance(exc, (EOFError, OSError)):
@@ -2953,7 +3054,11 @@ def maybe_run_ebay_quicklist(cards_parsed):
     if not selected:
         print("  No eBay cards selected.")
         return
-    chosen = [cards_parsed[index] for index in selected]
+    chosen = [offered[index] for index in selected]
+    chosen, skips = _ask_ebay_skips(chosen, skips, skip_path)
+    if not chosen:
+        print("  Every chosen card was marked to skip; no Quick List was written.")
+        return
     page, template_urls = _render_ebay_quicklist(chosen)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output = EBAY_QUICKLIST_DIR / ("ebay_quick_list_%s.html" % timestamp)

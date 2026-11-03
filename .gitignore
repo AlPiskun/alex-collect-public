@@ -26,6 +26,7 @@ app/cs-stock-meta.json
 app/cs-read-diagnosis-*.txt
 app/sku-audit-*.csv
 app/ebay_fill/
+app/ebay-skips.json
 
 # Temporary runtime files
 *.log

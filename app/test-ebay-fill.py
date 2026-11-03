@@ -7,6 +7,7 @@ the page is a string. The deciding is what is worth testing, because a list
 that misses a card or repeats one is a month of listings done twice.
 """
 import importlib.util
+import json
 import sys
 import tempfile
 from datetime import datetime
@@ -42,6 +43,7 @@ def load_harness():
 harness = load_harness()
 gui = harness.gui
 import ebay_fill                                      # noqa: E402
+import ebay_skip                                      # noqa: E402
 import market_stock                                   # noqa: E402
 
 
@@ -249,6 +251,56 @@ def test_the_selection():
     check("an empty shop with no listings says so rather than inventing one",
           "no product" in ebay_fill.summary(
               ebay_fill.plan([], [], limit=250)), "")
+
+
+def test_the_cards_marked_to_skip():
+    print()
+    print("== 3b. a card marked to skip is not offered again ==")
+    products = [
+        product(id=1, name="Dear card #1", price="900.00", sku="S-1"),
+        product(id=2, name="Kept card #2", price="800.00", sku="S-2"),
+        product(id=3, name="Dear card #3", price="700.00", sku="S-3"),
+    ]
+    skips = ebay_skip.mark({}, "S-2", dict(products[1]))
+    answer = ebay_fill.plan(products, [], limit=2, skips=skips)
+    check("a marked card is not chosen, even with room for it",
+          [row["id"] for row in answer["chosen"]] == [1, 3],
+          str([row["id"] for row in answer["chosen"]]))
+    check("and it is reported as marked, not as a card that cannot be sold",
+          [row["id"] for row in answer["marked"]] == [2] and
+          answer["skipped"] == [] and answer["marked_count"] == 1,
+          str(answer["marked"]) + str(answer["skipped"]))
+    check("the summary says how many were left out, and where the way back is",
+          "1 card marked to skip was left out" in ebay_fill.summary(answer) and
+          "Skipped cards button" in ebay_fill.summary(answer),
+          ebay_fill.summary(answer))
+    check("with nothing marked the plan is exactly what it always was",
+          ebay_fill.plan(products, [], limit=2)["chosen"] ==
+          ebay_fill.plan(products, [], limit=2, skips={})["chosen"], "")
+    on_ebay = ebay_fill.plan(
+        products, [{"id": "1", "name": "Dear card #1", "sku": "S-1",
+                    "qty": 1}], limit=250,
+        skips=ebay_skip.mark({}, "S-1", dict(products[0])))
+    check("a marked card that is already on eBay is reported once, as listed",
+          on_ebay["marked"] == [] and
+          [row["id"] for row in on_ebay["chosen"]] == [2, 3],
+          str(on_ebay["marked"]) + str([row["id"] for row in
+                                        on_ebay["chosen"]]))
+    check("a product with no SKU is skipped by its id",
+          [row["id"] for row in ebay_fill.plan(
+              [product(id=9, name="No SKU card", price="5.00", sku="")], [],
+              limit=250,
+              skips=ebay_skip.mark({}, "id:9", {"id": 9}))["chosen"]] == [],
+          "")
+
+    check("a row in the panel reads its number, its price and the card",
+          ebay_fill.row_text(products[0], number=2, width=2).startswith(
+              " 2  $900.00") and
+          "Dear card #1" in ebay_fill.row_text(products[0]),
+          ebay_fill.row_text(products[0], number=2, width=2))
+    check("and a product with no name is still a row",
+          "(no title)" in ebay_fill.row_text({"id": 1, "price": "1.00"}),
+          ebay_fill.row_text({"id": 1, "price": "1.00"}))
 
 
 def test_the_criteria():
@@ -887,15 +939,147 @@ def test_the_panel_criteria_and_templates():
           len(sorted((folder / "ebay_fill").glob("*.html"))) == before, "")
 
 
+def cards_box(parent):
+    """The list of cards on the page, as a person sees it."""
+    for widget in parent.walk():
+        if type(widget).__name__ == "FakeListbox":
+            return widget
+    return None
+
+
+def choose_cards(app, parent, products, listings=()):
+    """Run the selection the way the panel's own button does."""
+    button = find(parent, "FakeButton", "Find the cards to list next")
+    with patch.object(gui, "read_woo_credentials",
+                      lambda path=None: ("https://shop.example", "ck", "cs")), \
+            patch.object(market_stock, "read_cookie", lambda path: "a=1"), \
+            patch.object(market_stock, "read_ebay",
+                         lambda fetch, url, cookie: (list(listings), 1, "")), \
+            patch.object(gui.woo_create, "read_all_products",
+                         lambda site, key, secret, progress=None, **kw:
+                         list(products)), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", app.__dict__.get("folder", Path("."))), \
+            patch.object(gui, "save_settings", lambda s: None):
+        button.invoke()
+
+
+def test_the_panel_marks_a_card_to_skip():
+    print()
+    print("== 6. marking one of the cards on the page ==")
+    folder = Path(tempfile.mkdtemp())
+    products = [
+        product(id=1, name="Dear card #1", price="900.00", sku="S-1"),
+        product(id=2, name="Kept card #2", price="800.00", sku="S-2"),
+        product(id=3, name="Dear card #3", price="700.00", sku="S-3"),
+    ]
+    app, parent = build_panel(folder, limit=5)
+    app.folder = folder
+    choose_cards(app, parent, products)
+
+    wrote = sorted((folder / "ebay_fill").glob("ebay_fill_*.html"))
+    check("the page holds every card that fit",
+          len(wrote) == 1 and wrote[0].read_text(encoding="utf-8").count(
+              "<article>") == 3, str(wrote))
+    listing = cards_box(parent)
+    check("and the panel lists every one of them, not the first twenty",
+          listing is not None and len(listing.items) == 3,
+          str(listing and listing.items))
+    check("with the price and the card on each row",
+          "$900.00" in str(listing.items[0]) and
+          "Dear card #1" in str(listing.items[0]), str(listing.items))
+
+    listing.selection_set(1)                 # Kept card #2
+    old_ask = harness._BOX.askyesno
+    questions = []
+    harness._BOX.askyesno = lambda title, question, **k: (
+        questions.append((title, question)) or True)
+    skip = find(parent, "FakeButton", "Skip the selected card...")
+    check("the panel offers the way to mark one", skip is not None, "")
+    check("and says what it does before anything is written",
+          "every eBay Quick List after" in gui.tip_for(
+              "Skip the selected card..."), gui.tip_for(
+                  "Skip the selected card..."))
+    app.lines[:] = []
+    try:
+        with patch.object(gui, "BASE", folder), \
+                patch.object(gui, "save_settings", lambda s: None):
+            skip.invoke()
+    finally:
+        harness._BOX.askyesno = old_ask
+
+    saved = json.loads((folder / "ebay-skips.json").read_text(encoding="utf-8"))
+    check("the card is marked in the app folder, by its SKU",
+          "S-2" in saved["cards"] and
+          saved["cards"]["S-2"]["title"] == "Kept card #2",
+          str(saved.get("cards")))
+    check("the question named the card and said nothing on a site changes",
+          questions and "Kept card #2" in questions[0][1] and
+          "Nothing on any site" in questions[0][1], str(questions[:1]))
+    rewritten = wrote[0].read_text(encoding="utf-8")
+    check("the page that was already written is written again without it",
+          rewritten.count("<article>") == 2 and
+          "<h2>2. Kept card #2</h2>" not in rewritten,
+          rewritten[:200])
+    check("the list on the panel is the page's cards, so it shrinks too",
+          len(listing.items) == 2, str(listing.items))
+    check("and the console says what happened",
+          any("marked to skip" in text and "Kept card #2" in text
+              for _tag, text in app.lines), str(app.lines[-3:]))
+
+    #  The next selection reads the same file, so the card is not offered.
+    app.lines[:] = []
+    choose_cards(app, parent, products)
+    check("the next selection leaves the marked card out",
+          len(listing.items) == 2 and
+          not any("Kept card #2" in str(row) for row in listing.items),
+          str(listing.items))
+    check("and says on the console that a marked card was left out",
+          any("marked to skip" in text for _tag, text in app.lines),
+          str(app.lines[-4:]))
+
+    #  A mark that cannot be written is not a mark: the card stays.
+    listing.selection_set(0)
+    harness._BOX.askyesno = lambda *a, **k: True
+    app.lines[:] = []
+    try:
+        with patch.object(gui, "BASE", folder), \
+                patch.object(gui, "save_settings", lambda s: None), \
+                patch.object(ebay_skip, "save", lambda *a, **k: False):
+            skip.invoke()
+    finally:
+        harness._BOX.askyesno = old_ask
+    check("a skip that could not be saved says it was not marked",
+          any("was not marked" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and the card stays on the page and in the list",
+          len(listing.items) == 2 and
+          "Dear card #1" in wrote[0].read_text(encoding="utf-8"), "")
+
+    #  Putting one back is the same file, so the next list offers it again.
+    ebay_skip.save(ebay_skip.path_for(folder),
+                   ebay_skip.unmark(ebay_skip.load(
+                       ebay_skip.path_for(folder)), "S-2"))
+    app.lines[:] = []
+    choose_cards(app, parent, products)
+    check("a card put back is offered by the next selection",
+          len(listing.items) == 3 and
+          any("Kept card #2" in str(row) for row in listing.items),
+          str(listing.items))
+
+
 def main():
     try:
         test_prices_and_titles()
         test_what_can_be_listed()
         test_the_selection()
+        test_the_cards_marked_to_skip()
         test_the_criteria()
         test_the_values_and_the_page()
         test_the_panel()
         test_the_panel_criteria_and_templates()
+        test_the_panel_marks_a_card_to_skip()
     except AssertionError:
         raise
     print()

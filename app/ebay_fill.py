@@ -31,6 +31,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+import ebay_skip
 import stock_compare
 
 #: How many active listings a free eBay store may have. A setting, because a
@@ -428,7 +429,7 @@ def in_category(product, wanted):
 
 
 def plan(products, items, limit=DEFAULT_LIMIT, sort="dearest",
-         only_category="", wanted=""):
+         only_category="", wanted="", skips=None):
     """Which products to list next, and what stands behind every number.
 
     ``products`` are the website's whole catalogue and ``items`` the store's
@@ -436,10 +437,17 @@ def plan(products, items, limit=DEFAULT_LIMIT, sort="dearest",
     order, ``only_category`` narrows the catalogue to one category (blank means
     all of it), and ``wanted`` is the typed list used by the custom order.
 
+    ``skips`` is the list of cards marked to skip (see :mod:`ebay_skip`). A
+    marked card is not a candidate at all, and it is reported separately from
+    the cards that could not be listed - "you chose to leave this one out" and
+    "this one cannot be sold" are different answers, and a list that mixed
+    them up would send a person to fix a card they meant to keep.
+
     The answer carries the chosen products in the order they should be listed,
     the room left under the limit, and every group that was left out - already
-    on eBay, out of stock, unpriced, outside the chosen category - with its
-    count, because a list that shrinks without saying why cannot be trusted.
+    on eBay, out of stock, unpriced, outside the chosen category, marked to
+    skip - with its count, because a list that shrinks without saying why
+    cannot be trusted.
     """
     catalogue = [product for product in products or [] if isinstance(product, dict)]
     active = [item for item in items or [] if isinstance(item, dict)]
@@ -450,9 +458,15 @@ def plan(products, items, limit=DEFAULT_LIMIT, sort="dearest",
     outside = len(catalogue) - len(kept)
     pairs, unlisted_rows, only_ebay = stock_compare.pair(
         _product_rows(kept), active)
-    candidates, skipped = [], []
+    candidates, skipped, marked = [], [], []
     for row in unlisted_rows:
         product = row["product"]
+        #  A card the shop marked to skip is not offered and is not a fault:
+        #  it is reported on its own line, never among the cards that cannot
+        #  be sold.
+        if ebay_skip.is_marked(skips, ebay_skip.key_of(product)):
+            marked.append(product)
+            continue
         ok, why = listable(product)
         if ok:
             candidates.append(product)
@@ -466,6 +480,7 @@ def plan(products, items, limit=DEFAULT_LIMIT, sort="dearest",
             "left": max(0, len(candidates) - len(chosen)), "skipped": skipped,
             "sort": sort_key(sort), "category": str(only_category or "").strip(),
             "outside": outside, "wanted_missing": missing,
+            "marked": marked, "marked_count": len(marked),
             "wanted": len(wanted_terms(wanted)) if sort_key(sort) == "custom"
             else 0}
 
@@ -612,7 +627,26 @@ def summary(answer):
         names = sorted({entry.get("why") or "" for entry in skipped})
         head += " %d unlisted product%s could not be listed: %s." % (
             len(skipped), "" if len(skipped) == 1 else "s", "; ".join(names))
+    #  Marked to skip is not "could not be listed": one is a decision, the
+    #  other is a fault, and the sentence has to leave the person in no doubt
+    #  which one they are looking at.
+    marked = list(answer.get("marked") or [])
+    if marked:
+        head += " " + ebay_skip.left_out(marked, len(marked))
     return head
+
+
+def row_text(product, number=0, width=1):
+    """One list row for the panel: its number, its price, and the card.
+
+    The panel shows the cards the page holds, and it shows all of them - a
+    list that stopped at twenty would be a list a person cannot pick the
+    twenty-first card from.
+    """
+    text = "%-9s %s" % (_money(product), title_of(product) or "(no title)")
+    if number:
+        text = "%s  %s" % (str(number).rjust(width or 1), text)
+    return text
 
 
 def _money(product):

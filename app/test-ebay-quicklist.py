@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Offline checks for the manual eBay Quick List pipeline stage."""
 import builtins
+import contextlib
 import importlib.util
+import io
+import json
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -24,6 +27,7 @@ def main():
         pass
 
     old_settings = pipeline.USER_SETTINGS
+    old_app_dir = pipeline.APP_DIR
     old_script_dir = pipeline.SCRIPT_DIR
     old_output_dir = pipeline.OUTPUT_DIR
     old_ebay_dir = pipeline.EBAY_QUICKLIST_DIR
@@ -62,6 +66,7 @@ def main():
             }
             card = {
                 "seo_title": "1975 O-Pee-Chee Wayne Gretzky #1",
+                "last": "Gretzky",
                 "price": 12.2,
                 "year": "1975", "brand": "O-Pee-Chee", "card_num": "1",
                 "player": "Wayne Gretzky", "grade": "EX 5",
@@ -164,7 +169,9 @@ def main():
             assert "card-back.png" not in stale_page
             pipeline.launch_urls = lambda urls, browser: opened.append((list(urls), browser)) or "System default browser"
             pipeline.open_folder = lambda _path: True
-            with patch.object(builtins, "input", side_effect=["y", "1", ""]):
+            pipeline.APP_DIR = root
+            with patch.object(builtins, "input",
+                              side_effect=["y", "1", "", ""]):
                 pipeline.maybe_run_ebay_quicklist([card])
             html_files = list((root / "ebay_quick_list").glob(
                 "ebay_quick_list_*.html"))
@@ -177,9 +184,75 @@ def main():
             assert "Prior listing" in history.read_text(encoding="utf-8")
             assert opened[0][0][0].startswith("file:")
             assert opened[1][0] == ["https://ebay.example/hockey-template"]
-            print("PASS eBay selection, mapped fields, image URLs, HTML drag/copy page, and template tabs")
+            #  A card marked to skip is not offered on a later batch, and it
+            #  is named rather than silently missing from the numbered list.
+            other = dict(card, seo_title="1974 O-Pee-Chee Bobby Orr #2",
+                         last="Orr", card_num="2", player="Bobby Orr",
+                         front_img="card-front.webp",
+                         back_img="card-back.webp")
+            other_sku = pipeline.ebay_skip.clean(pipeline.card_sku(other))
+            assert other_sku and other_sku != pipeline.card_sku(card), (
+                other_sku, pipeline.card_sku(card))
+            skip_file = pipeline.ebay_skip.path_for(root)
+            assert pipeline.ebay_skip.save(
+                skip_file,
+                pipeline.ebay_skip.mark({}, other_sku, other))
+            for old_page in (root / "ebay_quick_list").glob(
+                    "ebay_quick_list_2*.html"):
+                old_page.unlink()
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output), \
+                    patch.object(builtins, "input",
+                                 side_effect=["y", "1", "", ""]):
+                pipeline.maybe_run_ebay_quicklist([card, other])
+            said = output.getvalue()
+            assert "marked to skip" in said and "Bobby Orr" in said, said
+            assert "1. 1975 O-Pee-Chee Wayne Gretzky #1" in said, said
+            pages = [path for path in (root / "ebay_quick_list").glob(
+                "ebay_quick_list_*.html")]
+            assert len(pages) == 1, pages
+            newest = pages[0].read_text(encoding="utf-8")
+            assert "Wayne Gretzky" in newest, newest[:200]
+            assert "Bobby Orr" not in newest, "the skipped card is on the page"
+            assert json.loads(skip_file.read_text(encoding="utf-8"))[
+                "cards"][other_sku], "the mark was lost"
+
+            #  And a card can be marked from the prompt itself: it comes off
+            #  this run's list, and the mark is on disk for the next batch.
+            skip_file.unlink()
+            for old_page in (root / "ebay_quick_list").glob(
+                    "ebay_quick_list_*.html"):
+                old_page.unlink()
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output), \
+                    patch.object(builtins, "input",
+                                 side_effect=["y", "1", "1", ""]):
+                pipeline.maybe_run_ebay_quicklist([card])
+            said = output.getvalue()
+            assert "marked to skip" in said, said
+            assert "no Quick List was written" in said, said
+            saved = json.loads(skip_file.read_text(encoding="utf-8"))["cards"]
+            assert pipeline.ebay_skip.clean(
+                pipeline.card_sku(card)) in saved, saved
+            assert not list((root / "ebay_quick_list").glob(
+                "ebay_quick_list_*.html")), "a page was written for a skipped card"
+
+            #  Without the app's module, a bare batch folder simply offers
+            #  every card, exactly as it did before skips existed.
+            old_skip_module = pipeline.ebay_skip
+            pipeline.ebay_skip = None
+            try:
+                assert pipeline._ebay_skip_state() == ({}, None)
+                chosen, kept = pipeline._ask_ebay_skips([card], {}, skip_file)
+                assert chosen == [card] and kept == {}
+            finally:
+                pipeline.ebay_skip = old_skip_module
+
+            print("PASS eBay selection, mapped fields, image URLs, HTML drag/copy "
+                  "page, template tabs, and cards marked to skip")
     finally:
         pipeline.USER_SETTINGS = old_settings
+        pipeline.APP_DIR = old_app_dir
         pipeline.SCRIPT_DIR = old_script_dir
         pipeline.OUTPUT_DIR = old_output_dir
         pipeline.EBAY_QUICKLIST_DIR = old_ebay_dir
