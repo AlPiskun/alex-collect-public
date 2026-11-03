@@ -843,7 +843,7 @@ def _gallery_base(url):
 
 
 def gallery_proof(url, cookie="", staged_url="", now=None, fetch=None,
-                  write=None, listing=None):
+                  write=None, listing=None, allow_copy=False):
     """A listing's gallery proved the way that gallery actually works.
 
     The gallery is not a field of the product record: it is ``productImage``
@@ -865,7 +865,7 @@ def gallery_proof(url, cookie="", staged_url="", now=None, fetch=None,
     result = cs_gallery.prove(
         identifier, cookie, staged_url,
         base=_gallery_base(url) or cs_gallery.BASE, fetch=fetch,
-        send=write or cs_gallery._send, now=now)
+        send=write or cs_gallery._send, now=now, allow_copy=allow_copy)
     result["url"] = url
     result["label"] = field_label("images")
     if listing:
@@ -893,7 +893,7 @@ def _snippet(body, limit=240):
 
 
 def prove(field, url, cookie="", staged_url="", now=None, fetch=None,
-          send=None, write=None, listing=None):
+          send=None, write=None, listing=None, allow_copy=False):
     """Write one field, read it back, put it back - and say what happened.
 
     The record is read first and the plan is made from *that* read, not from
@@ -918,7 +918,8 @@ def prove(field, url, cookie="", staged_url="", now=None, fetch=None,
         #  write to make, and this module's ``send`` is a PATCH. The gallery
         #  has its own collection, its own verbs and its own proof.
         return gallery_proof(url, cookie, staged_url=staged_url, now=now,
-                             fetch=fetch, write=write, listing=listing)
+                             fetch=fetch, write=write, listing=listing,
+                             allow_copy=allow_copy)
     fetch = fetch or read_record
     send = send or globals()["send"]
     result = {"field": field, "label": field_label(field), "url": url,
@@ -1190,7 +1191,7 @@ def same_card(card, title, threshold=PHOTO_MATCH_SCORE):
 
 def auto_photos(item=None, record=None, staged="", staged_rows=None,
                 siblings=None, alive=None, card="", threshold=PHOTO_MATCH_SCORE,
-                gallery_rows=None):
+                gallery_rows=None, proof_copy=False):
     """The photos a proof may write without asking, and why when there are none.
 
     A proof of a photo field puts a picture on a live listing, so the automatic
@@ -1256,9 +1257,11 @@ def auto_photos(item=None, record=None, staged="", staged_rows=None,
     #  the rows were not read, nothing is claimed about them; only the proof
     #  itself, which reads and writes that collection, can say.
     have = set()
+    held = []
     for row in gallery_rows or ():
         url = (row or {}).get("imageUrl") if isinstance(row, dict) else row
         if url:
+            held.append(str(url))
             have.add(photo_id(url))
     for url in safe:
         if photo_id(url) not in have and url != main:
@@ -1268,11 +1271,30 @@ def auto_photos(item=None, record=None, staged="", staged_rows=None,
         gallery = main
     why_gallery = ""
     if not gallery:
-        #  Only when there *are* photos of this card to compare: with none,
-        #  "every photo is already in the gallery" is vacuously true and reads
-        #  as a gallery problem, which is exactly the wrong sentence - there is
-        #  no photo of this card, and the main photo's reason already says so.
-        if have and safe and all(photo_id(url) in have for url in safe):
+        everything_here = bool(have and safe and
+                               all(photo_id(url) in have for url in safe))
+        if proof_copy and held:
+            #  Every photo of the card is already in the gallery, and a proof
+            #  cannot add a photo that is not there. It can add a *second row*
+            #  for one that is: the row is new, it is recognized by the ids
+            #  that were not there before it was sent, and it is removed again
+            #  by that id - so the gallery ends with exactly the rows it
+            #  started with, and this is still a proof of the whole path.
+            #
+            #  The photo is one this listing already shows. A photo certainly
+            #  of this card is preferred - the listing's own main photo, or one
+            #  of the card's - and only then any row the gallery holds, because
+            #  a row that is already on this listing cannot be a stranger's
+            #  picture introduced by the proof.
+            certain = [url for url in [current] + list(safe)
+                       if url and photo_id(url) in have]
+            gallery = certain[0] if certain else held[0]
+            why_gallery = ("every photo of this card is already in the "
+                           "listing's gallery, so the proof adds a second row "
+                           "for the photo it already shows (%s) and takes that "
+                           "row off again - the listing keeps exactly the rows "
+                           "it has now" % photo_id(gallery))
+        elif everything_here:
             why_gallery = ("every photo of this card the app can point at is "
                            "already in the listing's gallery, so there is "
                            "nothing new to add")
@@ -1331,7 +1353,7 @@ def missing_result(field, record=None, why=""):
 def prove_listing(url, cookie="", listing=None, fields=None, photo="",
                   gallery_photo="", skip=None, why=None, absent=None,
                   record=None, now=None, fetch=None,
-                  send=None, write=None, on_step=None):
+                  send=None, write=None, on_step=None, allow_copy=False):
     """Prove every field on one listing, one after another, and collect it.
 
     This is the same proof the panel runs one field at a time - write, read
@@ -1374,6 +1396,7 @@ def prove_listing(url, cookie="", listing=None, fields=None, photo="",
                 results.append(skipped(field, "was not attempted: " + reason))
                 continue
         result = prove(field, url, cookie, staged_url=trial, now=now,
+                       allow_copy=allow_copy,
                        fetch=fetch, send=send, write=write, listing=listing)
         results.append(result)
         if on_step is not None:

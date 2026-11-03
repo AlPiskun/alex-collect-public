@@ -2776,7 +2776,11 @@ def test_the_gallery_is_never_written_off():
         return 200, "{}"
 
     def fake_gallery_proof(listing, cookie, photo_url, **kwargs):
-        proved.append({"listing": listing, "photo": photo_url})
+        #  A proof may use a second row for a photo the gallery already shows:
+        #  without that, a listing whose every photo of the card is in its
+        #  gallery has no proof at all. The panel has to ask for it.
+        proved.append({"listing": listing, "photo": photo_url,
+                       "copy": kwargs.get("allow_copy")})
         return {"field": "images", "label": "Gallery photos",
                 "listing": listing, "photo": photo_url, "row": "new-2",
                 "verdict": "written", "written": True, "restored": True,
@@ -2819,6 +2823,9 @@ def test_the_gallery_is_never_written_off():
     check("and the proof runs on the gallery's own rows",
           len(proved) == 1 and proved[0]["listing"] == listing_id and
           proved[0]["photo"] == photo, str(proved))
+    check("and the gallery proof is allowed a copy of a photo it already "
+          "shows, so every listing can be proved",
+          proved and proved[0].get("copy") is True, str(proved))
     check("no product record is ever patched to hold a gallery",
           sent == [], str(sent))
     check("the console calls the gallery settled",

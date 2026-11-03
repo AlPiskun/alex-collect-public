@@ -11229,6 +11229,11 @@ def build_csledit(parent, app):
                 "CanadianShopper, reads each one back, and puts the old value "
                 "back before the next:\n\n  %s\n\nA photo field is written "
                 "with a photo of the same card the app can point at. The "
+                "gallery is a collection of rows, not a field: its proof adds "
+                "one row - a photo the gallery does not show yet, or, when "
+                "every photo of this card is already there, a second row for "
+                "one of them - reads it back, and takes that same row off "
+                "again, so the listing keeps exactly the rows it has now. The "
                 "record's own id is the address, no product id is used, and "
                 "your website is not touched.%s\n\nProve them now?"
                 % (named, "\n  ".join(cs_proof.field_label(field)
@@ -11260,7 +11265,12 @@ def build_csledit(parent, app):
                 siblings=answer.get("siblings"), card=cache.get("card"),
                 #  The gallery's own rows say what it already holds. Without
                 #  them the only honest answer is "not read", never "empty".
-                gallery_rows=answer.get("gallery"))
+                gallery_rows=answer.get("gallery"),
+                #  A proof may put a second row for a photo the gallery already
+                #  shows and take that row off again, which is the only way to
+                #  prove a listing whose every photo of the card is already in
+                #  its gallery.
+                proof_copy=True)
             photo = photos["main"]
             gallery_photo = photos["gallery"] if "images" in todo else ""
             reasons = {"primaryImageUrl": photos["why_main"],
@@ -11279,7 +11289,8 @@ def build_csledit(parent, app):
             results = cs_proof.prove_listing(
                 answer["address"], answer["cookie"], listing=item,
                 fields=everything, skip=settled_here, photo=photo,
-                gallery_photo=gallery_photo, why=reasons, record=record)
+                gallery_photo=gallery_photo, why=reasons, record=record,
+                allow_copy=True)
             return {"results": results, "answer": answer, "photo": photo,
                     "gallery_photo": gallery_photo}
 
