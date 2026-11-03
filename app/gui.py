@@ -77,7 +77,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.29"
+VERSION = "3.30"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -3516,16 +3516,18 @@ GROUPS_FULL = [("Sell to a customer", ["ordertext", "quote"]),
                #  are the same job: the shop's own editing, and the two sites
                #  the app can only read. Finding a CS listing and archiving the
                #  ones at zero now live inside the CanadianShopper section.
-               ("Edit stock", ["stock", "editfb", "editeb"]),
-               ("Photos", ["square", "rerun", "newphotos"])]
+               ("Edit stock", ["stock", "editfb", "editeb"])]
 
 
 #: Panels that belong *inside* another group's tab without being a task of
-#: their own. The shop's place in Edit stock is the whole of the shop's editing
-#: - comparing, finding one listing, sweeping the zeros - so the tabs view
-#: stacks those two inside the one tab, where the task menu reaches them from
-#: the buttons on the panel itself. Without the add-on neither exists.
-TAB_EXTRA = {"Edit stock": ["csedit", "zerostock"]}
+#: their own. The shop's place in Edit stock is the whole of the shop's *and*
+#: its photos' editing - comparing, finding one listing, sweeping the zeros,
+#: squaring a photo, re-pointing the photos that are already hosted, and
+#: replacing a card's pictures - so the tabs view stacks those inside the one
+#: tab, where the task menu reaches them from the buttons on the panel itself.
+#: Without the add-on none of them exists.
+TAB_EXTRA = {"Edit stock": ["csedit", "zerostock", "square", "rerun",
+                            "newphotos"]}
 
 
 def groups_for(has_cs):
@@ -3539,6 +3541,11 @@ def groups_for(has_cs):
     #  eBay and Facebook need none of the plugin - they are read with a
     #  signed-in session - so their half of the Edit stock section is offered
     #  in the core menu too. Only the shop's own place needs the plugin.
+    #  With the add-on the photo tools live inside the shop's place in Edit
+    #  stock, where the shop's photos are. Without it there is no shop place
+    #  to put them in, and squaring a photo and replacing a card's pictures
+    #  need no plugin - so the core menu keeps them where they were rather
+    #  than losing them.
     return [("Sell to a customer", ["ordertext", "quote"]),
             ("Sell a new batch", ["pipeline", "combine", "ebayfill",
                                   "markets"]),
@@ -8976,6 +8983,29 @@ def build_stock(parent, app, site_id="cs"):
                         "Sweep CanadianShopper for listings sitting at "
                         "quantity 0 and archive them, one at a time, without "
                         "deleting anything")
+            #  The photos of the listings being edited belong here too: a
+            #  square that will not upload, a listing pointing at the wrong
+            #  file, and a card that needs its pictures replaced are all the
+            #  same job as the row above them. In a tab these are stacked
+            #  underneath (TAB_EXTRA), so the buttons are built only where a
+            #  click has somewhere to go.
+            photo_row = ttk.Frame(box)
+            photo_row.pack(anchor="w", pady=(4, 0))
+            for text, wanted, tip in (
+                    ("Square up a photo...", "square",
+                     "Pad one photo (or a folder of them) onto white and "
+                     "save a square copy to upload by hand"),
+                    ("Re-point photos...", "rerun",
+                     "Point listings at photos that are already hosted, "
+                     "from the cache, without uploading anything again"),
+                    ("Replace card photos...", "newphotos",
+                     "Find a card and replace its pictures on the "
+                     "website")):
+                nav = ttk.Button(photo_row, text=text,
+                                 command=lambda pid=wanted:
+                                 app.show_panel(pid))
+                nav.pack(side="left", padx=(0, 6))
+                add_tooltip(nav, tip)
         ttk.Label(box,
                   text="The list is what needs attention: a card whose two "
                        "counts differ, a card whose listing on the other site "

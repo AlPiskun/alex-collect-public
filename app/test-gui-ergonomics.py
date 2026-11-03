@@ -118,11 +118,26 @@ def main():
     check("core task menu omits plugin-only tasks",
           not ({"stage", "wire", "zerostock", "rerun"} & core_ids))
     check("task sections are Sell to a customer, Sell a new batch, After a "
-          "sale, Edit stock, and Photos",
+          "sale, and Edit stock",
           [name for name, _ids in gui.groups_for(True)] ==
           ["Sell to a customer", "Sell a new batch", "After a sale",
-           "Edit stock", "Photos"],
+           "Edit stock"],
           [name for name, _ids in gui.groups_for(True)])
+    #  The shop's three photo tools moved into the shop's place, so they are
+    #  stacked inside the CanadianShopper tab rather than having a tab of their
+    #  own - and they have their own buttons on the panel in the task menu.
+    check("the shop's photo tools are stacked in the shop's tab",
+          [pid for pid in gui.TAB_EXTRA["Edit stock"]] ==
+          ["csedit", "zerostock", "square", "rerun", "newphotos"],
+          str(gui.TAB_EXTRA["Edit stock"]))
+    check("and none of them is a task of its own",
+          not ({"square", "rerun", "newphotos"} &
+               {pid for _group, ids in gui.groups_for(True) for pid in ids}),
+          "")
+    check("while the core menu keeps the two that need no plugin",
+          {"square", "newphotos"} <=
+          {pid for _group, ids in gui.groups_for(False) for pid in ids},
+          "")
     #  The three separate marketplace steps that used to have their own box
     #  are gone from the menu: the pipeline does that work itself, and the
     #  re-run panel is where a step that needs repeating is repeated.

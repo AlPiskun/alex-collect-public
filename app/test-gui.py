@@ -280,10 +280,17 @@ def main():
           18 <= int(gui.ttk.Style(app).lookup("TaskMenu.TButton", "width")) <= 30)
     task_sections = [w.cget("text") for w in walk(tasks_frame(app))
                      if isinstance(w, gui.ttk.LabelFrame)]
-    check("tasks are separated into customer, batch, After, stock and Photos "
-          "sections",
+    check("tasks are separated into customer, batch, After and stock sections",
           task_sections == ["Sell to a customer", "Sell a new batch",
-                            "After a sale", "Edit stock", "Photos"],
+                            "After a sale", "Edit stock"],
+          str(task_sections))
+    #  The photo tools are no longer a section of their own: they are reached
+    #  from the CanadianShopper place in Edit stock, because squaring a photo
+    #  and re-pointing a listing's pictures is the same job as editing stock.
+    check("the photo tools live in the shop's place, not a section of their own",
+          "Photos" not in task_sections and
+          all(pid in gui.TAB_EXTRA["Edit stock"]
+              for pid in ("square", "rerun", "newphotos")),
           str(task_sections))
     task_labels = [w.cget("text") for w in walk(tasks_frame(app))
                    if w.cget("style") == "TaskMenu.TButton"]

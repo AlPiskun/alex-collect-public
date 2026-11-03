@@ -85,9 +85,16 @@ def test_the_section_and_the_tabs():
     gui.build_stock(parent, app)
     texts = [str(w.cget("text")) for w in parent.walk()
              if isinstance(w, gui.ttk.Button)]
-    check("the task-menu shop panel offers its two neighbours as buttons",
-          "Find and edit a CanadianShopper listing..." in texts and
-          "Archive listings already at 0..." in texts, str(texts))
+    neighbours = ("Find and edit a CanadianShopper listing...",
+                  "Archive listings already at 0...",
+                  "Square up a photo...", "Re-point photos...",
+                  "Replace card photos...")
+    check("the task-menu shop panel offers its five neighbours as buttons",
+          all(text in texts for text in neighbours), str(texts))
+    check("and the photo tools are in the shop's own place, not a section of "
+          "their own",
+          "Photos" not in [name for name, _ids in gui.groups_for(True)],
+          str([name for name, _ids in gui.groups_for(True)]))
     check("and every one of them says what it opens on hover",
           all(gui.tip_for(text) for text in texts
               if text not in ("What this panel does", "Hide this help")),
@@ -108,8 +115,7 @@ def test_the_section_and_the_tabs():
     section_texts = [str(w.cget("text")) for w in section.walk()
                      if isinstance(w, gui.ttk.Button)]
     check("and offers no button that would hide the panels below it",
-          "Find and edit a CanadianShopper listing..." not in section_texts and
-          "Archive listings already at 0..." not in section_texts,
+          not any(text in section_texts for text in neighbours),
           str(section_texts))
     check("while still offering the fixes it makes itself",
           "Set CanadianShopper to the website's counts..." in section_texts,
@@ -119,13 +125,20 @@ def test_the_section_and_the_tabs():
     gui.TabsFrame(tabs, app)
     notebook = next(w for w in tabs.walk() if isinstance(w, gui.ttk.Notebook))
     labels = [label for _tab, label in notebook.tabs]
-    check("the tabs have the same five sections as the task menu",
+    check("the tabs have the same sections as the task menu",
           labels == [name for name, _ids in gui.groups_for(True)], str(labels))
+    check("and the photo tools no longer have a tab of their own",
+          "Photos" not in labels, str(labels))
     index = labels.index("Edit stock")
     tab = notebook.tabs[index][0]
     panels = [w for w in tab.walk() if getattr(w, "_section_titled", False)]
-    check("the shop's tab holds all five of its panels, in order",
-          len(panels) == 5, str([p.cget("text") for p in panels]))
+    expected = (["stock", "editfb", "editeb"] +
+                list(gui.TAB_EXTRA["Edit stock"]))
+    check("the shop's tab holds the shop's panels and its photo tools, in "
+          "order",
+          [p.cget("text") for p in panels] == [gui.TITLES[pid]
+                                                for pid in expected],
+          str([p.cget("text") for p in panels]))
     app.cs_addon = False
     tabs2 = harness.FakeWidget()
     gui.TabsFrame(tabs2, app)

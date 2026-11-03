@@ -746,7 +746,7 @@ def test_the_whole_listing_at_once():
         fetch=site.fetch, send=site.send)
     text = cs_proof.listing_report_text(
         results, listing={"id": RECORD["id"], "name": RECORD["title"]},
-        app_version="3.29")
+        app_version="3.30")
     check("the file names every field that was tried",
           all(cs_proof.field_label(result["field"]) in text
               for result in results), "")
@@ -952,7 +952,7 @@ def test_a_record_with_no_gallery_stops_being_a_problem():
           "sign in" not in cs_proof.advice(gallery).lower(),
           cs_proof.advice(gallery))
     text = cs_proof.report_text(gallery, listing={"id": record["id"]},
-                                app_version="3.29")
+                                app_version="3.30")
     check("the proof file carries the record's keys for the plugin report",
           "Every key it holds:" in text and "shippingFlatCad" in text and
           "tags is a list of 2" in text and "specs is a list of 1" in text,
@@ -988,7 +988,7 @@ def test_the_report():
     text = cs_proof.report_text(result, listing={"id": RECORD["id"],
                                                  "name": RECORD["title"]},
                                 when=datetime(2026, 11, 2, 14, 30, 5),
-                                app_version="3.29")
+                                app_version="3.30")
     check("it names the listing and the record's own id",
           RECORD["title"] in text and RECORD["id"] in text and
           "not a product id" in text, text[:400])
