@@ -434,6 +434,70 @@ def test_the_photos_a_proof_may_write():
           "https://canadianshopper.ca/api/file/a.webp" and
           "Card A" in offered[0]["source"], str(offered))
 
+    #  The card's other photo, at the address the plugin names its pairs with.
+    #  This is the one route that needs no local file at all: the listing shows
+    #  a squared photo the plugin uploaded, so its sibling is the same card.
+    check("a front photo names the back beside it",
+          cs_proof.sibling_photos(
+              "https://canadianshopper.ca/api/file/wurmple-front.webp") ==
+          ["https://canadianshopper.ca/api/file/wurmple-back.webp"], "")
+    check("and a back photo names the front, keeping the case it was given",
+          cs_proof.sibling_photos("https://cs/api/file/006-FRONT.jpg") ==
+          ["https://cs/api/file/006-BACK.jpg"], "")
+    check("a name with no front or back in it suggests nothing",
+          cs_proof.sibling_photos("https://cs/api/file/plain.webp") == [], "")
+    check("the folder part never gets swapped, only the file name",
+          cs_proof.sibling_photos("https://cs/front/api/file/card.webp") == [],
+          str(cs_proof.sibling_photos(
+              "https://cs/front/api/file/card.webp")))
+    check("only the part after the last slash is a name to change",
+          cs_proof.sibling_photos("https://cs/api/file/front-cover.webp") ==
+          ["https://cs/api/file/back-cover.webp"], "")
+
+    def answers(status, kind="image/webp"):
+        def opener(url):
+            return (status == 200, kind if status == 200 else "")
+        return opener
+
+    check("a photo the site answers with an image is alive",
+          cs_proof.photo_alive("https://cs/api/file/a.webp",
+                               opener=answers(200)) == (True, "image/webp"), "")
+    check("a photo the site does not have is not offered",
+          cs_proof.photo_alive("https://cs/api/file/a.webp",
+                               opener=answers(404)) == (False, ""), "")
+    check("a photo address that is not a web address is never fetched",
+          cs_proof.photo_alive("/api/file/a.webp", opener=answers(200)) ==
+          (False, ""), "")
+    check("the record's reading is public, so a caller need not reach inside",
+          cs_proof.record_from('{"id": "a", "title": "t"}') ==
+          {"id": "a", "title": "t"} and
+          cs_proof.record_from("not json") is None, "")
+
+    #  The folders searched are part of the answer when nothing is found: the
+    #  batch folder, its cs-ready, and wherever a caller says to look.
+    empty = Path(tempfile.mkdtemp())
+    elsewhere = Path(tempfile.mkdtemp())
+    with (elsewhere / "canadianshopper_staged_history.csv").open(
+            "w", newline="", encoding="utf-8") as handle:
+        writer = _csv.DictWriter(handle, ["title", "image_url"])
+        writer.writeheader()
+        writer.writerow({"title": "Card C",
+                         "image_url": "https://cs.example/api/file/c.webp"})
+    check("an extra folder a caller names is searched too",
+          cs_proof.staged_photos(empty, extra_folders=[elsewhere]) ==
+          [{"title": "Card C",
+            "url": "https://cs.example/api/file/c.webp"}],
+          str(cs_proof.staged_photos(empty, extra_folders=[elsewhere])))
+    check("the consolidated history is read as well as the batch CSVs",
+          cs_proof.staged_photo(elsewhere, "Card C") ==
+          "https://cs.example/api/file/c.webp", "")
+    check("and the folders searched can be said out loud",
+          cs_proof.staged_roots(empty, [elsewhere, ""]) ==
+          [empty, elsewhere], str(cs_proof.staged_roots(empty,
+                                                        [elsewhere, ""])))
+    check("a folder that is not there is not claimed to be searched",
+          elsewhere not in cs_proof.staged_roots(empty, ["/no/such/folder"]), "")
+
     check("a photo address is made whole the same way everywhere",
           cs_proof.absolute_photo("/api/file/x.webp") ==
           "https://canadianshopper.ca/api/file/x.webp" and

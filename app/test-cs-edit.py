@@ -2126,10 +2126,17 @@ def test_the_panel_writes_a_proof():
                 target.invoke()
         return press
 
-    def with_photo_proof(lookup=None, ask=fake_askstring, press=None):
+    record_body = json.dumps({
+        "id": rows[0]["id"],
+        "primaryImageUrl": "https://cs.example/api/file/current.webp",
+        "images": ["https://cs.example/api/file/current.webp",
+                   "https://cs.example/api/file/gallery.webp"]})
+
+    def with_photo_proof(lookup=None, ask=fake_askstring, press=None,
+                         record=record_body, alive=True):
         harness.PICKER["press"] = press or (lambda window: None)
         staged_lookup = lookup if callable(lookup) else \
-            (lambda folder, title: lookup or "")
+            (lambda folder, title, extra_folders=(): lookup or "")
         try:
             with patch.object(gui, "TOOL_ACTION",
                               lambda action: "/plugins/cs/stock.py"), \
@@ -2138,6 +2145,10 @@ def test_the_panel_writes_a_proof():
                     patch.object(gui, "open_path", lambda path: True), \
                     patch.object(gui, "simpledialog") as dialog, \
                     patch.object(cs_proof, "staged_photo", staged_lookup), \
+                    patch.object(cs_proof, "read_record",
+                                 lambda url, cookie="": (200, record)), \
+                    patch.object(cs_proof, "photo_alive",
+                                 lambda url, **k: (alive, "image/webp")), \
                     patch.object(cs_proof, "prove", fake_prove):
                 dialog.askstring = ask
                 find(parent, gui.ttk.Button, "Write the proof").invoke()
@@ -2172,11 +2183,18 @@ def test_the_panel_writes_a_proof():
                     if isinstance(widget, gui.ttk.Combobox) and
                     "Main photo" in (widget.cget("values") or ()))
     harness.PICKER["press"] = lambda window: None
+    bare_record = json.dumps({"id": "b" * 32,
+                              "primaryImageUrl": "",
+                              "title": "Bare card"})
     with patch.object(gui, "in_background", sync_background), \
             patch.object(gui, "BASE", folder3), \
             patch.object(gui, "simpledialog") as dialog, \
             patch.object(cs_proof, "staged_photo",
-                         lambda folder, title: ""), \
+                         lambda folder, title, extra_folders=(): ""), \
+            patch.object(cs_proof, "read_record",
+                         lambda url, cookie="": (200, bare_record)), \
+            patch.object(cs_proof, "photo_alive",
+                         lambda url, **k: (False, "")), \
             patch.object(cs_proof, "prove",
                          lambda *a, **k: bare_asked.append((a, k))):
         dialog.askstring = bare_ask
@@ -2187,6 +2205,9 @@ def test_the_panel_writes_a_proof():
           bare_opened[0].get("question", ""),
           str(bare_opened[:1]))
     check("and an empty box writes nothing at all", not bare_asked, "")
+    check("the console says which folders held no staged CSV",
+          any("No staged CSV was found. Searched:" in text
+              for _tag, text in app3.lines), str(app3.lines[:6]))
 
     #  One staged photo, and the row's own gallery beside it.
     asked[:] = []
@@ -2276,6 +2297,51 @@ def test_the_panel_writes_a_proof():
           not any("address box was left empty" in text
                   for _tag, text in app.lines), str(app.lines[-3:]))
 
+    #  The report: no staged CSV anywhere, and a record that carries one photo
+    #  - the squared one the plugin uploaded, whose name pairs it with the
+    #  card's back. That sibling is the same card and already on the site, so
+    #  it is offered without a single local file, and only because the site
+    #  answered with an image.
+    asked[:] = []
+    app.lines[:] = []
+    front_only = json.dumps({
+        "id": rows[0]["id"],
+        "primaryImageUrl": "https://canadianshopper.ca/api/file/pappin-front.webp",
+        "title": rows[0]["title"]})
+    with_photo_proof(None, record=front_only, press=press_photo(
+        "https://canadianshopper.ca/api/file/pappin-back.webp"))
+    check("with no staged CSV the card's other photo is offered",
+          asked and asked[-1]["staged"] ==
+          "https://canadianshopper.ca/api/file/pappin-back.webp",
+          str(asked[-1:]))
+    check("it says which photo the listing shows now",
+          any("The listing shows this photo now" in text
+              for _tag, text in app.lines), str(app.lines[-6:]))
+
+    #  A sibling address the site does not answer for is never offered: a
+    #  guess about a name is not a photo, and a 404 written to a live listing
+    #  is a broken picture.
+    asked[:] = []
+    app.lines[:] = []
+    with_photo_proof(None, record=front_only, alive=False,
+                     press=lambda window: find(window, gui.ttk.Button,
+                                               "Cancel").invoke())
+    check("a sibling the site does not have is not offered",
+          not asked and any("is not on the site, so it is not offered" in text
+                            for _tag, text in app.lines), str(app.lines[-4:]))
+
+    #  A record that cannot be read says so, and still uses what the list holds.
+    asked[:] = []
+    app.lines[:] = []
+    with_photo_proof(None, record=None, press=press_photo(
+        "https://cs.example/api/file/other-back.webp"))
+    check("a record that cannot be read is named, not hidden",
+          any("could not be read" in text for _tag, text in app.lines),
+          str(app.lines[:4]))
+    check("and the list's own photos are still offered",
+          asked and asked[-1]["staged"] ==
+          "https://cs.example/api/file/other-back.webp", str(asked[-1:]))
+
     #  Pasting an address the list does not know still works.
     asked[:] = []
 
@@ -2301,8 +2367,9 @@ def test_the_panel_writes_a_proof():
     asked[:] = []
     looked = {}
 
-    def eyes(folder, title):
+    def eyes(folder, title, extra_folders=()):
         looked["folder"] = str(folder)
+        looked["extra"] = [str(path) for path in extra_folders]
         return "/api/file/staged.webp"
 
     with_photo_proof(eyes, press=press_photo(

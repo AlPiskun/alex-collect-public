@@ -10233,42 +10233,174 @@ def build_csledit(parent, app):
                 "Choose the field to prove from the list beside the button. "
                 "Nothing was written.", parent=box.winfo_toplevel())
             return
-        staged_url = ""
-        if field == "primaryImageUrl":
-            #  The squared photos on the site were uploaded by the plugin, so
-            #  the safest picture to prove this field with is one of those: the
-            #  staging step's own upload for this card, or a photo the listing
-            #  already shows (the reader reports the gallery on its row). The
-            #  person picks, and can still paste an address the list does not
-            #  know. Every candidate is a picture of the same card, because the
-            #  listing really shows it for the seconds the proof runs.
-            batch_dir = canadianshopper_results_dir(app)
-            card = str(item.get("name") or "")
-            staged = cs_proof.absolute_photo(
-                cs_proof.staged_photo(batch_dir, card))
-            if staged:
-                say("The staged photo for this card is %s." % staged, "dim")
-            #  The batch's staged rows, best title match first. The site's
-            #  title and the CSV's are rarely the same words - a grade on one
-            #  and not the other - so an exact match is the first candidate and
-            #  the rest of the batch is beside it, each with the title it was
-            #  staged under. A person can see which is the card; the app cannot
-            #  guess it from a name it does not recognise.
-            ranked = []
-            for row in cs_proof.staged_photos(batch_dir):
-                ranked.append((cs_edit.score(card, {"name": row["title"]}),
-                               row))
-            ranked.sort(key=lambda pair: -pair[0])
-            staged_rows = [row for _value, row in ranked[:40]]
+        label = cs_proof.field_label(field)
+
+        def finish(staged_url):
+            """Confirm, write, read back, put back - and say what happened."""
+            named = str(item.get("name") or "that listing")
+            if field == "primaryImageUrl" and staged_url:
+                #  The picture, not only the field: a proof of the main photo
+                #  puts a different image on a live listing, so the
+                #  confirmation names exactly which one before anything is
+                #  sent.
+                named = "%s\n\nThe photo written: %s" % (named, staged_url)
+            if not ask_yes(
+                    "Write a proof to one listing?",
+                    "%s\n\nThis writes one field - %s - on CanadianShopper, "
+                    "reads the record back, and puts the old value back. It is "
+                    "a real change to a live listing for the few seconds it "
+                    "takes, and it is the only way to know whether the site "
+                    "honours that field.\n\nThe record's own id is the "
+                    "address. No product id is used, no other field is sent, "
+                    "and your website is not touched.\n\nWrite the proof now?"
+                    % (named, label)):
+                say("The proof was not confirmed; nothing was written.", "dim")
+                return
+            address = cs_edit.detail_url(listing_id, CS_HOME)
+            cookie = load_cookie_text() or ""
+            say("Proving %s on %s: writing one field, reading it back, putting "
+                "it back..." % (label.lower(), named), "cmd")
+            summary.configure(text="Proving %s on %s..."
+                              % (label.lower(), named))
+
+            def work():
+                return cs_proof.prove(field, address, cookie,
+                                      staged_url=staged_url, listing=item)
+
+            def done(result, error):
+                if error is not None:
+                    say("The proof could not run: %s. Nothing was written."
+                        % error, "err")
+                    summary.configure(text="The proof could not run: %s"
+                                      % error)
+                    return
+                good = cs_proof.proven(result)
+                say(cs_proof.sentence(result), "ok" if good else "err")
+                if result.get("verdict") == "written" and \
+                        result.get("restored"):
+                    #  This is the sentence a write path may be built on, so
+                    #  it says outright what was settled and that it was put
+                    #  back.
+                    say("%s is settled: the record kept the new value and the "
+                        "old one came back. That is the evidence an edit needs."
+                        % cs_proof.field_label(result.get("field")), "ok")
+                elif result.get("verdict") == "written":
+                    say("The old value was not read back after the restore. "
+                        "Check that listing on CanadianShopper before anything "
+                        "else.", "err")
+                elif result.get("verdict") == "ignored":
+                    say("The site answered but did not keep the value, so a "
+                        "write path must not be built on a 200 for %s alone."
+                        % cs_proof.field_label(result.get("field")), "dim")
+                text = cs_proof.report_text(result, listing=item,
+                                            app_version=VERSION)
+                path = cs_proof.proof_path(BASE)
+                saved = None
+                try:
+                    path.write_text(text, encoding="utf-8")
+                    saved = path
+                except OSError as exc:
+                    say("Could not save the proof: %s" % exc, "err")
+                cs_proof.remember(BASE, result, listing=item)
+                summary.configure(text=cs_proof.sentence(result))
+                if cs_proof.proven(result):
+                    #  The sentence that matters next: this panel can now
+                    #  write that field, and only because the record showed it
+                    #  kept it.
+                    say("%s can now be set from this panel: the proof is saved "
+                        "beside the app, and every write made on it is read "
+                        "back." % cs_proof.field_label(result.get("field")),
+                        "ok")
+                if saved is not None:
+                    say("Proof saved: %s (no cookie, token or password is in "
+                        "it)." % saved, "dim")
+                    if not open_path(saved):
+                        messagebox.showinfo(
+                            "Proof written",
+                            "Saved to:\n%s\n\nAttach it to the plugin report "
+                            "if the field is not honoured." % saved,
+                            parent=box.winfo_toplevel())
+
+            in_background(app, work, done)
+
+        if field != "primaryImageUrl":
+            finish("")
+            return
+        #  The main photo: gather every picture of *this card* the app can
+        #  point at, and never ask a person to paste an address it could have
+        #  found itself.
+        batch_dir = canadianshopper_results_dir(app)
+        extra = [app.settings.get("pipeline_dir", str(WORK)), BASE]
+        card = str(item.get("name") or "")
+        staged = cs_proof.absolute_photo(
+            cs_proof.staged_photo(batch_dir, card, extra_folders=extra))
+        if staged:
+            say("The staged photo for this card is %s." % staged, "dim")
+        #  The batch's staged rows, best title match first. The site's title
+        #  and the CSV's are rarely the same words - a grade on one and not
+        #  the other - so an exact match is the first candidate and the rest
+        #  of the batch is beside it, each with the title it was staged under.
+        ranked = []
+        for row in cs_proof.staged_photos(batch_dir, extra_folders=extra):
+            ranked.append((cs_edit.score(card, {"name": row["title"]}), row))
+        ranked.sort(key=lambda pair: -pair[0])
+        staged_rows = [row for _value, row in ranked[:60]]
+        roots = cs_proof.staged_roots(batch_dir, extra)
+        if not staged_rows:
+            say("No staged CSV was found. Searched: %s."
+                % "; ".join(str(path) for path in roots), "warn")
+        say("Reading the listing's own record to see which photos it carries "
+            "and which one it shows now...", "dim")
+        address = cs_edit.detail_url(listing_id, CS_HOME)
+        cookie = load_cookie_text() or ""
+
+        def look():
+            """What the record holds, and which sibling photos are really there.
+
+            One read of the record answers three questions the chooser needs:
+            which photo the listing shows now (never a candidate - it is what
+            a proof has to put back), which other photos the record carries
+            (the plugin uploads the front and the back), and whether the field
+            exists at all. The card's other photo is then looked up at the
+            address the plugin names its pairs with, and only a URL that
+            answers with an image is offered - a guess about a name is not a
+            photo.
+            """
+            status, body = cs_proof.read_record(address, cookie)
+            record = cs_proof.record_from(body) if status == 200 else None
+            current = cs_proof.primary_photo(item=item, record=record)
+            alive = []
+            for candidate_url in cs_proof.sibling_photos(current):
+                ok, _kind = cs_proof.photo_alive(candidate_url)
+                if ok:
+                    alive.append(candidate_url)
+                else:
+                    say("  %s is not on the site, so it is not offered."
+                        % candidate_url, "dim")
+            return {"status": status, "record": record, "current": current,
+                    "siblings": alive}
+
+        def with_look(answer, error):
+            answer = answer or {}
+            status = answer.get("status") or 0
+            record = answer.get("record")
+            if error is not None or record is None:
+                say("The listing's own record could not be read (%s), so the "
+                    "photos below come from the list and the batch only."
+                    % ("HTTP %s" % status if status else "no answer"), "warn")
             candidates = cs_proof.photo_candidates(
-                item=item, staged=staged, staged_rows=staged_rows)
-            current_photo = cs_proof.primary_photo(item=item)
-            for candidate in candidates[:8]:
-                say("  the proof could write %s (%s)"
+                item=item, record=record, staged=staged,
+                staged_rows=staged_rows, siblings=answer.get("siblings"))
+            current_photo = answer.get("current") or \
+                cs_proof.primary_photo(item=item)
+            say("The listing shows this photo now: %s."
+                % (current_photo or "(the record carries none)"), "dim")
+            for candidate in candidates[:10]:
+                say("  a photo the proof could write: %s (%s)"
                     % (candidate["url"], candidate["source"]), "dim")
-            if len(candidates) > 8:
-                say("  ... and %d more staged photo(s) in the list."
-                    % (len(candidates) - 8), "dim")
+            if len(candidates) > 10:
+                say("  ... and %d more in the list."
+                    % (len(candidates) - 10), "dim")
             staged_url = choose_proof_photo(candidates, current_photo)
             if staged_url is None:
                 say("The photo question was closed, so nothing was written.",
@@ -10278,84 +10410,9 @@ def build_csledit(parent, app):
                 say("The address box was left empty, so nothing was written.",
                     "dim")
                 return
-        label = cs_proof.field_label(field)
-        named = str(item.get("name") or "that listing")
-        if field == "primaryImageUrl" and staged_url:
-            #  The picture, not only the field: a proof of the main photo puts
-            #  a different image on a live listing, so the confirmation names
-            #  exactly which one before anything is sent.
-            named = "%s\n\nThe photo written: %s" % (named, staged_url)
-        if not ask_yes(
-                "Write a proof to one listing?",
-                "%s\n\nThis writes one field - %s - on CanadianShopper, reads "
-                "the record back, and puts the old value back. It is a real "
-                "change to a live listing for the few seconds it takes, and it "
-                "is the only way to know whether the site honours that field."
-                "\n\nThe record's own id is the address. No product id is "
-                "used, no other field is sent, and your website is not "
-                "touched.\n\nWrite the proof now?" % (named, label)):
-            say("The proof was not confirmed; nothing was written.", "dim")
-            return
-        url = cs_edit.detail_url(listing_id, CS_HOME)
-        cookie = load_cookie_text() or ""
-        say("Proving %s on %s: writing one field, reading it back, putting it "
-            "back..." % (label.lower(), named), "cmd")
-        summary.configure(text="Proving %s on %s..." % (label.lower(), named))
+            finish(staged_url)
 
-        def work():
-            return cs_proof.prove(field, url, cookie, staged_url=staged_url,
-                                  listing=item)
-
-        def done(result, error):
-            if error is not None:
-                say("The proof could not run: %s. Nothing was written." % error,
-                    "err")
-                summary.configure(text="The proof could not run: %s" % error)
-                return
-            good = cs_proof.proven(result)
-            say(cs_proof.sentence(result), "ok" if good else "err")
-            if result.get("verdict") == "written" and result.get("restored"):
-                #  This is the sentence a write path may be built on, so it
-                #  says outright what was settled and that it was put back.
-                say("%s is settled: the record kept the new value and the old "
-                    "one came back. That is the evidence an edit needs."
-                    % cs_proof.field_label(result.get("field")), "ok")
-            elif result.get("verdict") == "written":
-                say("The old value was not read back after the restore. Check "
-                    "that listing on CanadianShopper before anything else.",
-                    "err")
-            elif result.get("verdict") == "ignored":
-                say("The site answered but did not keep the value, so a write "
-                    "path must not be built on a 200 for %s alone."
-                    % cs_proof.field_label(result.get("field")), "dim")
-            text = cs_proof.report_text(result, listing=item,
-                                        app_version=VERSION)
-            path = cs_proof.proof_path(BASE)
-            saved = None
-            try:
-                path.write_text(text, encoding="utf-8")
-                saved = path
-            except OSError as exc:
-                say("Could not save the proof: %s" % exc, "err")
-            cs_proof.remember(BASE, result, listing=item)
-            summary.configure(text=cs_proof.sentence(result))
-            if cs_proof.proven(result):
-                #  The sentence that matters next: this panel can now write
-                #  that field, and only because the record showed it kept it.
-                say("%s can now be set from this panel: the proof is saved "
-                    "beside the app, and every write made on it is read back."
-                    % cs_proof.field_label(result.get("field")), "ok")
-            if saved is not None:
-                say("Proof saved: %s (no cookie, token or password is in it)."
-                    % saved, "dim")
-                if not open_path(saved):
-                    messagebox.showinfo(
-                        "Proof written",
-                        "Saved to:\n%s\n\nAttach it to the plugin report if "
-                        "the field is not honoured." % saved,
-                        parent=box.winfo_toplevel())
-
-        in_background(app, work, done)
+        in_background(app, look, with_look)
 
     proof_row = ttk.Frame(box)
     proof_row.pack(anchor="w", pady=(4, 0))
