@@ -1497,6 +1497,13 @@ title, price, quantity in stock and state, each filled with what it is now - so
 repricing a card and archiving it is a single visit; the two state buttons do
 only the state, which is the quick way through a restock.
 
+The listing's photos are in that form too. A gallery is rows of its own
+(``productImage``) keyed by the listing's id, not a field on the record, so the
+form reads them from the site and lists every one with its position and its
+full address - the main photo above is only one of them - and **Add a photo to
+the gallery...** and **Remove a photo from the gallery...** change them from
+there.
+
 Every change is named field by field before it is sent - "Stock: 2 -> 5",
 "State: archived -> on sale" - and only the fields that changed are sent (with
 the title, which is how the plugin finds the listing), so an edit can never put
@@ -2137,7 +2144,7 @@ TOOLTIPS = {
     "Prove every field...": "Prove every field this app can write on the selected listing in one job: each field is written, read back and put back before the next is touched, an already-settled field is skipped, and a field that does not settle is reported with what to do about it; one confirmed click, and nothing unattended",
     "Add a photo to the gallery...": "Put one photo you choose into the selected listing's gallery - the second picture a card listing should have. The gallery is its own collection of rows (productImage), keyed by the listing's record id, not a field on that record, so the photo is added as a row of its own and the gallery is read back: if the site does not show it, nothing changed and the answer says so. The photo stays, because a gallery photo is what you asked for - the proof is the one that adds a row and removes that same row again",
     "Remove a photo from the gallery...": "Take one photo off the selected listing's gallery. The gallery is read first so you choose from the photos it really holds, and the photo comes off by the id of its own row - then the gallery is read back again to show it gone. Nothing else on the listing is touched, and no proof is needed: the removal is shown by that second read.",
-    "Edit the record's fields...": "Edit this listing's own record - price, title, description, stock count and main photo, each one open only when a saved proof shows the site keeps it, and only the fields you change are sent, then read back; no product id is used and your website is never touched",
+    "Edit the record's fields...": "Edit this listing's own record - price, title, description, stock count and main photo, each one open only when a saved proof shows the site keeps it, and only the fields you change are sent, then read back; the gallery's photos are listed below them with their own addresses, and are added or removed from there; no product id is used and your website is never touched",
     "Set the selected listing's price...": "Set the price on the selected listing's own record - one field, at the record's own id, with the new price read back afterwards; offered only for a field a proof has settled, so it works on listings that carry no product id, and your website is never touched",
     "Choose the cards:": "What decides which unlisted cards come first - dearest, newest, oldest, cheapest, or in the order typed below; the choice is remembered",
     "Only this category:": "Leave blank to choose from the whole catalogue; type part of a category's name (hockey) to choose only from products filed under it",
@@ -2169,7 +2176,7 @@ TOOLTIPS = {
                                     "the search weighs them, so it does not "
                                     "have to be the exact title",
     "Read CanadianShopper's listings": "Read every listing on CanadianShopper, with its state and stock, so it can be searched here; nothing is changed",
-    "Edit the selected listing...": "Open the selected listing's own details - title, price, quantity in stock and whether it is on sale or archived - in one form filled with what they are now; only the fields you change are sent, and your website is not touched",
+    "Edit the selected listing...": "Open the selected listing's own details - title, price, quantity in stock, whether it is on sale or archived, and the photos in its gallery, each with its own address - in one form filled with what they are now; only the fields you change are sent, and your website is not touched",
     "Put the selected listing on sale": "Move the selected listing from archived (or draft) back to on sale on CanadianShopper; its title, price and stock stay as they are",
     "Archive the selected listing": "Put the selected listing away on CanadianShopper - it is not deleted and can be put back on sale; your website is not changed",
     "Open the selected listing on CanadianShopper": "Open the selected listing's own page on CanadianShopper for the details this panel does not edit - its description and photos; if the plugin sent no address for it, your store is opened and the card goes on the clipboard to search for; nothing is changed",
@@ -10699,7 +10706,7 @@ def build_csledit(parent, app):
         top = tk.Toplevel(app)
         top.title("Edit the fields on CanadianShopper")
         top.transient(app)
-        top.geometry("700x480")
+        top.geometry("720x640")
         top.grab_set()
         body = ttk.Frame(top)
         body.pack(fill="both", expand=True, padx=10, pady=(10, 4))
@@ -10844,6 +10851,101 @@ def build_csledit(parent, app):
                 summary.configure(text=cs_record.sentence(result))
 
             in_background(app, work, done)
+
+        #  The listing's photos are rows of their own, not a field on the
+        #  record, so they are not among the rows above - and a form that
+        #  stopped at the main photo would say a listing with a gallery has one
+        #  picture. They are read from the site, listed with the addresses they
+        #  really have, and changed by the same two calls the panel's own
+        #  buttons use.
+        ttk.Separator(body, orient="horizontal").grid(
+            row=row, column=0, columnspan=3, sticky="ew", pady=(10, 4))
+        row += 1
+        ttk.Label(body, text="Photos in the gallery", font=("", 10, "bold")
+                  ).grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
+        photo_state = {"rows": None, "why": ""}
+        photo_list = tk.Listbox(body, height=4, exportselection=False)
+        photo_list.grid(row=row, column=0, columnspan=3, sticky="ew", pady=3)
+        row += 1
+        photo_note = ttk.Label(body, text="Reading the gallery...",
+                               wraplength=660, justify="left")
+        photo_note.grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
+        photo_row = ttk.Frame(body)
+        photo_row.grid(row=row, column=0, columnspan=3, sticky="w",
+                       pady=(4, 0))
+        row += 1
+
+        def show_photos():
+            photo_list.delete(0, "end")
+            held = photo_state["rows"]
+            if held is None:
+                photo_list.insert("end", "(the gallery could not be read)")
+                photo_note.configure(text=photo_state["why"]
+                                     or "The gallery could not be read.")
+                return
+            if not held:
+                photo_list.insert("end", "No photos in the gallery.")
+            for number, gallery_row in enumerate(held, 1):
+                photo_list.insert("end", "%d. position %s - %s" % (
+                    number, gallery_row.get("sortOrder"),
+                    gallery_row.get("imageUrl")))
+            photo_note.configure(text=(
+                "%d photo%s in the gallery. Each is a row of its own "
+                "(productImage) keyed by this listing's id, not a field on the "
+                "record - which is why the main photo above is only one of "
+                "them. Adding and removing write those rows and read the "
+                "gallery back."
+                % (len(held), "" if len(held) == 1 else "s")))
+
+        def read_photos():
+            photo_state["rows"] = None
+            photo_state["why"] = ""
+            photo_note.configure(text="Reading the gallery...")
+            cookie = load_cookie_text() or ""
+            about = cs_gallery.read_url(listing_id, CS_HOME)
+
+            def got(answer, error):
+                answer = answer or {}
+                if error is not None:
+                    photo_state["why"] = ("The gallery could not be read: %s"
+                                          % error)
+                elif answer.get("rows") is None:
+                    photo_state["why"] = (answer.get("why")
+                                          or "The gallery could not be read.")
+                else:
+                    photo_state["rows"] = list(answer.get("rows") or [])
+                try:
+                    show_photos()
+                except Exception:
+                    pass          # the form was closed while the read was out
+
+            in_background(app, lambda: cs_gallery.read(about, cookie), got)
+
+        def after_photo_change():
+            """The list is what the site now holds, not what it held before."""
+            try:
+                if top.winfo_exists():
+                    read_photos()
+            except Exception:
+                pass
+
+        gallery_add_btn = ttk.Button(
+            photo_row, text="Add a photo to the gallery...",
+            command=lambda: add_gallery(after_photo_change))
+        gallery_add_btn.pack(side="left")
+        add_tooltip(gallery_add_btn,
+                    "Put one photo into this listing's gallery: it is added "
+                    "as a row of its own and the gallery is read back")
+        gallery_remove_btn = ttk.Button(
+            photo_row, text="Remove a photo from the gallery...",
+            command=lambda: remove_gallery(after_photo_change))
+        gallery_remove_btn.pack(side="left", padx=6)
+        add_tooltip(gallery_remove_btn,
+                    "Take one photo off this listing's gallery by its own "
+                    "row, then read the gallery back to show it gone")
+        read_photos()
 
         buttons = ttk.Frame(top)
         buttons.pack(fill="x", padx=10, pady=(4, 10))
@@ -11381,7 +11483,7 @@ def build_csledit(parent, app):
         in_background(app, work, done)
 
 
-    def add_gallery():
+    def add_gallery(on_done=None):
         """Put one photo into the listing's gallery - rows of their own.
 
         The gallery is ``productImage`` rows keyed by the listing's record id,
@@ -11473,13 +11575,18 @@ def build_csledit(parent, app):
                 if advice:
                     say("  What to do: %s" % advice, "dim")
                 summary.configure(text=cs_gallery.sentence(result))
+                #  A window that lists the gallery is stale the moment a row
+                #  is written, and a stale list is how the wrong row gets
+                #  picked - so it is read again by whoever is showing one.
+                if on_done is not None and verdict in ("added", "same"):
+                    on_done()
 
             in_background(app, work, done)
 
         in_background(app, look_at(item, listing_id), found)
 
 
-    def remove_gallery():
+    def remove_gallery(on_done=None):
         """Take one photo off the listing's gallery, by its row's own id.
 
         The gallery is ``productImage`` rows, so a photo comes off by deleting
@@ -11598,6 +11705,11 @@ def build_csledit(parent, app):
                 if advice:
                     say("  What to do: %s" % advice, "dim")
                 summary.configure(text=cs_gallery.sentence(result))
+                #  A window that lists the gallery is stale the moment a row
+                #  is written, and a stale list is how the wrong row gets
+                #  picked - so it is read again by whoever is showing one.
+                if on_done is not None and verdict in ("removed",):
+                    on_done()
 
             in_background(app, work, done)
 
