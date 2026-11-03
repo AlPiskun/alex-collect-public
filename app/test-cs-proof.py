@@ -330,6 +330,183 @@ def test_the_photo_comes_from_the_staging_step():
         check("no title is no answer, not the first row",
               cs_proof.staged_photo(folder, "") == "", "")
 
+        #  Plugin 1.0.40 writes the rewritten CSVs into cs-ready beside the
+        #  batch, while the batch itself sits one level above - and the panel
+        #  is handed the batch, not the folder inside it.
+        ready = folder / "cs-ready"
+        ready.mkdir()
+        write(ready, "canadianshopper_import_20260401_01_of_01.csv",
+              [{"title": RECORD["title"],
+                "image_url": "https://cs.example/api/file/new.webp",
+                "price_cad": "1250.00"}])
+        check("a staged CSV in the cs-ready folder is found from the batch",
+              cs_proof.staged_photo(folder, RECORD["title"]) ==
+              "https://cs.example/api/file/new.webp",
+              cs_proof.staged_photo(folder, RECORD["title"]))
+        check("and the newest staged row wins across the two folders",
+              cs_proof.staged_photo(ready, RECORD["title"]) ==
+              "https://cs.example/api/file/new.webp", "")
+        check("while a card only the older batch staged keeps its own photo",
+              cs_proof.staged_photo(folder, "Another card") ==
+              "https://cs.example/api/file/other.webp", "")
+
+
+def test_the_photos_a_proof_may_write():
+    """The squared photos on the site, offered by the app instead of pasted.
+
+    The plugin uploads the squared images, so the safest picture to prove the
+    main-photo field with is one of those: the staging step's own upload for
+    this card, or a photo the listing already shows. The one photo that must
+    never be offered is the one the listing shows *now* - writing it would prove
+    nothing, and it is what the proof has to put back.
+    """
+    print()
+    print("== 8b. which photo the proof may write ==")
+    row = {"id": "a" * 32,
+           "images": ["https://cs.example/api/file/current.webp",
+                      "/api/file/back.webp",
+                      {"src": "/api/file/detail.webp"}]}
+    candidates = cs_proof.photo_candidates(item=row)
+    check("the listing's own photos are offered, with their source",
+          [entry["url"] for entry in candidates] ==
+          ["https://canadianshopper.ca/api/file/back.webp",
+           "https://canadianshopper.ca/api/file/detail.webp"],
+          str(candidates))
+    check("and a bare path is given the site on the front",
+          all(entry["url"].startswith("https://canadianshopper.ca/api/file/")
+              for entry in candidates), str(candidates))
+    check("the photo the listing shows now is never a candidate",
+          not any("current.webp" in entry["url"] for entry in candidates), "")
+
+    staged = cs_proof.photo_candidates(item=row, staged="/api/file/staged.webp")
+    check("a staged photo comes first: it is the step's own upload",
+          staged[0]["url"] ==
+          "https://canadianshopper.ca/api/file/staged.webp" and
+          "staging" in staged[0]["source"], str(staged[:1]))
+    check("and a photo offered twice is offered once",
+          len({entry["url"] for entry in staged}) == len(staged), str(staged))
+    check("a staged photo the listing already shows is dropped",
+          [entry["url"] for entry in
+           cs_proof.photo_candidates(
+               item={"images": ["https://cs.example/api/file/one.webp"]},
+               staged="https://cs.example/api/file/one.webp")] == [],
+          "")
+
+    record = {"id": "a" * 32,
+              "primaryImageUrl": "https://cs.example/api/file/primary.webp",
+              "images": ["https://cs.example/api/file/gallery.webp",
+                         "https://cs.example/api/file/primary.webp"]}
+    check("a record's own gallery is offered, and its primary is not",
+          [entry["url"] for entry in cs_proof.photo_candidates(record=record)]
+          == ["https://cs.example/api/file/gallery.webp"], "")
+    check("the record is what says which photo is the main one",
+          cs_proof.primary_photo(record=record) ==
+          "https://cs.example/api/file/primary.webp", "")
+    check("with no record, the row's first photo stands in for it",
+          cs_proof.primary_photo(item=row) ==
+          "https://cs.example/api/file/current.webp", "")
+    check("no photos at all is no candidates, not an invented one",
+          cs_proof.photo_candidates(item={"id": "a"}) == [], "")
+    #  The batch's own staged rows: a card whose CSV title and site title are
+    #  not the same words still needs a way in, and the list is it.
+    folder = Path(tempfile.mkdtemp())
+    ready = folder / "cs-ready"
+    ready.mkdir()
+    import csv as _csv
+    with (ready / "canadianshopper_import_20260301_01_of_01.csv").open(
+            "w", newline="", encoding="utf-8") as handle:
+        writer = _csv.DictWriter(handle, ["title", "image_url"])
+        writer.writeheader()
+        writer.writerow({"title": "Card A", "image_url": "/api/file/a.webp"})
+        writer.writerow({"title": "Card B", "image_url":
+                         "https://shop.example/b.jpg"})
+        writer.writerow({"title": "Card A", "image_url": "/api/file/a.webp"})
+    rows = cs_proof.staged_photos(folder)
+    check("every staged row is offered, with the title it was staged for",
+          rows == [{"title": "Card A",
+                    "url": "https://canadianshopper.ca/api/file/a.webp"}],
+          str(rows))
+    check("a row the staging step has not rewritten is not offered",
+          not any("shop.example" in row["url"] for row in rows), str(rows))
+    offered = cs_proof.photo_candidates(staged_rows=rows)
+    check("the batch's rows reach the photo list, named by their titles",
+          offered and offered[0]["url"] ==
+          "https://canadianshopper.ca/api/file/a.webp" and
+          "Card A" in offered[0]["source"], str(offered))
+
+    #  The card's other photo, at the address the plugin names its pairs with.
+    #  This is the one route that needs no local file at all: the listing shows
+    #  a squared photo the plugin uploaded, so its sibling is the same card.
+    check("a front photo names the back beside it",
+          cs_proof.sibling_photos(
+              "https://canadianshopper.ca/api/file/wurmple-front.webp") ==
+          ["https://canadianshopper.ca/api/file/wurmple-back.webp"], "")
+    check("and a back photo names the front, keeping the case it was given",
+          cs_proof.sibling_photos("https://cs/api/file/006-FRONT.jpg") ==
+          ["https://cs/api/file/006-BACK.jpg"], "")
+    check("a name with no front or back in it suggests nothing",
+          cs_proof.sibling_photos("https://cs/api/file/plain.webp") == [], "")
+    check("the folder part never gets swapped, only the file name",
+          cs_proof.sibling_photos("https://cs/front/api/file/card.webp") == [],
+          str(cs_proof.sibling_photos(
+              "https://cs/front/api/file/card.webp")))
+    check("only the part after the last slash is a name to change",
+          cs_proof.sibling_photos("https://cs/api/file/front-cover.webp") ==
+          ["https://cs/api/file/back-cover.webp"], "")
+
+    def answers(status, kind="image/webp"):
+        def opener(url):
+            return (status == 200, kind if status == 200 else "")
+        return opener
+
+    check("a photo the site answers with an image is alive",
+          cs_proof.photo_alive("https://cs/api/file/a.webp",
+                               opener=answers(200)) == (True, "image/webp"), "")
+    check("a photo the site does not have is not offered",
+          cs_proof.photo_alive("https://cs/api/file/a.webp",
+                               opener=answers(404)) == (False, ""), "")
+    check("a photo address that is not a web address is never fetched",
+          cs_proof.photo_alive("/api/file/a.webp", opener=answers(200)) ==
+          (False, ""), "")
+    check("the record's reading is public, so a caller need not reach inside",
+          cs_proof.record_from('{"id": "a", "title": "t"}') ==
+          {"id": "a", "title": "t"} and
+          cs_proof.record_from("not json") is None, "")
+
+    #  The folders searched are part of the answer when nothing is found: the
+    #  batch folder, its cs-ready, and wherever a caller says to look.
+    empty = Path(tempfile.mkdtemp())
+    elsewhere = Path(tempfile.mkdtemp())
+    with (elsewhere / "canadianshopper_staged_history.csv").open(
+            "w", newline="", encoding="utf-8") as handle:
+        writer = _csv.DictWriter(handle, ["title", "image_url"])
+        writer.writeheader()
+        writer.writerow({"title": "Card C",
+                         "image_url": "https://cs.example/api/file/c.webp"})
+    check("an extra folder a caller names is searched too",
+          cs_proof.staged_photos(empty, extra_folders=[elsewhere]) ==
+          [{"title": "Card C",
+            "url": "https://cs.example/api/file/c.webp"}],
+          str(cs_proof.staged_photos(empty, extra_folders=[elsewhere])))
+    check("the consolidated history is read as well as the batch CSVs",
+          cs_proof.staged_photo(elsewhere, "Card C") ==
+          "https://cs.example/api/file/c.webp", "")
+    check("and the folders searched can be said out loud",
+          cs_proof.staged_roots(empty, [elsewhere, ""]) ==
+          [empty, elsewhere], str(cs_proof.staged_roots(empty,
+                                                        [elsewhere, ""])))
+    check("a folder that is not there is not claimed to be searched",
+          elsewhere not in cs_proof.staged_roots(empty, ["/no/such/folder"]), "")
+
+    check("a photo address is made whole the same way everywhere",
+          cs_proof.absolute_photo("/api/file/x.webp") ==
+          "https://canadianshopper.ca/api/file/x.webp" and
+          cs_proof.absolute_photo("//cdn.example/x.webp") ==
+          "https://cdn.example/x.webp" and
+          cs_proof.absolute_photo("https://cs.example/x.webp") ==
+          "https://cs.example/x.webp" and
+          cs_proof.absolute_photo("") == "", "")
+
 
 def test_the_report():
     print()
@@ -342,7 +519,7 @@ def test_the_report():
     text = cs_proof.report_text(result, listing={"id": RECORD["id"],
                                                  "name": RECORD["title"]},
                                 when=datetime(2026, 11, 2, 14, 30, 5),
-                                app_version="3.22")
+                                app_version="3.23")
     check("it names the listing and the record's own id",
           RECORD["title"] in text and RECORD["id"] in text and
           "not a product id" in text, text[:400])
@@ -416,6 +593,7 @@ def main():
     test_what_a_field_plan_says()
     test_a_field_that_is_written()
     test_the_photo_comes_from_the_staging_step()
+    test_the_photos_a_proof_may_write()
     test_the_report()
     test_what_the_app_remembers()
     print()

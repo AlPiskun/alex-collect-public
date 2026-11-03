@@ -46,8 +46,10 @@ STATES = (("any", "Any state"),
 #: most of their words, and a list of forty near-misses is not a search.
 SEARCH_MINIMUM = 0.34
 
-#: How many matches the search shows. A card catalogue is thousands of rows;
-#: a list longer than this is a spreadsheet, not an answer.
+#: How many matches a search returns when a caller asks for a short list.
+#: The panel does not ask: a person who read 2,596 listings and is shown 200 of
+#: them is not being helped, they are being told the shop is smaller than it is.
+#: ``limit=None`` - the default - returns every match.
 SEARCH_LIMIT = 200
 
 
@@ -176,23 +178,26 @@ def score(query, item):
     return value
 
 
-def search(items, query="", state="any", limit=SEARCH_LIMIT):
+def search(items, query="", state="any", limit=None):
     """The listings answering ``query``, best first; everything when empty.
 
     An empty box is not an empty list: it means "show me that state", which is
-    how the archived listings are worked through.
+    how the archived listings are worked through. Every match is returned
+    unless the caller asks for fewer: the list a person sees is the read they
+    made, and a shop of 2,596 listings must not look like a shop of 200.
     """
     rows = [item for item in items or [] if has_state(item, state)]
     query = str(query or "").strip()
     if not query:
         rows.sort(key=lambda item: (str(item.get("name") or "").lower(),
                                     str(item.get("sku") or "")))
-        return rows[:max(1, int(limit))]
+        return rows if not limit else rows[:max(1, int(limit))]
     scored = [(score(query, item), item) for item in rows]
     scored = [pair for pair in scored if pair[0] >= SEARCH_MINIMUM]
     scored.sort(key=lambda pair: (-pair[0],
                                   str(pair[1].get("name") or "").lower()))
-    return [item for _value, item in scored][:max(1, int(limit))]
+    found = [item for _value, item in scored]
+    return found if not limit else found[:max(1, int(limit))]
 
 
 def current(item):

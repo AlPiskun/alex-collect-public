@@ -64,6 +64,7 @@ screens. The current core recognizes the following action IDs:
 - `marketplace.publish_drafts`
 - `marketplace.import_csv`
 - `marketplace.listing_update`
+- `marketplace.photo_stage`
 - `stock.set`
 
 The three photo actions are separate jobs even though one script usually
@@ -74,6 +75,37 @@ backs them all, so the core resolves each one by ID rather than by filename:
 | `batch.photo_stage` | Preparing a batch (Square + host the photos) | `--mode prepare ...` |
 | `batch.photo_wire` | "Wire the photos", and the whole-batch offer in Replace a card's photos | `--mode wire --cookie-file ... --ready-dir ... --cache ...` |
 | `batch.photo_replace` | "Wire this card's photos?" in Replace a card's photos | the same `--mode wire` arguments plus `--title <full product name>` |
+| `marketplace.photo_stage` | Stage the photos (from plugin 1.0.40; wraps `batch.photo_stage`) | `--batch-dir ... --stage-out ... [--images-dir ...] [--ready-dir ...] [--cookie-file ...] [--dry-run]` |
+
+**`marketplace.photo_stage` (1.0.40) is the one the core asks for by ID.**
+It discovers the batch's direct-child `canadianshopper_import_*.csv` files
+rather than being handed each one, stages each front, writes the rewritten CSV
+into the ready folder, and answers with one JSON file - the per-row report the
+older `batch.photo_stage` never had. The core sends:
+
+```
+cs-photo-stage.py --batch-dir "<batch>"
+  --stage-out "<batch>/photo-stage.json"
+  [--images-dir "<folder>"] [--ready-dir "<batch>/cs-ready"]
+  [--cookie-file "<cookie.txt>"] [--dry-run]
+```
+
+and reads `items[]` (`csv`, 1-based `row`, `sku`, `title`, `status`,
+`staged_url`, `staged_csv`, `back_status`, `back_staged_url`, `error`) and
+`files[]` (`input`, `output`). Statuses are `staged`, `already_staged`,
+`dry_run` and `error`; exit `0` is a clean batch, `1` a partial one whose
+successes are still written, `2` fatal - and a safe `--stage-out` then holds
+an error JSON whose `error`/`message` the core quotes. The core reads that
+answer rather than guessing from the filename: a partial batch updates the
+staged history from the CSVs the plugin says it wrote, and every failed row is
+named to the person by card, CSV row and SKU with the plugin's own reason. A
+relative `output` is resolved from the batch folder, an absolute one used as
+given. The source CSVs are never rewritten - that is the plugin's guarantee,
+and the core only reads its answer. `--dry-run` reports what the batch would
+do, uploads nothing and changes no CSV, so the panel's **Preview the staging
+(no upload)** button never claims a staging. A plugin older than 1.0.40 has no
+such action, and the core falls back to the documented `batch.photo_stage
+--mode prepare` command, which says only what its exit code said.
 
 `batch.photo_replace` is the narrow one, and since plugin 1.0.15 it needs no
 staged CSV at all. When a card's photos are replaced the core splits the new
@@ -868,6 +900,27 @@ this field...** beside it. The edit panel still writes title, stock and state
 through `marketplace.listing_update` and `/api/products/<product_id>/` for rows
 that have a product id - two roads to the same listing, and the record road
 needs no id at all. No unattended or scheduled write is added for any field.
+
+**The core's own calls are gated on the plugin being installed.** Four
+features in this core talk to the site's API directly rather than through an
+action: the field proof (`cs_proof.py`), the record write path
+(`cs_record.py`), its bulk use in the comparison panel's *Set CanadianShopper
+to the website's prices...*, and the read-only diagnosis probe
+(`GET`/`OPTIONS` on a listing's record). The plugin is what owns that
+conversation - it holds the session cookie and the actions the vendor
+documents - so all four are offered **only while the plugin is installed**
+(`gui.cs_plugin_installed`): without it each button says the plugin is what
+talks to the shop and sends nothing, instead of reaching past the plugin to
+an API nobody installed. That is the rule for anything new here that would
+touch the vendor's API: it belongs in the plugin as an action, not in the
+core. The plugin's author agreed to take those four behind versioned
+actions - a proposed `marketplace.record_update` (opaque `listing_id` and
+the fields to change, answering `before`, `after`, `applied_fields` and an
+error) and `marketplace.record_proof` (the same identity input, answering
+the before/after records and `proven_fields`). Neither is implemented or
+claimed in 1.0.40, so the gated direct calls above are the interim: the
+core moves to the actions when a plugin declares them, and until then the
+proof file is still the only thing that lets a field be written.
 
 **A hard-failure report, if the failures turn out to be deterministic.** The
 counts do not say which listings failed, and a read caches no failures, so a

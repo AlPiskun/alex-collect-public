@@ -635,6 +635,32 @@ def test_the_panel_reprices_a_proven_field():
     harness._BOX.askyesno = lambda *a, **k: True
     harness._BOX.showinfo = lambda *a, **k: None
 
+    # ---- and with no plugin installed, nothing is offered at all
+    said[:] = []
+    asked[:] = []
+    sent[:] = []
+    app.lines[:] = []
+    app.cs_addon = False
+    harness._BOX.showinfo = lambda *a, **k: said.append(a)
+    try:
+        with patch.object(gui, "BASE", folder), \
+                patch.object(gui, "CS_COOKIE_FILE", cookie), \
+                patch.object(gui, "cs_addon_present", lambda: False), \
+                patch.object(gui.cs_record, "write_all",
+                             lambda *a, **k: sent.append((a, k)) or []):
+            button.invoke()
+    finally:
+        app.cs_addon = True
+        harness._BOX.showinfo = lambda *a, **k: None
+    check("with the plugin gone, a proven price still writes nothing",
+          not sent and not asked, str(sent))
+    check("and the panel says the plugin talks to the shop",
+          said and "CanadianShopper plugin" in str(said[-1]), str(said[-1:]))
+    check("with the refusal on the console, not only in a box",
+          any("plugin is not installed" in text for _tag, text in app.lines),
+          str(app.lines[-2:]))
+
+
 def test_the_cookies_canadian_shopper_is_told_about():
     print()
     print("== 8b. the stock read is told which cookie to use ==")

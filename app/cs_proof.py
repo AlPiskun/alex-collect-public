@@ -239,6 +239,12 @@ def plan(field, record, staged_url="", now=None):
 #: square photo it uploaded, so a row still pointing at the website is a row
 #: that has not been staged.
 STAGED_PATTERN = "canadianshopper_import_*.csv"
+
+#: Where older staged batches go: the app consolidates finished CSVs into one
+#: history file, so a card staged a fortnight ago has no ``import`` CSV of its
+#: own any more - only a row in here.
+STAGED_HISTORY = "canadianshopper_staged_history.csv"
+
 STAGED_PHOTO = "/api/file/"
 
 
@@ -246,7 +252,53 @@ def _fold(text):
     return " ".join(str(text or "").split()).casefold()
 
 
-def staged_photo(folder, title=""):
+def staged_roots(folder, extra_folders=()):
+    """The folders a staged-photo lookup searches, without duplicates.
+
+    The batch folder is where the newest CSVs are, ``cs-ready`` inside it is
+    where plugin 1.0.40 writes them, and the folders a caller adds are where a
+    person's own copies or an older batch may be. Saying which folders were
+    searched is part of the answer when nothing is found: "no staged photo"
+    without that is a dead end nobody can act on.
+    """
+    roots = []
+    for value in [folder] + list(extra_folders or []):
+        text = str(value or "").strip()
+        if not text:
+            continue
+        try:
+            path = Path(text)
+            if path.is_dir() and path not in roots:
+                roots.append(path)
+        except OSError:
+            continue
+    return roots
+
+
+def staged_files(folder, extra_folders=(), limit=40):
+    """The staged CSVs to read, newest first, across every folder searched."""
+    found = []
+    for root in staged_roots(folder, extra_folders):
+        for pattern in (STAGED_PATTERN, STAGED_HISTORY):
+            try:
+                found.extend(root.rglob(pattern))
+            except OSError:
+                continue
+    unique = {}
+    for path in found:
+        try:
+            if path.is_file():
+                unique[str(path.resolve())] = path
+        except OSError:
+            continue
+    try:
+        return sorted(unique.values(), key=lambda path: path.stat().st_mtime,
+                      reverse=True)[:max(1, int(limit or 40))]
+    except OSError:
+        return []
+
+
+def staged_photo(folder, title="", extra_folders=()):
     """The staged photo URL a batch's CSV holds for one card, or ``""``.
 
     The image staging step uploads a square photo and rewrites the import row's
@@ -262,13 +314,7 @@ def staged_photo(folder, title=""):
     wanted = _fold(title)
     if not wanted:
         return ""
-    folder = Path(folder or ".")
-    try:
-        files = sorted(folder.glob(STAGED_PATTERN),
-                       key=lambda path: path.stat().st_mtime, reverse=True)
-    except OSError:
-        return ""
-    for path in files[:8]:
+    for path in staged_files(folder, extra_folders, limit=8):
         try:
             with path.open(newline="", encoding="utf-8-sig",
                            errors="replace") as handle:
@@ -281,6 +327,211 @@ def staged_photo(folder, title=""):
         except (OSError, csv.Error, TypeError):
             continue
     return ""
+
+
+#: The keys a listing record or a reader's row may carry its photos under.
+#: ``primaryImageUrl`` is deliberately not one of them: that is the photo the
+#: listing shows *now*, so it is what a proof puts back, never what it writes.
+PHOTO_KEYS = ("images", "photos", "gallery", "imageUrls", "imageUrl", "image")
+
+#: Where the site's own uploads live. The image staging step posts a squared
+#: photo and the site answers with this path, so a URL holding it is a photo
+#: that is already on CanadianShopper - and one that shows this card.
+HOSTED_PHOTO = "/api/file/"
+
+
+def absolute_photo(url, base="https://canadianshopper.ca"):
+    """A photo address as a web address, whenever the site gave only a path.
+
+    The staging step's own CSV says ``/api/file/<name>``: it is the right photo
+    and the right site, and the record wants the whole address, so the site is
+    put on the front here instead of at four call sites.
+    """
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    if text.startswith("//"):
+        return "https:" + text
+    if text.startswith("/"):
+        return str(base or "").rstrip("/") + text
+    return text
+
+
+def _photo_values(container):
+    """Every photo address in one row or record, in the order it was given."""
+    found = []
+    for key, value in (container or {}).items():
+        if str(key).casefold() not in tuple(k.casefold() for k in PHOTO_KEYS):
+            continue
+        entries = value if isinstance(value, (list, tuple)) else [value]
+        for entry in entries:
+            if isinstance(entry, dict):
+                entry = entry.get("src") or entry.get("url") or ""
+            text = str(entry or "").strip()
+            if text:
+                found.append(text)
+    return found
+
+
+def primary_photo(item=None, record=None):
+    """The photo the listing shows now, from the record when there is one."""
+    if record:
+        found, value = record_value(record, "primaryImageUrl")
+        if found and str(value or "").strip():
+            return absolute_photo(value)
+    for text in _photo_values(item):
+        return absolute_photo(text)
+    return ""
+
+
+def staged_photos(folder, batches=8, extra_folders=()):
+    """Every staged photo the batch holds: ``[{"title", "url"}]``, newest first.
+
+    The exact-title lookup answers "is *this* card staged". When it does not -
+    the site's title and the CSV's are rarely the same words, a grade on the end
+    of one and not the other - the person still needs a way in, and the batch's
+    own staged rows are it: the same photos the plugin uploaded for this batch,
+    listed with the title each was staged under so the right card can be picked
+    by eye.
+    """
+    rows, seen = [], set()
+    for path in staged_files(folder, extra_folders,
+                             limit=max(1, int(batches or 8))):
+        try:
+            with path.open(newline="", encoding="utf-8-sig",
+                           errors="replace") as handle:
+                for row in csv.DictReader(handle):
+                    url = str((row or {}).get("image_url") or "").strip()
+                    if STAGED_PHOTO not in url:
+                        continue
+                    url = absolute_photo(url)
+                    if url in seen:
+                        continue
+                    seen.add(url)
+                    rows.append({"title": str((row or {}).get("title")
+                                              or "").strip(), "url": url})
+        except (OSError, csv.Error, TypeError):
+            continue
+    return rows
+
+
+def sibling_photos(url):
+    """The card's other photo, guessed from the one the listing shows now.
+
+    The plugin uploads a card's front and its back, and names the back by
+    swapping ``front`` for ``back`` in the file it staged. So a listing whose
+    main photo is ``…/wurmple-front.webp`` almost always has a
+    ``…/wurmple-back.webp`` beside it - the same card, already on the site, and
+    the one address a proof can write with no local file at all.
+
+    It is a *guess about a name*, so it is never offered on its own: the caller
+    asks the site whether that address answers with an image (``photo_alive``)
+    and only offers the ones that do.
+    """
+    text = str(url or "").strip()
+    if not text:
+        return []
+    head, _, tail = text.rpartition("/")
+    lowered = tail.casefold()
+    found = []
+    for old_word, new_word in (("front", "back"), ("back", "front")):
+        index = lowered.find(old_word)
+        while index != -1:
+            token = tail[index:index + len(old_word)]
+            replacement = (new_word.upper() if token.isupper() else
+                           new_word.capitalize() if token[:1].isupper()
+                           else new_word)
+            candidate = "%s/%s" % (head, tail[:index] + replacement +
+                                   tail[index + len(old_word):])
+            if candidate != text and candidate not in found:
+                found.append(candidate)
+            index = lowered.find(old_word, index + 1)
+    return found
+
+
+def photo_alive(url, opener=None, timeout=15):
+    """``(True, content_type)`` when a photo address answers with an image.
+
+    Read-only, never raises, and deliberately anonymous: a hosted photo is
+    public, and a proof has no business sending somebody's session to fetch a
+    picture. A site that refuses ``HEAD`` is asked for the first bytes with
+    ``GET`` instead, so a photo that exists is not called missing because of
+    the method.
+    """
+    text = str(url or "").strip()
+    if not text.lower().startswith(("http://", "https://")):
+        return False, ""
+    if opener is not None:
+        return opener(text)
+    headers = {"User-Agent": "Mozilla/5.0 (AlexCollect-GUI)",
+               "Accept": "image/*,*/*;q=0.8"}
+    for method in ("HEAD", "GET"):
+        request = urllib.request.Request(text, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                kind = str(response.headers.get("Content-Type") or "")
+                if method == "GET":
+                    response.read(2048)
+                status = getattr(response, "status", 200)
+            if 200 <= status < 300:
+                return True, kind
+            return False, kind
+        except urllib.error.HTTPError as exc:
+            if method == "GET" or exc.code not in (403, 405, 501):
+                return False, ""
+            continue
+        except Exception:
+            return False, ""
+    return False, ""
+
+
+def photo_candidates(item=None, record=None, staged="", staged_rows=None,
+                     siblings=None):
+    """Every photo a proof could safely write, best first, with where it came from.
+
+    A proof of the main photo must write a picture of *the same card*, because
+    the listing really shows it for the seconds the proof runs. Three sources
+    meet that test, and all three are things this app can point at:
+
+    * the **staged photo** - the image staging step's own upload of this card
+      (``/api/file/...``), which is what the CSV row already carries;
+    * the **listing's own gallery** - the squared photos the plugin uploaded
+      for this very listing, which the reader reports on its row and which a
+      record may carry under ``images`` and similar keys;
+    * anything the person pastes.
+
+    The photo the listing shows now is never a candidate: writing it would
+    prove nothing, and it is the value a proof has to put back.
+    """
+    current = primary_photo(item=item, record=record).rstrip("/")
+    seen, found = set(), []
+
+    def add(url, source):
+        text = absolute_photo(url)
+        key = text.rstrip("/")
+        if not text or key == current or key in seen:
+            return
+        seen.add(key)
+        found.append({"url": text, "source": source})
+
+    add(staged, "the image staging step's photo of this card")
+    #  The card's other photo, at the address the plugin names its pairs with -
+    #  offered only after the caller has asked the site whether it is there.
+    for text in siblings or []:
+        add(text, "the card's other photo, already on CanadianShopper")
+    #  The batch's other staged rows, already ranked by the caller: the site's
+    #  title and the CSV's are rarely the same words, and a person can see
+    #  which card a photo was staged for from the title beside it.
+    for row in staged_rows or []:
+        title = str((row or {}).get("title") or "").strip()
+        add((row or {}).get("url"),
+            "the batch's staged photo of %r" % title if title else
+            "a staged photo in this batch")
+    for text in _photo_values(record or {}):
+        add(text, "a photo on this listing's own record")
+    for text in _photo_values(item or {}):
+        add(text, "a photo this listing already shows")
+    return found
 
 
 def read_record(url, cookie="", opener=None, timeout=25):
@@ -318,6 +569,11 @@ def send(url, cookie, payload, opener=None, timeout=25):
         return exc.code, body
     except Exception as exc:
         return 0, str(exc)
+
+
+def record_from(body):
+    """The record in a detail response, or ``None`` - the public reading."""
+    return _record(body)
 
 
 def _record(body):

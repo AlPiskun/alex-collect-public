@@ -383,6 +383,14 @@ def listing_box(parent):
                  if isinstance(w, gui.tk.Listbox)), None)
 
 
+def summary_text(parent):
+    """The panel's summary line - the label that says what the list is doing."""
+    texts = [str(w.cget("text") or "") for w in parent.walk()
+             if isinstance(w, gui.ttk.Label)]
+    return next((text for text in texts
+                 if "listings read from CanadianShopper" in text), "")
+
+
 def query_box(parent):
     return next((w for w in parent.walk() if isinstance(w, gui.ttk.Entry)),
                 None)
@@ -940,9 +948,17 @@ def test_what_the_read_did_carry():
     check("the read itself keeps every listing, so the count is the read's",
           any("2587 listings read" in text for _tag, text in app.lines),
           str(app.lines[-4:]))
-    check("and the list shows as many as it has ever shown, not fewer",
-          len(listing_box(parent).items) == cs_edit.SEARCH_LIMIT == 200,
+    check("and every listing the read brought is in the list, not the first "
+          "200 of them",
+          len(listing_box(parent).items) == len(full) == 2587,
           str(len(listing_box(parent).items)))
+    check("the summary says the whole read is on screen",
+          "2587 listings read" in summary_text(parent) and
+          "All 2587 listings shown" in summary_text(parent),
+          summary_text(parent))
+    check("and the row that sorts last is really there",
+          any("card 2586" in text for text in listing_box(parent).items),
+          str(listing_box(parent).items[-1:]))
 
 
 def test_the_readers_own_numbers():
@@ -1126,7 +1142,7 @@ def test_the_diagnosis_file():
                                   stages=["read", "ids"], plugin="1.0.38",
                                   command="cs-stock.py --stock-out cs-stock.json",
                                   detail=detail, total=2596, editable=0,
-                                  app_version="3.22")
+                                  app_version="3.23")
     check("the file carries the reader's own count line",
           "2596 listings, 0 with a real product id" in text, "")
     check("the app's own count is beside it, so the two can be compared",
@@ -1581,7 +1597,7 @@ def test_the_real_diagnosis_from_the_shop():
                 "--cookie-file cookie.txt",
         detail={"url": cs_edit.detail_url(row["id"]), "status": 200,
                 "content_type": "application/json", "body": json.dumps(record)},
-        total=2596, editable=0, app_version="3.22",
+        total=2596, editable=0, app_version="3.23",
         source="the read this window made at 2026-11-02 13:03:59")
 
     check("the file no longer carries the progress markers",
@@ -1992,7 +2008,11 @@ def test_the_panel_writes_a_proof():
 
     rows = [{"id": "94b93f6040f5401daabaa9c936efa5a7", "product_id": 0,
              "sku": "OPC1973-74-112", "title": "Jim Pappin #112",
-             "status": "active", "inventory": 1, "price": "12.50"}]
+             "status": "active", "inventory": 1, "price": "12.50",
+             #  The gallery the reader reports, as the plugin uploads it: the
+             #  first is the photo the listing shows now.
+             "images": ["https://cs.example/api/file/current.webp",
+                        "https://cs.example/api/file/other-back.webp"]}]
     asked, questions = [], []
 
     def fake_prove(field, url, cookie="", staged_url="", listing=None):
@@ -2070,8 +2090,11 @@ def test_the_panel_writes_a_proof():
     check("the field is remembered as proven",
           cs_proof.settled("priceCad", saved), str(saved))
 
-    #  The main photo is proven with a staged photo of the same card, so the
-    #  button asks for that address and passes it through.
+    #  The main photo is proven with a photo of the same card, and the squared
+    #  photos on the site were uploaded by the plugin - so the proof offers the
+    #  ones the app can point at (the staging step's upload, the listing's own
+    #  gallery) and lets the person pick, instead of asking them to paste an
+    #  address into a box where the wrong card's URL would be accepted.
     proof_box = next(widget for widget in parent.walk()
                      if isinstance(widget, gui.ttk.Combobox) and
                      "Main photo" in (widget.cget("values") or ()))
@@ -2081,41 +2104,282 @@ def test_the_panel_writes_a_proof():
         opened.update(dict(kwargs, title=title, question=question))
         return kwargs.get("initialvalue") or ""
 
-    with patch.object(gui, "TOOL_ACTION",
-                      lambda action: "/plugins/cs/stock.py"), \
-            patch.object(gui, "CS_COOKIE_FILE", cookie), \
-            patch.object(gui, "in_background", sync_background), \
-            patch.object(gui, "open_path", lambda path: True), \
-            patch.object(gui, "simpledialog") as dialog, \
-            patch.object(cs_proof, "staged_photo",
-                         lambda folder, title: ""), \
-            patch.object(cs_proof, "prove", fake_prove):
-        dialog.askstring = fake_askstring
-        proof_box._kw["textvariable"].set("Main photo")
-        find(parent, gui.ttk.Button, "Write the proof").invoke()
-    check("with no staged photo on disk the proof asks for the address",
-          "run the image staging step" in opened.get("question", ""),
-          str(opened.get("question")))
+    def press_photo(url, button="Use this photo"):
+        """Pick a photo in the chooser, the way a person does.
 
+        The chooser is a list, not a column of radio buttons - a batch can hold
+        hundreds of staged photos - so the row whose address ends with ``url``
+        is clicked, then the button is pressed.
+        """
+        def press(window):
+            for widget in window.walk():
+                if not isinstance(widget, gui.tk.Listbox):
+                    continue
+                for index, text in enumerate(widget.items):
+                    if str(text).rstrip().endswith(url):
+                        widget.selection_set(index)
+                        break
+            target = next((w for w in window.walk()
+                           if isinstance(w, gui.ttk.Button) and
+                           str(w.cget("text")) == button), None)
+            if target is not None:
+                target.invoke()
+        return press
+
+    record_body = json.dumps({
+        "id": rows[0]["id"],
+        "primaryImageUrl": "https://cs.example/api/file/current.webp",
+        "images": ["https://cs.example/api/file/current.webp",
+                   "https://cs.example/api/file/gallery.webp"]})
+
+    def with_photo_proof(lookup=None, ask=fake_askstring, press=None,
+                         record=record_body, alive=True):
+        harness.PICKER["press"] = press or (lambda window: None)
+        staged_lookup = lookup if callable(lookup) else \
+            (lambda folder, title, extra_folders=(): lookup or "")
+        try:
+            with patch.object(gui, "TOOL_ACTION",
+                              lambda action: "/plugins/cs/stock.py"), \
+                    patch.object(gui, "CS_COOKIE_FILE", cookie), \
+                    patch.object(gui, "in_background", sync_background), \
+                    patch.object(gui, "open_path", lambda path: True), \
+                    patch.object(gui, "simpledialog") as dialog, \
+                    patch.object(cs_proof, "staged_photo", staged_lookup), \
+                    patch.object(cs_proof, "read_record",
+                                 lambda url, cookie="": (200, record)), \
+                    patch.object(cs_proof, "photo_alive",
+                                 lambda url, **k: (alive, "image/webp")), \
+                    patch.object(cs_proof, "prove", fake_prove):
+                dialog.askstring = ask
+                find(parent, gui.ttk.Button, "Write the proof").invoke()
+        finally:
+            harness.PICKER["press"] = lambda window: None
+
+    proof_box._kw["textvariable"].set("Main photo")
+    with_photo_proof(None, press=press_photo(
+        "https://cs.example/api/file/other-back.webp"))
+    check("with no staged photo the gallery is still offered, and writable",
+          asked and asked[-1]["staged"] ==
+          "https://cs.example/api/file/other-back.webp", str(asked[-1:]))
+
+    #  No staged photo and no gallery at all: the box is the only way in, and
+    #  it says which step would have filled the list.
+    folder3, app3, parent3 = build_panel()
+    bare = [{"id": "b" * 32, "title": "Bare card", "status": "active",
+             "inventory": 1, "price": "1.00"}]
+    bare_asked, bare_opened = [], []
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/stock.py"), \
-            patch.object(gui, "CS_COOKIE_FILE", cookie), \
             patch.object(gui, "in_background", sync_background), \
-            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(gui, "BASE", folder3):
+        read_into(app3, folder3, parent3, bare)
+    select(parent3, "Bare")
+
+    def bare_ask(title, question, **kwargs):
+        bare_opened.append(dict(kwargs, title=title, question=question))
+        return ""
+
+    bare_box = next(widget for widget in parent3.walk()
+                    if isinstance(widget, gui.ttk.Combobox) and
+                    "Main photo" in (widget.cget("values") or ()))
+    harness.PICKER["press"] = lambda window: None
+    bare_record = json.dumps({"id": "b" * 32,
+                              "primaryImageUrl": "",
+                              "title": "Bare card"})
+    with patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder3), \
             patch.object(gui, "simpledialog") as dialog, \
             patch.object(cs_proof, "staged_photo",
-                         lambda folder, title:
-                         "https://cs.example/api/file/staged.webp"), \
-            patch.object(cs_proof, "prove", fake_prove):
-        dialog.askstring = fake_askstring
-        find(parent, gui.ttk.Button, "Write the proof").invoke()
-    check("the image staging step's own photo is what the proof offers first",
-          opened.get("initialvalue") ==
-          "https://cs.example/api/file/staged.webp", str(opened))
-    check("and it is the address written, on the same one field",
-          asked[-1]["field"] == "primaryImageUrl" and
-          asked[-1]["staged"] == "https://cs.example/api/file/staged.webp",
-          str(asked[-1]))
+                         lambda folder, title, extra_folders=(): ""), \
+            patch.object(cs_proof, "read_record",
+                         lambda url, cookie="": (200, bare_record)), \
+            patch.object(cs_proof, "photo_alive",
+                         lambda url, **k: (False, "")), \
+            patch.object(cs_proof, "prove",
+                         lambda *a, **k: bare_asked.append((a, k))):
+        dialog.askstring = bare_ask
+        bare_box._kw["textvariable"].set("Main photo")
+        find(parent3, gui.ttk.Button, "Write the proof").invoke()
+    check("with no photo to offer, the proof asks for the address",
+          bare_opened and "run the image staging step" in
+          bare_opened[0].get("question", ""),
+          str(bare_opened[:1]))
+    check("and an empty box writes nothing at all", not bare_asked, "")
+    check("the console says which folders held no staged CSV",
+          any("No staged CSV was found. Searched:" in text
+              for _tag, text in app3.lines), str(app3.lines[:6]))
+
+    #  One staged photo, and the row's own gallery beside it.
+    asked[:] = []
+    opened.clear()
+    questions[:] = []
+    with_photo_proof("https://cs.example/api/file/staged.webp",
+                     press=press_photo(
+                         "https://cs.example/api/file/staged.webp"))
+    check("the chooser opens on the staged photo, and it is offered first",
+          not opened and asked and asked[-1]["field"] == "primaryImageUrl",
+          str(asked[-1:]))
+    check("and the staged address is the one written",
+          asked and asked[-1]["staged"] ==
+          "https://cs.example/api/file/staged.webp", str(asked[-1:]))
+    check("the confirmation names the photo, not only the field",
+          questions and "The photo written" in questions[0][1] and
+          "staged.webp" in questions[0][1], str(questions[:1]))
+
+    #  Choosing one of the listing's own photos instead: the plugin uploaded
+    #  those, so they are the same card and just as safe.
+    asked[:] = []
+    with_photo_proof("https://cs.example/api/file/staged.webp",
+                     press=press_photo(
+                         "https://cs.example/api/file/other-back.webp"))
+    check("a photo the listing already shows can be chosen instead",
+          asked and asked[-1]["staged"] ==
+          "https://cs.example/api/file/other-back.webp", str(asked[-1:]))
+
+    #  Cancelling the chooser is an answer: nothing is written, and it says so.
+    asked[:] = []
+    app.lines[:] = []
+    with_photo_proof("https://cs.example/api/file/staged.webp",
+                     press=lambda window: find(
+                         window, gui.ttk.Button, "Cancel").invoke())
+    check("closing the chooser writes no proof",
+          not asked and any("photo question was closed" in text
+                            for _tag, text in app.lines), str(app.lines[-2:]))
+
+    #  The report that started this: the site's title and the batch CSV's are
+    #  not the same words, so the exact-title lookup finds nothing and the
+    #  person was left with a paste box. The batch's own staged rows are
+    #  offered instead, best title match first, each with the title it was
+    #  staged under - and the right one can be clicked.
+    asked[:] = []
+    app.lines[:] = []
+    import csv as _csv
+    batch = folder / "canadianshopper_products" / "cs-ready"
+    batch.mkdir(parents=True, exist_ok=True)
+    with (batch / "canadianshopper_import_20260301_01_of_01.csv").open(
+            "w", newline="", encoding="utf-8") as handle:
+        writer = _csv.DictWriter(handle, ["title", "image_url"])
+        writer.writeheader()
+        writer.writerow({"title": "1973-74 O-Pee-Chee Jim Pappin #112 EX-MT",
+                         "image_url": "/api/file/pappin.webp"})
+        writer.writerow({"title": "1966-67 Topps Bobby Orr #35",
+                         "image_url": "/api/file/orr.webp"})
+    with_photo_proof(None, press=press_photo(
+        "https://canadianshopper.ca/api/file/pappin.webp"))
+    check("a staged row whose title is not the same words is still offered",
+          any("pappin.webp" in text for _tag, text in app.lines),
+          str(app.lines[-6:]))
+    check("and clicking it writes that photo",
+          asked and asked[-1]["staged"] ==
+          "https://canadianshopper.ca/api/file/pappin.webp", str(asked[-1:]))
+
+    #  The list is ranked by the title it was staged under, so the card's own
+    #  row is the one already selected.
+    picked = {}
+    with_photo_proof(None, press=lambda window: picked.update(
+        {"rows": next((w.items for w in window.walk()
+                       if isinstance(w, gui.tk.Listbox)), [])}) or find(
+        window, gui.ttk.Button, "Cancel").invoke())
+    check("the list says which title each photo was staged for",
+          picked.get("rows") and "Jim Pappin #112 EX-MT" in picked["rows"][0],
+          str(picked.get("rows")))
+
+    #  An empty address box is a different answer from a closed question, and
+    #  the console says which one happened.
+    app.lines[:] = []
+    bare_asked[:] = []
+    with_photo_proof(None, ask=lambda *a, **k: None,
+                     press=lambda window: find(
+                         window, gui.ttk.Button, "Cancel").invoke())
+    check("a closed chooser and an empty box read differently",
+          any("photo question was closed" in text
+              for _tag, text in app.lines) and
+          not any("address box was left empty" in text
+                  for _tag, text in app.lines), str(app.lines[-3:]))
+
+    #  The report: no staged CSV anywhere, and a record that carries one photo
+    #  - the squared one the plugin uploaded, whose name pairs it with the
+    #  card's back. That sibling is the same card and already on the site, so
+    #  it is offered without a single local file, and only because the site
+    #  answered with an image.
+    asked[:] = []
+    app.lines[:] = []
+    front_only = json.dumps({
+        "id": rows[0]["id"],
+        "primaryImageUrl": "https://canadianshopper.ca/api/file/pappin-front.webp",
+        "title": rows[0]["title"]})
+    with_photo_proof(None, record=front_only, press=press_photo(
+        "https://canadianshopper.ca/api/file/pappin-back.webp"))
+    check("with no staged CSV the card's other photo is offered",
+          asked and asked[-1]["staged"] ==
+          "https://canadianshopper.ca/api/file/pappin-back.webp",
+          str(asked[-1:]))
+    check("it says which photo the listing shows now",
+          any("The listing shows this photo now" in text
+              for _tag, text in app.lines), str(app.lines[-6:]))
+
+    #  A sibling address the site does not answer for is never offered: a
+    #  guess about a name is not a photo, and a 404 written to a live listing
+    #  is a broken picture.
+    asked[:] = []
+    app.lines[:] = []
+    with_photo_proof(None, record=front_only, alive=False,
+                     press=lambda window: find(window, gui.ttk.Button,
+                                               "Cancel").invoke())
+    check("a sibling the site does not have is not offered",
+          not asked and any("is not on the site, so it is not offered" in text
+                            for _tag, text in app.lines), str(app.lines[-4:]))
+
+    #  A record that cannot be read says so, and still uses what the list holds.
+    asked[:] = []
+    app.lines[:] = []
+    with_photo_proof(None, record=None, press=press_photo(
+        "https://cs.example/api/file/other-back.webp"))
+    check("a record that cannot be read is named, not hidden",
+          any("could not be read" in text for _tag, text in app.lines),
+          str(app.lines[:4]))
+    check("and the list's own photos are still offered",
+          asked and asked[-1]["staged"] ==
+          "https://cs.example/api/file/other-back.webp", str(asked[-1:]))
+
+    #  Pasting an address the list does not know still works.
+    asked[:] = []
+
+    def paste(title, question, **kwargs):
+        opened.update(dict(kwargs, title=title, question=question))
+        return "https://cs.example/api/file/pasted.webp"
+
+    with_photo_proof(
+        "https://cs.example/api/file/staged.webp", ask=paste,
+        press=lambda window: find(window, gui.ttk.Button,
+                                  "Paste an address...").invoke())
+    check("pasting an address is still a way in",
+          asked and asked[-1]["staged"] ==
+          "https://cs.example/api/file/pasted.webp", str(asked[-1:]))
+    check("and the paste box says the picture has to be the same card",
+          "same card" in opened.get("question", ""), str(opened.get("question")))
+
+    #  The staging step is handed the batch folder - `canadianshopper_products`
+    #  beside cs-ready - because that is where the CSVs it rewrote are. An
+    #  address written without the site on the front (the older staging run)
+    #  is completed before it is offered: the record wants a web address, and
+    #  it is the same file on the same site.
+    asked[:] = []
+    looked = {}
+
+    def eyes(folder, title, extra_folders=()):
+        looked["folder"] = str(folder)
+        looked["extra"] = [str(path) for path in extra_folders]
+        return "/api/file/staged.webp"
+
+    with_photo_proof(eyes, press=press_photo(
+        "https://canadianshopper.ca/api/file/staged.webp"))
+    check("the staging lookup is given the batch folder, not the app's",
+          looked.get("folder") == str(folder / "canadianshopper_products"),
+          str(looked))
+    check("and an address with no site on the front is completed",
+          asked and asked[-1]["staged"] ==
+          "https://canadianshopper.ca/api/file/staged.webp", str(asked[-1:]))
 
     #  Nothing read: a proof of nothing is worse than a word.
     folder2, app2, parent2 = build_panel()
@@ -2555,6 +2819,156 @@ def test_a_form_of_every_proven_field():
     check("while the photo, still unproven, offers its proof",
           shown_form.get("buttons", []).count("Prove this field...") == 2,
           str(shown_form.get("buttons")))
+
+
+
+def test_the_panel_shows_the_whole_read():
+    """2,596 listings read, and 2,596 on screen - not the first 200.
+
+    The report: *"I'm only shown 200 products from CS stock."* The read brought
+    the whole shop; the list capped itself at 200 rows, and the read's own
+    sentence replaced the count of what was on screen - so a shop of 2,596
+    listings looked like a shop of 200, and the only way to reach the other
+    2,396 was to guess a search term for them.
+    """
+    print()
+    print("== 5n. the whole read is on screen ==")
+    rows = [{"id": "b%04d" % n, "sku": "SKU-%04d" % n,
+             "title": "zzz card %04d" % n, "price": "1.00",
+             "inventory": 1, "status": "active"} for n in range(2596)]
+    folder, app, parent = build_panel()
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app, folder, parent, rows)
+    check("every listing the read brought is in the list",
+          len(listing_box(parent).items) == len(rows) == 2596,
+          str(len(listing_box(parent).items)))
+    check("and the summary says all of them are shown",
+          "All 2596 listings shown" in summary_text(parent),
+          summary_text(parent))
+    check("the last card in the read is on screen, not past a cut",
+          any("zzz card 2595" in text for text in listing_box(parent).items),
+          str(listing_box(parent).items[-1:]))
+
+    entry = query_box(parent)
+    entry._kw["textvariable"].set("SKU-2595")
+    find(parent, gui.ttk.Button, "Search").invoke()
+    check("a card that sorts past the old 200 is found by searching",
+          len(listing_box(parent).items) == 1 and
+          "SKU-2595" in listing_box(parent).items[0],
+          str(listing_box(parent).items[:3]))
+
+    check("search returns every match unless a caller asks for fewer",
+          len(cs_edit.search(rows, "")) == 2596, "")
+    check("a caller that does ask for a short list still gets one",
+          len(cs_edit.search(rows, "", limit=cs_edit.SEARCH_LIMIT)) ==
+          cs_edit.SEARCH_LIMIT == 200, "")
+    check("and a caller asking for everything gets everything, cap or no cap",
+          len(cs_edit.search(rows, "SKU-25", limit=0)) ==
+          len(cs_edit.search(rows, "SKU-25")) >= 1, "")
+
+
+
+def test_the_shop_is_reached_only_with_the_plugin():
+    """No plugin, no proof and no write: the plugin owns the site's API.
+
+    These four features - the proof, the price, the record's fields and the
+    diagnosis probe - talk to CanadianShopper's own API from this app. That is
+    the plugin's conversation: it holds the session and the actions the vendor
+    documents, and a core that reached past it would be writing to a live shop
+    on an arrangement nobody installed. So without the plugin each button says
+    so and sends nothing - it does not try and fail, and it never asks for a
+    value it would then have nowhere to send.
+    """
+    print()
+    print("== 5o. the shop is reached only while the plugin is installed ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+    rows = [{"id": "a2304e72dbca4e678e7111d011ade22d", "product_id": 4321,
+             "title": "#006/196 Wurmple SWSH11: Lost Origin - Pokemon TCG",
+             "sku": "PKM-006", "status": "active", "inventory": 1,
+             "price": "1.00"}]
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        read_into(app, folder, parent, payload=rows)
+    select(parent, "Wurmple")
+    (folder / "cs-field-proofs.json").write_text(
+        json.dumps({"priceCad": {"at": "2026-11-02 15:34:38", "proven": True,
+                                 "verdict": "written", "restored": True,
+                                 "listing": rows[0]["id"],
+                                 "title": "Wurmple"}}), encoding="utf-8")
+
+    said, written, proved, opened, typed = [], [], [], [], []
+    harness._BOX.shown[:] = []
+    harness._BOX.showinfo = lambda *a, **k: said.append(a)
+    harness.PICKER["press"] = lambda window: opened.append(window)
+    app.cs_addon = False
+    try:
+        with patch.object(gui, "BASE", folder), \
+                patch.object(gui, "CS_COOKIE_FILE", cookie), \
+                patch.object(gui, "cs_addon_present", lambda: False), \
+                patch.object(gui, "in_background", sync_background), \
+                patch.object(gui, "simpledialog") as dialog, \
+                patch.object(cs_record, "write",
+                             lambda *a, **k: written.append((a, k))), \
+                patch.object(cs_record, "update",
+                             lambda *a, **k: written.append((a, k))), \
+                patch.object(cs_record, "send_fields",
+                             lambda *a, **k: written.append((a, k))), \
+                patch.object(cs_proof, "prove",
+                             lambda *a, **k: proved.append((a, k))):
+            dialog.askstring = lambda *a, **k: typed.append(a) or "2.50"
+            find(parent, gui.ttk.Button,
+                 "Set the selected listing's price...").invoke()
+            check("with no plugin the price button asks for nothing",
+                  not typed, str(typed))
+            check("and writes nothing", not written, str(written))
+            check("and says the plugin is what talks to the shop",
+                  said and "CanadianShopper plugin" in str(said[-1]),
+                  str(said[-1:]))
+            check("and puts the refusal on the console",
+                  any("which is not installed; nothing was sent" in text
+                      for _tag, text in app.lines), str(app.lines[-2:]))
+
+            said[:] = []
+            before = len(opened)
+            find(parent, gui.ttk.Button,
+                 "Edit the record's fields...").invoke()
+            check("with no plugin the field form does not open",
+                  len(opened) == before, str(opened[before:]))
+            check("and nothing is written from it", not written, str(written))
+
+            said[:] = []
+            find(parent, gui.ttk.Button, "Write the proof").invoke()
+            check("with no plugin a proof is not written",
+                  not proved, str(proved))
+            check("and the button says why",
+                  said and "CanadianShopper plugin" in str(said[-1]),
+                  str(said[-1:]))
+
+            said[:] = []
+            find(parent, gui.ttk.Button,
+                 "Save a read diagnosis...").invoke()
+            check("with no plugin the diagnosis probe is not run either",
+                  said and "CanadianShopper plugin" in str(said[-1]),
+                  str(said[-1:]))
+    finally:
+        app.cs_addon = True
+        harness._BOX.showinfo = lambda *a, **k: (
+            harness._BOX.shown.append(("showinfo", a)))
+        harness.PICKER["press"] = lambda window: None
 
 
 def test_the_panel_quotes_the_readers_resolution():
@@ -3243,6 +3657,8 @@ def main():
     test_the_panel_sets_a_proven_price()
     test_the_edit_button_takes_the_price_road()
     test_a_form_of_every_proven_field()
+    test_the_panel_shows_the_whole_read()
+    test_the_shop_is_reached_only_with_the_plugin()
     test_the_panel_quotes_the_readers_resolution()
     test_the_evidence_outlives_the_window()
     test_the_panel_reads_and_lists()

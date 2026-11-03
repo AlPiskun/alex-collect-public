@@ -55,6 +55,7 @@ import sale_preview
 import cs_edit
 import cs_proof
 import cs_record
+import cs_stage
 import cs_listing
 import cs_products
 import stock_compare
@@ -76,7 +77,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.22"
+VERSION = "3.23"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -245,6 +246,29 @@ def cs_addon_present():
             return False
     return ((BASE / "addon-canadianshopper.txt").is_file() and
             all((BASE / n).is_file() for n in CS_ADDON_TOOLS))
+
+def cs_plugin_installed(app=None):
+    """Whether the CanadianShopper plugin is there to talk to the shop.
+
+    The plugin owns the shop's session and the actions that call its API. The
+    proof, the record write, the reprice and the diagnosis probe are the same
+    conversation held by this app, so they are offered only while the plugin is
+    installed - ``app.cs_addon`` is what the window found at startup, and the
+    folder is checked again for a plugin removed (or never installed) since.
+    """
+    if getattr(app, "cs_addon", False):
+        return True
+    return cs_addon_present()
+
+
+def cs_plugin_note(what=""):
+    """What a button says when the plugin that owns the site is not installed."""
+    return ("%s needs the CanadianShopper plugin: it is the piece that talks "
+            "to your shop, and it is not installed (or its files are "
+            "missing).\n\nNothing was read and nothing was written. Install "
+            "the plugin from the Plugins panel and this button will work."
+            % (what or "This"))
+
 
 SETTINGS_FILE = BASE / "gui-settings.json"
 LOG_FILE = BASE / "gui-log.txt"
@@ -2006,6 +2030,7 @@ TOOLTIPS = {
     "Combine now": "Join the CSVs now, after the preview",
     "Stage the photos": "Square, host and wire the batch photos through the plugin",
     "Stage the photos (square + host + rewrite CSVs)": "Square the photos, host them and rewrite the CSVs with their URLs",
+    "Preview the staging (no upload)": "Ask the plugin what it would do with this batch - which front it finds for each row, which is already staged and which would fail - without uploading anything; no CSV is changed",
     "Import / publish drafts": "Import the batch and preview or publish the vendor drafts",
     "Preview drafts": "Show what would be published; nothing is changed",
     "Publish ready drafts": "Publish the ready drafts after typing PUBLISH to confirm",
@@ -2095,6 +2120,8 @@ TOOLTIPS = {
     "Use this image": "Take the picture selected above as this card's image",
     "Another scan...": "Load a different scan when the image is not on these sheets",
     # -- dialogs ----------------------------------------------------------
+    "Use this photo": "Write the photo selected above to this listing's main photo for the seconds the proof runs, read the record back, then put the old photo back",
+    "Paste an address...": "Type the address of a photo of this card - a staged one, or one CanadianShopper already hosts - instead of choosing from the list",
     "Write the changed fields": "Send the fields you changed to this listing's own record on CanadianShopper, then read them back; fields you left alone are not sent",
     "Prove this field...": "Close this form and prove the field chosen beside \"Write the proof\" - one value written, read back, and put back; a proof is what opens the field here",
     "Cancel": "Close this window and change nothing",
@@ -5610,7 +5637,7 @@ def build_stage(parent, app):
     box = ttk.Frame(parent)
     box.pack(fill="x")
 
-    def go():
+    def go(dry=False):
         results = canadianshopper_results_dir(app)
         ready = canadianshopper_ready_dir(app)
         sources = sorted(results.glob("canadianshopper_import_*.csv"))
@@ -5620,6 +5647,34 @@ def build_stage(parent, app):
                 "Run the card pipeline first. Its current CSV batch will be "
                 "saved in %s." % results, parent=app)
             return
+        action = TOOL_ACTION(cs_stage.ACTION)
+        if action:
+            #  The plugin reports every row now, so the panel names the cards
+            #  that failed instead of only what the exit code said. Its answer
+            #  is written beside the batch and read once the run is over.
+            stage_out = results / "photo-stage.json"
+            try:
+                stage_out.unlink()
+            except FileNotFoundError:
+                pass
+            args = cs_stage.args(
+                results, stage_out, ready_dir=ready,
+                cookie_file=(CS_COOKIE_FILE if CS_COOKIE_FILE.is_file()
+                             else None), dry_run=dry)
+            app.console_line(
+                ("Checking %d CSV%s - nothing will be uploaded..."
+                 % (len(sources), "" if len(sources) == 1 else "s"))
+                if dry else
+                ("Staging %d CSV%s: squaring each front, uploading it and "
+                 "rewriting the ready CSVs..."
+                 % (len(sources), "" if len(sources) == 1 else "s")), "cmd")
+            app.run_tool(action, args,
+                         "Preview the photos" if dry else "Stage the photos",
+                         cwd=app.settings.get("pipeline_dir", str(WORK)),
+                         on_done=lambda rc: arrived(rc, stage_out, sources, dry))
+            return
+        #  A plugin older than 1.0.40 answers with an exit code and no per-row
+        #  report; the command it documents is the one that still works.
         args = ["--mode", "prepare", "-y",
                 "--cookie-file", str(CS_COOKIE_FILE),
                 "--ready-dir", str(ready),
@@ -5632,10 +5687,49 @@ def build_stage(parent, app):
                      cwd=app.settings.get("pipeline_dir", str(WORK)),
                      on_done=lambda rc: rc == 0 and _after_stage(sources))
 
-    def _after_stage(sources):
+    def arrived(rc, stage_out, sources, dry):
+        """Say what the plugin reported, per card, and go on when it may.
+
+        A partial batch (exit 1) is not a failed batch: the rows it staged are
+        on the site and their CSVs are written, so the history is updated and
+        only the failed rows are named. Exit 2 is fatal - the plugin then puts
+        its own reason in the same file, quoted rather than guessed at.
+        """
+        stage = cs_stage.read_stage(stage_out)
+        said = cs_stage.report(stage, rc, dry_run=dry)
+        for tag, text in said["lines"]:
+            app.console_line(text, tag)
+        if not said["known"]:
+            app.console_line(
+                "The staging step finished (exit %s) without writing its "
+                "answer to %s, so nothing can be said per card."
+                % (rc, stage_out), "err")
+        if dry:
+            app.console_line(
+                "Nothing was uploaded and no CSV was changed. When the preview "
+                "looks right, press \"Stage the photos (square + host + "
+                "rewrite CSVs)\" without the preview.", "dim")
+            return False
+        if not cs_stage.exit_is_ok(rc):
+            return False
+        _after_stage(sources, cs_stage.output_paths(stage, stage_out.parent))
+        return True
+
+    def _after_stage(sources, outputs=None):
         ready = canadianshopper_ready_dir(app)
-        staged = [ready / source.name for source in sources
-                  if (ready / source.name).is_file()]
+        if outputs:
+            #  The plugin said which CSVs it wrote; a name guessed from the
+            #  source would miss a batch it renamed or an output it refused.
+            paths = [Path(path) for path in outputs]
+            staged = [path for path in paths if path.is_file()]
+            missing = [path for path in paths if not path.is_file()]
+            for path in missing:
+                app.console_line(
+                    "The staging step reported %s as written, but it is not "
+                    "there." % path, "err")
+        else:
+            staged = [ready / source.name for source in sources
+                      if (ready / source.name).is_file()]
         if not staged:
             app.console_line("Staging finished but no current CSVs were found in %s." % ready,
                              "err")
@@ -5649,6 +5743,11 @@ def build_stage(parent, app):
     row.pack(anchor="w", pady=4)
     ttk.Button(row, text="Stage the photos (square + host + rewrite CSVs)",
                style="Task.TButton", command=go).pack(side="left")
+    if TOOL_ACTION(cs_stage.ACTION):
+        preview = ttk.Button(row, text="Preview the staging (no upload)",
+                             command=lambda: go(dry=True))
+        preview.pack(side="left", padx=(8, 0))
+        add_tooltip(preview, TOOLTIPS["Preview the staging (no upload)"])
     ttk.Button(box, text="Open the cs-ready folder",
                command=lambda: open_path(canadianshopper_ready_dir(app))).pack(
                    anchor="w")
@@ -6634,6 +6733,19 @@ def build_stock(parent, app):
         not is still in the pairs - which is exactly why this takes the pairs
         rather than the rows on screen.
         """
+        if not cs_plugin_installed(app):
+            #  The proof and the record write reach the shop's API directly,
+            #  and the plugin is what owns that conversation - so this button
+            #  is offered only while the plugin is installed.
+            messagebox.showinfo(
+                "The CanadianShopper plugin is not installed",
+                cs_plugin_note("Setting prices on CanadianShopper"),
+                parent=box.winfo_toplevel())
+            app.console_line(
+                "No price was written: the CanadianShopper plugin is not "
+                "installed, and it is the piece that talks to the shop.",
+                "err")
+            return
         pairs = state.get("pairs") or []
         if not pairs:
             messagebox.showinfo(
@@ -8800,7 +8912,12 @@ def build_csledit(parent, app):
     def load(items, note):
         state["items"] = list(items or [])
         run_search()
-        summary.configure(text=note)
+        #  Two facts, and both belong on the line: what the read brought, and
+        #  what the list is doing with it. The list used to be capped at 200
+        #  rows, so this sentence is also the place that a shop of 2,596
+        #  listings cannot be mistaken for a shop of 200.
+        shown = str(state.get("shown") or "")
+        summary.configure(text=("%s %s" % (note, shown)).strip())
 
     def arrived(rc, out):
         try:
@@ -9007,18 +9124,25 @@ def build_csledit(parent, app):
             list_frame.pack_forget()
             actions.pack_forget()
         if not state["items"]:
+            state["shown"] = ""
             summary.configure(text="Nothing read yet. Press \"Read "
                                    "CanadianShopper's listings\" first.")
             return
-        if rows:
-            summary.configure(text="%d of %d listing%s shown." %
-                              (len(rows), len(state["items"]),
-                               "" if len(state["items"]) == 1 else "s"))
+        if rows and len(rows) == len(state["items"]):
+            #  Nothing is being hidden: saying "2587 of 2587 shown" reads
+            #  like a warning about a page that does not exist.
+            state["shown"] = "All %d listing%s shown." % (
+                len(rows), "" if len(rows) == 1 else "s")
+        elif rows:
+            state["shown"] = "%d of %d listing%s shown." % (
+                len(rows), len(state["items"]),
+                "" if len(state["items"]) == 1 else "s")
         elif str(query_var.get() or "").strip():
-            summary.configure(text="No listing matches %r. Try fewer words, "
-                                   "or a card number." % query_var.get())
+            state["shown"] = ("No listing matches %r. Try fewer words, or a "
+                              "card number." % query_var.get())
         else:
-            summary.configure(text="No listing is in that state right now.")
+            state["shown"] = "No listing is in that state right now."
+        summary.configure(text=state["shown"])
         return rows
 
     # -------------------------------------------------------------- writing
@@ -9377,6 +9501,110 @@ def build_csledit(parent, app):
         app.wait_window(top)
         return result if result["done"] else None
 
+    def plugin_ready(what):
+        """Say why a button that talks to the shop cannot run, or say yes."""
+        if cs_plugin_installed(app):
+            return True
+        messagebox.showinfo("The CanadianShopper plugin is not installed",
+                            cs_plugin_note(what),
+                            parent=box.winfo_toplevel())
+        say("%s needs the CanadianShopper plugin, which is not installed; "
+            "nothing was sent." % what, "err")
+        return False
+
+    def choose_proof_photo(candidates, current):
+        """Which photo the proof writes - chosen, not guessed.
+
+        The squared photos on CanadianShopper were uploaded by the plugin, so
+        the safest picture to prove the field with is one of those: the staging
+        step's own upload for this card, or a photo this listing already shows.
+        They are offered as a list, because picking a card's photo out of a
+        paste box is exactly where the wrong card lands on a listing - and the
+        address can still be pasted for anything the list does not know.
+
+        Returns the address, ``""`` when the paste box was left empty, and
+        ``None`` when the question was closed.
+        """
+        parent = box.winfo_toplevel()
+        if not candidates:
+            answer = simpledialog.askstring(
+                "The staged photo URL",
+                "The address of the staged photo of this card - the one the "
+                "image staging step prepared. It replaces the listing's main "
+                "photo for the seconds the proof runs and is then put back, so "
+                "it has to show the same card.\n\nNothing staged was found "
+                "in the batch folder for this card, and the list carries no "
+                "photo it could offer: run the image staging step, or paste "
+                "the address here.",
+                initialvalue="", parent=parent)
+            return None if answer is None else str(answer).strip()
+        top = tk.Toplevel(parent)
+        top.title("Which photo?")
+        top.transient(parent)
+        top.geometry("820x520")
+        top.grab_set()
+        body = ttk.Frame(top)
+        body.pack(fill="both", expand=True, padx=10, pady=(10, 4))
+        ttk.Label(body, text="The listing shows this photo now:",
+                  font=("", 9, "bold")).pack(anchor="w")
+        ttk.Label(body, text=current or "(the list carries no photo for it)",
+                  wraplength=740, justify="left").pack(anchor="w", pady=(0, 8))
+        ttk.Label(body, text="A proof writes one of these, reads the record "
+                  "back, and puts the old photo back. Each one is a picture of "
+                  "this card, already on CanadianShopper:", wraplength=740,
+                  justify="left").pack(anchor="w", pady=(0, 6))
+        #  A list rather than a column of radio buttons: a batch can hold
+        #  hundreds of staged photos, and the one that is this card has to be
+        #  findable in it - each row says what the photo was staged for.
+        picker_frame = ttk.Frame(body)
+        picker_frame.pack(fill="both", expand=True)
+        picker = tk.Listbox(picker_frame, height=12, exportselection=False)
+        picker_scroll = ttk.Scrollbar(picker_frame, orient="vertical",
+                                      command=picker.yview)
+        picker.configure(yscrollcommand=picker_scroll.set)
+        picker.pack(side="left", fill="both", expand=True)
+        picker_scroll.pack(side="right", fill="y")
+        for candidate in candidates:
+            picker.insert("end", "%s  -  %s" % (candidate["source"],
+                                                candidate["url"]))
+        if candidates:
+            picker.selection_set(0)
+            picker.see(0)
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=10, pady=(4, 10))
+        chosen = {"url": None}
+
+        def use_this():
+            picked = picker.curselection()
+            if not picked:
+                messagebox.showinfo("Which photo?",
+                                    "Click the photo to write, then press "
+                                    "\"Use this photo\".", parent=top)
+                return
+            chosen["url"] = candidates[picked[0]]["url"]
+            top.destroy()
+
+        def paste_one():
+            top.destroy()
+            chosen["url"] = str(simpledialog.askstring(
+                "The staged photo URL",
+                "The address of a photo of this card - the staging step's own "
+                "upload, or one CanadianShopper already hosts. It replaces the "
+                "listing's main photo for the seconds the proof runs and is "
+                "then put back, so it has to show the same card.",
+                initialvalue="", parent=parent) or "").strip()
+
+        ttk.Button(buttons, text="Use this photo",
+                   command=use_this).pack(side="right")
+        ttk.Button(buttons, text="Paste an address...",
+                   command=paste_one).pack(side="right", padx=8)
+        ttk.Button(buttons, text="Cancel", command=top.destroy).pack(
+            side="right", padx=8)
+        top.protocol("WM_DELETE_WINDOW", top.destroy)
+        attach_tooltips(top)
+        app.wait_window(top)
+        return chosen["url"]
+
     def open_field_labels():
         """Every field a saved proof settled, by the name the form uses.
 
@@ -9560,6 +9788,8 @@ def build_csledit(parent, app):
         Everything written is sanitised, so the file can be pasted into a
         conversation without handing over a session.
         """
+        if not plugin_ready("Reading a listing for a diagnosis"):
+            return
         if not state["items"]:
             messagebox.showinfo(
                 "Nothing read yet",
@@ -9656,6 +9886,8 @@ def build_csledit(parent, app):
         is not sent, the record must name the id that was asked for, and the
         price is read back after the write.
         """
+        if not plugin_ready("Setting a price"):
+            return
         if not state["items"]:
             messagebox.showinfo(
                 "Nothing read yet",
@@ -9758,6 +9990,8 @@ def build_csledit(parent, app):
         form that hid it would say the app writes less than it does, and a form
         that let it be typed would send what the site has never kept.
         """
+        if not plugin_ready("Writing a listing's fields"):
+            return
         if not state["items"]:
             messagebox.showinfo(
                 "Nothing read yet",
@@ -9972,6 +10206,8 @@ def build_csledit(parent, app):
         old value showing again after the restore. One listing, one field, and
         a value that says what it is for the seconds it is on the listing.
         """
+        if not plugin_ready("Writing a proof"):
+            return
         if not state["items"]:
             messagebox.showinfo(
                 "Nothing read yet",
@@ -9997,105 +10233,186 @@ def build_csledit(parent, app):
                 "Choose the field to prove from the list beside the button. "
                 "Nothing was written.", parent=box.winfo_toplevel())
             return
-        staged_url = ""
-        if field == "primaryImageUrl":
-            #  The image staging step's own output is the only safe photo to
-            #  write: it is this card, already prepared for the site, so the
-            #  seconds the listing shows it are seconds it shows the same card.
-            staged = cs_proof.staged_photo(
-                app.settings.get("pipeline_dir", str(WORK)),
-                str(item.get("name") or ""))
-            if staged:
-                say("The staged photo for this card is %s." % staged, "dim")
-            staged_url = str(simpledialog.askstring(
-                "The staged photo URL",
-                "The address of the staged photo of this card - the one the "
-                "image staging step prepared. It replaces the listing's main "
-                "photo for the seconds the proof runs and is then put back, so "
-                "it has to show the same card."
-                + ("" if staged else
-                   "\n\nNo staged photo was found for this card in the "
-                   "pipeline folder: run the image staging step, or paste the "
-                   "address here."),
-                initialvalue=staged,
-                parent=box.winfo_toplevel()) or "").strip()
-            if not staged_url:
-                say("No staged photo URL was given, so nothing was written.",
+        label = cs_proof.field_label(field)
+
+        def finish(staged_url):
+            """Confirm, write, read back, put back - and say what happened."""
+            named = str(item.get("name") or "that listing")
+            if field == "primaryImageUrl" and staged_url:
+                #  The picture, not only the field: a proof of the main photo
+                #  puts a different image on a live listing, so the
+                #  confirmation names exactly which one before anything is
+                #  sent.
+                named = "%s\n\nThe photo written: %s" % (named, staged_url)
+            if not ask_yes(
+                    "Write a proof to one listing?",
+                    "%s\n\nThis writes one field - %s - on CanadianShopper, "
+                    "reads the record back, and puts the old value back. It is "
+                    "a real change to a live listing for the few seconds it "
+                    "takes, and it is the only way to know whether the site "
+                    "honours that field.\n\nThe record's own id is the "
+                    "address. No product id is used, no other field is sent, "
+                    "and your website is not touched.\n\nWrite the proof now?"
+                    % (named, label)):
+                say("The proof was not confirmed; nothing was written.", "dim")
+                return
+            address = cs_edit.detail_url(listing_id, CS_HOME)
+            cookie = load_cookie_text() or ""
+            say("Proving %s on %s: writing one field, reading it back, putting "
+                "it back..." % (label.lower(), named), "cmd")
+            summary.configure(text="Proving %s on %s..."
+                              % (label.lower(), named))
+
+            def work():
+                return cs_proof.prove(field, address, cookie,
+                                      staged_url=staged_url, listing=item)
+
+            def done(result, error):
+                if error is not None:
+                    say("The proof could not run: %s. Nothing was written."
+                        % error, "err")
+                    summary.configure(text="The proof could not run: %s"
+                                      % error)
+                    return
+                good = cs_proof.proven(result)
+                say(cs_proof.sentence(result), "ok" if good else "err")
+                if result.get("verdict") == "written" and \
+                        result.get("restored"):
+                    #  This is the sentence a write path may be built on, so
+                    #  it says outright what was settled and that it was put
+                    #  back.
+                    say("%s is settled: the record kept the new value and the "
+                        "old one came back. That is the evidence an edit needs."
+                        % cs_proof.field_label(result.get("field")), "ok")
+                elif result.get("verdict") == "written":
+                    say("The old value was not read back after the restore. "
+                        "Check that listing on CanadianShopper before anything "
+                        "else.", "err")
+                elif result.get("verdict") == "ignored":
+                    say("The site answered but did not keep the value, so a "
+                        "write path must not be built on a 200 for %s alone."
+                        % cs_proof.field_label(result.get("field")), "dim")
+                text = cs_proof.report_text(result, listing=item,
+                                            app_version=VERSION)
+                path = cs_proof.proof_path(BASE)
+                saved = None
+                try:
+                    path.write_text(text, encoding="utf-8")
+                    saved = path
+                except OSError as exc:
+                    say("Could not save the proof: %s" % exc, "err")
+                cs_proof.remember(BASE, result, listing=item)
+                summary.configure(text=cs_proof.sentence(result))
+                if cs_proof.proven(result):
+                    #  The sentence that matters next: this panel can now
+                    #  write that field, and only because the record showed it
+                    #  kept it.
+                    say("%s can now be set from this panel: the proof is saved "
+                        "beside the app, and every write made on it is read "
+                        "back." % cs_proof.field_label(result.get("field")),
+                        "ok")
+                if saved is not None:
+                    say("Proof saved: %s (no cookie, token or password is in "
+                        "it)." % saved, "dim")
+                    if not open_path(saved):
+                        messagebox.showinfo(
+                            "Proof written",
+                            "Saved to:\n%s\n\nAttach it to the plugin report "
+                            "if the field is not honoured." % saved,
+                            parent=box.winfo_toplevel())
+
+            in_background(app, work, done)
+
+        if field != "primaryImageUrl":
+            finish("")
+            return
+        #  The main photo: gather every picture of *this card* the app can
+        #  point at, and never ask a person to paste an address it could have
+        #  found itself.
+        batch_dir = canadianshopper_results_dir(app)
+        extra = [app.settings.get("pipeline_dir", str(WORK)), BASE]
+        card = str(item.get("name") or "")
+        staged = cs_proof.absolute_photo(
+            cs_proof.staged_photo(batch_dir, card, extra_folders=extra))
+        if staged:
+            say("The staged photo for this card is %s." % staged, "dim")
+        #  The batch's staged rows, best title match first. The site's title
+        #  and the CSV's are rarely the same words - a grade on one and not
+        #  the other - so an exact match is the first candidate and the rest
+        #  of the batch is beside it, each with the title it was staged under.
+        ranked = []
+        for row in cs_proof.staged_photos(batch_dir, extra_folders=extra):
+            ranked.append((cs_edit.score(card, {"name": row["title"]}), row))
+        ranked.sort(key=lambda pair: -pair[0])
+        staged_rows = [row for _value, row in ranked[:60]]
+        roots = cs_proof.staged_roots(batch_dir, extra)
+        if not staged_rows:
+            say("No staged CSV was found. Searched: %s."
+                % "; ".join(str(path) for path in roots), "warn")
+        say("Reading the listing's own record to see which photos it carries "
+            "and which one it shows now...", "dim")
+        address = cs_edit.detail_url(listing_id, CS_HOME)
+        cookie = load_cookie_text() or ""
+
+        def look():
+            """What the record holds, and which sibling photos are really there.
+
+            One read of the record answers three questions the chooser needs:
+            which photo the listing shows now (never a candidate - it is what
+            a proof has to put back), which other photos the record carries
+            (the plugin uploads the front and the back), and whether the field
+            exists at all. The card's other photo is then looked up at the
+            address the plugin names its pairs with, and only a URL that
+            answers with an image is offered - a guess about a name is not a
+            photo.
+            """
+            status, body = cs_proof.read_record(address, cookie)
+            record = cs_proof.record_from(body) if status == 200 else None
+            current = cs_proof.primary_photo(item=item, record=record)
+            alive = []
+            for candidate_url in cs_proof.sibling_photos(current):
+                ok, _kind = cs_proof.photo_alive(candidate_url)
+                if ok:
+                    alive.append(candidate_url)
+                else:
+                    say("  %s is not on the site, so it is not offered."
+                        % candidate_url, "dim")
+            return {"status": status, "record": record, "current": current,
+                    "siblings": alive}
+
+        def with_look(answer, error):
+            answer = answer or {}
+            status = answer.get("status") or 0
+            record = answer.get("record")
+            if error is not None or record is None:
+                say("The listing's own record could not be read (%s), so the "
+                    "photos below come from the list and the batch only."
+                    % ("HTTP %s" % status if status else "no answer"), "warn")
+            candidates = cs_proof.photo_candidates(
+                item=item, record=record, staged=staged,
+                staged_rows=staged_rows, siblings=answer.get("siblings"))
+            current_photo = answer.get("current") or \
+                cs_proof.primary_photo(item=item)
+            say("The listing shows this photo now: %s."
+                % (current_photo or "(the record carries none)"), "dim")
+            for candidate in candidates[:10]:
+                say("  a photo the proof could write: %s (%s)"
+                    % (candidate["url"], candidate["source"]), "dim")
+            if len(candidates) > 10:
+                say("  ... and %d more in the list."
+                    % (len(candidates) - 10), "dim")
+            staged_url = choose_proof_photo(candidates, current_photo)
+            if staged_url is None:
+                say("The photo question was closed, so nothing was written.",
                     "dim")
                 return
-        label = cs_proof.field_label(field)
-        named = str(item.get("name") or "that listing")
-        if not ask_yes(
-                "Write a proof to one listing?",
-                "%s\n\nThis writes one field - %s - on CanadianShopper, reads "
-                "the record back, and puts the old value back. It is a real "
-                "change to a live listing for the few seconds it takes, and it "
-                "is the only way to know whether the site honours that field."
-                "\n\nThe record's own id is the address. No product id is "
-                "used, no other field is sent, and your website is not "
-                "touched.\n\nWrite the proof now?" % (named, label)):
-            say("The proof was not confirmed; nothing was written.", "dim")
-            return
-        url = cs_edit.detail_url(listing_id, CS_HOME)
-        cookie = load_cookie_text() or ""
-        say("Proving %s on %s: writing one field, reading it back, putting it "
-            "back..." % (label.lower(), named), "cmd")
-        summary.configure(text="Proving %s on %s..." % (label.lower(), named))
-
-        def work():
-            return cs_proof.prove(field, url, cookie, staged_url=staged_url,
-                                  listing=item)
-
-        def done(result, error):
-            if error is not None:
-                say("The proof could not run: %s. Nothing was written." % error,
-                    "err")
-                summary.configure(text="The proof could not run: %s" % error)
+            if not staged_url:
+                say("The address box was left empty, so nothing was written.",
+                    "dim")
                 return
-            good = cs_proof.proven(result)
-            say(cs_proof.sentence(result), "ok" if good else "err")
-            if result.get("verdict") == "written" and result.get("restored"):
-                #  This is the sentence a write path may be built on, so it
-                #  says outright what was settled and that it was put back.
-                say("%s is settled: the record kept the new value and the old "
-                    "one came back. That is the evidence an edit needs."
-                    % cs_proof.field_label(result.get("field")), "ok")
-            elif result.get("verdict") == "written":
-                say("The old value was not read back after the restore. Check "
-                    "that listing on CanadianShopper before anything else.",
-                    "err")
-            elif result.get("verdict") == "ignored":
-                say("The site answered but did not keep the value, so a write "
-                    "path must not be built on a 200 for %s alone."
-                    % cs_proof.field_label(result.get("field")), "dim")
-            text = cs_proof.report_text(result, listing=item,
-                                        app_version=VERSION)
-            path = cs_proof.proof_path(BASE)
-            saved = None
-            try:
-                path.write_text(text, encoding="utf-8")
-                saved = path
-            except OSError as exc:
-                say("Could not save the proof: %s" % exc, "err")
-            cs_proof.remember(BASE, result, listing=item)
-            summary.configure(text=cs_proof.sentence(result))
-            if cs_proof.proven(result):
-                #  The sentence that matters next: this panel can now write
-                #  that field, and only because the record showed it kept it.
-                say("%s can now be set from this panel: the proof is saved "
-                    "beside the app, and every write made on it is read back."
-                    % cs_proof.field_label(result.get("field")), "ok")
-            if saved is not None:
-                say("Proof saved: %s (no cookie, token or password is in it)."
-                    % saved, "dim")
-                if not open_path(saved):
-                    messagebox.showinfo(
-                        "Proof written",
-                        "Saved to:\n%s\n\nAttach it to the plugin report if "
-                        "the field is not honoured." % saved,
-                        parent=box.winfo_toplevel())
+            finish(staged_url)
 
-        in_background(app, work, done)
+        in_background(app, look, with_look)
 
     proof_row = ttk.Frame(box)
     proof_row.pack(anchor="w", pady=(4, 0))
