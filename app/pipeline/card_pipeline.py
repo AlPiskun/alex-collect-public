@@ -2731,9 +2731,19 @@ def _ebay_quicklist_values(card):
         price = math.ceil(float(card.get("price") or 0))
     except (TypeError, ValueError, OverflowError):
         price = 0
+    #  How many of this card the batch is listing: the same number its CSV row
+    #  carries, so the eBay form is filled from what the website was given
+    #  rather than from a count somebody has to remember.
+    try:
+        quantity = int(card.get("quantity"))
+    except (TypeError, ValueError, OverflowError):
+        quantity = 1
+    if quantity < 0:
+        quantity = 0
     return {
         "title": str(card.get("seo_title") or "").strip(),
         "price": ("%.2f" % price) if price else "",
+        "quantity": str(quantity),
         "sport": ("Sports Cards" if _ebay_quicklist_sport(card) == "sports"
                   else _ebay_quicklist_sport(card).title()),
         "year": str(card.get("year") or settings.get("ebay_default_year", "Unknown")),
@@ -2808,6 +2818,7 @@ def _render_ebay_quicklist(cards):
             template_urls.append(template)
         fields = [
             ("Title", values["title"]), ("Buy It Now price (CAD)", values["price"]),
+            ("Quantity", values["quantity"]),
             ("Sport / Game", values["sport"]), ("Year", values["year"]),
             ("Manufacturer", values["manufacturer"]), ("Card Number", values["card_number"]),
             ("Player", values["player"]), ("Set", values["set"]),

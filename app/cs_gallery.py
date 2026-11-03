@@ -182,7 +182,7 @@ def _result(listing, photo, rows_before, now=None):
 
 
 def add(listing_id, cookie, photo, base=BASE, fetch=None, send=None,
-        now=None):
+        now=None, allow_copy=False):
     """Add one photo to a listing's gallery, and read the gallery back.
 
     ``added``      the POST was accepted and the read-back holds the photo;
@@ -194,6 +194,13 @@ def add(listing_id, cookie, photo, base=BASE, fetch=None, send=None,
 
     ``row`` is the id of the row this call created, once a read-back has given
     it - which is what makes it safe to remove again.
+
+    ``allow_copy`` is for a *proof* and nothing else: it lets the row be a
+    second one for a photo the gallery already shows, which is the only way to
+    prove a gallery whose every photo of the card is already in it. It stays
+    safe because the row is identified by the ids that were not there before
+    it was sent, and it is removed again by that id - so the listing ends with
+    exactly the rows it started with, and a duplicate is never left behind.
     """
     fetch = fetch or (lambda address, session: _send("GET", address, session))
     send = send or (lambda method, address, session, payload:
@@ -223,10 +230,15 @@ def add(listing_id, cookie, photo, base=BASE, fetch=None, send=None,
         return result
     before = looked["rows"]
     result["before"] = result["after"] = len(before)
-    if holds(before, photo):
+    already_there = holds(before, photo)
+    if already_there and not allow_copy:
         result.update(verdict="same",
                       why="The listing's gallery already holds that photo.")
         return result
+    #  A proof's copy: the same photo, a row that did not exist before. The
+    #  read-back has to show a *new* row, not this photo - the gallery already
+    #  held it, so the photo alone proves nothing.
+    result["copy"] = bool(already_there)
 
     payload = {"product": str(listing_id), "imageUrl": photo,
                "sortOrder": next_sort(before)}
@@ -262,13 +274,21 @@ def add(listing_id, cookie, photo, base=BASE, fetch=None, send=None,
             "added, and nothing was left behind."
             % (len(after), "" if len(after) == 1 else "s")))
         return result
-    result["verdict"] = "added"
     result["row"] = _row_id(after, photo, before)
-    result["why"] = ("The gallery holds the photo, as row %s at position %s."
-                     % (result["row"] or "(no id given)",
-                        next((row.get("sortOrder") for row in after
-                              if cs_proof.photo_id(row.get("imageUrl"))
-                              == cs_proof.photo_id(photo)), "?")))
+    if result["copy"] and not result["row"]:
+        result.update(verdict="ignored", why=(
+            "The site accepted the second row for a photo the gallery already "
+            "holds, and the read-back shows no row that was not there before "
+            "it: nothing was added and nothing was left behind, and the "
+            "gallery still has %d row%s."
+            % (len(after), "" if len(after) == 1 else "s")))
+        return result
+    result["verdict"] = "added"
+    ours = next((row for row in after if row.get("id") == result["row"]), {})
+    result["why"] = (
+        "The gallery holds the photo as a row of its own (%s), at position %s."
+        % ("row %s" % result["row"] if result["row"]
+           else "the read-back gave no id for it", ours.get("sortOrder", "?")))
     return result
 
 
@@ -333,7 +353,7 @@ def remove(listing_id, cookie, row_id, base=BASE, fetch=None, send=None,
 
 
 def prove(listing_id, cookie, photo, base=BASE, fetch=None, send=None,
-          now=None):
+          now=None, allow_copy=False):
     """Prove a listing's gallery is writable: add, read, delete, read.
 
     The photo is written as a new row, the gallery is read to show it there
@@ -353,7 +373,7 @@ def prove(listing_id, cookie, photo, base=BASE, fetch=None, send=None,
     ``unknown``  a read-back failed after a write.
     """
     added = add(listing_id, cookie, photo, base=base, fetch=fetch, send=send,
-                now=now)
+                now=now, allow_copy=allow_copy)
     result = dict(added)
     result["steps"] = list(added.get("steps") or [])
     if added.get("verdict") != "added":
@@ -392,6 +412,12 @@ def sentence(result):
     result = result or {}
     verdict = result.get("verdict")
     if verdict == "written":
+        if result.get("copy"):
+            return ("Gallery photos is settled: a second row for a photo the "
+                    "gallery already showed was added, read back and removed "
+                    "again - %d row%s before and after, the same ones."
+                    % (result.get("before") or 0,
+                       "" if (result.get("before") or 0) == 1 else "s"))
         return ("Gallery photos is settled: the photo was added as a row of "
                 "its own, the gallery showed it, and the row was removed "
                 "again - %d row%s before and after."

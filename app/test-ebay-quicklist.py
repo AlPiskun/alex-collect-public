@@ -130,9 +130,17 @@ def main():
             values = pipeline._ebay_quicklist_values(card)
             assert values["price"] == "13.00"  # WooCommerce rounds the price up.
             assert values["sport"] == "Hockey"
+            #  The count the batch is listing, so the eBay form is filled from
+            #  what the website was given instead of a number retyped by hand.
+            assert values["quantity"] == "1", values
+            assert pipeline._ebay_quicklist_values(
+                dict(card, quantity=4))["quantity"] == "4"
+            assert pipeline._ebay_quicklist_values(
+                dict(card, quantity=None))["quantity"] == "1"
             page, templates = pipeline._render_ebay_quicklist([card])
             assert templates == ["https://ebay.example/hockey-template"]
             assert "Wayne Gretzky" in page and "draggable=\"true\"" in page
+            assert "<b>Quantity</b>" in page, page[:300]
             assert "Vintage trading card description." in page
             #  The whole description is on the page, in a box as tall as it
             #  needs: half a description in a scroll box is half a listing.

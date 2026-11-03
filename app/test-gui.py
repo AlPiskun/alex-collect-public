@@ -317,12 +317,13 @@ def main():
     #  of taking two more entries in the menu.
     addon_order = [gui.MENU_LABELS[pid]
                    for _group, ids in gui.groups_for(True) for pid in ids]
-    check("the Edit stock section is one place per marketplace, shop first",
+    check("the Edit stock section is one place per site, your website first",
           dict(gui.groups_for(True))["Edit stock"] ==
-          ["stock", "editfb", "editeb"] and
+          ["woostock", "stock", "editfb", "editeb"] and
           [gui.MENU_LABELS[pid] for pid in
            dict(gui.groups_for(True))["Edit stock"]] ==
-          ["CanadianShopper", "Facebook", "eBay"], str(addon_order))
+          ["WooCommerce", "CanadianShopper", "Facebook", "eBay"],
+          str(addon_order))
     check("and finding a listing and sweeping the zeros are not menu entries",
           not ({"Find a CS listing", "Archive listings at 0"} &
                set(addon_order)), str(addon_order))

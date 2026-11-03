@@ -1,4 +1,4 @@
-Alex Collect 3.33 — public core package
+Alex Collect 3.34 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -69,6 +69,11 @@ app/:
                                    template pages for them
   stock_write.py                   write one stock count onto a website product,
                                    and confirm the site kept it
+  woo_edit.py                      find one product on the website by name, SKU
+                                   or id, and change its count - the count that
+                                   comes back is the one reported, and a product
+                                   the shop does not count is refused with the
+                                   setting that fixes it named
   cs_listing.py                    build the CanadianShopper import CSV for
                                    website products, and the import defaults
                                    (optional to the pipeline: it has its own copy

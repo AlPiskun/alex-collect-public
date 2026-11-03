@@ -387,6 +387,21 @@ def test_the_values_and_the_page():
     check("both of the shop's pictures travel with it",
           (values["front_image"], values["back_image"]) ==
           ("https://shop.example/a.jpg", "https://shop.example/b.jpg"), "")
+    #  eBay's form asks how many there are of the card: the number is the one
+    #  the website holds, so the two shops are never out of step.
+    check("the quantity is the stock the website holds",
+          values["quantity"] == "1", str(values.get("quantity")))
+    check("a card with three left says three",
+          ebay_fill.values(product(stock_quantity=3), SETTINGS)["quantity"]
+          == "3", "")
+    check("a card the shop counts at zero says zero, not one",
+          ebay_fill.values(product(stock_quantity=0), SETTINGS)["quantity"]
+          == "0", "")
+    check("and a shop that does not count stock is left blank rather than "
+          "invented",
+          ebay_fill.values(product(manage_stock=False,
+                                   stock_quantity=None), SETTINGS)["quantity"]
+          == "", "")
 
     page, templates = ebay_fill.render([product()], SETTINGS)
     check("the page is the Quick List page: draggable, click-to-copy fields",
@@ -394,6 +409,9 @@ def test_the_values_and_the_page():
     check("it carries the card's own fields",
           "Jim Pappin" in page and "1250.00" in page and
           "OPC1973-74-112-Pappin-EX-5" in page, "")
+    check("and a quantity to copy beside the price",
+          "<b>Quantity</b>" in page and
+          'data-value="1"' in page, "")
     check("and its pictures are the shop's URLs",
           "https://shop.example/a.jpg" in page and
           "https://shop.example/b.jpg" in page, "")

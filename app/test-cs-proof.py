@@ -676,7 +676,7 @@ def test_the_gallery_proof():
           "sign in to canadianshopper" not in
           cs_proof.advice(result).casefold(), cs_proof.advice(result))
     text = cs_proof.report_text(result, listing={"id": RECORD["id"]},
-                                app_version="3.33")
+                                app_version="3.34")
     check("the proof file says the row and that the photo is still there",
           "As row" in text and "take it off on CanadianShopper" in text)
 
@@ -851,7 +851,7 @@ def test_the_whole_listing_at_once():
         fetch=site.fetch, send=site.send, write=site.write)
     text = cs_proof.listing_report_text(
         results, listing={"id": RECORD["id"], "name": RECORD["title"]},
-        app_version="3.33")
+        app_version="3.34")
     check("the file names every field that was tried",
           all(cs_proof.field_label(result["field"]) in text
               for result in results), "")
@@ -962,6 +962,36 @@ def test_a_photo_of_the_wrong_card_is_never_chosen():
           "already in the listing's gallery" not in photos["why_gallery"] and
           bool(photos["why_main"]), str(photos))
 
+    #  A listing whose every photo of the card is already in its gallery, and
+    #  a proof of it: the proof adds a second row for one of those photos and
+    #  takes that row off again, so the gallery ends as it started. Without
+    #  that, this listing's gallery could never be proved at all.
+    settled_gallery = [{"id": "r1", "imageUrl": "https://cs/api/file/front.jpg"},
+                       {"id": "r2", "imageUrl": "https://cs/api/file/back.jpg"}]
+    plain = cs_proof.auto_photos(
+        item={"name": wurmple},
+        record={"primaryImageUrl": "https://cs/api/file/front.jpg"},
+        gallery_rows=settled_gallery,
+        staged_rows=[], siblings=["https://cs/api/file/back.jpg"],
+        alive=lambda url: (True, ""), card=wurmple)
+    check("an add with every photo already there says there is nothing new",
+          plain["gallery"] == "" and "nothing new to add" in
+          plain["why_gallery"], str(plain))
+    proved = cs_proof.auto_photos(
+        item={"name": wurmple},
+        record={"primaryImageUrl": "https://cs/api/file/front.jpg"},
+        gallery_rows=settled_gallery,
+        staged_rows=[], siblings=["https://cs/api/file/back.jpg"],
+        alive=lambda url: (True, ""), card=wurmple, proof_copy=True)
+    check("a proof of that listing uses a copy of a photo the gallery shows",
+          proved["gallery"] in ("https://cs/api/file/front.jpg",
+                                "https://cs/api/file/back.jpg"),
+          str(proved))
+    check("and says it is a second row that comes off again",
+          "second row" in proved["why_gallery"] and
+          "keeps exactly the rows" in proved["why_gallery"],
+          proved["why_gallery"])
+
     print()
     print("== the gallery is not a key on the record, whatever it is called ==")
     url = "https://canadianshopper.ca/api/data/product/" + RECORD["id"]
@@ -1033,7 +1063,7 @@ def test_the_report():
     text = cs_proof.report_text(result, listing={"id": RECORD["id"],
                                                  "name": RECORD["title"]},
                                 when=datetime(2026, 11, 2, 14, 30, 5),
-                                app_version="3.33")
+                                app_version="3.34")
     check("it names the listing and the record's own id",
           RECORD["title"] in text and RECORD["id"] in text and
           "not a product id" in text, text[:400])

@@ -67,6 +67,7 @@ import order_pdf
 import quote as quote_model
 import quote_pdf
 import woo_create
+import woo_edit
 import woo_media
 import woo_orders
 from sale_inputs import woo_get
@@ -78,7 +79,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.33"
+VERSION = "3.34"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1380,6 +1381,32 @@ quantity 0 gets archived (reversible - it can be reactivated later).
 Useful after you sold the last copies in person. Preview shows the
 list first; nothing is archived without the second click."""
 
+DOCS["woostock"] = """\
+Your website, through the WooCommerce API. The keys are the ones in
+woo-keys.txt that the batch uses to create products; without them nothing here
+can read the shop.
+
+Find a product and set its stock reads the whole catalogue once, then finds the
+card you mean by its name, its SKU or its product id and shows the count the
+shop holds. Type the count the website should show and press the button: the
+count is sent for that one product and read back, so the number reported is the
+number the website kept. A product the shop does not count has no number to
+edit - the window says so and names the setting that turns counting on, rather
+than sending a count the shop would ignore.
+
+Check the website's SKUs reads every product and names the ones whose title
+says which printing the card is and whose SKU does not. The website holds one
+product per SKU, so a product holding the SKU of the card sold without that
+printing stops the other card from being created at all.
+
+Neither tool writes on its own: the count waits for the button, and the SKUs
+wait until the list has been shown and agreed to. Only the field that was asked
+for is changed - title, price, photos and state are untouched, and nothing is
+added or removed.
+
+Keywords and tags are the next shop tools here, edited the same way: find the
+product, change one field, read it back.
+"""
 DOCS["stock"] = """\
 Where the numbers disagree, and where they get put right. One card can sit on
 four sites; when one of them sells it, the others keep offering it until
@@ -1469,6 +1496,13 @@ and **Edit the selected listing...** opens all of its details in one form -
 title, price, quantity in stock and state, each filled with what it is now - so
 repricing a card and archiving it is a single visit; the two state buttons do
 only the state, which is the quick way through a restock.
+
+The listing's photos are in that form too. A gallery is rows of its own
+(``productImage``) keyed by the listing's id, not a field on the record, so the
+form reads them from the site and lists every one with its position and its
+full address - the main photo above is only one of them - and **Add a photo to
+the gallery...** and **Remove a photo from the gallery...** change them from
+there.
 
 Every change is named field by field before it is sent - "Stock: 2 -> 5",
 "State: archived -> on sale" - and only the fields that changed are sent (with
@@ -2093,6 +2127,9 @@ TOOLTIPS = {
     "Sort by:": "Re-read the list below in this order; nothing is compared or written again",
     "Compare this card": "Open the stock panel pointed at the one card this sale is about",
     "Compare the whole catalogue instead": "Drop the one-card filter and compare everything",
+    "Find a product and set its stock...": "Search your website's products by the card's name, its SKU or its product id, see the count the shop holds, and change it - one product at a time, and the count that comes back from the website is the one reported",
+    "Set this count on the website": "Change this one product's stock count, then read it back from the website and report the number it kept; nothing else on the product is touched",
+    "Find": "Filter the products already read - the card's name, a SKU, or a product id; nothing is sent to the website by searching",
     "Check the website's SKUs": "Read every product on the website and name the ones whose SKU does not say which printing the title is - the products that keep a card of the same name from being created; a bar says which page it is reading and which product it is fixing; nothing is changed until the fixes are shown and agreed to",
     "Compare the last read instead (no new read)": "Compare now against the CanadianShopper list already on disk from an earlier read - it is named with its age wherever its counts appear, so nothing is mistaken for a fresh count, and no read is started",
     "Save the limit": "Remember this number in User Settings, where the same value is used by Fill your eBay store every time it chooses",
@@ -2107,7 +2144,7 @@ TOOLTIPS = {
     "Prove every field...": "Prove every field this app can write on the selected listing in one job: each field is written, read back and put back before the next is touched, an already-settled field is skipped, and a field that does not settle is reported with what to do about it; one confirmed click, and nothing unattended",
     "Add a photo to the gallery...": "Put one photo you choose into the selected listing's gallery - the second picture a card listing should have. The gallery is its own collection of rows (productImage), keyed by the listing's record id, not a field on that record, so the photo is added as a row of its own and the gallery is read back: if the site does not show it, nothing changed and the answer says so. The photo stays, because a gallery photo is what you asked for - the proof is the one that adds a row and removes that same row again",
     "Remove a photo from the gallery...": "Take one photo off the selected listing's gallery. The gallery is read first so you choose from the photos it really holds, and the photo comes off by the id of its own row - then the gallery is read back again to show it gone. Nothing else on the listing is touched, and no proof is needed: the removal is shown by that second read.",
-    "Edit the record's fields...": "Edit this listing's own record - price, title, description, stock count and main photo, each one open only when a saved proof shows the site keeps it, and only the fields you change are sent, then read back; no product id is used and your website is never touched",
+    "Edit the record's fields...": "Edit this listing's own record - price, title, description, stock count and main photo, each one open only when a saved proof shows the site keeps it, and only the fields you change are sent, then read back; the gallery's photos are listed below them with their own addresses, and are added or removed from there; no product id is used and your website is never touched",
     "Set the selected listing's price...": "Set the price on the selected listing's own record - one field, at the record's own id, with the new price read back afterwards; offered only for a field a proof has settled, so it works on listings that carry no product id, and your website is never touched",
     "Choose the cards:": "What decides which unlisted cards come first - dearest, newest, oldest, cheapest, or in the order typed below; the choice is remembered",
     "Only this category:": "Leave blank to choose from the whole catalogue; type part of a category's name (hockey) to choose only from products filed under it",
@@ -2139,7 +2176,7 @@ TOOLTIPS = {
                                     "the search weighs them, so it does not "
                                     "have to be the exact title",
     "Read CanadianShopper's listings": "Read every listing on CanadianShopper, with its state and stock, so it can be searched here; nothing is changed",
-    "Edit the selected listing...": "Open the selected listing's own details - title, price, quantity in stock and whether it is on sale or archived - in one form filled with what they are now; only the fields you change are sent, and your website is not touched",
+    "Edit the selected listing...": "Open the selected listing's own details - title, price, quantity in stock, whether it is on sale or archived, and the photos in its gallery, each with its own address - in one form filled with what they are now; only the fields you change are sent, and your website is not touched",
     "Put the selected listing on sale": "Move the selected listing from archived (or draft) back to on sale on CanadianShopper; its title, price and stock stay as they are",
     "Archive the selected listing": "Put the selected listing away on CanadianShopper - it is not deleted and can be put back on sale; your website is not changed",
     "Open the selected listing on CanadianShopper": "Open the selected listing's own page on CanadianShopper for the details this panel does not edit - its description and photos; if the plugin sent no address for it, your store is opened and the card goes on the clipboard to search for; nothing is changed",
@@ -3500,10 +3537,10 @@ class App(tk.Tk):
 #  menu, the tabs view and the wizard pages.
 PANEL_ORDER = ["cookie", "pipeline", "combine", "ebayfill", "stage",
                "importpanel",
-               "wire", "rerun", "sold", "checklist", "stock", "editfb",
-               "editeb", "csedit", "zerostock", "ordersheet", "square",
-               "newphotos", "ordertext", "quote", "markets", "logs",
-               "plugins"]
+               "wire", "rerun", "sold", "checklist", "woostock", "stock",
+               "editfb", "editeb", "csedit", "zerostock", "ordersheet",
+               "square", "newphotos", "ordertext", "quote", "markets",
+               "logs", "plugins"]
 #  Four jobs, in the order a batch goes through them: sell something, make the
 #  batch, deal with the aftermath, photograph the cards. The staging, import
 #  and wiring panels are no longer offered here - the pipeline does that work
@@ -3514,11 +3551,12 @@ GROUPS_FULL = [("Sell to a customer", ["ordertext", "quote"]),
                ("Sell a new batch", ["pipeline", "combine", "ebayfill",
                                      "markets"]),
                ("After a sale", ["sold", "checklist", "ordersheet"]),
-               #  One section per marketplace, because comparing and editing
-               #  are the same job: the shop's own editing, and the two sites
-               #  the app can only read. Finding a CS listing and archiving the
-               #  ones at zero now live inside the CanadianShopper section.
-               ("Edit stock", ["stock", "editfb", "editeb"])]
+               #  One section per place, because comparing and editing are the
+               #  same job: your website first (its products, their SKUs and,
+               #  later, the words they are missing), then the shop, then the
+               #  two sites the app can only read. Finding a CS listing and
+               #  archiving the ones at zero live inside the shop's place.
+               ("Edit stock", ["woostock", "stock", "editfb", "editeb"])]
 
 
 #: Panels that belong *inside* another group's tab without being a task of
@@ -3555,7 +3593,8 @@ def groups_for(has_cs):
             ("Sell a new batch", ["pipeline", "combine", "ebayfill",
                                   "markets"]),
             ("After a sale", ["sold", "checklist", "ordersheet"]),
-            ("Edit stock", ["square", "newphotos", "editfb", "editeb"])]
+            ("Edit stock", ["woostock", "square", "newphotos", "editfb",
+                            "editeb"])]
 TITLES = {
     "cookie": "User settings",
     "pipeline": "Run the card pipeline (new batch)",
@@ -3567,6 +3606,7 @@ TITLES = {
     "rerun": "Re-point photos",
     "sold": "A card sold - mark it everywhere",
     "checklist": "The tick-off checklist",
+    "woostock": "Edit stock - WooCommerce",
     "stock": "Edit stock - CanadianShopper",
     "editfb": "Edit stock - Facebook",
     "editeb": "Edit stock - eBay",
@@ -3592,6 +3632,7 @@ MENU_LABELS = {
     "rerun": "Re-point photos",
     "sold": "A card sold",
     "checklist": "The checklist",
+    "woostock": "WooCommerce",
     "stock": "CanadianShopper",
     "editfb": "Facebook",
     "editeb": "eBay",
@@ -3621,6 +3662,9 @@ BLURBS = {
               "there, without changing anything on either site.",
     "editeb": "Compare stock with eBay and mark what needs changing there, "
               "without changing anything on either site.",
+    "woostock": "The website's own products: check the SKUs that hold a "
+                "printing back, and (soon) fill in the keywords and tags a "
+                "product is missing.",
     "stock": "Find the cards whose counts disagree between your website "
              "and CanadianShopper, sort the list, and fix what needs it.",
     "csedit": "Search CanadianShopper by card name, then rename, reprice, "
@@ -4821,51 +4865,394 @@ def ask_create_products(app, cards=None):
     return dialog.answer
 
 
-def build_pipeline(parent, app):
-    panel_header(parent, app, "pipeline")
+class WooStockDialog(tk.Toplevel):
+    """Find one product on the website, and change the count it holds.
+
+    One product at a time, on purpose: a count is usually one correction -
+    a card came back in, a box was found, a listing was counted wrong - and
+    reading a catalogue of a few thousand products to make it is a detour.
+    The catalogue is read once, in the background, and the search then filters
+    what was read, so typing costs nothing and every row on screen is a
+    product the website actually sent.
+
+    Nothing is written until the button is pressed on a product that is
+    picked, and what is reported afterwards is the number the website
+    answered with - not the number that was typed.
+    """
+
+    def __init__(self, app, site="", key="", secret="", products=None,
+                 reader=None, writer=None, opener=None):
+        super().__init__(app)
+        self.app = app
+        self.site, self.key, self.secret = site, key, secret
+        self.opener = opener
+        self.reader = reader
+        self.writer = writer or woo_edit.set_count
+        self.products = None if products is None else list(products)
+        self.matches = []
+        self.chosen = None
+        self.busy = False
+        self.status_text = ""
+
+        self.title("Edit a website product")
+        try:
+            self.transient(app.winfo_toplevel())
+        except Exception:
+            pass
+        self.resizable(True, False)
+        frame = ttk.Frame(self, padding=(12, 10))
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="Find a product and set its stock",
+                  style="H2.TLabel").pack(anchor="w")
+        ttk.Label(frame, text=(
+            "Search your website's own products by the card's name, its SKU "
+            "or its product id, pick the one you mean, then type the count the "
+            "website should show. Only that product's stock count is sent, and "
+            "the number it kept is read back before it is reported."),
+            style="Dim.TLabel", wraplength=640,
+            justify="left").pack(anchor="w", pady=(2, 8))
+
+        search_row = ttk.Frame(frame)
+        search_row.pack(fill="x")
+        ttk.Label(search_row, text="Find").pack(side="left")
+        self.query = tk.StringVar(master=self, value="")
+        self.search = ttk.Entry(search_row, textvariable=self.query, width=46)
+        self.search.pack(side="left", padx=(6, 6))
+        self.search.bind("<Return>", lambda _event: self.refresh())
+        #  Filtering what was already read is instant, so it happens on every
+        #  keystroke - but the button and Return do it too, because a trace is
+        #  not something a person can see.
+        try:
+            self.query.trace_add("write", lambda *_args: self.refresh())
+        except Exception:
+            pass
+        find_btn = ttk.Button(search_row, text="Find", command=self.refresh)
+        find_btn.pack(side="left")
+        add_tooltip(find_btn, "Filter the products already read - the card's "
+                              "name, a SKU, or a product id")
+
+        listing_row = ttk.Frame(frame)
+        listing_row.pack(fill="both", expand=True, pady=(8, 0))
+        self.listing = tk.Listbox(listing_row, height=12, activestyle="none",
+                                  exportselection=False)
+        scroll = ttk.Scrollbar(listing_row, orient="vertical",
+                               command=self.listing.yview)
+        self.listing.configure(yscrollcommand=scroll.set)
+        self.listing.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="left", fill="y")
+        self.listing.bind("<<ListboxSelect>>",
+                          lambda _event: self.pick())
+
+        self.summary = ttk.Label(frame, text="No product picked yet.",
+                                 wraplength=640, justify="left")
+        self.summary.pack(anchor="w", pady=(8, 0))
+
+        count_row = ttk.Frame(frame)
+        count_row.pack(fill="x", pady=(6, 0))
+        ttk.Label(count_row, text="Stock count").pack(side="left")
+        self.count = tk.StringVar(master=self, value="")
+        self.count_entry = ttk.Entry(count_row, textvariable=self.count,
+                                     width=8)
+        self.count_entry.pack(side="left", padx=(6, 6))
+        self.count_entry.bind("<Return>", lambda _event: self.write())
+        self.set_button = ttk.Button(
+            count_row, text="Set this count on the website",
+            style="Task.TButton", command=self.write)
+        self.set_button.pack(side="left")
+        add_tooltip(self.set_button,
+                    "Change this one product's stock count, then read it back "
+                    "from the website and report the number it kept")
+
+        #  Named rather than left to be guessed at, because this window is
+        #  where the shop's editing grows: the same find-one-product,
+        #  change-one-field path carries the card's missing words next.
+        ttk.Label(frame, text="The next fields to land here are the keywords "
+                  "and tags a product is missing - the same job on the same "
+                  "product, found the same way.",
+                  style="Dim.TLabel", wraplength=640,
+                  justify="left").pack(anchor="w", pady=(8, 0))
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", pady=(10, 0))
+        ttk.Button(buttons, text="Close",
+                   command=self.destroy).pack(side="right")
+
+        self.status = ttk.Label(frame, text="", wraplength=640,
+                                justify="left")
+        self.status.pack(anchor="w", pady=(6, 0))
+
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        attach_tooltips(self)
+        self.start()
+
+    #  ---------------------------------------------------------------- words
+    def say(self, text):
+        """The window's own line, kept where a check can read it back."""
+        self.status_text = str(text or "")
+        try:
+            self.status.configure(text=self.status_text)
+        except Exception:
+            pass
+
+    def run(self, work, done):
+        """Do the slow call off the window thread, then draw with its answer.
+
+        One place for the read and the write, so a window that is closed
+        mid-call is never drawn on from a dead thread.
+        """
+        in_background(self.app, work, done)
+
+    #  --------------------------------------------------------------- reading
+    def start(self):
+        if self.products is not None:
+            self.say("%d products read. Type a card's name, a SKU or a product "
+                     "id." % len(self.products))
+            self.refresh()
+            return
+        if not (self.site and self.key and self.secret):
+            self.say("No WooCommerce keys are saved, so the website's products "
+                     "cannot be read.")
+            return
+        self.say("Reading every product on %s..." % self.site)
+        self.run(lambda: self.read(self.page_read), self.read_done)
+
+    def read(self, progress=None):
+        """Every product the shop has - or the caller's own reader, in a test."""
+        if self.reader is not None:
+            return self.reader(progress)
+        return woo_create.read_all_products(self.site, self.key, self.secret,
+                                            opener=self.opener,
+                                            progress=progress)
+
+    def page_read(self, page_done, total_pages, products):
+        if total_pages:
+            text = ("Reading the website's products: page %d of %d, %d read..."
+                    % (page_done, total_pages, products))
+        else:
+            text = ("Reading the website's products: page %d, %d read so far..."
+                    % (page_done, products))
+        try:
+            self.after(0, lambda: self.say(text))
+        except Exception:
+            pass          # the window went away; the read still finishes
+
+    def read_done(self, products, error):
+        if error is not None:
+            message = getattr(error, "message", str(error))
+            self.say("The website's products could not be read: %s" % message)
+            self.app.console_line("Could not read the website's products: %s"
+                                  % message, "err")
+            return
+        self.products = [row for row in (products or [])
+                         if isinstance(row, dict)]
+        self.say("%d products read. Type a card's name, a SKU or a product id."
+                 % len(self.products))
+        self.refresh()
+
+    #  -------------------------------------------------------------- finding
+    def refresh(self):
+        """Filter what was read, and say how much of the shop the list is."""
+        if self.products is None:
+            return
+        self.matches = woo_edit.find(self.products, self.query.get())
+        self.chosen = None
+        try:
+            self.summary.configure(text="No product picked yet.")
+            self.listing.delete(0, "end")
+        except Exception:
+            pass
+        width = len(str(len(self.matches)))
+        for number, product in enumerate(self.matches, start=1):
+            try:
+                self.listing.insert("end", woo_edit.label(
+                    product, number=number, width=width))
+            except Exception:
+                break
+        typed = str(self.query.get() or "").strip()
+        self.say("%d of %d products match." % (len(self.matches),
+                                              len(self.products)) if typed
+                 else "%d products read." % len(self.products))
+
+    def pick(self):
+        chosen = self.listing.curselection()
+        if not chosen:
+            self.chosen = None
+            self.say("No product picked yet.")
+            return
+        try:
+            index = int(chosen[0])
+        except (IndexError, TypeError, ValueError):
+            return
+        self.choose(index)
+
+    def choose(self, index):
+        """Pick the product at that row - the one the count will be set on."""
+        if not 0 <= index < len(self.matches):
+            return
+        self.chosen = self.matches[index]
+        count = woo_edit.count_of(self.chosen)
+        self.summary.configure(text=woo_edit.describe(self.chosen))
+        self.count.set("" if count is None else str(count))
+        #  A product the shop does not count has no number to edit, and the
+        #  window knows it before the button is pressed - so it says it there
+        #  and then, with the setting that fixes it, rather than sending a
+        #  count the site would ignore.
+        self.say(woo_edit.uncounted_note() if count is None else "")
+
+    #  -------------------------------------------------------------- writing
+    def write(self):
+        if self.busy:
+            return
+        if self.chosen is None:
+            self.say("Pick a product from the list first.")
+            return
+        if woo_edit.count_of(self.chosen) is None:
+            self.say(woo_edit.uncounted_note())
+            return
+        typed = self.count.get()
+        try:
+            wanted = woo_edit.parse_count(typed)
+        except woo_edit.WooEditError as exc:
+            self.say(exc.message + ("  " + exc.hint if exc.hint else ""))
+            return
+        product = self.chosen
+        self.busy = True
+        try:
+            self.set_button.configure(state="disabled")
+        except Exception:
+            pass
+        self.say("Setting the count to %d on %s..."
+                 % (wanted, product.get("name") or "the product"))
+
+        def work():
+            return self.writer(self.site, self.key, self.secret, product,
+                               typed, self.opener)
+
+        self.run(work, lambda result, error: self.written(product, result,
+                                                          error))
+
+    def written(self, product, result, error):
+        self.busy = False
+        try:
+            self.set_button.configure(state="normal")
+        except Exception:
+            pass
+        if error is not None:
+            message = getattr(error, "message", str(error))
+            hint = getattr(error, "hint", "")
+            self.say(message + ("  " + hint if hint else ""))
+            self.app.console_line("The count was not changed: %s" % message,
+                                  "err")
+            return
+        result = result if isinstance(result, dict) else {}
+        #  The product in the list is the one that was just written, so the
+        #  next search shows the count the website now holds instead of the
+        #  one this window opened with.
+        for row in self.products or []:
+            if str(row.get("id")) == str(product.get("id")):
+                row["stock_quantity"] = result.get("after")
+        note = result.get("note") or woo_edit.written_note(
+            product, result.get("before"), result.get("after"))
+        self.refresh()
+        for index, row in enumerate(self.matches):
+            if str(row.get("id")) == str(product.get("id")):
+                self.choose(index)
+                try:
+                    self.listing.selection_clear(0, "end")
+                    self.listing.selection_set(index)
+                    self.listing.see(index)
+                except Exception:
+                    pass
+                break
+        self.say(note)
+        self.app.console_line(note, "ok")
+
+
+def edit_website_stock(app):
+    """Open the product-and-count window, if there is a website to open it on.
+
+    The keys are checked here rather than inside the window, so a missing
+    pair is answered with the same sentence the SKU check gives instead of a
+    window that can only read nothing.
+    """
+    site, key, secret = read_woo_credentials(BASE / "woo-keys.txt")
+    if not (site and key and secret):
+        messagebox.showinfo(
+            "Edit a website product",
+            "This reads and changes your website's own products, so it needs "
+            "the WooCommerce keys in woo-keys.txt (lines 1-3).")
+        app.console_line("No WooCommerce keys saved, so the website's stock "
+                         "cannot be edited here.", "dim")
+        return None
+    dialog = WooStockDialog(app, site, key, secret)
+    app.wait_window(dialog)
+    return dialog
+
+
+def build_woostock(parent, app):
+    """Edit stock - WooCommerce: the shop's own products and the tools for them.
+
+    The website is where a card is created, priced, counted and given its SKU,
+    so its place comes first in Edit stock - and it needs no plugin, because
+    the shop's own API is the WooCommerce one.
+    """
+    panel_header(parent, app, "woostock")
     box = ttk.Frame(parent)
     box.pack(fill="x")
-    pdir = app.settings.get("pipeline_dir", str(WORK))
-    ttk.Label(box, text="Batch folder: %s" % pdir, style="Dim.TLabel").pack(
-        anchor="w")
+    site, key, secret = read_woo_credentials(BASE / "woo-keys.txt")
+    if site and key and secret:
+        ttk.Label(box, text="Your website: %s" % site,
+                  style="Dim.TLabel").pack(anchor="w")
+    else:
+        ttk.Label(box, text="No WooCommerce keys are saved yet, so the "
+                  "website's products cannot be read. Save them in User "
+                  "settings, or in woo-keys.txt in the app folder (lines 1-3: "
+                  "the site, the key, the secret).",
+                  style="Dim.TLabel", wraplength=680,
+                  justify="left").pack(anchor="w", pady=(0, 4))
 
-    def browse_for_pipeline():
-        f = filedialog.askopenfilename(
-            title="Find card_pipeline.py",
-            initialdir=app.settings.get("pipeline_dir") or str(BASE))
-        if not f:
-            return None
-        f = Path(f)
-        if f.name != "card_pipeline.py":
-            messagebox.showwarning(
-                "Wrong file",
-                "That is %s - I need the file named card_pipeline.py."
-                % f.name)
-            return None
-        app.set_setting("pipeline_dir", str(f.parent))
-        app.console_line("Batch folder set to %s" % f.parent, "ok")
-        return f
+    #  The everyday half of this section: one product, one count. It sits
+    #  above the SKU check because it is the job done most often, and it opens
+    #  its own window so this section stays a list of jobs with room to grow
+    #  rather than a form that has run out of space.
+    edit_row = ttk.Frame(box)
+    edit_row.pack(anchor="w", pady=(2, 6))
+    edit_btn = ttk.Button(edit_row, text="Find a product and set its stock...",
+                          command=lambda: edit_website_stock(app))
+    edit_btn.pack(side="left")
+    add_tooltip(edit_btn,
+                "Search your website's products by name, SKU or id, see the "
+                "count the shop holds, and change it - one product at a time, "
+                "read back from the website")
 
-    def run_pipeline():
-        script = find_pipeline_script(app.settings)
-        if script is None:
-            if messagebox.askyesno(
-                    "card_pipeline.py not found",
-                    "I could not find card_pipeline.py in the batch "
-                    "folder\n%s\n\nBrowse for it now?"
-                    % app.settings.get("pipeline_dir", "")):
-                script = browse_for_pipeline()
-            if script is None:
-                return
+    build_sku_check(box, app)
 
-        def on_run(args, on_done, title):
-            return app.run_tool(str(script), args, title,
-                                cwd=str(script.parent), on_done=on_done)
-        PipelineDialog(app, script, on_run)
+    #  Where the next shop tool goes. Named rather than left to be guessed at,
+    #  because this place is meant to grow: missing keywords, tags and the rest
+    #  are the same kind of work on the same products.
+    ttk.Label(box, text="Keywords and tags are the next shop tools here - a "
+              "product's words are edited the same way its count is, by "
+              "finding the product and changing one field - so a card's "
+              "stock, its SKU and its words are all fixed in one place.",
+              style="Dim.TLabel", wraplength=680,
+              justify="left").pack(anchor="w", pady=(8, 0))
 
-    ttk.Button(box, text="Run the card pipeline", style="Task.TButton",
-               command=run_pipeline).pack(anchor="w", pady=4)
 
+def build_sku_check(parent, app):
+    """The website's SKU check, as a block a panel can hold.
+
+    A product made before the printing joined its SKU holds the SKU
+    of the card sold without that printing, and the website allows
+    one product per SKU - so the other card can never be created.
+    This finds them all, and changes nothing until the fixes have
+    been shown and agreed to.
+
+    One definition, used by two panels: **Run the card pipeline**,
+    where a batch is about to create products, and **Edit stock ->
+    WooCommerce**, where the shop's own products are fixed. Two
+    copies of this would drift apart, and one of them would be the
+    one that stops reading a status.
+    """
     #  A product made before the printing joined its SKU holds the SKU of the
     #  card sold without that printing, and the website allows one product per
     #  SKU - so the other card can never be created. This finds them all, and
@@ -4970,7 +5357,7 @@ def build_pipeline(parent, app):
                     "changed: title, price, stock, photos and state are "
                     "untouched, and nothing is added or removed."
                     % (len(found), "" if len(found) == 1 else "s", body),
-                    parent=box.winfo_toplevel()):
+                    parent=parent.winfo_toplevel()):
                 sku_state["running"] = False
                 app.console_line("The SKUs were left as they are.", "dim")
                 return
@@ -5029,7 +5416,7 @@ def build_pipeline(parent, app):
 
         in_background(app, reading, read)
 
-    row_sku = ttk.Frame(box)
+    row_sku = ttk.Frame(parent)
     row_sku.pack(anchor="w", pady=(2, 0))
     ttk.Button(row_sku, text="Check the website's SKUs",
                command=check_skus).pack(side="left")
@@ -5040,7 +5427,7 @@ def build_pipeline(parent, app):
     #  always in the layout and holds nothing until a check starts, so nothing
     #  below it moves when it fills, and it is taken down by the same function
     #  that put it up - an error path included.
-    sku_row = ttk.Frame(box)
+    sku_row = ttk.Frame(parent)
     sku_row.pack(anchor="w", pady=(3, 0))
     sku_bar = ttk.Progressbar(sku_row, length=240, maximum=100)
     sku_text = ttk.Label(sku_row, text="", style="Dim.TLabel",
@@ -5089,6 +5476,56 @@ def build_pipeline(parent, app):
             sku_text.configure(text="")
         except Exception:
             pass
+
+
+def build_pipeline(parent, app):
+    panel_header(parent, app, "pipeline")
+    box = ttk.Frame(parent)
+    box.pack(fill="x")
+    pdir = app.settings.get("pipeline_dir", str(WORK))
+    ttk.Label(box, text="Batch folder: %s" % pdir, style="Dim.TLabel").pack(
+        anchor="w")
+
+    def browse_for_pipeline():
+        f = filedialog.askopenfilename(
+            title="Find card_pipeline.py",
+            initialdir=app.settings.get("pipeline_dir") or str(BASE))
+        if not f:
+            return None
+        f = Path(f)
+        if f.name != "card_pipeline.py":
+            messagebox.showwarning(
+                "Wrong file",
+                "That is %s - I need the file named card_pipeline.py."
+                % f.name)
+            return None
+        app.set_setting("pipeline_dir", str(f.parent))
+        app.console_line("Batch folder set to %s" % f.parent, "ok")
+        return f
+
+    def run_pipeline():
+        script = find_pipeline_script(app.settings)
+        if script is None:
+            if messagebox.askyesno(
+                    "card_pipeline.py not found",
+                    "I could not find card_pipeline.py in the batch "
+                    "folder\n%s\n\nBrowse for it now?"
+                    % app.settings.get("pipeline_dir", "")):
+                script = browse_for_pipeline()
+            if script is None:
+                return
+
+        def on_run(args, on_done, title):
+            return app.run_tool(str(script), args, title,
+                                cwd=str(script.parent), on_done=on_done)
+        PipelineDialog(app, script, on_run)
+
+    ttk.Button(box, text="Run the card pipeline", style="Task.TButton",
+               command=run_pipeline).pack(anchor="w", pady=4)
+
+    build_sku_check(box, app)
+
+
     if app.cs_addon:
         ttk.Label(box, text="CanadianShopper drafts", style="H2.TLabel").pack(
             anchor="w", pady=(6, 1))
@@ -10269,7 +10706,7 @@ def build_csledit(parent, app):
         top = tk.Toplevel(app)
         top.title("Edit the fields on CanadianShopper")
         top.transient(app)
-        top.geometry("700x480")
+        top.geometry("720x640")
         top.grab_set()
         body = ttk.Frame(top)
         body.pack(fill="both", expand=True, padx=10, pady=(10, 4))
@@ -10414,6 +10851,101 @@ def build_csledit(parent, app):
                 summary.configure(text=cs_record.sentence(result))
 
             in_background(app, work, done)
+
+        #  The listing's photos are rows of their own, not a field on the
+        #  record, so they are not among the rows above - and a form that
+        #  stopped at the main photo would say a listing with a gallery has one
+        #  picture. They are read from the site, listed with the addresses they
+        #  really have, and changed by the same two calls the panel's own
+        #  buttons use.
+        ttk.Separator(body, orient="horizontal").grid(
+            row=row, column=0, columnspan=3, sticky="ew", pady=(10, 4))
+        row += 1
+        ttk.Label(body, text="Photos in the gallery", font=("", 10, "bold")
+                  ).grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
+        photo_state = {"rows": None, "why": ""}
+        photo_list = tk.Listbox(body, height=4, exportselection=False)
+        photo_list.grid(row=row, column=0, columnspan=3, sticky="ew", pady=3)
+        row += 1
+        photo_note = ttk.Label(body, text="Reading the gallery...",
+                               wraplength=660, justify="left")
+        photo_note.grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
+        photo_row = ttk.Frame(body)
+        photo_row.grid(row=row, column=0, columnspan=3, sticky="w",
+                       pady=(4, 0))
+        row += 1
+
+        def show_photos():
+            photo_list.delete(0, "end")
+            held = photo_state["rows"]
+            if held is None:
+                photo_list.insert("end", "(the gallery could not be read)")
+                photo_note.configure(text=photo_state["why"]
+                                     or "The gallery could not be read.")
+                return
+            if not held:
+                photo_list.insert("end", "No photos in the gallery.")
+            for number, gallery_row in enumerate(held, 1):
+                photo_list.insert("end", "%d. position %s - %s" % (
+                    number, gallery_row.get("sortOrder"),
+                    gallery_row.get("imageUrl")))
+            photo_note.configure(text=(
+                "%d photo%s in the gallery. Each is a row of its own "
+                "(productImage) keyed by this listing's id, not a field on the "
+                "record - which is why the main photo above is only one of "
+                "them. Adding and removing write those rows and read the "
+                "gallery back."
+                % (len(held), "" if len(held) == 1 else "s")))
+
+        def read_photos():
+            photo_state["rows"] = None
+            photo_state["why"] = ""
+            photo_note.configure(text="Reading the gallery...")
+            cookie = load_cookie_text() or ""
+            about = cs_gallery.read_url(listing_id, CS_HOME)
+
+            def got(answer, error):
+                answer = answer or {}
+                if error is not None:
+                    photo_state["why"] = ("The gallery could not be read: %s"
+                                          % error)
+                elif answer.get("rows") is None:
+                    photo_state["why"] = (answer.get("why")
+                                          or "The gallery could not be read.")
+                else:
+                    photo_state["rows"] = list(answer.get("rows") or [])
+                try:
+                    show_photos()
+                except Exception:
+                    pass          # the form was closed while the read was out
+
+            in_background(app, lambda: cs_gallery.read(about, cookie), got)
+
+        def after_photo_change():
+            """The list is what the site now holds, not what it held before."""
+            try:
+                if top.winfo_exists():
+                    read_photos()
+            except Exception:
+                pass
+
+        gallery_add_btn = ttk.Button(
+            photo_row, text="Add a photo to the gallery...",
+            command=lambda: add_gallery(after_photo_change))
+        gallery_add_btn.pack(side="left")
+        add_tooltip(gallery_add_btn,
+                    "Put one photo into this listing's gallery: it is added "
+                    "as a row of its own and the gallery is read back")
+        gallery_remove_btn = ttk.Button(
+            photo_row, text="Remove a photo from the gallery...",
+            command=lambda: remove_gallery(after_photo_change))
+        gallery_remove_btn.pack(side="left", padx=6)
+        add_tooltip(gallery_remove_btn,
+                    "Take one photo off this listing's gallery by its own "
+                    "row, then read the gallery back to show it gone")
+        read_photos()
 
         buttons = ttk.Frame(top)
         buttons.pack(fill="x", padx=10, pady=(4, 10))
@@ -10799,6 +11331,11 @@ def build_csledit(parent, app):
                 "CanadianShopper, reads each one back, and puts the old value "
                 "back before the next:\n\n  %s\n\nA photo field is written "
                 "with a photo of the same card the app can point at. The "
+                "gallery is a collection of rows, not a field: its proof adds "
+                "one row - a photo the gallery does not show yet, or, when "
+                "every photo of this card is already there, a second row for "
+                "one of them - reads it back, and takes that same row off "
+                "again, so the listing keeps exactly the rows it has now. The "
                 "record's own id is the address, no product id is used, and "
                 "your website is not touched.%s\n\nProve them now?"
                 % (named, "\n  ".join(cs_proof.field_label(field)
@@ -10830,7 +11367,12 @@ def build_csledit(parent, app):
                 siblings=answer.get("siblings"), card=cache.get("card"),
                 #  The gallery's own rows say what it already holds. Without
                 #  them the only honest answer is "not read", never "empty".
-                gallery_rows=answer.get("gallery"))
+                gallery_rows=answer.get("gallery"),
+                #  A proof may put a second row for a photo the gallery already
+                #  shows and take that row off again, which is the only way to
+                #  prove a listing whose every photo of the card is already in
+                #  its gallery.
+                proof_copy=True)
             photo = photos["main"]
             gallery_photo = photos["gallery"] if "images" in todo else ""
             reasons = {"primaryImageUrl": photos["why_main"],
@@ -10849,7 +11391,8 @@ def build_csledit(parent, app):
             results = cs_proof.prove_listing(
                 answer["address"], answer["cookie"], listing=item,
                 fields=everything, skip=settled_here, photo=photo,
-                gallery_photo=gallery_photo, why=reasons, record=record)
+                gallery_photo=gallery_photo, why=reasons, record=record,
+                allow_copy=True)
             return {"results": results, "answer": answer, "photo": photo,
                     "gallery_photo": gallery_photo}
 
@@ -10940,7 +11483,7 @@ def build_csledit(parent, app):
         in_background(app, work, done)
 
 
-    def add_gallery():
+    def add_gallery(on_done=None):
         """Put one photo into the listing's gallery - rows of their own.
 
         The gallery is ``productImage`` rows keyed by the listing's record id,
@@ -11032,13 +11575,18 @@ def build_csledit(parent, app):
                 if advice:
                     say("  What to do: %s" % advice, "dim")
                 summary.configure(text=cs_gallery.sentence(result))
+                #  A window that lists the gallery is stale the moment a row
+                #  is written, and a stale list is how the wrong row gets
+                #  picked - so it is read again by whoever is showing one.
+                if on_done is not None and verdict in ("added", "same"):
+                    on_done()
 
             in_background(app, work, done)
 
         in_background(app, look_at(item, listing_id), found)
 
 
-    def remove_gallery():
+    def remove_gallery(on_done=None):
         """Take one photo off the listing's gallery, by its row's own id.
 
         The gallery is ``productImage`` rows, so a photo comes off by deleting
@@ -11157,6 +11705,11 @@ def build_csledit(parent, app):
                 if advice:
                     say("  What to do: %s" % advice, "dim")
                 summary.configure(text=cs_gallery.sentence(result))
+                #  A window that lists the gallery is stale the moment a row
+                #  is written, and a stale list is how the wrong row gets
+                #  picked - so it is read again by whoever is showing one.
+                if on_done is not None and verdict in ("removed",):
+                    on_done()
 
             in_background(app, work, done)
 
@@ -14740,6 +15293,7 @@ PANEL_BUILDERS = {
     "rerun": build_rerun,
     "sold": build_sold,
     "checklist": build_checklist,
+    "woostock": build_woostock,
     "stock": build_stock,
     "editfb": lambda parent, app: build_stock(parent, app, "facebook"),
     "editeb": lambda parent, app: build_stock(parent, app, "ebay"),

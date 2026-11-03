@@ -47,6 +47,25 @@ import cs_edit                                        # noqa: E402
 import cs_gallery                                     # noqa: E402
 import cs_proof                                       # noqa: E402
 import cs_record                                      # noqa: E402
+
+
+def read_gallery(*photos):
+    """A gallery read in the shape ``cs_gallery.read`` answers with.
+
+    The record form lists the listing's photos as well as its fields, so every
+    form opened here reads the gallery - and a test that let that read go to
+    the network would be testing the site, not the app.
+    """
+    def read(url, cookie="", fetch=None):
+        return {"status": 200, "rows": [dict(photo) for photo in photos],
+                "why": ""}
+    return read
+
+
+GALLERY_FRONT = {"id": "r1", "product": "listing", "sortOrder": 1,
+                 "imageUrl": "https://cs.example/api/file/front.webp"}
+GALLERY_BACK = {"id": "r2", "product": "listing", "sortOrder": 2,
+                "imageUrl": "https://cs.example/api/file/back.webp"}
 import stock_compare                                  # noqa: E402
 
 #  No test reaches the network. The gallery's own requests are refused here,
@@ -1432,7 +1451,7 @@ def test_the_diagnosis_file():
                                   stages=["read", "ids"], plugin="1.0.38",
                                   command="cs-stock.py --stock-out cs-stock.json",
                                   detail=detail, total=2596, editable=0,
-                                  app_version="3.33")
+                                  app_version="3.34")
     check("the file carries the reader's own count line",
           "2596 listings, 0 with a real product id" in text, "")
     check("the app's own count is beside it, so the two can be compared",
@@ -1887,7 +1906,7 @@ def test_the_real_diagnosis_from_the_shop():
                 "--cookie-file cookie.txt",
         detail={"url": cs_edit.detail_url(row["id"]), "status": 200,
                 "content_type": "application/json", "body": json.dumps(record)},
-        total=2596, editable=0, app_version="3.33",
+        total=2596, editable=0, app_version="3.34",
         source="the read this window made at 2026-11-02 13:03:59")
 
     check("the file no longer carries the progress markers",
@@ -2776,7 +2795,11 @@ def test_the_gallery_is_never_written_off():
         return 200, "{}"
 
     def fake_gallery_proof(listing, cookie, photo_url, **kwargs):
-        proved.append({"listing": listing, "photo": photo_url})
+        #  A proof may use a second row for a photo the gallery already shows:
+        #  without that, a listing whose every photo of the card is in its
+        #  gallery has no proof at all. The panel has to ask for it.
+        proved.append({"listing": listing, "photo": photo_url,
+                       "copy": kwargs.get("allow_copy")})
         return {"field": "images", "label": "Gallery photos",
                 "listing": listing, "photo": photo_url, "row": "new-2",
                 "verdict": "written", "written": True, "restored": True,
@@ -2819,6 +2842,9 @@ def test_the_gallery_is_never_written_off():
     check("and the proof runs on the gallery's own rows",
           len(proved) == 1 and proved[0]["listing"] == listing_id and
           proved[0]["photo"] == photo, str(proved))
+    check("and the gallery proof is allowed a copy of a photo it already "
+          "shows, so every listing can be proved",
+          proved and proved[0].get("copy") is True, str(proved))
     check("no product record is ever patched to hold a gallery",
           sent == [], str(sent))
     check("the console calls the gallery settled",
@@ -3409,6 +3435,8 @@ def test_a_form_of_every_proven_field():
         with patch.object(gui, "BASE", folder), \
                 patch.object(gui, "CS_COOKIE_FILE", cookie), \
                 patch.object(gui, "in_background", sync_background), \
+                patch.object(cs_gallery, "read",
+                             read_gallery(GALLERY_FRONT, GALLERY_BACK)), \
                 patch.object(cs_record, "update", fake_update):
             find(parent, gui.ttk.Button,
                  "Edit the record's fields...").invoke()
@@ -3443,10 +3471,18 @@ def test_a_form_of_every_proven_field():
                                 if isinstance(w, gui.ttk.Label)]
         shown_form["buttons"] = [str(w.cget("text")) for w in window.walk()
                                  if isinstance(w, gui.ttk.Button)]
+        #  The listing's photos are rows of their own, so they are not one of
+        #  the form's own fields - and a form that stopped at the main photo
+        #  said a listing with a gallery had one picture.
+        shown_form["photos"] = [str(item) for w in window.walk()
+                                if isinstance(w, gui.tk.Listbox)
+                                for item in w.items]
 
     harness.PICKER["press"] = look
     try:
         with patch.object(gui, "BASE", folder), \
+                patch.object(cs_gallery, "read",
+                             read_gallery(GALLERY_FRONT, GALLERY_BACK)), \
                 patch.object(gui, "in_background", sync_background):
             find(parent, gui.ttk.Button,
                  "Edit the record's fields...").invoke()
@@ -3460,6 +3496,22 @@ def test_a_form_of_every_proven_field():
     check("each one offers the proof that would open it",
           shown_form.get("buttons", []).count("Prove this field...") == 3,
           str(shown_form.get("buttons")))
+    check("the form lists the gallery's own photos, with their addresses",
+          len(shown_form.get("photos", [])) == 2 and
+          any(GALLERY_FRONT["imageUrl"] in row
+              for row in shown_form["photos"]) and
+          any(GALLERY_BACK["imageUrl"] in row
+              for row in shown_form["photos"]),
+          str(shown_form.get("photos")))
+    check("and says where they live, so the main photo is not mistaken for "
+          "the gallery",
+          any("Photos in the gallery" in text
+              for text in shown_form.get("labels", [])),
+          str(shown_form.get("labels"))[-300:])
+    check("while offering the two calls that change them",
+          {"Add a photo to the gallery...",
+           "Remove a photo from the gallery..."} <=
+          set(shown_form.get("buttons", [])), str(shown_form.get("buttons")))
     check("and the form says what is proven and what is never sent",
           any("Proven writable here" in text and "never sent" in text
               for text in shown_form.get("labels", [])),
@@ -3478,6 +3530,8 @@ def test_a_form_of_every_proven_field():
     harness.PICKER["press"] = look
     try:
         with patch.object(gui, "BASE", folder), \
+                patch.object(cs_gallery, "read",
+                             read_gallery(GALLERY_FRONT, GALLERY_BACK)), \
                 patch.object(gui, "in_background", sync_background):
             find(parent, gui.ttk.Button,
                  "Edit the record's fields...").invoke()

@@ -357,12 +357,70 @@ def test_the_gallery_proof():
           result["verdict"] == "unreadable" and site.sent == [], str(result))
 
 
+def test_a_gallery_whose_photos_are_all_there():
+    """A proof on a listing whose every photo is already in its gallery.
+
+    The old answer was "there is nothing new to add", which left a listing
+    like this one with a field that could never be proved. The gallery is a
+    collection, so a proof does not need a new photo: it adds a second row for
+    one the gallery already shows, learns that row's own id (the ids that were
+    not there before it was sent), removes *that* row, and reads again. The
+    listing keeps exactly the rows it started with.
+    """
+    print()
+    print("== 6. a gallery that already holds the photo ==")
+    site = Site(rows=[{"id": "r1", "imageUrl": FRONT, "sortOrder": 1},
+                      {"id": "r2", "imageUrl": PHOTO, "sortOrder": 2}])
+    result = cs_gallery.add(LISTING, "c", PHOTO, fetch=site.fetch,
+                            send=site.send, allow_copy=True)
+    check("a plain add still refuses a photo the gallery already holds",
+          cs_gallery.add(LISTING, "c", PHOTO, fetch=site.fetch,
+                         send=site.send)["verdict"] == "same", "")
+    check("a proof's copy is sent, and is a new row", result["verdict"] ==
+          "added" and result["copy"] is True and result["row"] == "new-3",
+          str(result)[:200])
+    check("and the row it names is not one that was there before",
+          result["row"] not in ("r1", "r2"), str(result["row"]))
+
+    site = Site(rows=[{"id": "r1", "imageUrl": FRONT, "sortOrder": 1},
+                      {"id": "r2", "imageUrl": PHOTO, "sortOrder": 2}])
+    before = [row["id"] for row in site.rows]
+    result = cs_gallery.prove(LISTING, "c", PHOTO, fetch=site.fetch,
+                              send=site.send, allow_copy=True)
+    check("the proof of a gallery like that runs all four steps",
+          result["verdict"] == "written" and
+          [step["step"] for step in result["steps"]] ==
+          ["GET the gallery", "POST the gallery row", "GET the gallery back",
+           "DELETE the gallery row", "GET the gallery back"],
+          str([step["step"] for step in result["steps"]]))
+    check("and the gallery ends with exactly the rows it started with",
+          [row["id"] for row in site.rows] == before,
+          str([row["id"] for row in site.rows]))
+    check("the sentence says it was a second row, not a new photo",
+          "second row" in cs_gallery.sentence(result),
+          cs_gallery.sentence(result))
+
+    #  The site takes the copy and the read-back shows no new row: nothing was
+    #  added, so nothing may be removed and the gallery must be untouched.
+    site = Site(rows=[{"id": "r1", "imageUrl": FRONT, "sortOrder": 1}],
+                keep=False)
+    result = cs_gallery.prove(LISTING, "c", FRONT, fetch=site.fetch,
+                              send=site.send, allow_copy=True)
+    check("a copy the gallery does not keep is not a proof",
+          result["verdict"] == "ignored" and
+          not [sent for sent in site.sent if sent[0] == "DELETE"],
+          str(result)[:200])
+    check("and nothing of the listing's own was removed",
+          [row["id"] for row in site.rows] == ["r1"], str(site.rows))
+
+
 def main():
     test_the_address_of_a_gallery()
     test_what_a_gallery_answer_holds()
     test_a_photo_added_to_a_gallery()
     test_removing_one_row()
     test_the_gallery_proof()
+    test_a_gallery_whose_photos_are_all_there()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))
