@@ -1,4 +1,4 @@
-Alex Collect 3.26 — public core package
+Alex Collect 3.27 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -122,6 +122,11 @@ app/:
                                    preview-first legacy result mover
   pipeline/OUTPUT-FILES.md         pipeline output/retention audit
   pipeline/facebook_merchant_products/facebook_feed.py
+  version_sync.py                 the app's version, in one place and
+                                   checked in every other: the two installers,
+                                   the setup names, the user agents, the
+                                   MANIFEST, the README and the tests; one
+                                   command moves them all together
   test-*.py                       core tests
 
 Plugins are separate packages. No CanadianShopper plugin implementation,

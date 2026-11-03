@@ -1,4 +1,4 @@
-# Alex Collect 3.26
+# Alex Collect 3.27
 
 Alex Collect is a local desktop control panel for organizing a small trading-card selling workflow. It brings together the card pipeline, WooCommerce order inputs, customer quotes, a sale checklist, photo utilities, and optional plugins.
 
@@ -79,6 +79,7 @@ Step-by-step instructions for checking a branch on Windows - including the one-t
 From the `app` directory:
 
 ```sh
+python version_sync.py --check
 python test-gui.py
 python test-order-pdf.py
 python test-gui-ergonomics.py
@@ -99,6 +100,17 @@ python ../installer/test-bundled-config.py
 ```
 
 The GUI test needs a working desktop display (or Xvfb on headless Linux).
+
+`version_sync.py --check` is the one to run first. Alex Collect's version lives
+in `app/gui.py`, and every other place that has to say it repeats it: both
+installers' `MyAppVersion` and the setup files they are named after, the
+Windows build script, the browser user agents the tools send, the core version
+a plugin is checked against, the MANIFEST, this README, the testing guide and
+the tests that stamp a proof file. It exits 1 and names the file when any of
+them has been left behind, and
+`python version_sync.py 3.28` moves them all to 3.28 in one command. A version
+bump is that command plus nothing else - not a search and replace in the files
+you happen to remember.
 
 ## Support
 
