@@ -132,7 +132,7 @@ def test_the_section_and_the_tabs():
     index = labels.index("Edit stock")
     tab = notebook.tabs[index][0]
     panels = [w for w in tab.walk() if getattr(w, "_section_titled", False)]
-    expected = (["stock", "editfb", "editeb"] +
+    expected = (["woostock", "stock", "editfb", "editeb"] +
                 list(gui.TAB_EXTRA["Edit stock"]))
     check("the shop's tab holds the shop's panels and its photo tools, in "
           "order",
@@ -151,10 +151,11 @@ def test_the_section_and_the_tabs():
     #  into, and squaring a photo and replacing a card's pictures need no
     #  plugin - so they sit at the top of the same Edit stock section rather
     #  than in a section (and a tab) of their own.
-    check("without the add-on the section holds the photo tools, then eBay "
-          "and Facebook",
-          len(panels2) == 4 and
-          [p.cget("text") for p in panels2] == [gui.TITLES["square"],
+    check("without the add-on the section holds the website, the photo tools, "
+          "then eBay and Facebook",
+          len(panels2) == 5 and
+          [p.cget("text") for p in panels2] == [gui.TITLES["woostock"],
+                                                gui.TITLES["square"],
                                                 gui.TITLES["newphotos"],
                                                 gui.TITLES["editfb"],
                                                 gui.TITLES["editeb"]],

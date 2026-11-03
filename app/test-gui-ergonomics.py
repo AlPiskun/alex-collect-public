@@ -75,13 +75,14 @@ def main():
     check("settings, plugins, and logs are removed from task buttons",
           not ({"cookie", "plugins", "logs"} & task_ids))
     #  Comparing and editing are one job, so the stock work left "After a
-    #  sale" for a section of its own, with one place per marketplace and the
-    #  shop's own two jobs inside its place.
-    check("the stock work has its own section, one per marketplace",
+    #  sale" for a section of its own: your website first, because that is
+    #  where a card is created and given its SKU, then one place per site, with
+    #  the shop's own jobs inside its place.
+    check("the stock work has its own section, one place per site",
           dict(gui.groups_for(True))["Edit stock"] ==
-          ["stock", "editfb", "editeb"] and
+          ["woostock", "stock", "editfb", "editeb"] and
           dict(gui.groups_for(False))["Edit stock"] ==
-          ["square", "newphotos", "editfb", "editeb"],
+          ["woostock", "square", "newphotos", "editfb", "editeb"],
           str(dict(gui.groups_for(False))["Edit stock"]))
     #  Every id a section offers must be a panel: a title, a blurb, a sentence
     #  of help, a menu label and a builder for each. A panel added to the menu
@@ -221,6 +222,113 @@ def main():
           'text="What do you want to do today?"' not in task_ui and
           'sticky="w"' in task_ui and 'sticky="ew"' not in task_ui)
 
+
+    #  ------------------------------------------- the shop's own stock editor
+    #  One product, one count, read back from the website. The window is
+    #  built with the products already read and the writer replaced, so no
+    #  website is touched and what is checked is what the window does with
+    #  the answers: which row it picks, what it refuses, and what it reports.
+    class Edits:
+        """A writer that answers like the site, and keeps what it was sent."""
+
+        def __init__(self):
+            self.written = []
+
+        def write(self, _site, _key, _secret, product, text, _opener=None):
+            import woo_edit
+            before = woo_edit.count_of(product)
+            after = woo_edit.parse_count(text)
+            self.written.append((product.get("id"), text))
+            return {"id": product.get("id"), "wanted": after, "before": before,
+                    "after": after,
+                    "note": woo_edit.written_note(product, before, after)}
+
+    def run_now(work, done):
+        """Do the window's slow call where this check can see it finish."""
+        try:
+            done(work(), None)
+        except Exception as exc:                # noqa: BLE001 - reported
+            done(None, exc)
+
+    shop_products = [
+        {"id": 7, "name": "Jeter, 1993 Upper Deck #279", "sku": "JET-279",
+         "manage_stock": True, "stock_quantity": 2},
+        {"id": 8, "name": "Griffey Jr., 1989 Upper Deck #1", "sku": "GRF-1",
+         "manage_stock": False, "stock_quantity": 0},
+    ]
+    #  The window's master: a real hidden window where there is a display,
+    #  and whatever the stub hands back where there is not. The console
+    #  method is attached here, because the only thing the window asks the
+    #  app for is the line it leaves behind.
+    try:
+        root = gui.tk.Tk()
+        root.withdraw()
+    except Exception:                           # no display, or the stub
+        root = SimpleNamespace()
+    root.lines = []
+    root.console_line = lambda text, tag="": root.lines.append((str(text), tag))
+    edits = Edits()
+    window = gui.WooStockDialog(root, products=shop_products,
+                                writer=edits.write)
+    window.run = run_now
+    check("the stock window lists every product that was read",
+          len(window.matches) == len(shop_products) and
+          "2 products read" in window.status_text,
+          "%r %r" % (len(window.matches), window.status_text))
+    window.query.set("griffey")
+    window.refresh()
+    check("a search narrows the list to the card that was typed",
+          [row["id"] for row in window.matches] == [8],
+          str([row["id"] for row in window.matches]))
+    window.choose(0)
+    check("picking a product shows the count the shop holds, ready to change",
+          window.chosen["id"] == 8 and window.count.get() == "" and
+          "does not count it" in gui.woo_edit.describe(window.chosen),
+          "%r %r" % (window.chosen["id"], window.count.get()))
+    window.count.set("4")
+    window.write()
+    check("a product the shop does not count is refused, with the fix named",
+          edits.written == [] and "Track stock quantity" in window.status_text,
+          "%r %r" % (edits.written, window.status_text))
+    window.query.set("jeter")
+    window.refresh()
+    window.choose(0)
+    check("a counted product starts at its own count",
+          window.chosen["id"] == 7 and window.count.get() == "2",
+          "%r %r" % (window.chosen["id"], window.count.get()))
+    window.count.set("two")
+    window.write()
+    check("a count that is not a number is refused before anything is sent",
+          edits.written == [] and "not a whole number" in window.status_text,
+          "%r %r" % (edits.written, window.status_text))
+    window.count.set("5")
+    window.write()
+    check("setting the count sends it once, for that product only",
+          edits.written == [(7, "5")], str(edits.written))
+    check("and the report is the number the website answered with, with the "
+          "old one beside it",
+          "now shows 5 in stock" in window.status_text and
+          "was 2" in window.status_text, window.status_text)
+    check("the list now holds the new count, so the next search shows it",
+          gui.woo_edit.count_of(window.matches[0]) == 5 and
+          window.count.get() == "5",
+          "%r %r" % (gui.woo_edit.count_of(window.matches[0]),
+                     window.count.get()))
+    check("and the console keeps the sentence the person was shown",
+          any("now shows 5 in stock" in text for text, _tag in root.lines),
+          str(root.lines))
+    window.destroy()
+    try:
+        root.destroy()
+    except Exception:
+        pass
+    section = source.split("def build_woostock", 1)[1].split(
+        "def build_sku_check", 1)[0]
+    check("the shop's section offers the stock editor and checks the SKUs "
+          "once, through the one shared button",
+          'text="Find a product and set its stock..."' in section and
+          section.count("build_sku_check(box, app)") == 1,
+          str(section.count("build_sku_check(box, app)")))
 
 if __name__ == "__main__":
     main()

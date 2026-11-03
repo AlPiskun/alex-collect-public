@@ -526,6 +526,7 @@ def values(product, settings=None):
     """
     settings = settings or {}
     price = price_of(product)
+    stock = stock_left(product)
     pictures = images_of(product)
     sport = sport_of(product)
     description, short_description = description_text(product)
@@ -537,6 +538,9 @@ def values(product, settings=None):
     return {
         "title": listing_title(product),
         "price": ("%.2f" % price) if price is not None else "",
+        #  "" when the shop does not count this product's stock: eBay's form
+        #  starts at 1, and a made-up number is worse than none.
+        "quantity": "" if stock is None else str(stock),
         "sku": str((product or {}).get("sku") or "").strip(),
         "sport": sport.title() if sport else "Sports Cards",
         "year": fact("Year", "ebay_default_year"),
@@ -640,6 +644,7 @@ def render(chosen, settings=None, note="", built=None):
         snippets = []
         for label, value in (("Title", fields["title"]),
                              ("Buy It Now price (CAD)", fields["price"]),
+                             ("Quantity", fields["quantity"]),
                              ("SKU", fields["sku"]),
                              ("Sport / Game", fields["sport"]),
                              ("Year", fields["year"]),
