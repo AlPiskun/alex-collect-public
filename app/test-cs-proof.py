@@ -746,7 +746,7 @@ def test_the_whole_listing_at_once():
         fetch=site.fetch, send=site.send)
     text = cs_proof.listing_report_text(
         results, listing={"id": RECORD["id"], "name": RECORD["title"]},
-        app_version="3.25")
+        app_version="3.26")
     check("the file names every field that was tried",
           all(cs_proof.field_label(result["field"]) in text
               for result in results), "")
@@ -882,6 +882,101 @@ def test_a_photo_of_the_wrong_card_is_never_chosen():
           cs_proof.advice(result))
 
 
+def test_a_record_with_no_gallery_stops_being_a_problem():
+    """The report: a record with 39 keys and no gallery among them.
+
+    The run on 3.26 said "Gallery photos needs attention" and listed
+    "… and 24 more" keys, which is the one part of the answer nobody can check.
+    A field the site's record does not have is not work: it is said, once, with
+    every key in the file behind it, and it stops being counted as a problem.
+    """
+    print()
+    print("== a field this site's record does not have ==")
+    record = {"id": "a", "createdAt": "2026-10-01", "vendor": "pokemon",
+              "title": "Wurmple", "slug": "wurmple", "description": "A card.",
+              "primaryImageUrl": "https://cs/api/file/wurmple-front.jpg",
+              "priceCad": 1.0, "inventory": 1, "status": "active",
+              "category": "pokemon", "shipFromProvince": "ON",
+              "shippingFlatCad": 3.0, "specs": ["set: Lost Origin"],
+              "tags": ["vintage", "pokemon"]}
+    report = cs_proof.photo_field_report(record)
+    check("the fields that could hold photos are named, with what is in them",
+          any(line.startswith("primaryImageUrl is text") for line in report) and
+          any(line.startswith("tags is a list of 2") for line in report),
+          str(report))
+    check("and a plain list of words is not mistaken for photos",
+          cs_proof.gallery_key({"tags": ["vintage", "hockey"]}) == "" and
+          cs_proof.gallery_key({"attachments": ["readme.txt"]}) == "", "")
+    check("while a list of file names under an unexpected name is one",
+          cs_proof.gallery_key({"productShots": ["/uploads/a.jpg",
+                                                 "b.png"]}) == "productShots" and
+          cs_proof.gallery_key({"files": ["/api/file/a.jpg"]}) == "files", "")
+    check("and a gallery of maps can keep its photo under any of the usual keys",
+          cs_proof.gallery_key({"media": [{"filename": "a.jpg"},
+                                          {"thumb": {"url": "/uploads/b.jpg"}}]})
+          == "media", "")
+
+    refusal = cs_proof.plan("images", record,
+                            staged_url="https://cs/api/file/back.jpg")
+    check("the refusal names every key, not 'and 24 more'",
+          "and more" not in refusal["why"] and "shippingFlatCad" in
+          refusal["why"] and "primaryImageUrl" in refusal["why"],
+          refusal["why"][:300])
+    check("and it is marked as a field the record does not have",
+          refusal.get("missing") is True, str(refusal)[:120])
+
+    site = Site(record=dict(record))
+    url = "https://canadianshopper.ca/api/data/product/" + record["id"]
+    results = cs_proof.prove_listing(
+        url, "secret-session", fields=["priceCad", "images"],
+        photo="https://cs/api/file/front2.jpg",
+        gallery_photo="https://cs/api/file/back.jpg",
+        fetch=site.fetch, send=site.send)
+    gallery = [result for result in results
+               if result["field"] == "images"][0]
+    check("the gallery is not attempted and nothing is sent for it",
+          gallery["verdict"] == "unreadable" and
+          gallery.get("field_missing") is True and
+          not any("images" in payload for payload in site.sent), str(site.sent))
+    check("and it is counted apart from the fields that need attention",
+          cs_proof.not_here(gallery) and
+          not cs_proof.problem_results(results) and
+          cs_proof.problem_results(results) == [], str(cs_proof.problem_results(
+              results)))
+    sentence = cs_proof.listing_sentence(results)
+    check("the summary says what is settled and what the site does not have",
+          "1 of 2 fields are settled" in sentence and
+          "Gallery photos is not on this site's record" in sentence, sentence)
+    check("and its advice says there is nothing to do, not to sign in",
+          "Nothing to do on the site" in cs_proof.advice(gallery) and
+          "sign in" not in cs_proof.advice(gallery).lower(),
+          cs_proof.advice(gallery))
+    text = cs_proof.report_text(gallery, listing={"id": record["id"]},
+                                app_version="3.26")
+    check("the proof file carries the record's keys for the plugin report",
+          "Every key it holds:" in text and "shippingFlatCad" in text and
+          "tags is a list of 2" in text and "specs is a list of 1" in text,
+          text[-700:])
+    check("and still carries no session",
+          "secret-session" not in text, "")
+
+    print()
+    print("== a record that does have a gallery, under another name ==")
+    owned = dict(record, productShots=["https://cs/api/file/a.jpg",
+                                       "https://cs/api/file/b.jpg"])
+    site = Site(record=dict(owned), honours=("images", "productShots"))
+    result = cs_proof.prove("images", url, "secret-session",
+                            staged_url="https://cs/api/file/new.jpg",
+                            fetch=site.fetch, send=site.send)
+    check("the gallery is found under the name the record uses, and written "
+          "to that name",
+          result["verdict"] == "written" and site.sent and
+          sorted(site.sent[0]) == ["productShots"], str(site.sent[:1]))
+    check("and it is nobody's problem in the summary",
+          not cs_proof.problem_results([result]) and
+          cs_proof.settled_result(result), "")
+
+
 def test_the_report():
     print()
     print("== 9. the file the author is handed ==")
@@ -893,7 +988,7 @@ def test_the_report():
     text = cs_proof.report_text(result, listing={"id": RECORD["id"],
                                                  "name": RECORD["title"]},
                                 when=datetime(2026, 11, 2, 14, 30, 5),
-                                app_version="3.25")
+                                app_version="3.26")
     check("it names the listing and the record's own id",
           RECORD["title"] in text and RECORD["id"] in text and
           "not a product id" in text, text[:400])
@@ -971,6 +1066,7 @@ def main():
     test_the_gallery_proof()
     test_the_whole_listing_at_once()
     test_a_photo_of_the_wrong_card_is_never_chosen()
+    test_a_record_with_no_gallery_stops_being_a_problem()
     test_the_report()
     test_what_the_app_remembers()
     print()

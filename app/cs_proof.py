@@ -270,14 +270,9 @@ def plan(field, record, staged_url="", now=None):
     label = field_label(field)
     if not found:
         if field == "images":
-            return {"field": field, "label": label,
-                    "why": "The record carries no gallery - no list of photos "
-                           "under any of the names marketplaces use (images, "
-                           "galleryImages, imageUrls and the rest) - so a "
-                           "photo written there would create a field with "
-                           "nothing to put back. The record holds: %s."
-                           % record_keys(record)}
-        return {"field": field, "label": label,
+            return {"field": field, "label": label, "missing": True,
+                    "why": gallery_refusal(record)}
+        return {"field": field, "label": label, "missing": True,
                 "why": "The record does not carry %s (%s), so there would be "
                        "nothing to put back - and a field that cannot be put "
                        "back is not touched." % (label.lower(), field)}
@@ -509,15 +504,56 @@ def _photo_values(container):
 #: app has seen - so the key is *found* on the record rather than assumed, and
 #: a field that is not there is never invented.
 GALLERY_KEYS = ("images", "galleryImages", "imageUrls", "image_urls",
-                "gallery", "photos", "imageList", "additionalImages")
+                "gallery", "photos", "imageList", "additionalImages",
+                "media", "productImages", "secondaryImages", "extraImages",
+                "imageGallery", "galleryUrls")
+
+#: Names a gallery may go by that are *not* conclusive on their own - a record
+#: can hold files that are not pictures. These are only believed when what is
+#: in them looks like photos.
+GALLERY_WEAK_KEYS = ("attachments", "files", "assets", "uploads", "imageset",
+                     "pictures", "photosList")
+
+#: What a photo file name ends with. A list of these under a name nobody
+#: predicted is a gallery; a list of "vintage", "hockey" is not.
+IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp",
+                  ".tiff", ".tif", ".heic")
 
 
-def _entry_url(entry):
+def looks_like_photo(text):
+    """Whether a value reads as the address of a picture."""
+    value = str(text or "").strip().casefold()
+    if not value:
+        return False
+    if value.startswith(("http://", "https://")):
+        return True
+    if HOSTED_PHOTO.casefold() in value:
+        return True
+    if value.startswith(("uploads/", "/uploads/", "media/", "/media/",
+                         "files/", "/files/", "./", "../")):
+        return True
+    return value.split("?")[0].endswith(IMAGE_SUFFIXES)
+
+
+#: The key an entry keeps its photo under, in the order shops tend to use
+#: them. A gallery of maps is common - the photo, its thumbnail, its id - and
+#: reading only ``url`` is how a record with a gallery reads as having none.
+ENTRY_URL_KEYS = ("url", "src", "image", "path", "href", "file", "filename",
+                  "originalUrl", "cdnUrl", "large", "medium", "thumb",
+                  "thumbnail", "imageUrl", "srcUrl")
+
+
+def _entry_url(entry, depth=0):
     """The address inside one gallery entry, whether it is a string or a map."""
     if isinstance(entry, dict):
-        for key in ("url", "src", "image", "path", "href"):
-            if entry.get(key):
-                return str(entry[key])
+        for key in ENTRY_URL_KEYS:
+            value = entry.get(key)
+            if isinstance(value, dict) and depth < 2:
+                found = _entry_url(value, depth + 1)
+                if found:
+                    return found
+            elif value:
+                return str(value)
         return ""
     return str(entry or "")
 
@@ -537,33 +573,126 @@ def gallery_key(record):
         key = vendor_key(record, wanted)
         if key:
             return key
-    main = str(record.get("primaryImageUrl") or "").casefold()
+    #  A name that is only a hint: believed when the list really holds photos.
+    for wanted in GALLERY_WEAK_KEYS:
+        key = vendor_key(record, wanted)
+        if key and _holds_photos(record.get(key), record):
+            return key
+    #  No recognised name at all: a list of photo addresses under a name nobody
+    #  predicted is still the gallery - it is the only list of pictures on the
+    #  record, and that is what a gallery is.
     for key, value in record.items():
+        if not _holds_photos(value, record):
+            continue
         if str(key).casefold() == "primaryimageurl":
             continue
-        entries = value if isinstance(value, (list, tuple)) else []
-        if not entries:
-            continue
-        urls = [_entry_url(entry) for entry in entries]
-        if not all(urls):
-            continue
-        if all(url.lower().startswith(("http://", "https://")) or
-               HOSTED_PHOTO in url for url in urls):
-            if len(urls) == 1 and urls[0].rstrip("/") == main:
-                continue
-            return key
+        return str(key)
     return ""
 
 
-def record_keys(record, limit=14):
-    """The record's keys, for a message that has to name what is not there."""
+def _holds_photos(value, record=None):
+    """Whether a value is a list of photos, and not the main photo alone."""
+    entries = value if isinstance(value, (list, tuple)) else []
+    if not entries:
+        return False
+    urls = [_entry_url(entry) for entry in entries]
+    if not all(urls):
+        return False
+    photos = [url for url in urls if looks_like_photo(url)]
+    if len(photos) != len(urls):
+        #  A mixed list is not evidence of a gallery: one picture beside a
+        #  paragraph of prose is a record describing itself, not a gallery.
+        return False
+    main = str((record or {}).get("primaryImageUrl") or "")
+    key_main = photo_id(main)
+    if key_main and len(urls) == 1 and photo_id(urls[0]) == key_main:
+        return False
+    return True
+
+
+def record_keys(record, limit=0):
+    """The record's keys, for a message that has to name what is not there.
+
+    Every one of them by default: "and 24 more" is exactly the part a person
+    cannot check, and the key that is not named is the one being looked for.
+    """
     keys = [str(key) for key in (record or {}) if str(key).strip()]
     if not keys:
         return "(the record carries no keys)"
-    shown = ", ".join(keys[:limit])
-    if len(keys) > limit:
-        shown += " and %d more" % (len(keys) - limit)
-    return shown
+    if limit and len(keys) > limit:
+        return "%s and %d more" % (", ".join(keys[:limit]), len(keys) - limit)
+    return ", ".join(keys)
+
+
+def gallery_refusal(record):
+    """"There is no gallery on this record", with everything needed to check.
+
+    A refusal has to be as useful as an answer: the record's every key, and
+    what each field that could hold photos actually holds. That is what says
+    whether the site has no gallery at all, or has one under a name this app
+    does not know yet - and it is the same text the proof file keeps, so it can
+    be attached to a plugin report as it is.
+    """
+    lines = ["The record carries no gallery, so a photo written there would "
+             "create a field with nothing to put back.",
+             "Every key it holds: %s." % record_keys(record)]
+    shaped = photo_field_report(record)
+    if shaped:
+        lines.append("The fields that could have held photos:")
+        lines += ["  " + line for line in shaped]
+    else:
+        lines.append("None of them is a list of photos, and none is named for "
+                     "pictures: there is no gallery on this record at all.")
+    return "\n".join(lines)
+
+
+def shape_of(value):
+    """What a value is, in a few words: a count for a list, a kind for a map."""
+    if isinstance(value, dict):
+        keys = [str(key) for key in value if str(key).strip()]
+        return "a map with %s" % (", ".join(keys[:6]) or "no keys")
+    if isinstance(value, (list, tuple)):
+        kinds = {type(entry).__name__ for entry in value}
+        return "a list of %d (%s)" % (len(value),
+                                      ", ".join(sorted(kinds)) or "empty")
+    if isinstance(value, str):
+        text = value.strip()
+        return "text (%s...)" % text[:40] if text else "empty text"
+    return type(value).__name__
+
+
+#: Words that make a key worth looking at when hunting for a gallery that the
+#: app did not recognise.
+PHOTO_WORDS = ("image", "photo", "picture", "gallery", "media", "thumb",
+               "attachment", "file", "asset", "upload")
+
+
+def photo_field_report(record):
+    """Every field that could be a gallery, and what is in it.
+
+    This is the sentence that answers "does this record have a gallery at
+    all": a site that calls the list something unexpected, or holds a list of
+    objects rather than addresses, is named here with its shape and a sample -
+    rather than a flat "no gallery" over a record with thirty-nine keys in it,
+    twenty-four of which nobody ever saw.
+    """
+    lines = []
+    for key, value in (record or {}).items():
+        name = str(key)
+        wanted = any(word in name.casefold() for word in PHOTO_WORDS)
+        interesting = wanted or isinstance(value, (list, tuple, dict))
+        if not interesting:
+            continue
+        sample = ""
+        entries = value if isinstance(value, (list, tuple)) else [value]
+        for entry in entries:
+            text = _entry_url(entry) if isinstance(entry, dict) else str(entry)
+            if str(text or "").strip():
+                sample = str(text).strip()[:90]
+                break
+        lines.append("%s is %s%s" % (name, shape_of(value),
+                                     (" - e.g. %s" % sample) if sample else ""))
+    return lines
 
 
 def primary_photo(item=None, record=None):
@@ -834,7 +963,16 @@ def prove(field, url, cookie="", staged_url="", now=None, fetch=None,
         #  the fix is different - there is nothing to sign in to.
         result["verdict"] = "unreadable"
         result["plan_refused"] = True
+        result["field_missing"] = bool(planned.get("missing"))
         result["why"] = planned["why"]
+        #  The record itself is the evidence for a refusal that is about the
+        #  record's shape: its keys, and what each field that could hold photos
+        #  holds. Kept on the result so the proof file carries it without the
+        #  record ever being written into a file - the values are cut to a line
+        #  each and the session is not in it.
+        result["record_shape"] = {
+            "keys": record_keys(record),
+            "photo_fields": photo_field_report(record)}
         return result
     result.update({key: planned[key] for key in
                    ("old", "trial", "restore", "note", "label")})
@@ -1006,6 +1144,12 @@ def advice(result):
                 "through: the proof file is the evidence, and no write path "
                 "should be built on it until it is settled."
                 % label.lower())
+    if not_here(result):
+        return ("Nothing to do on the site and nothing to fix here: this "
+                "listing's record has no such field, so there is nothing a "
+                "proof could write or put back. The keys above are everything "
+                "the record holds - if the field should exist, that is a "
+                "plugin question, and the proof file is the evidence for it.")
     if verdict == "unreadable" and result.get("plan_refused"):
         #  The record answered; the plan said no. Signing in again would change
         #  nothing, so it is not suggested.
@@ -1173,8 +1317,26 @@ def photo_for_proof(item=None, record=None, staged="", staged_rows=None,
     return ""
 
 
+def missing_result(field, record=None, why=""):
+    """A field the site's record does not have, reported like the proof would.
+
+    The proof knows this when it reads the record, and so does a caller that
+    has already read it: a field that is not there must not be turned into a
+    "no photo found" skip, because that reads as something a person could fix.
+    """
+    result = skipped(field, str(why or "the record does not carry it"))
+    result["verdict"] = "unreadable"
+    result["plan_refused"] = True
+    result["field_missing"] = True
+    if record is not None:
+        result["record_shape"] = {"keys": record_keys(record),
+                                  "photo_fields": photo_field_report(record)}
+    return result
+
+
 def prove_listing(url, cookie="", listing=None, fields=None, photo="",
-                  gallery_photo="", skip=None, why=None, now=None, fetch=None,
+                  gallery_photo="", skip=None, why=None, absent=None,
+                  record=None, now=None, fetch=None,
                   send=None, on_step=None):
     """Prove every field on one listing, one after another, and collect it.
 
@@ -1190,7 +1352,14 @@ def prove_listing(url, cookie="", listing=None, fields=None, photo="",
     results = []
     already = {str(field) for field in (skip or ())}
     reasons = dict(why or {})
+    absent = {str(field) for field in (absent or ())}
     for field in (fields or proof_fields()):
+        if field in absent:
+            #  The record was read and has no such field: said as that, not as
+            #  a photo that could not be found.
+            results.append(missing_result(field, record=record,
+                                          why=reasons.get(field, "")))
+            continue
         if field in already:
             results.append(skipped(
                 field, "was settled by an earlier proof and was not written "
@@ -1234,10 +1403,29 @@ def proven_results(results):
     return [result for result in (results or []) if settled_result(result)]
 
 
+def not_here(result):
+    """Whether the site's own record has no such field.
+
+    That is not a failure to fix and not a fault in the app: the listing's
+    record does not carry the field at all, so there is nothing to write and
+    nothing to put back. It is said plainly, once, and it is not counted as
+    something that needs attention - there is no action a person can take on
+    the site.
+    """
+    return bool(result) and bool(result.get("field_missing")) and \
+        bool(result.get("plan_refused"))
+
+
+def unavailable_results(results):
+    """The fields this site's record cannot hold."""
+    return [result for result in (results or []) if not_here(result)]
+
+
 def problem_results(results):
     """The fields that still need attention: refused, ignored, unknown, or not
-    attempted at all."""
-    return [result for result in (results or []) if not settled_result(result)]
+    attempted at all - but not a field the site does not have."""
+    return [result for result in (results or [])
+            if not settled_result(result) and not not_here(result)]
 
 
 def listing_sentence(results):
@@ -1249,6 +1437,14 @@ def listing_sentence(results):
     bad = problem_results(results)
     fresh = [result for result in good if proven(result)]
     earlier = len(good) - len(fresh)
+    absent = unavailable_results(results)
+    absent_names = ", ".join(result.get("label") or result.get("field")
+                             for result in absent)
+    if not bad and absent:
+        return ("%d of %d fields are settled on this listing; %s %s not on "
+                "this site's record, so there is nothing to prove or write "
+                "there." % (len(good), len(results), absent_names,
+                            "is" if len(absent) == 1 else "are"))
     if not bad:
         if earlier:
             return ("All %d fields are settled on this listing: %d proved now, "
@@ -1378,8 +1574,25 @@ def report_text(result, listing=None, when=None, app_version=""):
             lines.append("Final:      %s"
                          % value_text(field, result.get("final")))
     lines += ["", "Result:     %s" % (result.get("why") or sentence(result)),
-              "In short:   %s" % sentence(result),
-              "", "Steps:"]
+              "In short:   %s" % sentence(result)]
+    shape = result.get("record_shape") or {}
+    if shape and str(shape.get("keys") or "") in str(result.get("why") or ""):
+        #  The refusal sentence already carries every key and the photo-bearing
+        #  fields; repeating them under a heading is the same paragraph twice.
+        shape = {}
+    if shape:
+        #  A refusal about the record's shape is only useful with the shape in
+        #  the file: this is what a plugin author needs to see, and it is what
+        #  the person can read to know there is nothing to fix on the site.
+        lines += ["", "The record's keys: %s" % shape.get("keys", "")]
+        fields = shape.get("photo_fields") or []
+        if fields:
+            lines.append("Fields that could hold photos:")
+            lines += ["  " + line for line in fields]
+        else:
+            lines.append("No field on the record is a list of photos, and none "
+                         "is named for pictures.")
+    lines += ["", "Steps:"]
     for number, step in enumerate(result.get("steps") or [], 1):
         status = step.get("status")
         lines.append("  %d. %s -> %s" % (

@@ -664,16 +664,18 @@ def test_a_settled_field_is_not_reported_as_broken():
           not any("Syl-Apps" in line or "Pit-Martin" in line
                   for _tag, line in app.lines) and
           "Syl-Apps" not in json.dumps(asked), str(asked))
-    check("five fields are settled and one is not",
-          any("5 of 6 fields are settled" in line for _tag, line in app.lines)
-          and any("Gallery photos need" in line
-                  for _tag, line in app.lines), str(app.lines[-4:]))
-    check("and only the field that is missing is put in front of the person",
-          any(kind == "showwarning" and "Gallery photos" in str(payload)
-              for kind, payload in harness._BOX.shown) and
-          not any("Price" in str(payload) for _kind, payload
+    check("five fields are settled, and the gallery is not on this record",
+          any("5 of 6 fields are settled" in line and
+              "Gallery photos is not on this site's record" in line
+              for _tag, line in app.lines), str(app.lines[-4:]))
+    infos = [str(payload) for kind, payload in harness._BOX.shown
+             if kind == "showinfo"]
+    check("and it is put in front of the person as information, not a warning",
+          any("no such field" in text and "Gallery photos" in text
+              for text in infos) and
+          not any(kind == "showwarning" for kind, _payload
                   in harness._BOX.shown),
-          str(harness._BOX.shown)[:400])
+          str(harness._BOX.shown)[:500])
     saved = cs_proof.load_proofs(folder)
     check("the earlier proofs are still remembered",
           all(cs_proof.settled(field, saved) for field in
@@ -1418,7 +1420,7 @@ def test_the_diagnosis_file():
                                   stages=["read", "ids"], plugin="1.0.38",
                                   command="cs-stock.py --stock-out cs-stock.json",
                                   detail=detail, total=2596, editable=0,
-                                  app_version="3.25")
+                                  app_version="3.26")
     check("the file carries the reader's own count line",
           "2596 listings, 0 with a real product id" in text, "")
     check("the app's own count is beside it, so the two can be compared",
@@ -1873,7 +1875,7 @@ def test_the_real_diagnosis_from_the_shop():
                 "--cookie-file cookie.txt",
         detail={"url": cs_edit.detail_url(row["id"]), "status": 200,
                 "content_type": "application/json", "body": json.dumps(record)},
-        total=2596, editable=0, app_version="3.25",
+        total=2596, editable=0, app_version="3.26",
         source="the read this window made at 2026-11-02 13:03:59")
 
     check("the file no longer carries the progress markers",

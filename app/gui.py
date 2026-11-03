@@ -77,7 +77,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.25"
+VERSION = "3.26"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -10757,13 +10757,20 @@ def build_csledit(parent, app):
             gallery_photo = photos["gallery"] if "images" in todo else ""
             reasons = {"primaryImageUrl": photos["why_main"],
                        "images": photos["why_gallery"] or photos["why_main"]}
+            #  A gallery the record simply does not have is not a photo that
+            #  could not be found: it is a field this site does not keep. The
+            #  record was read above, so that is known before anything runs.
+            record = answer.get("record")
+            absent = [field for field in todo if field == "images" and
+                      record is not None and not cs_proof.gallery_key(record)]
             #  Every field is passed, and the settled ones are *skipped*: the
             #  report is about the whole listing, so a field an earlier proof
             #  settled is counted as done rather than left out.
             results = cs_proof.prove_listing(
                 answer["address"], answer["cookie"], listing=item,
                 fields=everything, skip=settled_here, photo=photo,
-                gallery_photo=gallery_photo, why=reasons)
+                gallery_photo=gallery_photo, why=reasons, absent=absent,
+                record=record)
             return {"results": results, "answer": answer, "photo": photo,
                     "gallery_photo": gallery_photo}
 
@@ -10777,12 +10784,16 @@ def build_csledit(parent, app):
             results = payload.get("results") or []
             for result in results:
                 #  A field an earlier proof settled is done, not broken: it
-                #  reads as settled, in the colour a settled field has.
+                #  reads as settled, in the colour a settled field has. A
+                #  field this site's record simply does not have is neither -
+                #  it is information, and it says so in the dim colour.
                 good = cs_proof.settled_result(result)
-                say(cs_proof.sentence(result), "ok" if good else "err")
+                absent = cs_proof.not_here(result)
+                say(cs_proof.sentence(result),
+                    "ok" if good else "dim" if absent else "err")
                 fix = cs_proof.advice(result)
                 if fix and not good:
-                    say("  What to do: %s" % fix, "err")
+                    say("  What to do: %s" % fix, "dim" if absent else "err")
             #  Only say which photo was written when one really was: a field
             #  that was skipped never saw its photo, and naming it reads as a
             #  write that did not happen.
@@ -10802,6 +10813,7 @@ def build_csledit(parent, app):
             say(cs_proof.listing_sentence(results),
                 "err" if cs_proof.problem_results(results) else "ok")
             problems = cs_proof.problem_results(results)
+            absent = cs_proof.unavailable_results(results)
             if problems:
                 shown = []
                 for result in problems[:8]:
@@ -10820,6 +10832,21 @@ def build_csledit(parent, app):
                         "The proof file is saved beside the app: attach it to "
                         "the plugin report if a field needs the plugin's "
                         "route.\n\nProof: %s" % saved[0] if saved else ""),
+                    parent=box.winfo_toplevel())
+            elif absent:
+                #  Nothing to fix and nobody to fix it: the record has no such
+                #  field, so the dialog says what that means and shows the
+                #  keys, rather than warning about work that does not exist.
+                messagebox.showinfo(
+                    "A field this site's record does not have",
+                    "%s\n\n%s\n\nThat is not something to fix on the site: "
+                    "the listing's record simply has no such field, so a proof "
+                    "has nothing to write and nothing to put back. If it "
+                    "should exist, the keys above are what the plugin needs to "
+                    "see.\n\nProof: %s"
+                    % (cs_proof.listing_sentence(results),
+                       cs_proof.sentence(absent[0]),
+                       saved[0] if saved else "(not saved)"),
                     parent=box.winfo_toplevel())
             else:
                 messagebox.showinfo(
