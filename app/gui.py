@@ -53,6 +53,7 @@ import market_stock
 import photo_thumbs
 import sale_preview
 import cs_edit
+import cs_gallery
 import cs_proof
 import cs_record
 import cs_stage
@@ -77,7 +78,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.23"
+VERSION = "3.33"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1351,6 +1352,28 @@ column in Notepad/Excel) and it stops nagging you - and every tool
 run, including the .bat launchers, prints what is still outstanding
 until you do."""
 
+DOCS["editeb"] = """\
+eBay's place in the Edit stock section: the same comparison as the shop's, run
+against your eBay active listings instead of CanadianShopper, and the list of
+what needs attention between it and your website.
+
+eBay publishes no list this app can write to, so nothing is ever changed there
+from this panel - a finished page offers no write button at all rather than one
+that would fail. What the panel does is be exact about the work: the rows that
+need changing are copied onto the clipboard as a worklist, one card per line
+with both counts and the site's own state, ready to paste beside the site's own
+editor. A card can be opened on your website, where the app *can* write its
+count, and a card that is not really a disagreement can be ignored so it stops
+being compared again.
+
+Reading needs a signed-in session, pasted once into ebay-cookie.txt: the whole
+Cookie header at once, on one line or several. eBay checks whether a request
+comes from a browser and answers a refused one with a "Pardon our interruption"
+page; the app recognises that page, says so rather than calling the shop empty,
+and falls back to the page saved from a signed-in browser, newest first, in its
+own folder and in Downloads. A free store is read up to 250 listings, which is
+the whole of it.""" 
+
 DOCS["zerostock"] = """\
 Sweep on the CanadianShopper side: every listing already sitting at
 quantity 0 gets archived (reversible - it can be reactivated later).
@@ -1409,6 +1432,29 @@ readiness checks, and still asks for PUBLISH to be typed.
 A pair is only made when a shared SKU or the title identifies the same card - a
 wrong pair would accuse a card that is fine - and an unpaired card is never
 called wrong, only "on one side"."""
+
+DOCS["editfb"] = """\
+Facebook's place in the Edit stock section: the same comparison as the shop's,
+run against your Facebook selling page instead of CanadianShopper, and the list
+of what needs attention between it and your website.
+
+Facebook publishes no list this app can write to, so nothing is ever changed
+there from this panel - a finished page offers no write button at all rather
+than one that would fail. What the panel does is be exact about the work: the
+rows that need changing are copied onto the clipboard as a worklist, one card
+per line with both counts and the site's own state, ready to paste beside the
+site's own editor. A card can be opened on your website, where the app *can*
+write its count, and a card that is not really a disagreement can be ignored so
+it stops being compared again.
+
+Reading needs a signed-in session, pasted once into fb-cookie.txt: the whole
+Cookie header at once, on one line or several. If Facebook refuses the request
+- it answers HTTP 400 to anything it thinks is not a browser - the app looks
+for the page saved from a signed-in browser, newest first, in its own folder
+and in Downloads, and reads that instead, saying which file it used. Facebook
+renders its first batch and loads the rest as you scroll, so a page saved after
+scrolling covers more than a request can; when it does, that page is the one
+compared.""" 
 
 DOCS["csedit"] = """\
 Find one CanadianShopper listing and change it here, without opening the vendor
@@ -2052,7 +2098,15 @@ TOOLTIPS = {
     "Save the limit": "Remember this number in User Settings, where the same value is used by Fill your eBay store every time it chooses",
     "Open the last list": "Open the page written by the last selection (or the newest one on disk); nothing is read again",
     "Save a read diagnosis...": "Write one small text file for a plugin report: the read's own output, the progress phases it reported, one listing row and the detail response its lookup would have read - sanitised, with no cookie, token or password in it",
+    "Find and edit a CanadianShopper listing...": "Open the listing panel on this same section's job: search CanadianShopper by card name, SKU or id, and change one listing there - title, price, stock, state, and the fields a saved proof has settled",
+    "Archive listings already at 0...": "Sweep CanadianShopper for listings sitting at quantity 0 and archive them one at a time, without deleting anything",
+    "Open the %s cookie file": "Open the private file this marketplace's session cookie goes in - the whole Cookie header can be pasted at once, on one line or several, and the file never leaves this computer",
+    "Read the saved %s page": "Read the newest page saved from a browser signed in to this marketplace - found in the app's folder and in Downloads, recognised by what is in it - and compare that, for when the site refuses the app's own request",
+    "Copy what needs changing": "Put the rows on the clipboard as a worklist - one card per line with both counts and the site's own state - for pasting into that site's own editor, because nothing is written there from here",
     "Write the proof": "Write one field on the selected CanadianShopper listing, read the record back, and put the old value back - a real change for the seconds it takes, and the only way to prove the site honours that field; one field, one listing, and nothing on your website",
+    "Prove every field...": "Prove every field this app can write on the selected listing in one job: each field is written, read back and put back before the next is touched, an already-settled field is skipped, and a field that does not settle is reported with what to do about it; one confirmed click, and nothing unattended",
+    "Add a photo to the gallery...": "Put one photo you choose into the selected listing's gallery - the second picture a card listing should have. The gallery is its own collection of rows (productImage), keyed by the listing's record id, not a field on that record, so the photo is added as a row of its own and the gallery is read back: if the site does not show it, nothing changed and the answer says so. The photo stays, because a gallery photo is what you asked for - the proof is the one that adds a row and removes that same row again",
+    "Remove a photo from the gallery...": "Take one photo off the selected listing's gallery. The gallery is read first so you choose from the photos it really holds, and the photo comes off by the id of its own row - then the gallery is read back again to show it gone. Nothing else on the listing is touched, and no proof is needed: the removal is shown by that second read.",
     "Edit the record's fields...": "Edit this listing's own record - price, title, description, stock count and main photo, each one open only when a saved proof shows the site keeps it, and only the fields you change are sent, then read back; no product id is used and your website is never touched",
     "Set the selected listing's price...": "Set the price on the selected listing's own record - one field, at the record's own id, with the new price read back afterwards; offered only for a field a proof has settled, so it works on listings that carry no product id, and your website is never touched",
     "Choose the cards:": "What decides which unlisted cards come first - dearest, newest, oldest, cheapest, or in the order typed below; the choice is remembered",
@@ -3446,8 +3500,8 @@ class App(tk.Tk):
 #  menu, the tabs view and the wizard pages.
 PANEL_ORDER = ["cookie", "pipeline", "combine", "ebayfill", "stage",
                "importpanel",
-               "wire", "rerun", "sold", "checklist", "stock", "csedit",
-               "zerostock", "ordersheet", "square",
+               "wire", "rerun", "sold", "checklist", "stock", "editfb",
+               "editeb", "csedit", "zerostock", "ordersheet", "square",
                "newphotos", "ordertext", "quote", "markets", "logs",
                "plugins"]
 #  Four jobs, in the order a batch goes through them: sell something, make the
@@ -3459,9 +3513,23 @@ PANEL_ORDER = ["cookie", "pipeline", "combine", "ebayfill", "stage",
 GROUPS_FULL = [("Sell to a customer", ["ordertext", "quote"]),
                ("Sell a new batch", ["pipeline", "combine", "ebayfill",
                                      "markets"]),
-               ("After a sale", ["sold", "checklist", "stock", "csedit",
-                                 "zerostock", "ordersheet"]),
-               ("Photos", ["square", "rerun", "newphotos"])]
+               ("After a sale", ["sold", "checklist", "ordersheet"]),
+               #  One section per marketplace, because comparing and editing
+               #  are the same job: the shop's own editing, and the two sites
+               #  the app can only read. Finding a CS listing and archiving the
+               #  ones at zero now live inside the CanadianShopper section.
+               ("Edit stock", ["stock", "editfb", "editeb"])]
+
+
+#: Panels that belong *inside* another group's tab without being a task of
+#: their own. The shop's place in Edit stock is the whole of the shop's *and*
+#: its photos' editing - comparing, finding one listing, sweeping the zeros,
+#: squaring a photo, re-pointing the photos that are already hosted, and
+#: replacing a card's pictures - so the tabs view stacks those inside the one
+#: tab, where the task menu reaches them from the buttons on the panel itself.
+#: Without the add-on none of them exists.
+TAB_EXTRA = {"Edit stock": ["csedit", "zerostock", "square", "rerun",
+                            "newphotos"]}
 
 
 def groups_for(has_cs):
@@ -3472,11 +3540,22 @@ def groups_for(has_cs):
     """
     if has_cs:
         return GROUPS_FULL
+    #  eBay and Facebook need none of the plugin - they are read with a
+    #  signed-in session - so their half of the Edit stock section is offered
+    #  in the core menu too. Only the shop's own place needs the plugin.
+    #  With the add-on the photo tools live inside the shop's place in Edit
+    #  stock, where the shop's photos are. Without it there is no shop place
+    #  to put them in, and squaring a photo and replacing a card's pictures
+    #  need no plugin - so they go at the top of the same Edit stock section
+    #  rather than back into a section of their own. A "Photos" section was a
+    #  fifth heading for two buttons that are stock work, and it appeared
+    #  exactly when the add-on was not seen - which is the case a bare
+    #  checkout and a first run both hit.
     return [("Sell to a customer", ["ordertext", "quote"]),
             ("Sell a new batch", ["pipeline", "combine", "ebayfill",
                                   "markets"]),
             ("After a sale", ["sold", "checklist", "ordersheet"]),
-            ("Photos", ["square", "newphotos"])]
+            ("Edit stock", ["square", "newphotos", "editfb", "editeb"])]
 TITLES = {
     "cookie": "User settings",
     "pipeline": "Run the card pipeline (new batch)",
@@ -3488,7 +3567,9 @@ TITLES = {
     "rerun": "Re-point photos",
     "sold": "A card sold - mark it everywhere",
     "checklist": "The tick-off checklist",
-    "stock": "Stock on every site",
+    "stock": "Edit stock - CanadianShopper",
+    "editfb": "Edit stock - Facebook",
+    "editeb": "Edit stock - eBay",
     "csedit": "Find and edit a CanadianShopper listing",
     "zerostock": "Archive CanadianShopper listings already at 0",
     "ordersheet": "Print an order as a PDF",
@@ -3511,7 +3592,9 @@ MENU_LABELS = {
     "rerun": "Re-point photos",
     "sold": "A card sold",
     "checklist": "The checklist",
-    "stock": "Compare stock",
+    "stock": "CanadianShopper",
+    "editfb": "Facebook",
+    "editeb": "eBay",
     "csedit": "Find a CS listing",
     "zerostock": "Archive listings at 0",
     "ordersheet": "Print an order",
@@ -3534,6 +3617,10 @@ BLURBS = {
     "rerun": "CanadianShopper plugin: restore cached front/back photos after an import. No Woo export or image uploads needed; preview before applying.",
     "sold": "Record where the sale happened and follow up on the other listings.",
     "checklist": "See what is still outstanding and tick it off.",
+    "editfb": "Compare stock with Facebook and mark what needs changing "
+              "there, without changing anything on either site.",
+    "editeb": "Compare stock with eBay and mark what needs changing there, "
+              "without changing anything on either site.",
     "stock": "Find the cards whose counts disagree between your website "
              "and CanadianShopper, sort the list, and fix what needs it.",
     "csedit": "Search CanadianShopper by card name, then rename, reprice, "
@@ -6400,7 +6487,23 @@ def build_sold(parent, app):
                   anchor="w", pady=(6, 0))
 
 
-def build_stock(parent, app):
+def build_stock(parent, app, site_id="cs"):
+    """Compare the website with one marketplace, and edit that marketplace.
+
+    The comparison engine is the same for all three, so the panel is: built
+    once for CanadianShopper (where the correction can be written) and once
+    each for eBay and Facebook (where it cannot - neither publishes an API, and
+    the app reads the page the seller is signed in to). What differs is the
+    site's own read, the actions that site can take, and the words - so one
+    panel with a site beside it, rather than three copies of the same list that
+    would drift apart the first time one of them was fixed.
+    """
+    site_id = str(site_id or "cs")
+    market_site = site_id if site_id in market_stock.SITES else ""
+    is_cs = not market_site
+    site_info = market_stock.SITES.get(market_site) or {}
+    site_label = site_info.get("label") or "CanadianShopper"
+    market_panel = {"ebay": "editeb", "facebook": "editfb"}.get(market_site, "")
     #  One job, on demand: which cards have a different number on two sites,
     #  and then the correction. Nothing here runs during a sale - the sale
     #  panel says plainly that comparing is a separate job.
@@ -6410,7 +6513,7 @@ def build_stock(parent, app):
     #  count is one confirmed click for the whole list, a selection for the
     #  exceptions, and a card that only exists on one side can be dismissed so
     #  it stops coming back.
-    panel_header(parent, app, "stock")
+    panel_header(parent, app, market_panel or "stock")
     box = ttk.Frame(parent)
     box.pack(fill="x")
 
@@ -6425,7 +6528,7 @@ def build_stock(parent, app):
     if saved_sort not in dict(stock_compare.SORTS):
         saved_sort = stock_compare.DEFAULT_SORT
     state = {"card": focus, "rows": [], "pairs": [], "only_woo": [],
-             "only_other": [], "label": "CanadianShopper", "mode": "count",
+             "only_other": [], "label": site_label, "mode": "count",
              "skipped": 0, "catalog": {}, "items": [], "sort": saved_sort,
              "stale": None, "started": None}
     statuses = {}
@@ -7962,8 +8065,9 @@ def build_stock(parent, app):
                     "re-read a repeated page once; update the plugin and "
                     "compare again before acting on the states above." %
                     (reader, CS_STOCK_CACHE_VERSION), "warn")
-            publish_ready.pack(anchor="w", pady=(3, 0))
-        else:
+            if publish_ready is not None:
+                publish_ready.pack(anchor="w", pady=(3, 0))
+        elif publish_ready is not None:
             publish_ready.pack_forget()
         if drafts:
             app.console_line(
@@ -8587,27 +8691,32 @@ def build_stock(parent, app):
         anchor="w")
     row = ttk.Frame(box)
     row.pack(anchor="w", pady=(2, 0))
-    ttk.Button(row, text="Compare stock (WooCommerce and CanadianShopper)",
-               style="Task.TButton", command=compare_cs).pack(side="left")
-    ttk.Button(row, text="Compare stock with eBay",
-               command=lambda: compare_market("ebay")).pack(side="left", padx=8)
-    ttk.Button(row, text="Compare stock with Facebook",
-               command=lambda: compare_market("facebook")).pack(side="left")
+    if is_cs:
+        #  The site this panel edits, and the two that are compared elsewhere:
+        #  each marketplace has its own section, with its own button, so a
+        #  button can never compare one site and then fix another.
+        ttk.Button(row, text="Compare stock (WooCommerce and CanadianShopper)",
+                   style="Task.TButton", command=compare_cs).pack(side="left")
+    else:
+        ttk.Button(row, text="Compare stock with %s" % site_label,
+                   style="Task.TButton",
+                   command=lambda s=market_site: compare_market(s)).pack(
+                       side="left")
 
     #  The page the site saved is found, not chosen: the app looks in its own
     #  folder and in Downloads, newest first, and recognises the page by what
     #  is in it. Picking a file is still there for the odd case of wanting an
-    #  older or a downloaded one.
-    row_saved = ttk.Frame(box)
-    row_saved.pack(anchor="w", pady=(2, 0))
-    ttk.Button(row_saved, text="Read the saved eBay page",
-               command=lambda: read_saved_page("ebay")).pack(side="left")
-    ttk.Button(row_saved, text="Read the saved Facebook page",
-               command=lambda: read_saved_page("facebook")).pack(
-                   side="left", padx=8)
-    ttk.Button(row_saved, text="Choose a saved page...",
-               command=lambda: read_saved_page(None, choose=True)).pack(
-                   side="left")
+    #  older or a downloaded one. CanadianShopper needs none of it - it is read
+    #  through the plugin - so this row belongs to the marketplace panels.
+    if not is_cs:
+        row_saved = ttk.Frame(box)
+        row_saved.pack(anchor="w", pady=(2, 0))
+        ttk.Button(row_saved, text="Read the saved %s page" % site_label,
+                   command=lambda s=market_site: read_saved_page(s)).pack(
+                       side="left")
+        ttk.Button(row_saved, text="Choose a saved page...",
+                   command=lambda: read_saved_page(None, choose=True)).pack(
+                       side="left", padx=8)
 
     #  A read of a whole shop takes minutes; this compares the list from the
     #  last one without starting another, and says how old it is. Its own row,
@@ -8734,121 +8843,254 @@ def build_stock(parent, app):
 
     #  The actions belong to the list and sit right under it, so "fix this" is
     #  never a scroll away from what it fixes.
+    def copy_changes():
+        """The list as a worklist on the clipboard - the edit these sites take.
+
+        eBay and Facebook publish no API this app can write to and the app
+        never sends a change to either, so what it can do is be precise about
+        what needs changing and put it one paste away from the site's own
+        editor: a card per line, with the counts and the site's own state.
+        """
+        rows = selected_rows() or state["rows"]
+        if not rows:
+            messagebox.showinfo(
+                "Nothing to copy",
+                "Compare first: the list is what would be copied, and it is "
+                "empty.", parent=box.winfo_toplevel())
+            return
+        lines = [stock_compare.label_action(row, state["label"], state["mode"])
+                 for row in rows]
+        try:
+            app.clipboard_clear()
+            app.clipboard_append("\n".join(lines))
+        except Exception as exc:                 # no clipboard on this desktop
+            messagebox.showwarning(
+                "Could not copy",
+                "The list could not be put on the clipboard: %s" % exc,
+                parent=box.winfo_toplevel())
+            return
+        app.console_line(
+            "%d row%s copied: the cards that differ between your website and "
+            "%s." % (len(rows), "" if len(rows) == 1 else "s", state["label"]),
+            "ok")
+
     action_row = ttk.Frame(box)
-    first = ttk.Frame(action_row)
-    first.pack(anchor="w")
-    ttk.Button(first, text="Set CanadianShopper to the website's counts...",
-               style="Task.TButton", command=set_all).pack(side="left")
-    ttk.Button(first, text="Fix the selected cards...",
-               command=set_selected).pack(side="left", padx=6)
-    second = ttk.Frame(action_row)
-    second.pack(anchor="w", pady=(3, 0))
-    ttk.Button(second, text="Set the website to the selected cards' counts...",
-               command=set_website_selected).pack(side="left")
-    ttk.Button(second, text="Open the selected cards on the website",
-               command=open_on_website).pack(side="left", padx=6)
-    third = ttk.Frame(action_row)
-    third.pack(anchor="w", pady=(3, 0))
-    ttk.Button(third, text="Set CanadianShopper to the website's prices...",
-               style="Task.TButton",
-               command=reprice_all).pack(side="left")
-    ttk.Button(third, text="Reprice the selected cards...",
-               command=reprice_selected).pack(side="left", padx=6)
-    third_l = ttk.Frame(action_row)
-    third_l.pack(anchor="w", pady=(3, 0))
-    ttk.Button(third_l, text="List the selected cards on CanadianShopper...",
-               style="Task.TButton", command=list_selected).pack(side="left")
-    ttk.Button(third_l, text="List every website-only card...",
-               command=list_every_website_only_card).pack(side="left", padx=6)
-    fifth = ttk.Frame(action_row)
-    fifth.pack(anchor="w", pady=(3, 0))
-    ttk.Button(fifth, text="Create website products for the selected cards...",
-               style="Task.TButton",
-               command=create_website_products).pack(side="left")
-    ttk.Button(fifth, text="Create website products for every "
-                           "CanadianShopper-only card...",
-               command=create_products_every_listing).pack(side="left", padx=6)
-    fourth = ttk.Frame(action_row)
-    fourth.pack(anchor="w", pady=(3, 0))
-    ttk.Button(fourth, text="Ignore the selected cards",
-               command=ignore_selected).pack(side="left")
-    ttk.Button(fourth, text="Restore ignored cards...",
-               command=restore_ignored).pack(side="left", padx=6)
+    if not is_cs:
+        #  The marketplace panels cannot write to the site, so their actions
+        #  are the honest ones: copy the worklist, open the website side, and
+        #  stop asking about a card.
+        market_row = ttk.Frame(action_row)
+        market_row.pack(anchor="w")
+        ttk.Button(market_row, text="Copy what needs changing",
+                   style="Task.TButton", command=copy_changes).pack(
+                       side="left")
+        ttk.Button(market_row, text="Open the selected cards on the website",
+                   command=open_on_website).pack(side="left", padx=6)
+        quiet_row = ttk.Frame(action_row)
+        quiet_row.pack(anchor="w", pady=(3, 0))
+        ttk.Button(quiet_row, text="Ignore the selected cards",
+                   command=ignore_selected).pack(side="left")
+        ttk.Button(quiet_row, text="Restore ignored cards...",
+                   command=restore_ignored).pack(side="left", padx=6)
+        action_row.pack_forget()
+    #  The CanadianShopper corrections exist only on its own panel: on eBay
+    #  and Facebook there is nowhere to write a count to, so the buttons are
+    #  not built at all - not built and hidden, which is a widget that could
+    #  still be pressed.
+    if is_cs:
+        cs_rows = ttk.Frame(action_row)
+        cs_rows.pack(anchor="w")
+        first = ttk.Frame(cs_rows)
+        first.pack(anchor="w")
+        ttk.Button(first, text="Set CanadianShopper to the website's counts...",
+                   style="Task.TButton", command=set_all).pack(side="left")
+        ttk.Button(first, text="Fix the selected cards...",
+                   command=set_selected).pack(side="left", padx=6)
+        second = ttk.Frame(cs_rows)
+        second.pack(anchor="w", pady=(3, 0))
+        ttk.Button(second, text="Set the website to the selected cards' counts...",
+                   command=set_website_selected).pack(side="left")
+        ttk.Button(second, text="Open the selected cards on the website",
+                   command=open_on_website).pack(side="left", padx=6)
+        third = ttk.Frame(cs_rows)
+        third.pack(anchor="w", pady=(3, 0))
+        ttk.Button(third, text="Set CanadianShopper to the website's prices...",
+                   style="Task.TButton",
+                   command=reprice_all).pack(side="left")
+        ttk.Button(third, text="Reprice the selected cards...",
+                   command=reprice_selected).pack(side="left", padx=6)
+        third_l = ttk.Frame(cs_rows)
+        third_l.pack(anchor="w", pady=(3, 0))
+        ttk.Button(third_l, text="List the selected cards on CanadianShopper...",
+                   style="Task.TButton", command=list_selected).pack(side="left")
+        ttk.Button(third_l, text="List every website-only card...",
+                   command=list_every_website_only_card).pack(side="left", padx=6)
+        fifth = ttk.Frame(cs_rows)
+        fifth.pack(anchor="w", pady=(3, 0))
+        ttk.Button(fifth, text="Create website products for the selected cards...",
+                   style="Task.TButton",
+                   command=create_website_products).pack(side="left")
+        ttk.Button(fifth, text="Create website products for every "
+                               "CanadianShopper-only card...",
+                   command=create_products_every_listing).pack(side="left", padx=6)
+        fourth = ttk.Frame(cs_rows)
+        fourth.pack(anchor="w", pady=(3, 0))
+        ttk.Button(fourth, text="Ignore the selected cards",
+                   command=ignore_selected).pack(side="left")
+        ttk.Button(fourth, text="Restore ignored cards...",
+                   command=restore_ignored).pack(side="left", padx=6)
     action_row.pack_forget()
 
     #  Shown only when a comparison finds listings that exist but are not on
     #  sale: a count cannot activate those, publishing can.
-    publish_ready = ttk.Button(
-        box, text="Publish the ready drafts...",
-        command=lambda: publish_drafts(
-            0, "Some of these cards have a draft listing on CanadianShopper. "
-               "Publishing activates the drafts that pass every readiness "
-               "check; a draft that is not ready is left alone."))
-    publish_ready.pack_forget()
+    if is_cs:
+        publish_ready = ttk.Button(
+            box, text="Publish the ready drafts...",
+            command=lambda: publish_drafts(
+                0, "Some of these cards have a draft listing on "
+                   "CanadianShopper. Publishing activates the drafts that pass "
+                   "every readiness check; a draft that is not ready is left "
+                   "alone."))
+        publish_ready.pack_forget()
+    else:
+        #  Nothing on eBay or Facebook is published from here, so the button
+        #  that would is not built: a widget that cannot do its job in this
+        #  panel is a defect, not a placeholder.
+        publish_ready = None
 
+    #  Inside a tab the shop's two other panels are already stacked under this
+    #  one, so a button that jumped to the task menu to open them would be a
+    #  button that hides the panel right below it. A sectioned parent gets the
+    #  panels; the task menu, which shows one panel at a time, gets the buttons.
+    sectioned = getattr(parent, "_section_titled", False)
+    if is_cs:
+        if not sectioned:
+            #  Where the two CS jobs that used to be their own sections now
+            #  live: this section is the shop's editing, so finding a listing
+            #  and archiving the ones at zero belong beside the comparison
+            #  rather than in two more places to remember.
+            nav_row = ttk.Frame(box)
+            nav_row.pack(anchor="w", pady=(8, 0))
+            find_btn = ttk.Button(
+                nav_row, text="Find and edit a CanadianShopper listing...",
+                command=lambda: app.show_panel("csedit"))
+            find_btn.pack(side="left")
+            add_tooltip(find_btn,
+                        "Search CanadianShopper by card name, SKU or id and "
+                        "change one listing there - the same panel, opened "
+                        "from this section")
+            sweep_btn = ttk.Button(
+                nav_row, text="Archive listings already at 0...",
+                command=lambda: app.show_panel("zerostock"))
+            sweep_btn.pack(side="left", padx=6)
+            add_tooltip(sweep_btn,
+                        "Sweep CanadianShopper for listings sitting at "
+                        "quantity 0 and archive them, one at a time, without "
+                        "deleting anything")
+            #  The photos of the listings being edited belong here too: a
+            #  square that will not upload, a listing pointing at the wrong
+            #  file, and a card that needs its pictures replaced are all the
+            #  same job as the row above them. In a tab these are stacked
+            #  underneath (TAB_EXTRA), so the buttons are built only where a
+            #  click has somewhere to go.
+            photo_row = ttk.Frame(box)
+            photo_row.pack(anchor="w", pady=(4, 0))
+            for text, wanted, tip in (
+                    ("Square up a photo...", "square",
+                     "Pad one photo (or a folder of them) onto white and "
+                     "save a square copy to upload by hand"),
+                    ("Re-point photos...", "rerun",
+                     "Point listings at photos that are already hosted, "
+                     "from the cache, without uploading anything again"),
+                    ("Replace card photos...", "newphotos",
+                     "Find a card and replace its pictures on the "
+                     "website")):
+                nav = ttk.Button(photo_row, text=text,
+                                 command=lambda pid=wanted:
+                                 app.show_panel(pid))
+                nav.pack(side="left", padx=(0, 6))
+                add_tooltip(nav, tip)
+        ttk.Label(box,
+                  text="The list is what needs attention: a card whose two "
+                       "counts differ, a card whose listing on the other site "
+                       "is not on sale, or a card that exists on one side "
+                       "only. A card at zero on your website that is not on "
+                       "the other site is not listed: there is nothing to set "
+                       "and nothing to sell. The list can be sorted from the "
+                       "chooser above it, and the read shows a progress bar "
+                       "while it runs. The website is usually the right one, "
+                       "so the first button sets every differing count to the "
+                       "website's - after showing exactly what would change "
+                       "and asking. Select rows to fix or ignore just those; "
+                       "ignoring a card that is not on the other site stops it "
+                       "being compared again, and nothing on either site is "
+                       "changed by comparing or by ignoring. When the website "
+                       "is the one that is wrong, select the card and set the "
+                       "website to the other side's count - the same "
+                       "confirmation applies, and Read/Write keys are needed "
+                       "- or open its product page and change it there. A "
+                       "card that is on the website and no longer on "
+                       "CanadianShopper can be put back: the listing buttons "
+                       "write the same import file the batch pipeline writes, "
+                       "from the website product itself, then offer to import "
+                       "it and publish the drafts - all with the publisher's "
+                       "own confirmations, including the typed PUBLISH.",
+                  style="Dim.TLabel", wraplength=680,
+                  justify="left").pack(anchor="w", pady=(6, 0))
+        return
+
+    # ------------------------------------------------- eBay / Facebook only
+    info = site_info
     ttk.Label(box,
-              text="The list is what needs attention: a card whose two counts "
-                   "differ, a card whose listing on the other site is not on "
-                   "sale, or a card that exists on one side only. A card at "
-                   "zero on your website that is not on the other site is not "
-                   "listed: there is nothing to set and nothing to sell. The "
-                   "list can be sorted from the chooser above it, and the "
-                   "read shows a progress bar while it runs. The "
-                   "website is usually the right one, so the first button sets "
-                   "every differing count to the website's - after showing "
-                   "exactly what would change and asking. Select rows to fix "
-                   "or ignore just those; ignoring a card that is not on the "
-                   "other site stops it being compared again, and nothing on "
-                   "either site is changed by comparing or by ignoring. When "
-                   "the website is the one that is wrong, select the card and "
-                   "set the website to the other side's count - the same "
-                   "confirmation applies, and Read/Write keys are needed - or "
-                   "open its product page and change it there. A card that is "
-                   "on the website and no longer on CanadianShopper can be put "
-                   "back: the listing buttons write the same import file the "
-                   "batch pipeline writes, from the website product itself, "
-                   "then offer to import it and publish the drafts - all with "
-                   "the publisher's own confirmations, including the typed "
-                   "PUBLISH.",
+              text="The list is what needs attention: a card whose count "
+                   "differs, a card whose listing there is not on sale, or a "
+                   "card that exists on one side only. Nothing on %s is "
+                   "changed from here - the site publishes no list this app "
+                   "can write to, so the list is the worklist: select the rows "
+                   "you want and Copy what needs changing, then make the "
+                   "change in the site's own editor; or open the card on your "
+                   "website and change the count there, where the panel can "
+                   "write it. Ignoring a card stops it being compared again "
+                   "without changing anything anywhere." % site_label,
               style="Dim.TLabel", wraplength=680, justify="left").pack(
                   anchor="w", pady=(6, 0))
 
-    # ---------------------------------------------------------- sessions
-    ttk.Label(box, text="Your eBay and Facebook sessions", style="H2.TLabel"
+    ttk.Label(box, text="Your %s session" % site_label, style="H2.TLabel"
               ).pack(anchor="w", pady=(12, 0))
-    for site_id, caption in (("ebay", "Open the eBay cookie file"),
-                             ("facebook", "Open the Facebook cookie file")):
-        info = market_stock.SITES[site_id]
-        line = ttk.Frame(box)
-        line.pack(anchor="w", pady=(2, 0))
-        ttk.Button(line, text=caption,
-                   command=lambda s=site_id: open_market_cookie(app, s)
-                   ).pack(side="left")
-        label = ttk.Label(line, text="no session saved" if not (
-            BASE / info["cookie"]).is_file() else "session saved",
-            style="Dim.TLabel")
-        label.pack(side="left", padx=(6, 0))
-        statuses[site_id] = label
+    line = ttk.Frame(box)
+    line.pack(anchor="w", pady=(2, 0))
+    cookie_btn = ttk.Button(
+        line, text="Open the %s cookie file" % site_label,
+        command=lambda s=market_site: open_market_cookie(app, s))
+    cookie_btn.pack(side="left")
+    add_tooltip(cookie_btn,
+                "The private file the %s session cookie goes in; the app reads "
+                "the page you are signed in to, and nothing is ever written "
+                "back to the site" % site_label)
+    label = ttk.Label(line, text="no session saved" if not (
+        BASE / info["cookie"]).is_file() else "session saved",
+        style="Dim.TLabel")
+    label.pack(side="left", padx=(6, 0))
+    statuses[market_site] = label
 
     ttk.Label(box,
-              text="Both sites need a signed-in session, and both check "
-                   "whether a request comes from a browser - eBay answers "
-                   "with a \"Pardon our interruption\" page and Facebook with "
-                   "HTTP 400. Nothing is changed when that happens, and the "
+              text="%s needs a signed-in session, and it checks whether a "
+                   "request comes from a browser - eBay answers with a "
+                   "\"Pardon our interruption\" page and Facebook with HTTP "
+                   "400. Nothing is changed when that happens, and the "
                    "comparison does not stop: the app looks for the page saved "
                    "from a signed-in browser - in its own folder and in "
                    "Downloads, newest first, recognised by what is in it - and "
                    "reads that instead, saying which file it used. Every live "
-                   "read also writes the app's own copy (ebay-active.html, "
-                   "fb-selling.html) from the page the site really sent, and "
-                   "eBay is read up to 250 listings, the whole of a free "
-                   "store. Facebook renders its first batch and loads the rest "
-                   "as you scroll, so a page saved after scrolling covers more "
-                   "than a request can - when it does, that page is the one "
-                   "compared. The cookie goes in ebay-cookie.txt or "
-                   "fb-cookie.txt; the whole Cookie header can be pasted at "
-                   "once, on one line or several. Nothing on either site is "
-                   "ever changed from this panel.",
+                   "read also writes the app's own copy (%s) from the page the "
+                   "site really sent. eBay is read up to 250 listings, the "
+                   "whole of a free store; Facebook renders its first batch "
+                   "and loads the rest as you scroll, so a page saved after "
+                   "scrolling covers more than a request can - when it does, "
+                   "that page is the one compared. The cookie goes in %s; the "
+                   "whole Cookie header can be pasted at once, on one line or "
+                   "several. Nothing on %s is ever changed from this panel."
+                   % (site_label, info["page"], info["cookie"], site_label),
               style="Dim.TLabel", wraplength=680, justify="left").pack(
                   anchor="w", pady=(6, 0))
 
@@ -10198,6 +10440,146 @@ def build_csledit(parent, app):
     diagnosis_btn.pack(side="left", padx=(8, 0))
     add_tooltip(diagnosis_btn, TOOLTIPS["Save a read diagnosis..."])
 
+    def proof_guard(title="Writing a proof"):
+        """The checks every proof starts with: a plugin, a read, a listing.
+
+        Every one of them is a sentence, not a refusal: a proof needs the
+        plugin for the record's address, a listing to address, and that
+        listing's own id - a name is not an address.
+        """
+        if not plugin_ready(title):
+            return None
+        if not state["items"]:
+            messagebox.showinfo(
+                "Nothing read yet",
+                "Read CanadianShopper's listings first: a proof writes one "
+                "field on one listing, so it needs a listing to address.",
+                parent=box.winfo_toplevel())
+            return None
+        item = selected()
+        if item is None:
+            return None
+        if not cs_edit.listing_id(item):
+            messagebox.showinfo(
+                "That listing has no id",
+                "The list carries no id for that listing, so there is no "
+                "record this app could address.\n\nNothing was written.",
+                parent=box.winfo_toplevel())
+            return None
+        return item
+
+    def batch_photos(item):
+        """The staged photos for this batch, and where they were looked for."""
+        batch_dir = canadianshopper_results_dir(app)
+        extra = [app.settings.get("pipeline_dir", str(WORK)), BASE]
+        card = str(item.get("name") or "")
+        staged = cs_proof.absolute_photo(
+            cs_proof.staged_photo(batch_dir, card, extra_folders=extra))
+        #  The batch's staged rows, best title match first. The site's title
+        #  and the CSV's are rarely the same words - a grade on one and not
+        #  the other - so an exact match is the first candidate and the rest
+        #  of the batch is beside it, each with the title it was staged under.
+        ranked = []
+        for row in cs_proof.staged_photos(batch_dir, extra_folders=extra):
+            ranked.append((cs_edit.score(card, {"name": row["title"]}), row))
+        ranked.sort(key=lambda pair: -pair[0])
+        return {"dir": batch_dir, "extra": extra, "card": card,
+                "staged": staged,
+                "rows": [row for _value, row in ranked[:60]]}
+
+    def look_at(item, listing_id):
+        """One background read that answers what the photo questions need.
+
+        The record is what says which photo the listing shows now (never a
+        candidate - it is what a proof has to put back), which other photos
+        the listing carries, and whether the field exists at all. The card's
+        other photo is then looked up at the address the plugin names its
+        pairs with, and only an address that answers with an image is used.
+        """
+        address = cs_edit.detail_url(listing_id, CS_HOME)
+        cookie = load_cookie_text() or ""
+        cache = batch_photos(item)
+
+        def look():
+            status, body = cs_proof.read_record(address, cookie)
+            record = cs_proof.record_from(body) if status == 200 else None
+            #  The gallery comes from its own collection, not from this
+            #  record: productImage rows keyed by the listing's id. Reading it
+            #  here means a photo already in the gallery is never offered as
+            #  one to add, without a second round trip later.
+            looked = cs_gallery.read(cs_gallery.read_url(listing_id, CS_HOME),
+                                     cookie)
+            current = cs_proof.primary_photo(item=item, record=record)
+            alive = []
+            for candidate_url in cs_proof.sibling_photos(current):
+                ok, _kind = cs_proof.photo_alive(candidate_url)
+                if ok:
+                    alive.append(candidate_url)
+                else:
+                    say("  %s is not on the site, so it is not offered."
+                        % candidate_url, "dim")
+            return {"status": status, "record": record, "current": current,
+                    "siblings": alive, "cache": cache, "address": address,
+                    "cookie": cookie, "gallery": looked.get("rows"),
+                    "gallery_why": looked.get("why") or ""}
+
+        return look
+
+    def photo_choices(answer, item, field=""):
+        """Every photo a proof could write, best first, from one look."""
+        cache = (answer or {}).get("cache") or {}
+        candidates = cs_proof.photo_candidates(
+            item=item, record=(answer or {}).get("record"),
+            staged=cache.get("staged"), staged_rows=cache.get("rows"),
+            siblings=(answer or {}).get("siblings"))
+        if field == "images":
+            #  A gallery proof adds one photo the gallery does not already
+            #  hold: the rows it holds are exactly what it must not write
+            #  again. A gallery that could not be read filters nothing out -
+            #  the write itself reads the gallery first and answers "already
+            #  there" rather than trusting a list nobody could see.
+            held = (answer or {}).get("gallery")
+            if held is not None:
+                have = cs_gallery.photo_ids(held)
+                candidates = [candidate for candidate in candidates
+                              if cs_proof.photo_id(candidate["url"])
+                              not in have]
+        return candidates
+
+    def save_proofs(results, item, one_file=True):
+        """Write the proof file(s) and remember what each field settled."""
+        results = list(results or [])
+        saved = []
+        if one_file:
+            text = cs_proof.listing_report_text(results, listing=item,
+                                               app_version=VERSION)
+            path = cs_proof.proof_path(BASE)
+            try:
+                path.write_text(text, encoding="utf-8")
+                saved.append(path)
+            except OSError as exc:
+                say("Could not save the proof: %s" % exc, "err")
+        else:
+            for result in results:
+                text = cs_proof.report_text(result, listing=item,
+                                            app_version=VERSION)
+                path = cs_proof.proof_path(BASE)
+                try:
+                    path.write_text(text, encoding="utf-8")
+                    saved.append(path)
+                except OSError as exc:
+                    say("Could not save the proof: %s" % exc, "err")
+        for result in results:
+            #  A skipped field is not a verdict: remembering it would replace
+            #  an earlier proof that is still true.
+            if result.get("verdict") == "skipped":
+                continue
+            cs_proof.remember(BASE, result, listing=item)
+        if saved:
+            say("Proof saved: %s (no cookie, token or password is in it)."
+                % saved[0], "dim")
+        return saved
+
     def prove_field():
         """Write one field, read it back, and put it back - the proof.
 
@@ -10206,26 +10588,10 @@ def build_csledit(parent, app):
         old value showing again after the restore. One listing, one field, and
         a value that says what it is for the seconds it is on the listing.
         """
-        if not plugin_ready("Writing a proof"):
-            return
-        if not state["items"]:
-            messagebox.showinfo(
-                "Nothing read yet",
-                "Read CanadianShopper's listings first: a proof writes one "
-                "field on one listing, so it needs a listing to address.",
-                parent=box.winfo_toplevel())
-            return
-        item = selected()
+        item = proof_guard()
         if item is None:
             return
         listing_id = cs_edit.listing_id(item)
-        if not listing_id:
-            messagebox.showinfo(
-                "That listing has no id",
-                "The list carries no id for that listing, so there is no "
-                "record this app could address.\n\nNothing was written.",
-                parent=box.winfo_toplevel())
-            return
         field = cs_proof.field_for(str(proof_var.get() or ""))
         if field not in cs_proof.FIELD_LABELS:
             messagebox.showinfo(
@@ -10238,8 +10604,8 @@ def build_csledit(parent, app):
         def finish(staged_url):
             """Confirm, write, read back, put back - and say what happened."""
             named = str(item.get("name") or "that listing")
-            if field == "primaryImageUrl" and staged_url:
-                #  The picture, not only the field: a proof of the main photo
+            if field in cs_proof.photo_fields() and staged_url:
+                #  The picture, not only the field: a proof of a photo field
                 #  puts a different image on a live listing, so the
                 #  confirmation names exactly which one before anything is
                 #  sent.
@@ -10276,6 +10642,9 @@ def build_csledit(parent, app):
                     return
                 good = cs_proof.proven(result)
                 say(cs_proof.sentence(result), "ok" if good else "err")
+                fix = cs_proof.advice(result)
+                if fix:
+                    say("  What to do: %s" % fix, "err" if not good else "dim")
                 if result.get("verdict") == "written" and \
                         result.get("restored"):
                     #  This is the sentence a write path may be built on, so
@@ -10292,16 +10661,7 @@ def build_csledit(parent, app):
                     say("The site answered but did not keep the value, so a "
                         "write path must not be built on a 200 for %s alone."
                         % cs_proof.field_label(result.get("field")), "dim")
-                text = cs_proof.report_text(result, listing=item,
-                                            app_version=VERSION)
-                path = cs_proof.proof_path(BASE)
-                saved = None
-                try:
-                    path.write_text(text, encoding="utf-8")
-                    saved = path
-                except OSError as exc:
-                    say("Could not save the proof: %s" % exc, "err")
-                cs_proof.remember(BASE, result, listing=item)
+                saved = save_proofs([result], item, one_file=False)
                 summary.configure(text=cs_proof.sentence(result))
                 if cs_proof.proven(result):
                     #  The sentence that matters next: this panel can now
@@ -10311,74 +10671,28 @@ def build_csledit(parent, app):
                         "beside the app, and every write made on it is read "
                         "back." % cs_proof.field_label(result.get("field")),
                         "ok")
-                if saved is not None:
-                    say("Proof saved: %s (no cookie, token or password is in "
-                        "it)." % saved, "dim")
-                    if not open_path(saved):
-                        messagebox.showinfo(
-                            "Proof written",
-                            "Saved to:\n%s\n\nAttach it to the plugin report "
-                            "if the field is not honoured." % saved,
-                            parent=box.winfo_toplevel())
+                if saved and not open_path(saved[0]):
+                    messagebox.showinfo(
+                        "Proof written",
+                        "Saved to:\n%s\n\nAttach it to the plugin report if "
+                        "the field is not honoured." % saved[0],
+                        parent=box.winfo_toplevel())
 
             in_background(app, work, done)
 
-        if field != "primaryImageUrl":
+        if field not in cs_proof.photo_fields():
             finish("")
             return
-        #  The main photo: gather every picture of *this card* the app can
-        #  point at, and never ask a person to paste an address it could have
-        #  found itself.
-        batch_dir = canadianshopper_results_dir(app)
-        extra = [app.settings.get("pipeline_dir", str(WORK)), BASE]
-        card = str(item.get("name") or "")
-        staged = cs_proof.absolute_photo(
-            cs_proof.staged_photo(batch_dir, card, extra_folders=extra))
-        if staged:
-            say("The staged photo for this card is %s." % staged, "dim")
-        #  The batch's staged rows, best title match first. The site's title
-        #  and the CSV's are rarely the same words - a grade on one and not
-        #  the other - so an exact match is the first candidate and the rest
-        #  of the batch is beside it, each with the title it was staged under.
-        ranked = []
-        for row in cs_proof.staged_photos(batch_dir, extra_folders=extra):
-            ranked.append((cs_edit.score(card, {"name": row["title"]}), row))
-        ranked.sort(key=lambda pair: -pair[0])
-        staged_rows = [row for _value, row in ranked[:60]]
-        roots = cs_proof.staged_roots(batch_dir, extra)
-        if not staged_rows:
+        cache = batch_photos(item)
+        if cache["staged"]:
+            say("The staged photo for this card is %s." % cache["staged"],
+                "dim")
+        roots = cs_proof.staged_roots(cache["dir"], cache["extra"])
+        if not cache["rows"]:
             say("No staged CSV was found. Searched: %s."
                 % "; ".join(str(path) for path in roots), "warn")
         say("Reading the listing's own record to see which photos it carries "
             "and which one it shows now...", "dim")
-        address = cs_edit.detail_url(listing_id, CS_HOME)
-        cookie = load_cookie_text() or ""
-
-        def look():
-            """What the record holds, and which sibling photos are really there.
-
-            One read of the record answers three questions the chooser needs:
-            which photo the listing shows now (never a candidate - it is what
-            a proof has to put back), which other photos the record carries
-            (the plugin uploads the front and the back), and whether the field
-            exists at all. The card's other photo is then looked up at the
-            address the plugin names its pairs with, and only a URL that
-            answers with an image is offered - a guess about a name is not a
-            photo.
-            """
-            status, body = cs_proof.read_record(address, cookie)
-            record = cs_proof.record_from(body) if status == 200 else None
-            current = cs_proof.primary_photo(item=item, record=record)
-            alive = []
-            for candidate_url in cs_proof.sibling_photos(current):
-                ok, _kind = cs_proof.photo_alive(candidate_url)
-                if ok:
-                    alive.append(candidate_url)
-                else:
-                    say("  %s is not on the site, so it is not offered."
-                        % candidate_url, "dim")
-            return {"status": status, "record": record, "current": current,
-                    "siblings": alive}
 
         def with_look(answer, error):
             answer = answer or {}
@@ -10388,9 +10702,7 @@ def build_csledit(parent, app):
                 say("The listing's own record could not be read (%s), so the "
                     "photos below come from the list and the batch only."
                     % ("HTTP %s" % status if status else "no answer"), "warn")
-            candidates = cs_proof.photo_candidates(
-                item=item, record=record, staged=staged,
-                staged_rows=staged_rows, siblings=answer.get("siblings"))
+            candidates = photo_choices(answer, item, field)
             current_photo = answer.get("current") or \
                 cs_proof.primary_photo(item=item)
             say("The listing shows this photo now: %s."
@@ -10412,7 +10724,443 @@ def build_csledit(parent, app):
                 return
             finish(staged_url)
 
-        in_background(app, look, with_look)
+        in_background(app, look_at(item, listing_id), with_look)
+
+    def prove_everything():
+        """Prove every field on the selected listing in one job.
+
+        The same proof the single-field button runs, done as one pass because
+        a person asking "can this app write to this listing" should not have
+        to answer it six times. It is still one confirmed click and never
+        unattended: the confirmation lists the fields, and each is written and
+        put back before the next is touched.
+
+        A field an earlier proof already settled is not written again unless
+        the person asks for it, because a proof is a real change to a live
+        listing.
+        """
+        item = proof_guard("Proving the listing")
+        if item is None:
+            return
+        listing_id = cs_edit.listing_id(item)
+        everything = cs_proof.proof_fields()
+        proofs = cs_proof.load_proofs(BASE)
+        settled_here = [field for field in everything
+                        if cs_proof.settled(field, proofs)]
+        #  A record field this listing does not carry cannot be proved by
+        #  pressing the button again: an earlier run read the record and found
+        #  no such field, and that is remembered. It is left out here rather
+        #  than offered, confirmed, and then written nowhere.
+        #
+        #  The gallery is exempt, and not because it is special-cased for its
+        #  own sake: it is not a record field at all. It is productImage rows,
+        #  which exist even when the record shows no gallery, so "the record
+        #  has no such field" never means this listing cannot have one.
+        absent_here = [field for field in everything
+                       if field != "images" and field not in settled_here
+                       and cs_proof.known_absent(field, proofs,
+                                                 cs_edit.listing_id(item))]
+        todo = [field for field in everything
+                if field not in settled_here and field not in absent_here]
+        if not todo and absent_here:
+            words = cs_edit.field_words([cs_proof.field_label(field)
+                                         for field in absent_here])
+            rest = ("Every other field is settled."
+                    if len(settled_here) == len(everything) - len(absent_here)
+                    else "")
+            say("Nothing was written: %s %s not a field this listing's record "
+                "has, so there is nothing to prove there. %s"
+                % (words, "are" if len(absent_here) > 1 else "is", rest),
+                "dim")
+            summary.configure(text="Nothing left to prove on this listing")
+            return
+        if not todo:
+            if not ask_yes(
+                    "Every field is already settled",
+                    "Every field was proved writable and put back by an "
+                    "earlier proof:\n\n  %s\n\nProve them all again anyway? "
+                    "Each one is a real change to a live listing for the few "
+                    "seconds it runs." % "\n  ".join(cs_proof.labels())):
+                say("Nothing was written: every field is already settled.",
+                    "dim")
+                return
+            settled_here, todo = [], list(everything)
+        named = str(item.get("name") or "that listing")
+        skipped_line = ""
+        if settled_here:
+            skipped_line = ("\n\nAlready settled, so not written again: %s."
+                            % ", ".join(cs_proof.field_label(field)
+                                        for field in settled_here))
+        if not ask_yes(
+                "Prove %d field%s on one listing?" % (len(todo),
+                                                      "" if len(todo) == 1
+                                                      else "s"),
+                "%s\n\nThis writes these fields one at a time on "
+                "CanadianShopper, reads each one back, and puts the old value "
+                "back before the next:\n\n  %s\n\nA photo field is written "
+                "with a photo of the same card the app can point at. The "
+                "record's own id is the address, no product id is used, and "
+                "your website is not touched.%s\n\nProve them now?"
+                % (named, "\n  ".join(cs_proof.field_label(field)
+                                      for field in todo), skipped_line)):
+            say("The proofs were not confirmed; nothing was written.", "dim")
+            return
+        #  What is being started, not what is promised: a field the record
+        #  does not carry, or one with no photo of this card, is reported as
+        #  that when the run gets to it - so the first line does not get to
+        #  say every field will be written.
+        say("Proving %d field%s on %s..." % (len(todo),
+                                             "" if len(todo) == 1 else "s",
+                                             named), "cmd")
+        summary.configure(text="Proving %d fields on %s..."
+                          % (len(todo), named))
+        look = look_at(item, listing_id)
+
+        def work():
+            answer = look()
+            cache = answer.get("cache") or {}
+            #  A photo of *this card*, found rather than asked for - and never
+            #  a well-scoring row from the batch that is a different card. A
+            #  proof is written to a live listing: "O-Pee-Chee" in both titles
+            #  is not the same card, and the wrong picture is worse than no
+            #  photo proof at all.
+            photos = cs_proof.auto_photos(
+                item=item, record=answer.get("record"),
+                staged=cache.get("staged"), staged_rows=cache.get("rows"),
+                siblings=answer.get("siblings"), card=cache.get("card"),
+                #  The gallery's own rows say what it already holds. Without
+                #  them the only honest answer is "not read", never "empty".
+                gallery_rows=answer.get("gallery"))
+            photo = photos["main"]
+            gallery_photo = photos["gallery"] if "images" in todo else ""
+            reasons = {"primaryImageUrl": photos["why_main"],
+                       "images": photos["why_gallery"] or photos["why_main"]}
+            record = answer.get("record")
+            #  Every field is passed, and the settled ones are *skipped*: the
+            #  report is about the whole listing, so a field an earlier proof
+            #  settled is counted as done rather than left out.
+            #
+            #  "Gallery photos" comes through here with the rest, and
+            #  cs_proof.prove routes it to the gallery's own proof: add a
+            #  productImage row, read the gallery back, remove that row by its
+            #  own id, read again. The record is never patched to hold a
+            #  gallery - it has no such field, and a listing with no gallery
+            #  field can still have a full gallery.
+            results = cs_proof.prove_listing(
+                answer["address"], answer["cookie"], listing=item,
+                fields=everything, skip=settled_here, photo=photo,
+                gallery_photo=gallery_photo, why=reasons, record=record)
+            return {"results": results, "answer": answer, "photo": photo,
+                    "gallery_photo": gallery_photo}
+
+        def done(payload, error):
+            if error is not None:
+                say("The proofs could not run: %s. Nothing was written."
+                    % error, "err")
+                summary.configure(text="The proofs could not run: %s" % error)
+                return
+            payload = payload or {}
+            results = payload.get("results") or []
+            for result in results:
+                #  A field an earlier proof settled is done, not broken: it
+                #  reads as settled, in the colour a settled field has. A
+                #  field this site's record simply does not have is neither -
+                #  it is information, and it says so in the dim colour.
+                good = cs_proof.settled_result(result)
+                absent = cs_proof.not_here(result)
+                say(cs_proof.sentence(result),
+                    "ok" if good else "dim" if absent else "err")
+                fix = cs_proof.advice(result)
+                if fix and not good:
+                    say("  What to do: %s" % fix, "dim" if absent else "err")
+            #  Only say which photo was written when one really was: a field
+            #  that was skipped never saw its photo, and naming it reads as a
+            #  write that did not happen.
+            settled_now = {result.get("field"): result for result in results}
+            main_result = settled_now.get("primaryImageUrl") or {}
+            gallery_result = settled_now.get("images") or {}
+            if payload.get("photo") and \
+                    main_result.get("verdict") != "skipped":
+                say("The photo used for the main photo was %s."
+                    % payload["photo"], "dim")
+            if payload.get("gallery_photo") and \
+                    gallery_result.get("verdict") != "skipped":
+                say("The photo added to the gallery was %s."
+                    % payload["gallery_photo"], "dim")
+            saved = save_proofs(results, item)
+            summary.configure(text=cs_proof.listing_sentence(results))
+            say(cs_proof.listing_sentence(results),
+                "err" if cs_proof.problem_results(results) else "ok")
+            problems = cs_proof.problem_results(results)
+            absent = cs_proof.unavailable_results(results)
+            if problems:
+                shown = []
+                for result in problems[:8]:
+                    shown.append("%s\n  %s\n  What to do: %s" % (
+                        cs_proof.field_label(result.get("field")),
+                        cs_proof.sentence(result),
+                        cs_proof.advice(result) or "see the proof file."))
+                if len(problems) > 8:
+                    shown.append("... and %d more in the console."
+                                 % (len(problems) - 8))
+                messagebox.showwarning(
+                    "Some fields are not settled",
+                    "%s\n\n%s\n\n%s" % (
+                        cs_proof.listing_sentence(results),
+                        "\n\n".join(shown),
+                        "The proof file is saved beside the app: attach it to "
+                        "the plugin report if a field needs the plugin's "
+                        "route.\n\nProof: %s" % saved[0] if saved else ""),
+                    parent=box.winfo_toplevel())
+            elif absent:
+                #  Nothing to fix and nobody to fix it: the record has no such
+                #  field, so the dialog says what that means and shows the
+                #  keys, rather than warning about work that does not exist.
+                messagebox.showinfo(
+                    "A field this site's record does not have",
+                    "%s\n\n%s\n\nThat is not something to fix on the site: "
+                    "the listing's record simply has no such field, so a proof "
+                    "has nothing to write and nothing to put back. If it "
+                    "should exist, the keys above are what the plugin needs to "
+                    "see.\n\nProof: %s"
+                    % (cs_proof.listing_sentence(results),
+                       cs_proof.sentence(absent[0]),
+                       saved[0] if saved else "(not saved)"),
+                    parent=box.winfo_toplevel())
+            else:
+                messagebox.showinfo(
+                    "Every field is settled",
+                    "All %d fields can be written at the record's own id: each "
+                    "one was written, read back, and the old value came back."
+                    "\n\nThat is the evidence an edit needs, and this panel "
+                    "can now set them.\n\nProof: %s"
+                    % (len(results), saved[0] if saved else "(not saved)"),
+                    parent=box.winfo_toplevel())
+
+        in_background(app, work, done)
+
+
+    def add_gallery():
+        """Put one photo into the listing's gallery - rows of their own.
+
+        The gallery is ``productImage`` rows keyed by the listing's record id,
+        not a field on that record. That is the plugin's own 1.0.40 answer, and
+        it is why a record with thirty-nine keys and no gallery can still have
+        one. So this posts one row, reads the gallery back to show the photo
+        there, and keeps it - a gallery photo is what was asked for.
+
+        The proof is the one that adds a row and removes *that* row again, by
+        the id its own read-back gave; this never removes anything.
+        """
+        item = proof_guard("Adding a gallery photo")
+        if item is None:
+            return
+        listing_id = cs_edit.listing_id(item)
+        cookie = load_cookie_text() or ""
+        say("Reading this listing's record and its gallery...", "dim")
+
+        def found(answer, error):
+            """Say what the gallery holds, let the person choose, then ask."""
+            answer = answer or {}
+            held = answer.get("gallery")
+            if error is not None:
+                say("The listing could not be read: %s. Nothing was written."
+                    % error, "err")
+                return
+            if held is None:
+                say("%s Nothing was added: a gallery nobody could read is not "
+                    "a gallery that is empty."
+                    % (answer.get("gallery_why")
+                       or "The gallery could not be read."), "err")
+                return
+            say("The gallery holds %d photo%s."
+                % (len(held), "" if len(held) == 1 else "s"), "dim")
+            current = answer.get("current") or ""
+            candidates = photo_choices(answer, item, "images")
+            if not candidates:
+                #  Nothing the app is sure is this card - so the address is
+                #  asked for rather than a row from the batch being used on a
+                #  guess. A gallery photo stays on the listing.
+                say("Nothing staged for this card was found, so the photo's "
+                    "address is asked for rather than a row from the batch "
+                    "being used on a guess.", "dim")
+            photo = choose_proof_photo(candidates, current)
+            if photo is None:
+                say("The photo question was closed, so nothing was written.",
+                    "dim")
+                return
+            if not photo:
+                say("The address box was left empty, so nothing was written.",
+                    "dim")
+                return
+            if cs_gallery.holds(held, photo):
+                say("That photo is already in the gallery, so nothing was "
+                    "written: %s" % photo, "dim")
+                return
+            if not ask_yes(
+                    "Add one photo to the gallery?",
+                    "%s\n\nThe photo added: %s\n\nIt is written as a row of "
+                    "its own in the listing's gallery, at position %d, and the "
+                    "gallery is read back afterwards: if the site does not show "
+                    "it, nothing changed and the answer says so.\n\nIt is "
+                    "KEPT - a gallery photo is what you asked for, so nothing "
+                    "is put back. The proof adds a row and removes that same "
+                    "row again.\n\nNo product id is used, no other field is "
+                    "sent, and your website is not touched.\n\nAdd it now?"
+                    % (str(item.get("name") or "that listing"), photo,
+                       cs_gallery.next_sort(held))):
+                say("The photo was not added; nothing was written.", "dim")
+                return
+            say("Adding the photo to %s: %s..."
+                % (str(item.get("name") or "the listing"), photo), "cmd")
+            summary.configure(text="Adding a photo to the gallery...")
+
+            def work():
+                return cs_gallery.add(listing_id, cookie, photo, base=CS_HOME)
+
+            def done(result, failure):
+                if failure is not None:
+                    say("The photo could not be added: %s. Nothing was "
+                        "written." % failure, "err")
+                    summary.configure(text="The photo could not be added: %s"
+                                      % failure)
+                    return
+                verdict = (result or {}).get("verdict")
+                say(cs_gallery.sentence(result),
+                    "ok" if verdict in ("added", "same") else "err")
+                advice = cs_gallery.advice(result)
+                if advice:
+                    say("  What to do: %s" % advice, "dim")
+                summary.configure(text=cs_gallery.sentence(result))
+
+            in_background(app, work, done)
+
+        in_background(app, look_at(item, listing_id), found)
+
+
+    def remove_gallery():
+        """Take one photo off the listing's gallery, by its row's own id.
+
+        The gallery is ``productImage`` rows, so a photo comes off by deleting
+        the row that holds it - and the gallery is read back afterwards to show
+        it gone. No proof is needed and none is written: the removal is its own
+        evidence, because the read that follows it would show the row still
+        there if it had not happened.
+
+        Nothing else on the listing is touched, and the row removed is the row
+        the person chose from the list of photos the gallery really holds.
+        """
+        item = proof_guard("Removing a gallery photo")
+        if item is None:
+            return
+        listing_id = cs_edit.listing_id(item)
+        cookie = load_cookie_text() or ""
+        say("Reading this listing's gallery...", "dim")
+
+        def found(answer, error):
+            answer = answer or {}
+            if error is not None:
+                say("The listing could not be read: %s. Nothing was removed."
+                    % error, "err")
+                return
+            held = answer.get("gallery")
+            if held is None:
+                say("%s Nothing was removed: a gallery nobody could read is "
+                    "not a gallery with nothing in it."
+                    % (answer.get("gallery_why")
+                       or "The gallery could not be read."), "err")
+                return
+            if not held:
+                say("The gallery holds no photos, so there is nothing to "
+                    "remove.", "dim")
+                return
+            say("The gallery holds %d photo%s."
+                % (len(held), "" if len(held) == 1 else "s"), "dim")
+            #  Every photo the read brought is listed, numbered, with the row
+            #  it lives in - a list that shows fewer rows than the read is how
+            #  the wrong photo gets picked. The number (or the photo's own
+            #  address) is answered, and the confirmation after it names the
+            #  photo *and* its row, so nothing is removed on a guess.
+            listing_lines = ["%d. position %s - %s"
+                             % (number, row.get("sortOrder"),
+                                row.get("imageUrl"))
+                             for number, row in enumerate(held, 1)]
+            answered = simpledialog.askstring(
+                "Which photo comes off?",
+                "The listing's gallery holds these photos:\n\n%s\n\nType "
+                "the number of the one to take off, or paste its address. "
+                "Nothing is removed until the next question names the photo "
+                "and its row." % "\n".join(listing_lines),
+                initialvalue="", parent=box.winfo_toplevel())
+            if answered is None:
+                say("The photo question was closed, so nothing was removed.",
+                    "dim")
+                return
+            text = str(answered).strip()
+            if not text:
+                say("No photo was named, so nothing was removed.", "dim")
+                return
+            row = None
+            if text.isdigit() and 1 <= int(text) <= len(held):
+                row = held[int(text) - 1]
+            else:
+                wanted = cs_proof.photo_id(text)
+                holders = [entry for entry in held
+                           if cs_proof.photo_id(entry.get("imageUrl"))
+                           == wanted]
+                #  The last row is the one taken off when the same photo is in
+                #  the gallery more than once: it is the most recent, which is
+                #  what a photo added by mistake is.
+                row = holders[-1] if holders else None
+            if row is None:
+                say("%s is not one of the photos in %d the gallery answered "
+                    "with, so nothing was removed."
+                    % (text[:120], len(held)), "err")
+                return
+            photo = row.get("imageUrl") or ""
+            row_id = str(row.get("id") or "").strip()
+            if not row_id:
+                say("The gallery shows that photo and gives no row id for it, "
+                    "so it cannot be removed from here. Take it off on the "
+                    "listing itself.", "err")
+                return
+            named = str(item.get("name") or "that listing")
+            if not ask_yes(
+                    "Remove a photo from the gallery?",
+                    "%s\n\nThe photo taken off: %s\n\nIts row: %s "
+                    "(position %s).\n\nIt is removed by that row's own "
+                    "address and the gallery is read back afterwards, so the "
+                    "answer says whether it really went. Nothing else on the "
+                    "listing is touched, no other field is sent, and this is "
+                    "not a proof: the photo stays removed.\n\nRemove it now?"
+                    % (named, photo, row_id, row.get("sortOrder"))):
+                say("Nothing was removed.", "dim")
+                return
+            say("Removing the photo from %s: %s..." % (named, photo), "cmd")
+            summary.configure(text="Removing a photo from the gallery...")
+
+            def work():
+                return cs_gallery.remove(listing_id, cookie, row_id,
+                                         base=CS_HOME)
+
+            def done(result, failure):
+                if failure is not None:
+                    say("The photo could not be removed: %s. Nothing was "
+                        "removed." % failure, "err")
+                    summary.configure(text="The photo could not be removed: %s"
+                                      % failure)
+                    return
+                verdict = (result or {}).get("verdict")
+                say(cs_gallery.sentence(result),
+                    "ok" if verdict == "removed" else "err")
+                advice = cs_gallery.advice(result)
+                if advice:
+                    say("  What to do: %s" % advice, "dim")
+                summary.configure(text=cs_gallery.sentence(result))
+
+            in_background(app, work, done)
+
+        in_background(app, look_at(item, listing_id), found)
 
     proof_row = ttk.Frame(box)
     proof_row.pack(anchor="w", pady=(4, 0))
@@ -10427,6 +11175,29 @@ def build_csledit(parent, app):
                            command=prove_field)
     prove_btn.pack(side="left", padx=(6, 0))
     add_tooltip(prove_btn, TOOLTIPS["Write the proof"])
+    #  The same proof, done as one job: a person asking "can this app write
+    #  to this listing" should not have to answer it six times.
+    prove_all_btn = ttk.Button(proof_row, text="Prove every field...",
+                               style="Task.TButton",
+                               command=prove_everything)
+    prove_all_btn.pack(side="left", padx=(8, 0))
+    add_tooltip(prove_all_btn, TOOLTIPS["Prove every field..."])
+    #  The gallery as an ordinary edit: the proof adds a row and takes that
+    #  same row off again, which is not what a person asking for a second
+    #  photo wants - so this is the one button that *keeps* what it writes.
+    gallery_btn = ttk.Button(proof_row, text="Add a photo to the gallery...",
+                             command=add_gallery)
+    gallery_btn.pack(side="left", padx=(8, 0))
+    add_tooltip(gallery_btn, TOOLTIPS["Add a photo to the gallery..."])
+    #  Taking one off again, by the row's own id: a photo added by mistake has
+    #  to be removable, and a gallery nobody can edit is the defect this whole
+    #  line of work started from.
+    remove_gallery_btn = ttk.Button(proof_row,
+                                    text="Remove a photo from the gallery...",
+                                    command=remove_gallery)
+    remove_gallery_btn.pack(side="left", padx=(8, 0))
+    add_tooltip(remove_gallery_btn,
+                TOOLTIPS["Remove a photo from the gallery..."])
 
     list_frame = ttk.Frame(box)
     listing = tk.Listbox(list_frame, height=9, exportselection=False)
@@ -13970,6 +14741,8 @@ PANEL_BUILDERS = {
     "sold": build_sold,
     "checklist": build_checklist,
     "stock": build_stock,
+    "editfb": lambda parent, app: build_stock(parent, app, "facebook"),
+    "editeb": lambda parent, app: build_stock(parent, app, "ebay"),
     "csedit": build_csledit,
     "zerostock": build_zerostock,
     "ordersheet": build_ordersheet,
@@ -14757,7 +15530,8 @@ class TabsFrame(ttk.Frame):
                 continue
             tab = ttk.Frame(nb, padding=(6, 5))
             nb.add(tab, text=group)
-            for pid in ids:
+            extra = TAB_EXTRA.get(group, []) if app.cs_addon else []
+            for pid in list(ids) + list(extra):
                 panel_section(tab, app, pid, expand=False)
 
 

@@ -44,9 +44,15 @@ def load_harness():
 harness = load_harness()
 gui = harness.gui
 import cs_edit                                        # noqa: E402
+import cs_gallery                                     # noqa: E402
 import cs_proof                                       # noqa: E402
 import cs_record                                      # noqa: E402
 import stock_compare                                  # noqa: E402
+
+#  No test reaches the network. The gallery's own requests are refused here,
+#  which is also the honest answer for a test that never gave it a gallery;
+#  a test that needs one patches cs_gallery.read itself.
+cs_gallery._send = lambda *args, **kwargs: (0, "the tests reach no network")
 
 #  A list as plugin 1.0.31 reports it: every listing keeps its own catalogue
 #  id, and carries the product id its API patches beside it. A list read before
@@ -404,6 +410,290 @@ def read_into(app, folder, parent, payload=None):
     out.write_text(json.dumps({"items": payload or LISTINGS}), encoding="utf-8")
     run["on_done"](0)
     return out
+
+
+def test_every_field_is_proved_in_one_job():
+    """The whole listing, proved by one confirmed click - not six.
+
+    Asked for after every field had been proved one at a time: "can the
+    program create the proofs instead of the user". It cannot run unattended -
+    a proof is a real change to a live listing - but it can do the whole job
+    from one confirmation, skip what an earlier proof settled, find the photos
+    itself, and say what to do about whatever did not settle.
+    """
+    print()
+    print("== the whole listing proved, one confirmed click ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    rows = [{"id": "94b93f6040f5401daabaa9c936efa5a7", "product_id": 0,
+             "sku": "OPC1973-74-112", "title": "Jim Pappin #112",
+             "status": "active", "inventory": 1, "price": "12.50",
+             "images": ["https://cs.example/api/file/current.webp",
+                        "https://cs.example/api/file/other-back.webp"]}]
+    record = json.dumps({
+        "id": rows[0]["id"], "title": "Jim Pappin #112",
+        "primaryImageUrl": "https://cs.example/api/file/current.webp",
+        "images": ["https://cs.example/api/file/current.webp",
+                   "https://cs.example/api/file/gallery.webp"]})
+    asked, questions, shown = [], [], []
+
+    def fake_prove(field, url, cookie="", staged_url="", listing=None,
+                   **kwargs):
+        asked.append({"field": field, "staged": staged_url})
+        good = field != "inventory"
+        return {"field": field, "label": cs_proof.field_label(field),
+                "verdict": "written" if good else "refused", "written": good,
+                "restored": True if good else None, "status": 403 if not good
+                else 200, "restore_status": 200 if good else 0,
+                "old": 1, "trial": 2, "restore": 1, "after": 2, "final": 1,
+                "url": url, "why": "the site's answer",
+                "steps": [{"step": "GET the record", "status": 200}],
+                "at": "2026-11-03 09:00:00"}
+
+    def yes(title, question, **kwargs):
+        questions.append((title, question))
+        return True
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    harness._BOX.shown[:] = []
+    harness._BOX.askyesno = yes
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(cs_proof, "staged_photo",
+                         lambda folder, title, extra_folders=(): ""), \
+            patch.object(cs_proof, "staged_photos",
+                         lambda folder, **kwargs: []), \
+            patch.object(cs_proof, "read_record",
+                         lambda url, cookie="": (200, record)), \
+            patch.object(cs_proof, "photo_alive",
+                         lambda url, **k: (True, "image/webp")), \
+            patch.object(cs_proof, "prove", fake_prove):
+        read_into(app, folder, parent, rows)
+        select(parent, "Pappin")
+        app.lines[:] = []
+        find(parent, gui.ttk.Button, "Prove every field...").invoke()
+
+    check("one question at the start, not one per field",
+          len(questions) == 1, str([title for title, _q in questions]))
+    check("and it names every field it is about to write",
+          all(label in questions[0][1] for label in cs_proof.labels()),
+          questions[0][1] if questions else "")
+    check("every field is proved, in the order they are offered",
+          [entry["field"] for entry in asked] == cs_proof.proof_fields(),
+          str([entry["field"] for entry in asked]))
+    photo_writes = {entry["field"]: entry["staged"] for entry in asked
+                    if entry["staged"]}
+    check("a photo is found for each photo field, without asking",
+          photo_writes.get("primaryImageUrl", "").endswith("gallery.webp") and
+          photo_writes.get("images", "").endswith("other-back.webp"),
+          str(photo_writes))
+    check("and the two never get the same photo, because a gallery that "
+          "already holds it proves nothing",
+          photo_writes.get("images") != photo_writes.get("primaryImageUrl"),
+          str(photo_writes))
+    check("the listing's sentence says how it went",
+          any("of 6 fields are settled" in line for _tag, line in app.lines),
+          str(app.lines[-5:]))
+    check("the field that would not settle is named with what to do",
+          any("What to do" in line and "not allowed" in line
+              for _tag, line in app.lines), str(app.lines[-6:]))
+    check("the problem is put in front of the person, not only in the log",
+          any(kind == "showwarning" for kind, _a in harness._BOX.shown),
+          str(harness._BOX.shown)[:300])
+    proof_files = sorted(folder.glob("cs-proof-*.txt"))
+    check("one proof file holds every field tried",
+          len(proof_files) == 1 and
+          all(cs_proof.field_label(field) in
+              proof_files[0].read_text(encoding="utf-8")
+              for field in cs_proof.proof_fields()), str(proof_files))
+    text = proof_files[0].read_text(encoding="utf-8") if proof_files else ""
+    check("and it names the field that needs attention",
+          "Needs attention:" in text and "Stock:" in text, text[:300])
+    saved = cs_proof.load_proofs(folder)
+    check("the fields that settled are remembered; the refused one is not",
+          cs_proof.settled("priceCad", saved) and
+          not cs_proof.settled("inventory", saved), str(saved))
+
+    #  A field an earlier proof settled is not written again - a proof is a
+    #  real change to a live listing, and repeating it proves nothing new.
+    folder2, app2, parent2 = build_panel()
+    cookie2 = folder2 / "cookie.txt"
+    (folder2 / cs_proof.PROOFS_FILE).write_text(json.dumps({
+        "priceCad": {"at": "2026-11-01 10:00:00", "verdict": "written",
+                     "restored": True, "proven": True, "listing": "a",
+                     "title": "Jim Pappin #112"}}), encoding="utf-8")
+    asked[:] = []
+    questions[:] = []
+    harness._BOX.shown[:] = []
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie2), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(cs_proof, "staged_photo",
+                         lambda folder, title, extra_folders=(): ""), \
+            patch.object(cs_proof, "staged_photos",
+                         lambda folder, **kwargs: []), \
+            patch.object(cs_proof, "read_record",
+                         lambda url, cookie="": (200, record)), \
+            patch.object(cs_proof, "photo_alive",
+                         lambda url, **k: (True, "image/webp")), \
+            patch.object(cs_proof, "prove", fake_prove):
+        read_into(app2, folder2, parent2, rows)
+        select(parent2, "Pappin")
+        app2.lines[:] = []
+        find(parent2, gui.ttk.Button, "Prove every field...").invoke()
+
+    check("a settled field is left alone",
+          [entry["field"] for entry in asked] ==
+          [field for field in cs_proof.proof_fields() if field != "priceCad"],
+          str([entry["field"] for entry in asked]))
+    check("and the question says which field was already settled",
+          questions and "Already settled, so not written again: Price"
+          in questions[0][1], questions[0][1] if questions else "")
+    check("the job still counts it as done, and the listing has six fields",
+          any("of 6 fields are settled" in line for _tag, line in app2.lines),
+          str(app2.lines[-4:]))
+    check("nothing is left behind for the skipped field",
+          cs_proof.settled("priceCad", cs_proof.load_proofs(folder2)), "")
+    harness._BOX.askyesno = lambda *a, **k: True
+
+
+def test_a_settled_field_is_not_reported_as_broken():
+    """The run from the report, exactly: five settled, one gallery, and a
+    batch full of other people's cards.
+
+    What came back was "the write was accepted but not readable back" for five
+    fields that had not been written at all, "No field is settled" underneath
+    them, and two photos of *different cards* lined up for the gallery. Settled
+    is not broken, and a photo the app is not sure is this card is never
+    written to a live listing.
+    """
+    print()
+    print("== a settled field reads as settled, and never another card's photo ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    wurmple = "#006/196 Wurmple SWSH11: Lost Origin - Pokémon TCG"
+    rows = [{"id": "a2304e72dbca4e678e7111d011ade22d", "product_id": 0,
+             "sku": "PKM-SWSH11-006", "title": wurmple,
+             "status": "active", "inventory": 1, "price": "1.00"}]
+    record = json.dumps({
+        "id": rows[0]["id"], "title": wurmple, "priceCad": 1.0,
+        "inventory": 1, "description": "A card.",
+        "primaryImageUrl":
+            "https://canadianshopper.ca/api/file/wurmple-front.jpg"})
+    #  Every field but the gallery was settled by an earlier proof.
+    (folder / cs_proof.PROOFS_FILE).write_text(json.dumps({
+        field: {"at": "2026-11-02 15:34:38", "verdict": "written",
+                "restored": True, "proven": True, "listing": rows[0]["id"],
+                "title": wurmple}
+        for field in ("priceCad", "title", "description", "inventory",
+                      "primaryImageUrl")}), encoding="utf-8")
+    asked, questions = [], []
+    harness._BOX.shown[:] = []
+
+    def fake_prove(field, url, cookie="", staged_url="", listing=None,
+                   **kwargs):
+        asked.append({"field": field, "staged": staged_url})
+        return {"field": field, "label": cs_proof.field_label(field),
+                "verdict": "written", "written": True, "restored": True,
+                "status": 200, "restore_status": 200, "url": url,
+                "why": "the site's answer", "steps": [],
+                "at": "2026-11-03 07:24:03"}
+
+    def yes(title, question, **kwargs):
+        questions.append((title, question))
+        return True
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    harness._BOX.askyesno = yes
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(cs_proof, "staged_photo",
+                         lambda folder, title, extra_folders=(): ""), \
+            patch.object(cs_proof, "staged_photos",
+                         lambda folder, **kwargs: [
+                             {"title": "56 Syl Apps 1978-79 O-Pee-Chee "
+                                       "Baseball Card",
+                              "url": "https://canadianshopper.ca/api/file/"
+                                     "56-Syl-Apps-front.jpg"},
+                             {"title": "73 Pit Martin 1973-74 O-Pee-Chee",
+                              "url": "https://canadianshopper.ca/api/file/"
+                                     "73-Pit-Martin-front.jpg"}]), \
+            patch.object(cs_proof, "read_record",
+                         lambda url, cookie="": (200, record)), \
+            patch.object(cs_proof, "photo_alive",
+                         lambda url, **k: (False, "")), \
+            patch.object(cs_proof, "prove", fake_prove):
+        read_into(app, folder, parent, rows)
+        select(parent, "Wurmple")
+        app.lines[:] = []
+        find(parent, gui.ttk.Button, "Prove every field...").invoke()
+
+    check("the question names only the field that is left to prove",
+          questions and "Prove 1 field" in questions[0][0] and
+          "Already settled, so not written again: Price, Title, Description, "
+          "Stock, Main photo" in questions[0][1],
+          questions[0][1] if questions else "")
+    check("nothing at all was written - not a different card's photo either",
+          asked == [], str(asked))
+    check("a settled field reads as settled, not as unreadable",
+          any("Price was settled by an earlier proof" in line
+              for _tag, line in app.lines) and
+          not any("not readable back" in line for _tag, line in app.lines),
+          str(app.lines[:6]))
+    #  The record has no gallery *field* - and that is no longer said as if
+
+    #  the listing had no gallery. The gallery is productImage rows, so the
+    #  only honest reason to leave it unproved is a missing photo of this card.
+    said_here = "\n".join(text for _tag, text in app.lines)
+    check("the gallery is never written off as a field this record lacks",
+          "carries no gallery" not in said_here and
+          "not on this site's record" not in said_here, said_here[-400:])
+    flat = " ".join(said_here.split())
+    check("it is left unproved only for want of a photo of this card",
+          "Gallery photos was not attempted" in flat and
+          "no photo of this card" in flat, flat[-400:])
+    check("a skipped photo field does not claim its photo was written",
+          not any("The photo used" in line or "The photo added" in line
+                  for _tag, line in app.lines), str(app.lines[-6:]))
+    check("no other card's photo is used, named as written, or left behind",
+          not any("Syl-Apps" in line or "Pit-Martin" in line
+                  for _tag, line in app.lines) and
+          "Syl-Apps" not in json.dumps(asked), str(asked))
+    check("five fields are settled and the gallery is the one left over",
+          any("5 of 6 fields are settled" in line and
+              "Gallery photos needs attention" in line
+              for _tag, line in app.lines), str(app.lines[-4:]))
+    infos = [str(payload) for kind, payload in harness._BOX.shown
+             if kind in ("showinfo", "showwarning")]
+    check("and the answer names the gallery and why it was not proved",
+          any("Gallery photos" in text and "no photo of this card" in text
+              for text in infos), str(harness._BOX.shown)[:500])
+    saved = cs_proof.load_proofs(folder)
+    check("the earlier proofs are still remembered",
+          all(cs_proof.settled(field, saved) for field in
+              ("priceCad", "title", "description", "inventory",
+               "primaryImageUrl")), str(sorted(saved)))
+    harness._BOX.askyesno = lambda *a, **k: True
 
 
 def test_the_12030_reproduction():
@@ -1142,7 +1432,7 @@ def test_the_diagnosis_file():
                                   stages=["read", "ids"], plugin="1.0.38",
                                   command="cs-stock.py --stock-out cs-stock.json",
                                   detail=detail, total=2596, editable=0,
-                                  app_version="3.23")
+                                  app_version="3.33")
     check("the file carries the reader's own count line",
           "2596 listings, 0 with a real product id" in text, "")
     check("the app's own count is beside it, so the two can be compared",
@@ -1597,7 +1887,7 @@ def test_the_real_diagnosis_from_the_shop():
                 "--cookie-file cookie.txt",
         detail={"url": cs_edit.detail_url(row["id"]), "status": 200,
                 "content_type": "application/json", "body": json.dumps(record)},
-        total=2596, editable=0, app_version="3.23",
+        total=2596, editable=0, app_version="3.33",
         source="the read this window made at 2026-11-02 13:03:59")
 
     check("the file no longer carries the progress markers",
@@ -2015,7 +2305,8 @@ def test_the_panel_writes_a_proof():
                         "https://cs.example/api/file/other-back.webp"]}]
     asked, questions = [], []
 
-    def fake_prove(field, url, cookie="", staged_url="", listing=None):
+    def fake_prove(field, url, cookie="", staged_url="", listing=None,
+                   **kwargs):
         asked.append({"field": field, "url": url, "staged": staged_url,
                       "listing": dict(listing or {})})
         return {"field": field, "label": cs_proof.field_label(field),
@@ -2424,6 +2715,389 @@ def test_the_panel_writes_a_proof():
     harness._BOX.askyesno = lambda *a, **k: False
     #  Leave the module's dialog answers as the rest of the suite expects them.
 
+
+
+def select(parent, word):
+    """Select the one row whose card name contains ``word``."""
+    box = listing_box(parent)
+    for index, text in enumerate(box.items):
+        if word in text:
+            box.selection_set(index)
+            return index
+    raise AssertionError("no row for %r in %r" % (word, box.items))
+
+
+def test_the_gallery_is_never_written_off():
+    """The listing from the report: a record with no gallery, and a gallery.
+
+    Wurmple's record has thirty-nine keys and no gallery among them, and this
+    app read that as "there is nothing to prove here" - for releases. The
+    gallery is ``productImage`` rows keyed by the record's id, so a record
+    with no gallery field says nothing about the gallery. A remembered
+    "field_missing" from the old model must not stop the button either: the
+    gallery is offered, proved by its own rows, and never called a field this
+    site's record does not have.
+    """
+    print()
+    print("== 13. the gallery is never written off ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    listing_id = "94b93f6040f5401daabaa9c936efa5a7"
+    photo = "https://cs.example/api/file/back.webp"
+    rows = [{"id": listing_id, "product_id": 0, "title": "Wurmple",
+             "status": "active", "inventory": 1, "price": "12.50"}]
+    proofs = {field: {"at": "2026-11-03 08:00:00", "verdict": "written",
+                      "restored": True, "proven": True, "listing": listing_id,
+                      "field_missing": False}
+              for field in ("priceCad", "title", "description", "inventory",
+                            "primaryImageUrl")}
+    #  What the old model remembered about the gallery: "this record has no
+    #  such field". It is wrong about the *gallery*, and must not be believed.
+    proofs["images"] = {"at": "2026-11-03 08:00:00", "verdict": "unreadable",
+                        "restored": None, "proven": False,
+                        "listing": listing_id, "field_missing": True}
+    (folder / cs_proof.PROOFS_FILE).write_text(json.dumps(proofs),
+                                               encoding="utf-8")
+    questions, proved, sent = [], [], []
+
+    def fake_send(url, cookie, payload):
+        #  Any PATCH of the product record at all is a bug now: a gallery is
+        #  not a field of that record.
+        sent.append((url, payload))
+        return 200, "{}"
+
+    def fake_gallery_proof(listing, cookie, photo_url, **kwargs):
+        proved.append({"listing": listing, "photo": photo_url})
+        return {"field": "images", "label": "Gallery photos",
+                "listing": listing, "photo": photo_url, "row": "new-2",
+                "verdict": "written", "written": True, "restored": True,
+                "before": 1, "after": 1,
+                "steps": [{"step": "GET the gallery", "status": 200},
+                          {"step": "POST the gallery row", "status": 201},
+                          {"step": "GET the gallery back", "status": 200},
+                          {"step": "DELETE the gallery row", "status": 204},
+                          {"step": "GET the gallery back", "status": 200}],
+                "why": "", "at": "2026-11-03 09:00:00"}
+
+    harness._BOX.shown[:] = []
+    harness._BOX.askyesno = lambda title, question, **kwargs: questions.append(
+        (title, question)) or True
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(cs_proof, "send", fake_send), \
+            patch.object(cs_proof, "auto_photos",
+                         lambda **k: {"main": photo, "gallery": photo,
+                                      "why_main": "", "why_gallery": ""}), \
+            patch.object(cs_proof, "photo_alive", lambda url, **k: (False, "")), \
+            patch.object(cs_gallery, "prove", fake_gallery_proof):
+        find(parent, gui.ttk.Button,
+             "Read CanadianShopper's listings").invoke()
+        run = app.runs[-1]
+        Path(run["args"][1]).write_text(json.dumps({"items": rows}),
+                                       encoding="utf-8")
+        run["on_done"](0)
+        listing_box(parent).selection_set(0)
+        app.lines[:] = []
+        find(parent, gui.ttk.Button, "Prove every field...").invoke()
+
+    said = "\n".join(text for _tag, text in app.lines)
+    asked = questions[0][1] if questions else ""
+    check("the gallery is offered, not written off as a missing field",
+          questions and "Gallery photos" in asked, asked[:300])
+    check("and the proof runs on the gallery's own rows",
+          len(proved) == 1 and proved[0]["listing"] == listing_id and
+          proved[0]["photo"] == photo, str(proved))
+    check("no product record is ever patched to hold a gallery",
+          sent == [], str(sent))
+    check("the console calls the gallery settled",
+          "Gallery photos is settled" in said, said[-300:])
+    check("and never says the record has no such field",
+          "not a field this listing's record has" not in said and
+          "carries no gallery" not in said, said[-300:])
+    check("and the run says what it set out to prove",
+          "Proving 1 field on Wurmple" in said, said[:300])
+
+
+def test_a_photo_can_be_put_in_the_gallery():
+    """A photo can go into a gallery that is rows, not a field of the record.
+
+    The gallery is ``productImage`` rows keyed by the listing's own id, which
+    is the plugin's 1.0.40 answer and the reason this app was wrong for six
+    releases: a record with thirty-nine keys and no gallery can have a full
+    gallery. So this button does not look for a field to write. It reads the
+    gallery's rows, says how many there are, asks once, posts one row, and
+    reads the gallery back.
+    """
+    print()
+    print("== 14. a photo can be put in the gallery ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    listing_id = "94b93f6040f5401daabaa9c936efa5a7"
+    photo = "https://cs.example/api/file/back.webp"
+    front = "https://cs.example/api/file/front.webp"
+    rows = [{"id": listing_id, "product_id": 0, "title": "Wurmple",
+             "status": "active", "inventory": 1, "price": "12.50"}]
+    record = {"id": listing_id, "title": "Wurmple", "priceCad": 12.5,
+              "inventory": 1, "primaryImageUrl": front}
+    read_urls, questions, added = [], [], []
+
+    def fake_read(url, cookie="", fetch=None):
+        read_urls.append(url)
+        return {"status": 200,
+                "rows": [{"id": "r1", "product": listing_id,
+                          "imageUrl": front, "sortOrder": 1}], "why": ""}
+
+    def fake_add(listing, session, photo_url, **kwargs):
+        added.append({"listing": listing, "photo": photo_url,
+                      "base": kwargs.get("base")})
+        return {"field": "images", "label": "Gallery photos",
+                "listing": listing, "photo": photo_url, "row": "new-2",
+                "verdict": "added", "written": True, "restored": None,
+                "before": 1, "after": 2,
+                "why": "The gallery holds the photo, as row new-2.",
+                "steps": [{"step": "GET the gallery", "status": 200}],
+                "at": "2026-11-03 09:00:00"}
+
+    def yes(title, question, **kwargs):
+        questions.append((title, question))
+        return True
+
+    harness._BOX.shown[:] = []
+    harness._BOX.askyesno = yes
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(cs_proof, "read_record",
+                         lambda url, cookie="": (200, json.dumps(record))), \
+            patch.object(cs_proof, "photo_alive", lambda url, **k: (False, "")), \
+            patch.object(cs_proof, "photo_candidates", lambda **k: []), \
+            patch.object(gui, "simpledialog") as prompt, \
+            patch.object(cs_gallery, "read", fake_read), \
+            patch.object(cs_gallery, "add", fake_add):
+        prompt.askstring = lambda *a, **k: photo
+        read_into(app, folder, parent, rows)
+        listing_box(parent).selection_set(0)
+        app.lines[:] = []
+        find(parent, gui.ttk.Button, "Add a photo to the gallery...").invoke()
+
+    said = "\n".join(text for _tag, text in app.lines)
+    check("the panel offers to put a photo in the gallery",
+          find(parent, gui.ttk.Button, "Add a photo to the gallery...")
+          is not None, "")
+    check("the gallery is read at the listing's own productImage rows",
+          read_urls and "/api/data/productImage" in read_urls[0] and
+          listing_id in read_urls[0], str(read_urls))
+    check("and the console says how many photos it holds",
+          any("holds 1 photo" in text for _tag, text in app.lines),
+          str(app.lines[:5]))
+    check("pressing it asks once, before anything is written",
+          len(questions) == 1, str(questions))
+    question = questions[0][1] if questions else ""
+    check("the question names the photo that would be added",
+          photo in question, question[:200])
+    check("and says the photo is kept, because that is what was asked for",
+          "KEPT" in question, question[:300])
+    check("and that the gallery is read back afterwards",
+          "read back afterwards" in question, question[:400])
+    check("exactly one row is added, at the listing's own id",
+          len(added) == 1 and added[0]["listing"] == listing_id and
+          added[0]["photo"] == photo, str(added))
+    check("and the console says the gallery holds the photo now",
+          "in the listing's gallery now" in said, said[-300:])
+
+    #  Declining writes nothing - the one thing a confirmation is for.
+    added[:] = []
+    questions[:] = []
+    with patch.object(gui, "in_background", sync_background), \
+            patch.object(cs_proof, "read_record",
+                         lambda url, cookie="": (200, json.dumps(record))), \
+            patch.object(cs_proof, "photo_alive", lambda url, **k: (False, "")), \
+            patch.object(cs_proof, "photo_candidates", lambda **k: []), \
+            patch.object(gui, "simpledialog") as prompt, \
+            patch.object(cs_gallery, "read", fake_read), \
+            patch.object(cs_gallery, "add", fake_add):
+        prompt.askstring = lambda *a, **k: photo
+        harness._BOX.askyesno = lambda *args, **kwargs: False
+        app.lines[:] = []
+        find(parent, gui.ttk.Button, "Add a photo to the gallery...").invoke()
+    check("declining the question writes nothing", added == [], str(added))
+    check("and says so plainly",
+          any("not added" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    harness._BOX.askyesno = lambda *a, **k: True
+
+
+def test_a_photo_can_be_taken_off_the_gallery():
+    """The other half of the same button pair: a photo added by mistake.
+
+    A gallery nobody can edit is the defect this line of work started from, so
+    removal is not a proof and not a leftover: the gallery is read, every photo
+    it holds is listed with the row it lives in, the chosen row is deleted by
+    its own id, and the gallery is read back to show it gone.
+    """
+    print()
+    print("== 14b. a photo can be taken off the gallery ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    listing_id = "94b93f6040f5401daabaa9c936efa5a7"
+    front = "https://cs.example/api/file/front.webp"
+    stray = "https://cs.example/api/file/56-Syl-Apps-1978-79-O-Pee-Chee-front.jpg"
+    rows = [{"id": listing_id, "product_id": 0, "title": "Wurmple",
+             "status": "active", "inventory": 1, "price": "12.50"}]
+    record = {"id": listing_id, "title": "Wurmple", "priceCad": 12.5,
+              "inventory": 1, "primaryImageUrl": front}
+    read_urls, questions, removed, asked = [], [], [], []
+
+    def fake_read(url, cookie="", fetch=None):
+        read_urls.append(url)
+        return {"status": 200,
+                "rows": [{"id": "r1", "product": listing_id,
+                          "imageUrl": front, "sortOrder": 1},
+                         {"id": "bcfed67", "product": listing_id,
+                          "imageUrl": stray, "sortOrder": 2}], "why": ""}
+
+    def fake_remove(listing, session, row_id, **kwargs):
+        removed.append({"listing": listing, "row": row_id,
+                        "base": kwargs.get("base")})
+        return {"field": "images", "label": "Gallery photos",
+                "listing": listing, "photo": "", "row": row_id,
+                "verdict": "removed", "written": True, "restored": True,
+                "before": 2, "after": 1,
+                "why": "The row is gone from the gallery.",
+                "steps": [{"step": "DELETE the gallery row", "status": 204}],
+                "at": "2026-11-03 09:30:00"}
+
+    def yes(title, question, **kwargs):
+        questions.append((title, question))
+        return True
+
+    def ask(title, question, **kwargs):
+        asked.append((title, question))
+        return "2"
+
+    harness._BOX.shown[:] = []
+    harness._BOX.askyesno = yes
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(cs_proof, "read_record",
+                         lambda url, cookie="": (200, json.dumps(record))), \
+            patch.object(cs_proof, "photo_alive", lambda url, **k: (False, "")), \
+            patch.object(cs_proof, "photo_candidates", lambda **k: []), \
+            patch.object(gui, "simpledialog") as prompt, \
+            patch.object(cs_gallery, "read", fake_read), \
+            patch.object(cs_gallery, "remove", fake_remove):
+        prompt.askstring = ask
+        read_into(app, folder, parent, rows)
+        listing_box(parent).selection_set(0)
+        app.lines[:] = []
+        add_buttons = [w for w in parent.walk()
+                       if isinstance(w, gui.ttk.Button) and
+                       w.cget("text") == "Add a photo to the gallery..."]
+        remove_buttons = [w for w in parent.walk()
+                          if isinstance(w, gui.ttk.Button) and
+                          w.cget("text") ==
+                          "Remove a photo from the gallery..."]
+        check("the panel offers one Add button and one Remove button",
+              len(add_buttons) == 1 and len(remove_buttons) == 1,
+              "%d add, %d remove" % (len(add_buttons), len(remove_buttons)))
+        remove_buttons[0].invoke()
+
+    said = "\n".join(text for _tag, text in app.lines)
+    check("the gallery is read before anything is chosen",
+          read_urls and "/api/data/productImage" in read_urls[0] and
+          listing_id in read_urls[0], str(read_urls))
+    check("and the console says how many photos it holds",
+          any("holds 2 photos" in text for _tag, text in app.lines),
+          str(app.lines[:5]))
+    check("the question lists every photo the read brought, numbered",
+          asked and "1. position 1" in asked[0][1] and
+          "2. position 2" in asked[0][1] and front in asked[0][1] and
+          stray in asked[0][1], (asked[0][1] if asked else "")[:300])
+    check("the row is removed by the id of the row that photo lives in",
+          len(removed) == 1 and removed[0]["row"] == "bcfed67" and
+          removed[0]["listing"] == listing_id, str(removed))
+    check("the confirmation names the photo and its row",
+          questions and stray in questions[0][1] and
+          "bcfed67" in questions[0][1], (questions[0][1] if questions else "")[:300])
+    check("and says it is not a proof - the photo stays removed",
+          questions and "not a proof" in questions[0][1],
+          (questions[0][1] if questions else "")[:500])
+    check("the console says the photo is off the gallery",
+          "off the listing's gallery" in said, said[-300:])
+
+    #  Declining the confirmation removes nothing.
+    removed[:] = []
+    questions[:] = []
+    with patch.object(gui, "in_background", sync_background), \
+            patch.object(cs_proof, "read_record",
+                         lambda url, cookie="": (200, json.dumps(record))), \
+            patch.object(cs_proof, "photo_alive", lambda url, **k: (False, "")), \
+            patch.object(cs_proof, "photo_candidates", lambda **k: []), \
+            patch.object(gui, "simpledialog") as prompt, \
+            patch.object(cs_gallery, "read", fake_read), \
+            patch.object(cs_gallery, "remove", fake_remove):
+        prompt.askstring = ask
+        harness._BOX.askyesno = lambda *args, **kwargs: False
+        app.lines[:] = []
+        find(parent, gui.ttk.Button, "Remove a photo from the gallery...").invoke()
+    check("declining the question removes nothing", removed == [], str(removed))
+    check("and says so plainly",
+          any("Nothing was removed" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+
+    #  A number that is not one of the photos removes nothing.
+    removed[:] = []
+    with patch.object(gui, "in_background", sync_background), \
+            patch.object(cs_proof, "read_record",
+                         lambda url, cookie="": (200, json.dumps(record))), \
+            patch.object(cs_proof, "photo_alive", lambda url, **k: (False, "")), \
+            patch.object(cs_proof, "photo_candidates", lambda **k: []), \
+            patch.object(gui, "simpledialog") as prompt, \
+            patch.object(cs_gallery, "read", fake_read), \
+            patch.object(cs_gallery, "remove", fake_remove):
+        prompt.askstring = lambda *a, **k: "9"
+        harness._BOX.askyesno = lambda *args, **kwargs: True
+        app.lines[:] = []
+        find(parent, gui.ttk.Button, "Remove a photo from the gallery...").invoke()
+    check("a number the gallery does not have removes nothing",
+          removed == [], str(removed))
+    check("and says the photo is not one of them",
+          any("is not one of the photos" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    harness._BOX.askyesno = lambda *a, **k: True
 
 
 def test_the_panel_sets_a_proven_price():
@@ -3233,16 +3907,6 @@ def test_the_panel_reads_and_lists():
           len(listing_box(parent).items) == len(LISTINGS), "")
 
 
-def select(parent, word):
-    """Select the one row whose card name contains ``word``."""
-    box = listing_box(parent)
-    for index, text in enumerate(box.items):
-        if word in text:
-            box.selection_set(index)
-            return index
-    raise AssertionError("no row for %r in %r" % (word, box.items))
-
-
 def open_edit_form(parent, values=(None, None, None, None), agree=True):
     """Press Edit on the selected row, fill the form and press Save.
 
@@ -3639,6 +4303,8 @@ def main():
     test_only_what_changed_is_sent()
     test_the_confirmation_says_what_will_change()
     test_the_plugins_answer_is_read_conservatively()
+    test_every_field_is_proved_in_one_job()
+    test_a_settled_field_is_not_reported_as_broken()
     test_the_12030_reproduction()
     test_a_list_read_before_product_ids()
     test_a_read_with_no_product_ids_at_all()
@@ -3654,6 +4320,9 @@ def main():
     test_the_editing_panel_says_what_stopped_a_read()
     test_the_panel_writes_a_diagnosis()
     test_the_panel_writes_a_proof()
+    test_a_photo_can_be_put_in_the_gallery()
+    test_a_photo_can_be_taken_off_the_gallery()
+    test_the_gallery_is_never_written_off()
     test_the_panel_sets_a_proven_price()
     test_the_edit_button_takes_the_price_road()
     test_a_form_of_every_proven_field()

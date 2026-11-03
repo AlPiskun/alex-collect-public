@@ -1,4 +1,4 @@
-Alex Collect 3.23 — public core package
+Alex Collect 3.33 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -106,6 +106,18 @@ app/:
                                    id, the confirmed values checked first, only
                                    the changed fields sent, every answer read
                                    back field by field
+  cs_gallery.py                    read, add to and remove from a
+                                   CanadianShopper listing's gallery, which is
+                                   productImage rows keyed by the listing's
+                                   record id and not a field on that record:
+                                   read the rows, add one photo you chose and
+                                   read the gallery back, remove one photo by
+                                   the id of its own row and read the gallery
+                                   back again, and prove the gallery by adding
+                                   a row, reading it, removing that same row and
+                                   reading again - so a settled gallery is one
+                                   the site demonstrably keeps, and the listing
+                                   is left as it was
   cs_stage.py                      read the plugin's photo staging answer - every
                                    row's status, the staged front URL, the CSVs
                                    it wrote and the reason each failed row gave -
@@ -122,6 +134,11 @@ app/:
                                    preview-first legacy result mover
   pipeline/OUTPUT-FILES.md         pipeline output/retention audit
   pipeline/facebook_merchant_products/facebook_feed.py
+  version_sync.py                 the app's version, in one place and
+                                   checked in every other: the two installers,
+                                   the setup names, the user agents, the
+                                   MANIFEST, the README and the tests; one
+                                   command moves them all together
   test-*.py                       core tests
 
 Plugins are separate packages. No CanadianShopper plugin implementation,

@@ -12,12 +12,20 @@ LAUNCHER = (HERE.parent / "app" / "Alex Collect.bat").read_text(
 CORE = (HERE.parent / "app" / "gui.py").read_text(encoding="utf-8")
 PYTHON_SETUP = (HERE / "alexcollect.iss").read_text(encoding="utf-8")
 
-APP_VERSION = "3.23"
+# The app's version is read from gui.py rather than copied here. A copy is a
+# number that has to be remembered, and this file is exactly where forgetting
+# went unnoticed for four releases: the .iss files sat at 3.23 while the app
+# said 3.26, and the only test that reads them was this one.
+#
+# The Python the bundled installer ships is a separate number, pinned here
+# with the official installer's SHA-256, and is not the app's version.
+_APP_VERSION = re.search(r'(?m)^VERSION = "(\d+\.\d+)"$', CORE)
+assert _APP_VERSION, 'app/gui.py has no VERSION = "x.yy" line'
+APP_VERSION = _APP_VERSION.group(1)
 VERSION = "3.13.16"
 INSTALLER = "python-3.13.16-amd64.exe"
 SHA256 = "fb4f9f5d438b2396da0086dc70b935c530cb578e37adc6d354f7ad2037fee83b"
 
-assert 'VERSION = "%s"' % APP_VERSION in CORE
 assert '#define MyAppVersion "%s"' % APP_VERSION in ISS
 assert '#define MyAppVersion "%s"' % APP_VERSION in PYTHON_SETUP
 for setup in (ISS, PYTHON_SETUP):
@@ -36,10 +44,11 @@ assert 'set "PYEXE=python-%PYVER%-amd64.exe"' in BATCH
 assert 'set "PYSHA=%s"' % SHA256 in BATCH
 assert 'set "PYURL=https://www.python.org/ftp/python/%PYVER%/%PYEXE%"' in BATCH
 assert 'https://www.python.org/downloads/release/python-31316/' in BATCH
-assert VERSION in README
+assert VERSION in README  # Python 3.13.16, not the app's version
 assert 'https://www.python.org/downloads/release/python-31316/' in README
 assert not re.search(r"3\.14\.8|python-3148", ISS + BATCH + README)
 print("PASS bundled installer pins Python %s x64" % VERSION)
+print("PASS both installers carry the app's own version, %s" % APP_VERSION)
 print("PASS Inno Setup and download script agree on installer filename")
 print("PASS build script verifies the official SHA-256")
 print("PASS bundled runtime target and release documentation agree")
