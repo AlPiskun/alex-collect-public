@@ -1,4 +1,4 @@
-# Alex Collect 3.27
+# Alex Collect 3.28
 
 Alex Collect is a local desktop control panel for organizing a small trading-card selling workflow. It brings together the card pipeline, WooCommerce order inputs, customer quotes, a sale checklist, photo utilities, and optional plugins.
 
@@ -108,9 +108,26 @@ Windows build script, the browser user agents the tools send, the core version
 a plugin is checked against, the MANIFEST, this README, the testing guide and
 the tests that stamp a proof file. It exits 1 and names the file when any of
 them has been left behind, and
-`python version_sync.py 3.28` moves them all to 3.28 in one command. A version
+`python version_sync.py 3.29` moves them all to 3.29 in one command. A version
 bump is that command plus nothing else - not a search and replace in the files
 you happen to remember.
+
+It reads the two `.iss` files back and prints what each one calls itself and
+the setup it builds, so the question "is the installer up to date?" is answered
+without opening Inno Setup:
+
+```
+  installer/alexcollect.iss          AppVersion 3.NN -> AlexCollect-Setup-3.NN.exe
+  installer/alexcollect-bundled.iss  AppVersion 3.NN -> AlexCollect-Setup-bundled-3.NN.exe
+```
+
+(`3.NN` stands for whatever the version is - the real lines carry the number,
+and the check above is what keeps them honest. A number printed here would be
+one more copy to drift.)
+
+And it names any finished setup left in `installer/Output/` that was built as
+another version, because that file outlives the mistake: double-clicking it
+installs the older release after the `.iss` has been fixed.
 
 ## Support
 

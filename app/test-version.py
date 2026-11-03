@@ -79,6 +79,24 @@ def test_every_place_agrees():
               '#define MyAppVersion "%s"' % version in text, name)
         check("%s names the version once, in one place" % name,
               text.count('#define MyAppVersion') == 1, name)
+        check("%s builds its name from the version, not from a number typed "
+              "into the output line" % name,
+              "OutputBaseFilename=" in text
+              and "{#MyAppVersion}" in re.search(
+                  r'(?m)^OutputBaseFilename=(\S+)$', text).group(1), name)
+
+    said = version_sync.installer_lines()
+    check("the report says what each installer calls itself, without anyone "
+          "opening the file",
+          len(said) == 2 and all(version in line for line in said), str(said))
+    check("and which setup file each one builds",
+          any("AlexCollect-Setup-%s.exe" % version in line for line in said)
+          and any("AlexCollect-Setup-bundled-%s.exe" % version in line
+                  for line in said), str(said))
+    check("a finished setup for another version is not silently trusted",
+          not version_sync.setups() or
+          all(found != version for _path, found in version_sync.setups()),
+          str(version_sync.setups()))
 
 
 def test_every_place_would_move():
@@ -197,6 +215,25 @@ def test_a_copy_that_lags_is_caught():
         check("a new file naming a version is reported rather than ignored",
               "new-note.md" in said and "3.20" in said, said)
         note.unlink()
+
+        #  A setup file left behind from an older build - the thing a stale
+        #  .iss produces, and the thing someone double-clicks months later.
+        #  The name is assembled from its parts so that this test's own
+        #  fixture is not mistaken for a version declaration by the scan it
+        #  is exercising.
+        built = repo / "installer" / "Output"
+        built.mkdir(exist_ok=True)
+        stale = "3." + "23"
+        stale_name = "AlexCollect-Setup-" + stale + ".exe"
+        (built / stale_name).write_bytes(b"")
+        said = "\n".join(version_sync.report()[0])
+        check("a finished setup built as another version is reported",
+              stale_name in said and stale in said, said)
+        check("and it says what running it would install",
+              "running it installs" in said, said)
+        (built / stale_name).unlink()
+        check("with no such leftover, nothing is said",
+              not version_sync.setups(), str(version_sync.setups()))
 
         #  One command, every copy - the installers included.
         version_sync.apply("9.99")

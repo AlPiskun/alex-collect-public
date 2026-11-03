@@ -25,6 +25,11 @@ also scans the repository for anything that *looks* like a version declaration
 and refuses a number that is not the current one: a new file cannot be
 forgotten quietly, and a pattern that stops matching its file is reported
 rather than passed over.
+
+It also reads the two installers back and prints what each one calls itself and
+the setup file it builds - so "is the .iss up to date?" is answered on screen -
+and it names any finished setup left in ``installer/Output/`` that was built as
+another version, because double-clicking that one installs the older release.
 """
 import re
 import sys
@@ -186,6 +191,53 @@ def declarations(version=""):
     return strays
 
 
+#: Setup files are artefacts, not sources: they are never bumped, they are
+#: rebuilt. But an old one left in the output folder is worth saying out loud,
+#: because double-clicking it installs the older release it was built for -
+#: which is exactly what a stale .iss produces, and then outlives.
+OUTPUT_FOLDER = "installer/Output"
+SETUP_NAME = re.compile(r'AlexCollect-Setup-(?:bundled-)?(\d+\.\d+)\.exe$')
+
+
+def setups(version=""):
+    """``[(path, number)]`` for finished setups built as another version."""
+    version = version or read_version()
+    folder = ROOT / OUTPUT_FOLDER
+    if not folder.is_dir():
+        return []
+    stale = []
+    for path in sorted(folder.glob("AlexCollect-Setup-*.exe")):
+        found = SETUP_NAME.search(path.name)
+        if found and found.group(1) != version:
+            stale.append((OUTPUT_FOLDER + "/" + path.name, found.group(1)))
+    return stale
+
+
+def installer_lines(version=""):
+    """What each installer calls itself and the setup file it builds.
+
+    Read out of the files rather than promised in a comment: this is the
+    answer to "is the .iss up to date?" without opening either of them.
+    """
+    version = version or read_version()
+    lines = []
+    for relative, _what, _pattern in PLACES:
+        if not relative.endswith(".iss"):
+            continue
+        try:
+            text = (ROOT / relative).read_text(encoding="utf-8",
+                                               errors="replace")
+        except OSError:
+            continue
+        said = re.search(r'(?m)^#define MyAppVersion "(\d+\.\d+)"$', text)
+        base = re.search(r'(?m)^OutputBaseFilename=(\S+)$', text)
+        name = (base.group(1).replace("{#MyAppVersion}", version)
+                if base else "(no output name)")
+        lines.append("  %-34s AppVersion %s -> %s.exe"
+                     % (relative, said.group(1) if said else "(none)", name))
+    return lines
+
+
 def render(path, pattern, version):
     """What a file would say with every version under ``pattern`` replaced."""
     try:
@@ -227,7 +279,8 @@ def check(version=""):
     return {"version": version,
             "wrong": disagreements(version),
             "unfound": misconfigurations(version),
-            "strays": declarations(version)}
+            "strays": declarations(version),
+            "setups": setups(version)}
 
 
 def report(version=""):
@@ -260,10 +313,16 @@ def report(version=""):
         seen.add(key)
         lines.append("  ! %s:%d says %s, not %s (and is not in the list of "
                      "places): %s" % (relative, number, value, version, line))
-    good = not (state["wrong"] or state["unfound"] or state["strays"])
+    for relative, found in state["setups"]:
+        lines.append("  ! %s is a finished setup for %s - running it installs "
+                     "that release, not %s. Rebuild it, or delete it."
+                     % (relative, found, version))
+    good = not (state["wrong"] or state["unfound"] or state["strays"]
+                or state["setups"])
     if good:
         lines.append("Every one of the %d places agrees, and nothing else in "
                      "the repository names a version." % len(PLACES))
+        lines.extend(installer_lines(version))
     return lines, good
 
 
@@ -281,7 +340,8 @@ def main(argv=None):
         lines, good = report()
         print("\n".join(lines))
         if good:
-            print("\nMove them all with:  python version_sync.py 3.27")
+            print("\nNothing to do. To move every place at once:  "
+                  "python version_sync.py <version>")
         else:
             print("\nFix them all with:   python version_sync.py <version>")
         return 0 if good else 1
