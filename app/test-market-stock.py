@@ -68,6 +68,79 @@ FB_400 = """<!DOCTYPE html><html><head><title>Error</title></head><body>
 </body></html>"""
 
 
+def test_the_section_and_the_tabs():
+    """The Edit stock section, as the window really builds it.
+
+    Two things this caught that the panel tests could not: a shop panel built
+    inside a tab (a "sectioned" parent) fell through into the eBay branch with
+    no eBay site and raised, and a task-menu button that jumps to another panel
+    is wrong when the panel it points at is already stacked underneath it.
+    """
+    print()
+    print("== 5b. one section, a place per marketplace ==")
+    folder = Path(tempfile.mkdtemp())
+    harness.install_plugin("1.0.20", folder / "plugin")
+    app = harness.FakeApp(folder)
+    parent = harness.FakeWidget()
+    gui.build_stock(parent, app)
+    texts = [str(w.cget("text")) for w in parent.walk()
+             if isinstance(w, gui.ttk.Button)]
+    check("the task-menu shop panel offers its two neighbours as buttons",
+          "Find and edit a CanadianShopper listing..." in texts and
+          "Archive listings already at 0..." in texts, str(texts))
+    check("and every one of them says what it opens on hover",
+          all(gui.tip_for(text) for text in texts
+              if text not in ("What this panel does", "Hide this help")),
+          str([text for text in texts if not gui.tip_for(text)]))
+
+    #  The same panel inside a tab: the two panels are stacked under it, so it
+    #  must build without buttons that would hide them - and without falling
+    #  into the marketplace branch of its own layout.
+    section = harness.FakeWidget()
+    section._section_titled = True
+    built = {"error": None}
+    try:
+        gui.panel_section(section, app, "stock", expand=False)
+    except Exception as exc:                    # noqa: BLE001 - reported
+        built["error"] = exc
+    check("the shop panel builds inside a tab", built["error"] is None,
+          str(built["error"]))
+    section_texts = [str(w.cget("text")) for w in section.walk()
+                     if isinstance(w, gui.ttk.Button)]
+    check("and offers no button that would hide the panels below it",
+          "Find and edit a CanadianShopper listing..." not in section_texts and
+          "Archive listings already at 0..." not in section_texts,
+          str(section_texts))
+    check("while still offering the fixes it makes itself",
+          "Set CanadianShopper to the website's counts..." in section_texts,
+          str(section_texts))
+
+    tabs = harness.FakeWidget()
+    gui.TabsFrame(tabs, app)
+    notebook = next(w for w in tabs.walk() if isinstance(w, gui.ttk.Notebook))
+    labels = [label for _tab, label in notebook.tabs]
+    check("the tabs have the same five sections as the task menu",
+          labels == [name for name, _ids in gui.groups_for(True)], str(labels))
+    index = labels.index("Edit stock")
+    tab = notebook.tabs[index][0]
+    panels = [w for w in tab.walk() if getattr(w, "_section_titled", False)]
+    check("the shop's tab holds all five of its panels, in order",
+          len(panels) == 5, str([p.cget("text") for p in panels]))
+    app.cs_addon = False
+    tabs2 = harness.FakeWidget()
+    gui.TabsFrame(tabs2, app)
+    notebook2 = next(w for w in tabs2.walk()
+                     if isinstance(w, gui.ttk.Notebook))
+    index2 = [label for _tab, label in notebook2.tabs].index("Edit stock")
+    panels2 = [w for w in notebook2.tabs[index2][0].walk()
+               if getattr(w, "_section_titled", False)]
+    check("without the add-on the section holds only eBay and Facebook",
+          len(panels2) == 2 and
+          [p.cget("text") for p in panels2] == [gui.TITLES["editfb"],
+                                                gui.TITLES["editeb"]],
+          str([p.cget("text") for p in panels2]))
+
+
 def test_cookies():
     print("== 1. the three ways a person pastes a cookie ==")
     folder = Path(tempfile.mkdtemp())
@@ -1105,6 +1178,7 @@ def main():
     test_panel_with_a_stray_character()
     test_site_rows()
     test_panel()
+    test_the_section_and_the_tabs()
     test_one_card_market()
     test_cookie_file()
     test_the_walls_have_names()

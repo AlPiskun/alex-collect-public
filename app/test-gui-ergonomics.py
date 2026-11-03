@@ -80,9 +80,28 @@ def main():
     check("the stock work has its own section, one per marketplace",
           dict(gui.groups_for(True))["Edit stock"] ==
           ["stock", "editfb", "editeb"] and
-          "Edit stock" not in [name for name, _ids in
-                               gui.groups_for(False)],
+          dict(gui.groups_for(False))["Edit stock"] == ["editfb", "editeb"],
           str(dict(gui.groups_for(True))["Edit stock"]))
+    #  Every id a section offers must be a panel: a title, a blurb, a sentence
+    #  of help, a menu label and a builder for each. A panel added to the menu
+    #  without one of them is a button that opens nothing - which is what the
+    #  window suite caught on the Edit stock section, and this catches here,
+    #  where it can be run without a display.
+    ids = set(gui.PANEL_ORDER)
+    check("every panel in the order has a title, a blurb and a builder",
+          set(gui.TITLES) == ids and set(gui.BLURBS) == ids and
+          set(gui.PANEL_BUILDERS) == ids,
+          str(sorted((set(gui.TITLES) ^ ids) | (set(gui.BLURBS) ^ ids) |
+                     (set(gui.PANEL_BUILDERS) ^ ids))))
+    check("and a menu label and its own help",
+          set(gui.MENU_LABELS) == ids and
+          not (ids - {"welcome"} - set(gui.DOCS)),
+          str(sorted((set(gui.MENU_LABELS) ^ ids) |
+                     (ids - {"welcome"} - set(gui.DOCS)))))
+    check("every id a section offers is a real panel",
+          all(pid in gui.PANEL_BUILDERS
+              for _name, group in gui.groups_for(True) + gui.groups_for(False)
+              for pid in group), "")
     check("and the shop's own section is named for the shop",
           gui.TITLES["stock"] == "Edit stock - CanadianShopper" and
           gui.TITLES["editfb"] == "Edit stock - Facebook" and

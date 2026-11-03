@@ -1406,7 +1406,12 @@ def test_tabs_are_sections():
 
     sections, problems, repeated = [], [], []
     for tab, group in getattr(notebook, "tabs", []):
+        #  A group's tab holds its own panels, plus any panel that belongs
+        #  inside that tab rather than being a task of its own (the shop's
+        #  place in Edit stock carries finding a listing and the zero sweep).
         ids = list(dict(gui.groups_for(app.cs_addon)).get(group, []))
+        if app.cs_addon:
+            ids += list(gui.TAB_EXTRA.get(group, []))
         frames = [w for w in tab.walk() if is_section(w)]
         sections.extend(frames)
         if [f.cget("text") for f in frames] != [gui.TITLES[pid] for pid in ids]:
@@ -1416,9 +1421,13 @@ def test_tabs_are_sections():
                 repeated.append(pid)
     check("every panel in a group has its own section, in order",
           not problems, str(problems))
+    expected_sections = sum(len(ids) for _g, ids in
+                            gui.groups_for(app.cs_addon))
+    if app.cs_addon:
+        expected_sections += sum(len(gui.TAB_EXTRA.get(group, []))
+                                 for group, _ids in gui.groups_for(True))
     check("a section carries the panel's title on its border",
-          len(sections) == sum(len(ids) for _g, ids in
-                               gui.groups_for(app.cs_addon)) and
+          len(sections) == expected_sections and
           all(s.cget("text") for s in sections),
           str([s.cget("text") for s in sections]))
     check("no panel dresses its own boxes as sections",

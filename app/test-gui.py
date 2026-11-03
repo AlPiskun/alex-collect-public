@@ -280,10 +280,10 @@ def main():
           18 <= int(gui.ttk.Style(app).lookup("TaskMenu.TButton", "width")) <= 30)
     task_sections = [w.cget("text") for w in walk(tasks_frame(app))
                      if isinstance(w, gui.ttk.LabelFrame)]
-    check("tasks are separated into customer, batch, After, and Photos "
+    check("tasks are separated into customer, batch, After, stock and Photos "
           "sections",
           task_sections == ["Sell to a customer", "Sell a new batch",
-                            "After a sale", "Photos"],
+                            "After a sale", "Edit stock", "Photos"],
           str(task_sections))
     task_labels = [w.cget("text") for w in walk(tasks_frame(app))
                    if w.cget("style") == "TaskMenu.TButton"]
@@ -304,27 +304,37 @@ def main():
     #  Turning the add-on on for the check is the only way to test the button
     #  on a machine that has no plugin installed - which is exactly where the
     #  check used to fail.
+    #  Comparing and editing are one job now, so each marketplace has a place
+    #  of its own in one section - and the shop's two extra jobs (finding a
+    #  listing, sweeping the ones at zero) open from inside its place instead
+    #  of taking two more entries in the menu.
     addon_order = [gui.MENU_LABELS[pid]
                    for _group, ids in gui.groups_for(True) for pid in ids]
-    check("finding a CanadianShopper listing is an after-a-sale job",
-          addon_order.index("Find a CS listing") > addon_order.index(
-              "Compare stock") and addon_order.index("Find a CS listing") <
-          addon_order.index("Archive listings at 0"), str(addon_order))
+    check("the Edit stock section is one place per marketplace, shop first",
+          dict(gui.groups_for(True))["Edit stock"] ==
+          ["stock", "editfb", "editeb"] and
+          [gui.MENU_LABELS[pid] for pid in
+           dict(gui.groups_for(True))["Edit stock"]] ==
+          ["CanadianShopper", "Facebook", "eBay"], str(addon_order))
+    check("and finding a listing and sweeping the zeros are not menu entries",
+          not ({"Find a CS listing", "Archive listings at 0"} &
+               set(addon_order)), str(addon_order))
     addon_before = app.cs_addon
     app.cs_addon = True
     app.show_mode("menu")
     app.update()
     with_addon = [w.cget("text") for w in walk(tasks_frame(app))
                   if w.cget("style") == "TaskMenu.TButton"]
-    check("and with the add-on installed it is a button in that section",
-          "Find a CS listing" in with_addon and
-          with_addon.index("Find a CS listing") ==
-          with_addon.index("Compare stock") + 1, str(with_addon))
+    check("with the add-on installed the shop has its own button there",
+          "CanadianShopper" in with_addon and
+          with_addon.index("CanadianShopper") < with_addon.index("Facebook") <
+          with_addon.index("eBay"), str(with_addon))
     app.cs_addon = addon_before
     app.show_mode("menu")
     app.update()
-    check("without the add-on the menu offers only what it can do",
-          ("Find a CS listing" in task_labels) == bool(addon_before),
+    check("without the add-on the menu still offers eBay and Facebook",
+          ("CanadianShopper" in task_labels) == bool(addon_before) and
+          "Facebook" in task_labels and "eBay" in task_labels,
           "add-on %s: %s" % (addon_before, str(task_labels)))
 
     print("== 3. every panel builds from the task menu ==")
@@ -1790,8 +1800,9 @@ def main():
             pass
     check("no staging/wiring/zero-stock tasks in the core menu",
           not ({"Stage the photos", "Wire the photos",
-                "Archive listings at 0", "Re-point photos"} &
-               labels))
+                "Archive listings at 0", "Re-point photos",
+                "Find a CS listing", "CanadianShopper"} & labels),
+          str(sorted(labels)))
     core_menu = app3.nametowidget(app3.cget("menu"))
     core_menu_labels = menu_entry_labels(core_menu)
     check("Plugins and Logs & reports remain available in the menu",

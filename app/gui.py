@@ -1351,6 +1351,28 @@ column in Notepad/Excel) and it stops nagging you - and every tool
 run, including the .bat launchers, prints what is still outstanding
 until you do."""
 
+DOCS["editeb"] = """\
+eBay's place in the Edit stock section: the same comparison as the shop's, run
+against your eBay active listings instead of CanadianShopper, and the list of
+what needs attention between it and your website.
+
+eBay publishes no list this app can write to, so nothing is ever changed there
+from this panel - a finished page offers no write button at all rather than one
+that would fail. What the panel does is be exact about the work: the rows that
+need changing are copied onto the clipboard as a worklist, one card per line
+with both counts and the site's own state, ready to paste beside the site's own
+editor. A card can be opened on your website, where the app *can* write its
+count, and a card that is not really a disagreement can be ignored so it stops
+being compared again.
+
+Reading needs a signed-in session, pasted once into ebay-cookie.txt: the whole
+Cookie header at once, on one line or several. eBay checks whether a request
+comes from a browser and answers a refused one with a "Pardon our interruption"
+page; the app recognises that page, says so rather than calling the shop empty,
+and falls back to the page saved from a signed-in browser, newest first, in its
+own folder and in Downloads. A free store is read up to 250 listings, which is
+the whole of it.""" 
+
 DOCS["zerostock"] = """\
 Sweep on the CanadianShopper side: every listing already sitting at
 quantity 0 gets archived (reversible - it can be reactivated later).
@@ -1409,6 +1431,29 @@ readiness checks, and still asks for PUBLISH to be typed.
 A pair is only made when a shared SKU or the title identifies the same card - a
 wrong pair would accuse a card that is fine - and an unpaired card is never
 called wrong, only "on one side"."""
+
+DOCS["editfb"] = """\
+Facebook's place in the Edit stock section: the same comparison as the shop's,
+run against your Facebook selling page instead of CanadianShopper, and the list
+of what needs attention between it and your website.
+
+Facebook publishes no list this app can write to, so nothing is ever changed
+there from this panel - a finished page offers no write button at all rather
+than one that would fail. What the panel does is be exact about the work: the
+rows that need changing are copied onto the clipboard as a worklist, one card
+per line with both counts and the site's own state, ready to paste beside the
+site's own editor. A card can be opened on your website, where the app *can*
+write its count, and a card that is not really a disagreement can be ignored so
+it stops being compared again.
+
+Reading needs a signed-in session, pasted once into fb-cookie.txt: the whole
+Cookie header at once, on one line or several. If Facebook refuses the request
+- it answers HTTP 400 to anything it thinks is not a browser - the app looks
+for the page saved from a signed-in browser, newest first, in its own folder
+and in Downloads, and reads that instead, saying which file it used. Facebook
+renders its first batch and loads the rest as you scroll, so a page saved after
+scrolling covers more than a request can; when it does, that page is the one
+compared.""" 
 
 DOCS["csedit"] = """\
 Find one CanadianShopper listing and change it here, without opening the vendor
@@ -3452,8 +3497,8 @@ class App(tk.Tk):
 #  menu, the tabs view and the wizard pages.
 PANEL_ORDER = ["cookie", "pipeline", "combine", "ebayfill", "stage",
                "importpanel",
-               "wire", "rerun", "sold", "checklist", "stock", "csedit",
-               "zerostock", "ordersheet", "square",
+               "wire", "rerun", "sold", "checklist", "stock", "editfb",
+               "editeb", "csedit", "zerostock", "ordersheet", "square",
                "newphotos", "ordertext", "quote", "markets", "logs",
                "plugins"]
 #  Four jobs, in the order a batch goes through them: sell something, make the
@@ -3474,6 +3519,14 @@ GROUPS_FULL = [("Sell to a customer", ["ordertext", "quote"]),
                ("Photos", ["square", "rerun", "newphotos"])]
 
 
+#: Panels that belong *inside* another group's tab without being a task of
+#: their own. The shop's place in Edit stock is the whole of the shop's editing
+#: - comparing, finding one listing, sweeping the zeros - so the tabs view
+#: stacks those two inside the one tab, where the task menu reaches them from
+#: the buttons on the panel itself. Without the add-on neither exists.
+TAB_EXTRA = {"Edit stock": ["csedit", "zerostock"]}
+
+
 def groups_for(has_cs):
     """Compact task groups. Settings, plugins, and logs live in the menu bar.
 
@@ -3482,10 +3535,14 @@ def groups_for(has_cs):
     """
     if has_cs:
         return GROUPS_FULL
+    #  eBay and Facebook need none of the plugin - they are read with a
+    #  signed-in session - so their half of the Edit stock section is offered
+    #  in the core menu too. Only the shop's own place needs the plugin.
     return [("Sell to a customer", ["ordertext", "quote"]),
             ("Sell a new batch", ["pipeline", "combine", "ebayfill",
                                   "markets"]),
             ("After a sale", ["sold", "checklist", "ordersheet"]),
+            ("Edit stock", ["editfb", "editeb"]),
             ("Photos", ["square", "newphotos"])]
 TITLES = {
     "cookie": "User settings",
@@ -8889,29 +8946,35 @@ def build_stock(parent, app, site_id="cs"):
         #  panel is a defect, not a placeholder.
         publish_ready = None
 
+    #  Inside a tab the shop's two other panels are already stacked under this
+    #  one, so a button that jumped to the task menu to open them would be a
+    #  button that hides the panel right below it. A sectioned parent gets the
+    #  panels; the task menu, which shows one panel at a time, gets the buttons.
+    sectioned = getattr(parent, "_section_titled", False)
     if is_cs:
-        #  Where the two CS jobs that used to be their own sections now live:
-        #  this section is the shop's editing, so finding a listing and
-        #  archiving the ones sitting at zero belong beside the comparison
-        #  rather than in two more places to remember.
-        nav_row = ttk.Frame(box)
-        nav_row.pack(anchor="w", pady=(8, 0))
-        find_btn = ttk.Button(
-            nav_row, text="Find and edit a CanadianShopper listing...",
-            command=lambda: app.show_panel("csedit"))
-        find_btn.pack(side="left")
-        add_tooltip(find_btn,
-                    "Search CanadianShopper by card name, SKU or id and change "
-                    "one listing there - the same panel, opened from this "
-                    "section")
-        sweep_btn = ttk.Button(
-            nav_row, text="Archive listings already at 0...",
-            command=lambda: app.show_panel("zerostock"))
-        sweep_btn.pack(side="left", padx=6)
-        add_tooltip(sweep_btn,
-                    "Sweep CanadianShopper for listings sitting at quantity 0 "
-                    "and archive them, one at a time, without deleting "
-                    "anything")
+        if not sectioned:
+            #  Where the two CS jobs that used to be their own sections now
+            #  live: this section is the shop's editing, so finding a listing
+            #  and archiving the ones at zero belong beside the comparison
+            #  rather than in two more places to remember.
+            nav_row = ttk.Frame(box)
+            nav_row.pack(anchor="w", pady=(8, 0))
+            find_btn = ttk.Button(
+                nav_row, text="Find and edit a CanadianShopper listing...",
+                command=lambda: app.show_panel("csedit"))
+            find_btn.pack(side="left")
+            add_tooltip(find_btn,
+                        "Search CanadianShopper by card name, SKU or id and "
+                        "change one listing there - the same panel, opened "
+                        "from this section")
+            sweep_btn = ttk.Button(
+                nav_row, text="Archive listings already at 0...",
+                command=lambda: app.show_panel("zerostock"))
+            sweep_btn.pack(side="left", padx=6)
+            add_tooltip(sweep_btn,
+                        "Sweep CanadianShopper for listings sitting at "
+                        "quantity 0 and archive them, one at a time, without "
+                        "deleting anything")
         ttk.Label(box,
                   text="The list is what needs attention: a card whose two "
                        "counts differ, a card whose listing on the other site "
@@ -15123,7 +15186,8 @@ class TabsFrame(ttk.Frame):
                 continue
             tab = ttk.Frame(nb, padding=(6, 5))
             nb.add(tab, text=group)
-            for pid in ids:
+            extra = TAB_EXTRA.get(group, []) if app.cs_addon else []
+            for pid in list(ids) + list(extra):
                 panel_section(tab, app, pid, expand=False)
 
 
