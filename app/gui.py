@@ -77,7 +77,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.28"
+VERSION = "3.29"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -2104,6 +2104,7 @@ TOOLTIPS = {
     "Copy what needs changing": "Put the rows on the clipboard as a worklist - one card per line with both counts and the site's own state - for pasting into that site's own editor, because nothing is written there from here",
     "Write the proof": "Write one field on the selected CanadianShopper listing, read the record back, and put the old value back - a real change for the seconds it takes, and the only way to prove the site honours that field; one field, one listing, and nothing on your website",
     "Prove every field...": "Prove every field this app can write on the selected listing in one job: each field is written, read back and put back before the next is touched, an already-settled field is skipped, and a field that does not settle is reported with what to do about it; one confirmed click, and nothing unattended",
+    "Add a photo to the gallery...": "Put one photo into the selected listing's gallery - the second picture a card listing should have and a record edit cannot reach: the photo you chose is added, the record is read back, and if the site does not show it nothing changed; it stays, because a gallery photo is what you asked for, and the name the field is sent to is learned from the site's other listings rather than guessed at",
     "Edit the record's fields...": "Edit this listing's own record - price, title, description, stock count and main photo, each one open only when a saved proof shows the site keeps it, and only the fields you change are sent, then read back; no product id is used and your website is never touched",
     "Set the selected listing's price...": "Set the price on the selected listing's own record - one field, at the record's own id, with the new price read back afterwards; offered only for a field a proof has settled, so it works on listings that carry no product id, and your website is never touched",
     "Choose the cards:": "What decides which unlisted cards come first - dearest, newest, oldest, cheapest, or in the order typed below; the choice is remembered",
@@ -10702,7 +10703,29 @@ def build_csledit(parent, app):
         proofs = cs_proof.load_proofs(BASE)
         settled_here = [field for field in everything
                         if cs_proof.settled(field, proofs)]
-        todo = [field for field in everything if field not in settled_here]
+        #  A field this listing's record does not carry cannot be proved by
+        #  pressing the button again. An earlier run read the record and found
+        #  no such field, and that is remembered - so it is left out here
+        #  rather than offered, confirmed, and then written nowhere.
+        absent_here = [field for field in everything
+                       if field not in settled_here
+                       and cs_proof.known_absent(field, proofs,
+                                                 cs_edit.listing_id(item))]
+        todo = [field for field in everything
+                if field not in settled_here and field not in absent_here]
+        if not todo and absent_here:
+            words = cs_edit.field_words([cs_proof.field_label(field)
+                                         for field in absent_here])
+            rest = ("Every other field is settled."
+                    if len(settled_here) == len(everything) - len(absent_here)
+                    else "")
+            say("Nothing was written: %s %s not a field this listing's record "
+                "has, so there is nothing to prove there. %s The gallery has "
+                "its own button for that - \"Add a photo to the gallery...\"."
+                % (words, "are" if len(absent_here) > 1 else "is", rest),
+                "dim")
+            summary.configure(text="Nothing left to prove on this listing")
+            return
         if not todo:
             if not ask_yes(
                     "Every field is already settled",
@@ -10734,9 +10757,13 @@ def build_csledit(parent, app):
                                       for field in todo), skipped_line)):
             say("The proofs were not confirmed; nothing was written.", "dim")
             return
-        say("Proving %d field%s on %s: each is written, read back and put "
-            "back..." % (len(todo), "" if len(todo) == 1 else "s", named),
-            "cmd")
+        #  What is being started, not what is promised: a field the record
+        #  does not carry, or one with no photo of this card, is reported as
+        #  that when the run gets to it - so the first line does not get to
+        #  say every field will be written.
+        say("Proving %d field%s on %s..." % (len(todo),
+                                             "" if len(todo) == 1 else "s",
+                                             named), "cmd")
         summary.configure(text="Proving %d fields on %s..."
                           % (len(todo), named))
         look = look_at(item, listing_id)
@@ -10861,6 +10888,154 @@ def build_csledit(parent, app):
         in_background(app, work, done)
 
 
+    #: How many other listings are read to learn the name this site gives a
+    #: gallery. Small on purpose: the answer wanted is a field name, and every
+    #: one of these is a read of somebody's shop.
+    GALLERY_SURVEY_ROWS = 4
+
+    def add_gallery():
+        """Put a photo into the listing's gallery - the field a proof cannot reach.
+
+        A proof needs a value to put back. A listing whose record carries no
+        gallery has none, so the field would have to be *created* - and a field
+        that is not there cannot be settled, which is how a person could see
+        every field proved and still have no way to change the gallery.
+
+        So this does that one write, and says so before it happens: the photo
+        the person chose (never a placeholder), sent under the name this site
+        uses - learned by reading a few other listings' records, not guessed at
+        - then the record is read back. If the site does not show it, nothing
+        changed and the answer says so. It is kept, because a gallery photo is
+        what was asked for; nothing is put back.
+        """
+        item = proof_guard("Adding a gallery photo")
+        if item is None:
+            return
+        listing_id = cs_edit.listing_id(item)
+        address = cs_edit.detail_url(listing_id, CS_HOME)
+        cookie = load_cookie_text() or ""
+        cache = batch_photos(item)
+        others = [row for row in (state["items"] or [])
+                  if cs_edit.listing_id(row)
+                  and str(cs_edit.listing_id(row)) != str(listing_id)
+                  ][:GALLERY_SURVEY_ROWS]
+        say("Reading this listing's record, and up to %d other listings' "
+            "records for the name this site gives a gallery..."
+            % GALLERY_SURVEY_ROWS, "dim")
+
+        def look():
+            status, body = cs_proof.read_record(address, cookie)
+            record = cs_proof.record_from(body) if status == 200 else None
+            surveyed = []
+            for row in others:
+                other_id = cs_edit.listing_id(row)
+                other_status, other_body = cs_proof.read_record(
+                    cs_edit.detail_url(other_id, CS_HOME), cookie)
+                if other_status != 200:
+                    continue
+                other = cs_proof.record_from(other_body)
+                if other:
+                    surveyed.append(other)
+            return {"status": status, "record": record, "cache": cache,
+                    "survey": cs_proof.gallery_survey(surveyed)}
+
+        def found(answer, error):
+            """Say what was learned, then ask before anything is written."""
+            answer = answer or {}
+            record = answer.get("record")
+            if error is not None or record is None:
+                status = answer.get("status") or 0
+                say("The listing's own record could not be read (%s), so "
+                    "nothing was added: a photo written blind could be a "
+                    "second copy of one already in the gallery."
+                    % ("HTTP %s" % status if status else "no answer"), "err")
+                return
+            survey = answer.get("survey") or {}
+            here = cs_proof.gallery_key(record)
+            if here:
+                held = len(cs_proof.gallery_keys(record.get(here)))
+                say("The listing's gallery is %s and holds %d photo%s."
+                    % (here, held, "" if held == 1 else "s"), "dim")
+            elif survey.get("key"):
+                say("This listing's record has no gallery field. %d of the %d "
+                    "other listings read keep theirs in %s, so that is the "
+                    "name this one is asked for."
+                    % (survey.get("count") or 0, survey.get("total") or 0,
+                       survey.get("key")), "dim")
+            else:
+                say("This listing's record has no gallery field, and neither "
+                    "do the %d other listing%s read - so the name it is sent "
+                    "to is a guess, and the read-back is what says whether it "
+                    "was right."
+                    % (survey.get("total") or 0,
+                       "" if (survey.get("total") or 0) == 1 else "s"), "dim")
+            photos = cs_proof.auto_photos(
+                item=item, record=record, staged=cache.get("staged"),
+                staged_rows=cache.get("rows"), card=cache.get("card"))
+            photo = photos.get("gallery") or photos.get("main")
+            if not photo:
+                say("No photo of this card could be found to add, so nothing "
+                    "was written: %s"
+                    % (photos.get("why_gallery") or photos.get("why_main")
+                       or "nothing in the batch is certainly this card."),
+                    "err")
+                return
+            key = here or str(survey.get("key") or "") or "images"
+            shape = cs_proof.gallery_shape(
+                record.get(key) if here else survey.get("shape"))
+            added = ("It is sent as %s, the shape the site's own galleries "
+                     "use." % ("a list of photo objects" if shape == "map"
+                               else "a list of photo addresses"))
+            say("The photo to add: %s" % photo, "dim")
+            if not ask_yes(
+                    "Add one photo to the gallery?",
+                    "%s\n\nThe photo added: %s\n\nIt is written to the "
+                    "listing's own record under %s. %s It is KEPT - a gallery "
+                    "photo is what you asked for, so nothing is put back - and "
+                    "the record is read afterwards: if the site does not show "
+                    "it, nothing changed and the answer says so.\n\nNo "
+                    "product id is used, no other field is sent, and your "
+                    "website is not touched.\n\nAdd it now?"
+                    % (str(item.get("name") or "that listing"), photo, key,
+                       added)):
+                say("The photo was not added; nothing was written.", "dim")
+                return
+            say("Adding the photo to %s: %s..."
+                % (str(item.get("name") or "the listing"), photo), "cmd")
+            summary.configure(text="Adding a photo to the gallery...")
+
+            def work():
+                return cs_record.add_gallery_photo(
+                    address, cookie, photo, expect_id=listing_id,
+                    listing=item, key=key, shape=shape)
+
+            def done(result, failure):
+                if failure is not None:
+                    say("The photo could not be added: %s. Nothing was "
+                        "written." % failure, "err")
+                    summary.configure(text="The photo could not be added: %s"
+                                      % failure)
+                    return
+                verdict = (result or {}).get("verdict")
+                say(cs_record.add_sentence(result),
+                    "ok" if verdict in ("added", "same") else "err")
+                advice = cs_record.add_advice(result)
+                if advice:
+                    say("  What to do: %s" % advice, "dim")
+                summary.configure(text=cs_record.add_sentence(result))
+                if verdict in ("added", "same", "ignored"):
+                    #  What was learned about this listing's record: the field
+                    #  is there now, or it is not and never will be with this
+                    #  site's route. Either way the next proof run should not
+                    #  start over asking the same question.
+                    cs_proof.remember(
+                        BASE, dict(result, field_missing=verdict == "ignored"),
+                        listing=item)
+
+            in_background(app, work, done)
+
+        in_background(app, look, found)
+
     proof_row = ttk.Frame(box)
     proof_row.pack(anchor="w", pady=(4, 0))
     ttk.Label(proof_row, text="Prove a field can be written:").pack(side="left")
@@ -10881,6 +11056,13 @@ def build_csledit(parent, app):
                                command=prove_everything)
     prove_all_btn.pack(side="left", padx=(8, 0))
     add_tooltip(prove_all_btn, TOOLTIPS["Prove every field..."])
+    #  The gallery is the one field a proof cannot reach: a record that does
+    #  not carry it has nothing to put back, so no proof can settle it - and a
+    #  field without a proof was a gallery nobody could change.
+    add_gallery_btn = ttk.Button(proof_row, text="Add a photo to the gallery...",
+                                 command=add_gallery)
+    add_gallery_btn.pack(side="left", padx=(8, 0))
+    add_tooltip(add_gallery_btn, TOOLTIPS["Add a photo to the gallery..."])
 
     list_frame = ttk.Frame(box)
     listing = tk.Listbox(list_frame, height=9, exportselection=False)

@@ -746,7 +746,7 @@ def test_the_whole_listing_at_once():
         fetch=site.fetch, send=site.send)
     text = cs_proof.listing_report_text(
         results, listing={"id": RECORD["id"], "name": RECORD["title"]},
-        app_version="3.28")
+        app_version="3.29")
     check("the file names every field that was tried",
           all(cs_proof.field_label(result["field"]) in text
               for result in results), "")
@@ -952,7 +952,7 @@ def test_a_record_with_no_gallery_stops_being_a_problem():
           "sign in" not in cs_proof.advice(gallery).lower(),
           cs_proof.advice(gallery))
     text = cs_proof.report_text(gallery, listing={"id": record["id"]},
-                                app_version="3.28")
+                                app_version="3.29")
     check("the proof file carries the record's keys for the plugin report",
           "Every key it holds:" in text and "shippingFlatCad" in text and
           "tags is a list of 2" in text and "specs is a list of 1" in text,
@@ -988,7 +988,7 @@ def test_the_report():
     text = cs_proof.report_text(result, listing={"id": RECORD["id"],
                                                  "name": RECORD["title"]},
                                 when=datetime(2026, 11, 2, 14, 30, 5),
-                                app_version="3.28")
+                                app_version="3.29")
     check("it names the listing and the record's own id",
           RECORD["title"] in text and RECORD["id"] in text and
           "not a product id" in text, text[:400])
@@ -1058,6 +1058,97 @@ def test_what_the_app_remembers():
               cs_proof.load_proofs(Path(tmp) / "nothing-here") == {}, "")
 
 
+def test_where_this_site_keeps_a_gallery():
+    print()
+    print("== 13. the name a site gives its gallery ==")
+
+    def record(**extra):
+        return dict({"id": "abc", "title": "Wurmple",
+                     "primaryImageUrl": "https://canadianshopper.ca/api/file/f.jpg"},
+                    **extra)
+
+    survey = cs_proof.gallery_survey([record(images=["a"]), record(),
+                                      record(images=["b", "c"])])
+    check("a key most records carry is the name the site uses",
+          survey["key"] == "images" and survey["count"] == 2
+          and survey["total"] == 3, str(survey))
+    check("and one of the values is kept to copy the shape from",
+          survey["shape"] == ["a"], str(survey.get("shape")))
+    check("a record with only a main photo is not a gallery",
+          cs_proof.gallery_survey([record(), record()])["key"] == "", "")
+    check("no records read is said as that, not as a gallery of none",
+          cs_proof.gallery_survey([]) == {"key": "", "count": 0, "total": 0,
+                                          "shape": None},
+          str(cs_proof.gallery_survey([])))
+    maps = cs_proof.gallery_survey([record(images=[{"url": "a"}])])
+    check("a gallery of objects is found by the same survey",
+          maps["key"] == "images", str(maps))
+    check("and its shape is read as objects, not as addresses",
+          cs_proof.gallery_shape(maps["shape"]) == "map",
+          str(cs_proof.gallery_shape(maps["shape"])))
+    check("addresses read as addresses",
+          cs_proof.gallery_shape(["a", "b"]) == "url"
+          and cs_proof.gallery_shape(None) == "url", "")
+    check("one photo is written as a list the site can read",
+          cs_proof.one_photo("/api/file/back.jpg") ==
+          ["https://canadianshopper.ca/api/file/back.jpg"], "")
+    check("in objects when that is the shape the site uses",
+          cs_proof.one_photo("/api/file/back.jpg", "map") ==
+          [{"url": "https://canadianshopper.ca/api/file/back.jpg"}], "")
+    check("no photo is no list, rather than an empty entry",
+          cs_proof.one_photo("") == [], "")
+    check("a new entry copies the shape of the ones beside it",
+          cs_proof.like_others([{"url": "a", "caption": "front"}], "/api/file/b.jpg")
+          == {"url": "https://canadianshopper.ca/api/file/b.jpg",
+              "caption": "front"},
+          str(cs_proof.like_others([{"url": "a", "caption": "front"}],
+                                   "/api/file/b.jpg")))
+    check("and an empty gallery gets a plain address",
+          cs_proof.like_others([], "/api/file/b.jpg") ==
+          "https://canadianshopper.ca/api/file/b.jpg", "")
+
+
+def test_a_field_this_record_does_not_have_is_remembered():
+    print()
+    print("== 14. \"no such field here\" is remembered, so it is not asked again ==")
+    import tempfile
+    folder = Path(tempfile.mkdtemp(prefix="alex-absent-"))
+    try:
+        absent = cs_proof.missing_result("images", record={"id": "abc",
+                                                           "priceCad": 1})
+        cs_proof.remember(folder, absent, listing={"id": "abc"})
+        proofs = cs_proof.load_proofs(folder)
+        check("a field the record does not carry is saved as that",
+              proofs["images"]["field_missing"] is True, str(proofs))
+        check("and it is not saved as proven",
+              proofs["images"]["proven"] is False and
+              not cs_proof.settled("images", proofs), str(proofs))
+        check("the same listing is not asked again",
+              cs_proof.known_absent("images", proofs, "abc"), "")
+        check("another listing may carry the field, so it is asked there",
+              not cs_proof.known_absent("images", proofs, "def"), "")
+        check("a field with no mark is not treated as absent",
+              not cs_proof.known_absent("title", proofs, "abc"), "")
+
+        #  A later run that finds the field clears the mark, because the
+        #  record grew it - that is what adding a gallery photo does.
+        written = cs_proof.plan("images", {"id": "abc", "images": ["a"]},
+                                staged_url="/api/file/b.jpg")
+        cs_proof.remember(folder, dict(written, verdict="written",
+                                       restored=True, field_missing=False),
+                          listing={"id": "abc"})
+        proofs = cs_proof.load_proofs(folder)
+        check("a proof that finds the field clears the mark",
+              proofs["images"]["field_missing"] is False, str(proofs))
+        check("and the field is settled from then on",
+              cs_proof.settled("images", proofs), str(proofs))
+        check("so it is no longer skipped as absent",
+              not cs_proof.known_absent("images", proofs, "abc"), "")
+    finally:
+        import shutil
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def main():
     test_what_a_field_plan_says()
     test_a_field_that_is_written()
@@ -1069,6 +1160,8 @@ def main():
     test_a_record_with_no_gallery_stops_being_a_problem()
     test_the_report()
     test_what_the_app_remembers()
+    test_where_this_site_keeps_a_gallery()
+    test_a_field_this_record_does_not_have_is_remembered()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))

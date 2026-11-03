@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
+from datetime import datetime
 
 import cs_edit
 import cs_listing
@@ -569,6 +570,203 @@ def update(url, cookie, changes, expect_id="", listing=None, proofs=None,
     result["why"] = " ".join(entry.get("why") or "" for entry in plans
                              if entry["field"] in payload)
     return result
+
+
+def add_gallery_photo(url, cookie, photo, expect_id="", listing=None, key="",
+                      shape="", fetch=None, send=None, now=None):
+    """Add one photo to a listing's gallery - and keep it there.
+
+    This is the one write in this app that does not put the old value back,
+    because the old value is what the person is changing: they want a second
+    picture on the listing. It is used where a *proof* cannot help - a record
+    that carries no gallery at all has no value to restore, so the field would
+    have to be created, and nothing can be proved about a field that is not
+    there yet.
+
+    So the rule is different, and stated before anything is sent: the photo
+    written is the photo the person chose, never a placeholder; the record is
+    read back afterwards; and if the site does not show it, nothing changed and
+    the answer says so.
+
+    ``key`` is the name the site gives a gallery when a caller has learned it
+    (see ``cs_proof.gallery_survey``); ``images`` is used when it has not.
+    ``shape`` is ``"map"`` when the site's gallery holds objects rather than
+    addresses. Returns the result, with a ``verdict``:
+
+    ``added``      the site took it and the record shows the photo now;
+    ``same``       the gallery already held that photo, so nothing was sent;
+    ``ignored``    the site answered and the record does not show it;
+    ``refused``    the site answered with anything but a 2xx;
+    ``unreadable`` the record could not be read, so nothing was written;
+    ``unknown``    the write was accepted but the read-back could not be read.
+    """
+    fetch = fetch or cs_proof.read_record
+    send = send or send_fields
+    now = now or datetime.now()
+    listing = listing or {}
+    photo = cs_proof.absolute_photo(photo)
+    result = {"url": url, "id": str(expect_id or ""), "field": "images",
+              "label": cs_proof.field_label("images"), "key": str(key or ""),
+              "photo": photo, "before": 0, "after": 0, "created": False,
+              "steps": [], "verdict": "", "written": False, "why": "",
+              "at": now.strftime("%Y-%m-%d %H:%M:%S"),
+              "card": str(listing.get("name") or listing.get("title") or "")}
+    if not photo or not photo.lower().startswith(("http://", "https://")):
+        result.update(verdict="refused",
+                      why=("There is no web address for the photo to add, so "
+                           "nothing was sent. A gallery holds pictures the "
+                           "site can show, not a file on this computer."))
+        return result
+    if not url or not cs_edit.is_id(expect_id):
+        result.update(verdict="unreadable",
+                      why=("There is no record id to address, so nothing was "
+                           "sent."))
+        return result
+
+    status, body = fetch(url, cookie)
+    result["steps"].append({"step": "GET the record", "status": status})
+    record = cs_proof._record(body) if status == 200 else None
+    if record is None:
+        result.update(verdict="unreadable",
+                      why=("The record could not be read (%s), so nothing was "
+                           "written: what the gallery holds now cannot be "
+                           "checked, and a photo added blind could be a second "
+                           "copy of one already there."
+                           % ("HTTP %s" % status if status else "no answer")))
+        return result
+
+    found_id = _record_id(record)
+    if found_id and str(found_id).strip() != str(expect_id).strip():
+        result["steps"].append({"step": "the record names %s" % found_id,
+                                "status": 200})
+        result.update(
+            verdict="refused",
+            why=("The record at that address says it is listing %s, not %s. "
+                 "Nothing was written: adding a photo to the wrong listing is "
+                 "the one mistake this path must never make."
+                 % (found_id, expect_id)))
+        return result
+
+    #  The site's own key when it has one; the surveyed name when a caller
+    #  learned it from the site's other records; ``images`` as the fallback.
+    key = str(key or "").strip() or cs_proof.gallery_key(record) or "images"
+    result["key"] = key
+    entries = []
+    if key in record:
+        value = record.get(key)
+        entries = list(value) if isinstance(value, (list, tuple)) else [value]
+        #  A field with that name is only a gallery when it holds addresses a
+        #  browser could open: a list of words is not a gallery, and writing
+        #  into it would be writing into somebody else's field.
+        addresses = [url for url in cs_proof.gallery_keys(entries)
+                     if str(url).lower().startswith(("http://", "https://"))]
+        if not addresses:
+            result.update(
+                verdict="refused",
+                why=("The record's %s field does not hold photo addresses, so "
+                     "it is not a gallery and is not written. Nothing was "
+                     "sent." % key))
+            return result
+    result["before"] = len(addresses if key in record else ())
+    result["created"] = key not in record
+    #  Compared by the file each address names: the site may write the same
+    #  picture as a path, a host and a path, or a resized variant, and one
+    #  photo written twice is how a gallery grows a duplicate.
+    have = {cs_proof.photo_id(url) for url in cs_proof.gallery_keys(entries)}
+    if cs_proof.photo_id(photo) in have:
+        result.update(verdict="same",
+                      why="The listing's gallery already holds that photo.")
+        return result
+    entry = cs_proof.like_others(entries, photo)
+    if entry is None:
+        result.update(verdict="refused",
+                      why="The photo could not be written as a gallery entry.")
+        return result
+    payload = {key: entries + [entry]}
+
+    status, body = send(url, cookie, payload)
+    result["steps"].append({"step": "PATCH the gallery", "status": status,
+                            "sent": key})
+    if not 200 <= int(status or 0) < 300:
+        result.update(verdict="refused",
+                      why=("The site refused the write (%s), so nothing was "
+                           "added. %s"
+                           % ("HTTP %s" % status if status else "no answer",
+                              _snippet(body))))
+        return result
+    result["written"] = True
+
+    status, body = fetch(url, cookie)
+    result["steps"].append({"step": "GET the record back", "status": status})
+    after = cs_proof._record(body) if status == 200 else None
+    if after is None:
+        result.update(verdict="unknown",
+                      why=("The site accepted the photo but the record could "
+                           "not be read back (%s), so whether it is in the "
+                           "gallery is unknown. Look at the listing before "
+                           "adding it again."
+                           % ("HTTP %s" % status if status else "no answer")))
+        return result
+    shown = cs_proof.gallery_keys(after.get(key) or [])
+    result["after"] = len(shown)
+    if cs_proof.photo_id(photo) in {cs_proof.photo_id(url) for url in shown}:
+        result.update(verdict="added",
+                      why=("The record shows the photo in its %s field, so the "
+                           "listing's gallery holds it now." % key))
+        return result
+    result.update(verdict="ignored",
+                  why=("The site accepted the write and the record does not "
+                       "show the photo: %s holds %d photo%s, as it did before. "
+                       "Nothing was added, and nothing was left behind."
+                       % (key, len(shown), "" if len(shown) == 1 else "s")))
+    return result
+
+
+def add_sentence(result):
+    """What happened when a photo was added, in one sentence."""
+    result = result or {}
+    what = cs_proof.field_label(result.get("field") or "images").lower()
+    key = str(result.get("key") or "images")
+    verdict = result.get("verdict")
+    if verdict == "added":
+        return ("The photo is in the listing's gallery: %s now holds %d "
+                "photo%s. It was kept, because that is what was asked for."
+                % (key, result.get("after") or 1,
+                   "" if (result.get("after") or 1) == 1 else "s"))
+    if verdict == "same":
+        return ("That photo was already in the listing's gallery, so nothing "
+                "was sent.")
+    if verdict == "ignored":
+        return ("The site accepted the photo and the record does not show it, "
+                "so the %s field it was sent to is not one this listing "
+                "writes." % what)
+    if verdict == "refused":
+        return "The photo was not added: %s" % (result.get("why") or
+                                                "the site refused it.")
+    if verdict == "unknown":
+        return ("The site took the write, but the record could not be read "
+                "back - check the listing before adding the photo again.")
+    return "The photo was not added: %s" % (result.get("why") or "no answer.")
+
+
+def add_advice(result):
+    """What to do about it, when there is anything to do."""
+    verdict = (result or {}).get("verdict")
+    if verdict == "added":
+        return ("The gallery is a field on this listing now, so 'Prove every "
+                "field' can settle it and every later gallery edit is read "
+                "back like the rest.")
+    if verdict == "ignored":
+        return ("Nothing changed on the site and there is nothing to fix "
+                "here: this site does not keep a gallery on the listing's "
+                "record. The proof file is the evidence for a plugin report.")
+    if verdict == "unknown":
+        return ("Open the listing on CanadianShopper and look before adding "
+                "the photo again - the site took the write, so it may be "
+                "there.")
+    if verdict == "refused":
+        return ("Nothing was written. %s" % (result.get("why") or ""))
+    return ""
 
 
 def _written_note(entry, after):

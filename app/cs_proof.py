@@ -624,6 +624,92 @@ def record_keys(record, limit=0):
     return ", ".join(keys)
 
 
+def gallery_survey(records):
+    """The name the site gives a gallery, learned from the site's own records.
+
+    A listing whose record has no gallery is the one case a proof cannot settle:
+    there is no value to put back, so writing one would create the field. The
+    *other* listings on the same site answer the question without a write - a
+    gallery they do carry is the site's own word for it and the site's own
+    shape - so a listing that has none yet can be asked for in the same key and
+    the same shape rather than a name guessed at.
+
+    ``records`` is anything iterable of records (dicts). ``count`` is how many
+    of them carried a gallery, ``total`` how many were read, and ``shape`` is
+    one example value to copy the shape from. ``key`` is ``""`` when none did.
+    """
+    counts, shapes, total = {}, {}, 0
+    for record in records or ():
+        if not isinstance(record, dict):
+            continue
+        total += 1
+        key = gallery_key(record)
+        if not key:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+        shapes.setdefault(key, record.get(key))
+    if not counts:
+        return {"key": "", "count": 0, "total": total, "shape": None}
+    #  Most of them first, and the first-seen name when two are level: a site
+    #  that spells it two ways is not a site this should guess at.
+    order = list(counts)
+    key = max(order, key=lambda name: (counts[name], -order.index(name)))
+    return {"key": key, "count": counts[key], "total": total,
+            "shape": shapes.get(key)}
+
+
+def gallery_shape(value, photo=""):
+    """How one site holds a gallery: a list of addresses, or a list of maps."""
+    entries = value if isinstance(value, (list, tuple)) else []
+    for entry in entries:
+        if isinstance(entry, dict):
+            return "map"
+        if isinstance(entry, str) and entry.strip():
+            return "url"
+    if isinstance(value, str) and value.strip():
+        return "url"
+    return "map" if photo and photo.strip().startswith("{") else "url"
+
+
+def one_photo(photo, shape="url"):
+    """One photo in the shape the site's gallery uses, ready to write."""
+    photo = absolute_photo(photo)
+    if not photo:
+        return []
+    if str(shape or "") == "map":
+        return [{"url": photo}]
+    return [photo]
+
+
+def like_others(entries, photo):
+    """One photo entry shaped like the gallery it is going into."""
+    entries = list(entries or [])
+    photo = absolute_photo(photo)
+    if not photo:
+        return None
+    if entries:
+        return _same_photo(entries[-1], photo)
+    return one_photo(photo)[0]
+
+
+def known_absent(field, proofs, listing=""):
+    """Whether an earlier read of this listing found no such field on it.
+
+    The record cannot grow the field by itself, so a run that has already read
+    it and found nothing is worth remembering: pressing "Prove every field"
+    again must not start a proof for a field that is not there. The mark is per
+    listing - another listing may carry the same field - and it is cleared by
+    any later proof run whose read shows the field (see remember()).
+    """
+    entry = (proofs or {}).get(str(field or "")) or {}
+    if not entry.get("field_missing"):
+        return False
+    named = str(entry.get("listing") or "")
+    if listing and named and str(listing) != str(named):
+        return False
+    return True
+
+
 def gallery_refusal(record):
     """"There is no gallery on this record", with everything needed to check.
 
@@ -1656,6 +1742,10 @@ def remember(folder, result, listing=None, now=None):
                    "verdict": result.get("verdict") or "",
                    "restored": result.get("restored"),
                    "proven": proven(result),
+                   #  A field the record does not carry is remembered as that,
+                   #  so the next "Prove every field" does not start a run for
+                   #  a field that is not there. Anything else clears it.
+                   "field_missing": bool(result.get("field_missing")),
                    "listing": str(listing.get("id") or
                                   result.get("listing") or ""),
                    "title": str(listing.get("name") or

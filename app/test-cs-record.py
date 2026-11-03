@@ -540,6 +540,175 @@ def test_every_proven_field_can_be_written():
     check("the photo is not blocked by the row's own different URL",
           result["verdict"] != "changed", str(result["verdict"]))
 
+def test_the_gallery_photo_on_a_record_that_has_none():
+    print()
+    print("== 9. a photo added to a gallery the record does not carry ==")
+    photo = "https://canadianshopper.ca/api/file/back.jpg"
+    bare = dict(RECORD, primaryImageUrl="https://canadianshopper.ca/api/file/front.jpg")
+
+    class Gallery:
+        """A record, and what the site does with a write to its gallery."""
+
+        def __init__(self, record=None, keep=True, status=200, fail_read=0,
+                     after=None):
+            self.record = dict(bare if record is None else record)
+            self.keep = keep
+            self.status = status
+            self.fail_read = fail_read
+            self.after = after
+            self.reads = 0
+            self.sent = []
+
+        def fetch(self, url, cookie=""):
+            self.reads += 1
+            if self.fail_read and self.reads >= self.fail_read:
+                return 500, "<html>read failed</html>"
+            import json
+            return 200, json.dumps(self.after if (self.sent and self.after)
+                                   else self.record)
+
+        def send(self, url, cookie, payload):
+            self.sent.append(dict(payload))
+            if self.status >= 300:
+                return self.status, '{"error": "no"}'
+            if self.keep:
+                self.record.update(payload)
+            return 200, "{}"
+
+    def add(site, **kwargs):
+        return cs_record.add_gallery_photo(
+            URL, "", kwargs.pop("photo", photo), expect_id=LISTING_ID,
+            fetch=site.fetch, send=site.send, **kwargs)
+
+    #  The field is created, and the read-back is what makes it an answer.
+    site = Gallery(after=dict(bare, images=[photo]))
+    result = add(site)
+    check("a record with no gallery is sent one photo under images",
+          site.sent == [{"images": [photo]}], str(site.sent))
+    check("and the photo shows in the read-back, so it is added",
+          result["verdict"] == "added" and result["written"], str(result["verdict"]))
+    check("the result says the field was created, and from what to what",
+          result["created"] and result["before"] == 0 and result["after"] == 1,
+          str((result["created"], result["before"], result["after"])))
+    check("and the sentence says it was kept, because that is what was asked",
+          "kept" in cs_record.add_sentence(result) and
+          "1 photo" in cs_record.add_sentence(result),
+          cs_record.add_sentence(result))
+    check("the advice says the field can now be proved like the others",
+          "Prove every field" in cs_record.add_advice(result),
+          cs_record.add_advice(result))
+
+    #  A site that answers and does not keep it: nothing changed, and no
+    #  sentence may suggest it did.
+    site = Gallery(keep=False)
+    result = add(site)
+    #  "written" means the site accepted the request; the verdict is what the
+    #  record shows, and only that one may say the photo is there.
+    check("a site that ignores the write is said as ignored, not added",
+          result["verdict"] == "ignored" and not result["after"],
+          str((result["verdict"], result["after"])))
+    check("and nothing was left behind that has to be undone",
+          len(site.sent) == 1 and "Nothing was added" in result["why"],
+          result["why"])
+    check("the sentence does not promise the photo is there",
+          "is not one this listing writes" in cs_record.add_sentence(result),
+          cs_record.add_sentence(result))
+
+    site = Gallery(status=403)
+    result = add(site)
+    check("a refused write is refused, with the status",
+          result["verdict"] == "refused" and "403" in result["why"],
+          result["why"])
+    check("and it is not reported as written",
+          not result["written"] and result["after"] == 0, str(result))
+
+    #  A gallery the site already keeps: the same write, under its own key.
+    housed = dict(bare, galleryImages=["https://canadianshopper.ca/api/file/a.jpg"])
+    site = Gallery(record=housed,
+                   after=dict(housed, galleryImages=housed["galleryImages"] + [photo]))
+    result = add(site)
+    check("a gallery the record already has keeps the site's own key",
+          site.sent and list(site.sent[0]) == ["galleryImages"],
+          str(site.sent))
+    check("and the photo goes on the end rather than replacing it",
+          site.sent[0]["galleryImages"][:1] == housed["galleryImages"],
+          str(site.sent))
+
+    #  Objects, not addresses: the shape is the site's.
+    maps = dict(bare, images=[{"url": "https://canadianshopper.ca/api/file/a.jpg",
+                               "caption": "front"}])
+    site = Gallery(record=maps,
+                   after=dict(maps, images=maps["images"] + [{"url": photo}]))
+    result = add(site)
+    sent = site.sent[0]["images"][-1] if site.sent else {}
+    check("a gallery of objects is given an object, in the same shape",
+          isinstance(sent, dict) and sent.get("url") == photo,
+          str(sent))
+    check("and the keys the site puts on its own entries are kept",
+          sent.get("caption") == "front", str(sent))
+    check("and that is counted as added", result["verdict"] == "added",
+          str(result["verdict"]))
+
+    #  The one photo already there.
+    site = Gallery(record=dict(bare, images=[photo]))
+    result = add(site)
+    check("a photo already in the gallery is not written again",
+          result["verdict"] == "same" and site.sent == [], str(result["verdict"]))
+
+    #  A field with the right name and the wrong contents.
+    site = Gallery(record=dict(bare, images=["front", "back"]))
+    result = add(site)
+    check("a field named images that holds words is not a gallery",
+          result["verdict"] == "refused" and site.sent == [], result["why"])
+
+    #  Never another listing.
+    site = Gallery(record=dict(bare, id="some-other-listing"))
+    result = add(site)
+    check("a record that names another listing is never written",
+          result["verdict"] == "refused" and site.sent == [], result["why"])
+
+    #  What is sent is exactly the one photo, never a placeholder.
+    site = Gallery(after=dict(bare, images=[photo]))
+    add(site, key="media")
+    check("a key learned from the site's other listings is the one used",
+          list(site.sent[0]) == ["media"], str(site.sent))
+    check("and the value is the photo that was chosen, whole",
+          site.sent[0]["media"] == [photo], str(site.sent))
+
+    site = Gallery(after=dict(bare, images=["https://canadianshopper.ca/api/file/back.jpg"]))
+    result = add(site, photo="/api/file/back.jpg")
+    check("a bare site path is made whole before it is written",
+          site.sent and site.sent[0]["images"] == [
+              "https://canadianshopper.ca/api/file/back.jpg"], str(site.sent))
+    check("and the read-back compares the same picture, not two spellings",
+          result["verdict"] == "added", str(result["verdict"]))
+
+    #  The refusals that send nothing at all.
+    site = Gallery()
+    result = add(site, photo="back.jpg")
+    check("a file on this computer is not a photo a gallery can hold",
+          result["verdict"] == "refused" and site.reads == 0 and
+          not site.sent, result["why"])
+    site = Gallery(fail_read=1)
+    result = add(site)
+    check("an unreadable record writes nothing", result["verdict"] == "unreadable"
+          and not site.sent, result["why"])
+    result = cs_record.add_gallery_photo(URL, "", photo, expect_id="",
+                                         fetch=site.fetch, send=site.send)
+    check("no record id, no write", result["verdict"] == "unreadable" and
+          not site.sent, result["why"])
+
+    #  Accepted, and the read-back fails: unknown, never added.
+    site = Gallery(after=dict(bare, images=[photo]), fail_read=2)
+    result = add(site)
+    check("a read-back that fails is unknown rather than added",
+          result["verdict"] == "unknown" and not result["after"],
+          str(result["verdict"]))
+    check("and the sentence sends the person to look before trying again",
+          "check the listing" in cs_record.add_sentence(result).lower(),
+          cs_record.add_sentence(result))
+
+
 def main():
     test_only_a_proven_field_is_written()
     test_the_price_that_is_sent()
@@ -548,6 +717,7 @@ def main():
     test_the_address_is_the_records_own()
     test_the_comparison_panel_s_plan()
     test_every_proven_field_can_be_written()
+    test_the_gallery_photo_on_a_record_that_has_none()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))

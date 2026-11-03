@@ -1,4 +1,4 @@
-Alex Collect 3.28 — public core package
+Alex Collect 3.29 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -105,7 +105,10 @@ app/:
                                    each gated on its own proof: the record's own
                                    id, the confirmed values checked first, only
                                    the changed fields sent, every answer read
-                                   back field by field
+                                   back field by field; and add one photo to a
+                                   gallery the record does not carry - the one
+                                   write a proof cannot gate, sent under the
+                                   name the site itself uses and read back
   cs_stage.py                      read the plugin's photo staging answer - every
                                    row's status, the staged front URL, the CSVs
                                    it wrote and the reason each failed row gave -
