@@ -78,7 +78,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.31"
+VERSION = "3.32"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -3545,14 +3545,16 @@ def groups_for(has_cs):
     #  With the add-on the photo tools live inside the shop's place in Edit
     #  stock, where the shop's photos are. Without it there is no shop place
     #  to put them in, and squaring a photo and replacing a card's pictures
-    #  need no plugin - so the core menu keeps them where they were rather
-    #  than losing them.
+    #  need no plugin - so they go at the top of the same Edit stock section
+    #  rather than back into a section of their own. A "Photos" section was a
+    #  fifth heading for two buttons that are stock work, and it appeared
+    #  exactly when the add-on was not seen - which is the case a bare
+    #  checkout and a first run both hit.
     return [("Sell to a customer", ["ordertext", "quote"]),
             ("Sell a new batch", ["pipeline", "combine", "ebayfill",
                                   "markets"]),
             ("After a sale", ["sold", "checklist", "ordersheet"]),
-            ("Edit stock", ["editfb", "editeb"]),
-            ("Photos", ["square", "newphotos"])]
+            ("Edit stock", ["square", "newphotos", "editfb", "editeb"])]
 TITLES = {
     "cookie": "User settings",
     "pipeline": "Run the card pipeline (new batch)",

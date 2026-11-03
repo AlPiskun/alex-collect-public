@@ -147,9 +147,16 @@ def test_the_section_and_the_tabs():
     index2 = [label for _tab, label in notebook2.tabs].index("Edit stock")
     panels2 = [w for w in notebook2.tabs[index2][0].walk()
                if getattr(w, "_section_titled", False)]
-    check("without the add-on the section holds only eBay and Facebook",
-          len(panels2) == 2 and
-          [p.cget("text") for p in panels2] == [gui.TITLES["editfb"],
+    #  Without the add-on there is no shop place to fold the photo tools
+    #  into, and squaring a photo and replacing a card's pictures need no
+    #  plugin - so they sit at the top of the same Edit stock section rather
+    #  than in a section (and a tab) of their own.
+    check("without the add-on the section holds the photo tools, then eBay "
+          "and Facebook",
+          len(panels2) == 4 and
+          [p.cget("text") for p in panels2] == [gui.TITLES["square"],
+                                                gui.TITLES["newphotos"],
+                                                gui.TITLES["editfb"],
                                                 gui.TITLES["editeb"]],
           str([p.cget("text") for p in panels2]))
 

@@ -80,8 +80,9 @@ def main():
     check("the stock work has its own section, one per marketplace",
           dict(gui.groups_for(True))["Edit stock"] ==
           ["stock", "editfb", "editeb"] and
-          dict(gui.groups_for(False))["Edit stock"] == ["editfb", "editeb"],
-          str(dict(gui.groups_for(True))["Edit stock"]))
+          dict(gui.groups_for(False))["Edit stock"] ==
+          ["square", "newphotos", "editfb", "editeb"],
+          str(dict(gui.groups_for(False))["Edit stock"]))
     #  Every id a section offers must be a panel: a title, a blurb, a sentence
     #  of help, a menu label and a builder for each. A panel added to the menu
     #  without one of them is a button that opens nothing - which is what the
