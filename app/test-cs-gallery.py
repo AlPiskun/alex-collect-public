@@ -239,6 +239,15 @@ def test_removing_one_row():
           result["verdict"] == "removed" and result["restored"], str(result))
     check("the photos that were not this row are still there",
           [row["id"] for row in site.rows] == ["r1"], str(site.rows))
+    check("and the sentence says the photo is off the gallery",
+          "off the listing's gallery" in cs_gallery.sentence(result),
+          cs_gallery.sentence(result))
+    check("with the read-back it was proved by named",
+          "read back" in cs_gallery.sentence(result),
+          cs_gallery.sentence(result))
+    check("and nothing left to do about it",
+          "Nothing was added and nothing else was touched"
+          in cs_gallery.advice(result), cs_gallery.advice(result))
 
     site = Site(rows=[{"id": "r1", "imageUrl": FRONT, "sortOrder": 1}],
                 delete_status=500)

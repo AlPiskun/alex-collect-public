@@ -1,4 +1,4 @@
-Alex Collect 3.32 — public core package
+Alex Collect 3.33 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -106,13 +106,15 @@ app/:
                                    id, the confirmed values checked first, only
                                    the changed fields sent, every answer read
                                    back field by field
-  cs_gallery.py                    read and write a CanadianShopper listing's
-                                   gallery, which is productImage rows keyed by
-                                   the listing's record id and not a field on
-                                   that record: read the rows, add one photo you
-                                   chose and read the gallery back, and prove
-                                   the gallery by adding a row, reading it,
-                                   removing that same row by its own id and
+  cs_gallery.py                    read, add to and remove from a
+                                   CanadianShopper listing's gallery, which is
+                                   productImage rows keyed by the listing's
+                                   record id and not a field on that record:
+                                   read the rows, add one photo you chose and
+                                   read the gallery back, remove one photo by
+                                   the id of its own row and read the gallery
+                                   back again, and prove the gallery by adding
+                                   a row, reading it, removing that same row and
                                    reading again - so a settled gallery is one
                                    the site demonstrably keeps, and the listing
                                    is left as it was

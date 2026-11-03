@@ -1268,7 +1268,11 @@ def auto_photos(item=None, record=None, staged="", staged_rows=None,
         gallery = main
     why_gallery = ""
     if not gallery:
-        if have and all(photo_id(url) in have for url in safe):
+        #  Only when there *are* photos of this card to compare: with none,
+        #  "every photo is already in the gallery" is vacuously true and reads
+        #  as a gallery problem, which is exactly the wrong sentence - there is
+        #  no photo of this card, and the main photo's reason already says so.
+        if have and safe and all(photo_id(url) in have for url in safe):
             why_gallery = ("every photo of this card the app can point at is "
                            "already in the listing's gallery, so there is "
                            "nothing new to add")

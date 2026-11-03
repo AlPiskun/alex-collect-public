@@ -401,6 +401,9 @@ def sentence(result):
         return ("The photo is in the listing's gallery now, as row %s. It was "
                 "kept, because that is what was asked for."
                 % (result.get("row") or "(no id given)"))
+    if verdict == "removed":
+        return ("The photo is off the listing's gallery: its row was removed "
+                "and the gallery was read back without it.")
     if verdict == "same":
         return ("That photo was already in the listing's gallery, so nothing "
                 "was sent.")
@@ -433,6 +436,9 @@ def advice(result):
         return ("The gallery is writable on this listing, so every gallery "
                 "edit is now added, read back and (when it is a proof) taken "
                 "off again by its own row id.")
+    if verdict == "removed":
+        return ("Nothing was added and nothing else was touched: the gallery "
+                "was read back after the removal and the row is gone.")
     if verdict == "added":
         return ("The listing's gallery has one more photo. Nothing needs "
                 "doing unless it should come off, which is one click on the "

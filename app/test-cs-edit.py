@@ -1432,7 +1432,7 @@ def test_the_diagnosis_file():
                                   stages=["read", "ids"], plugin="1.0.38",
                                   command="cs-stock.py --stock-out cs-stock.json",
                                   detail=detail, total=2596, editable=0,
-                                  app_version="3.32")
+                                  app_version="3.33")
     check("the file carries the reader's own count line",
           "2596 listings, 0 with a real product id" in text, "")
     check("the app's own count is beside it, so the two can be compared",
@@ -1887,7 +1887,7 @@ def test_the_real_diagnosis_from_the_shop():
                 "--cookie-file cookie.txt",
         detail={"url": cs_edit.detail_url(row["id"]), "status": 200,
                 "content_type": "application/json", "body": json.dumps(record)},
-        total=2596, editable=0, app_version="3.32",
+        total=2596, editable=0, app_version="3.33",
         source="the read this window made at 2026-11-02 13:03:59")
 
     check("the file no longer carries the progress markers",
@@ -2945,6 +2945,157 @@ def test_a_photo_can_be_put_in_the_gallery():
     check("declining the question writes nothing", added == [], str(added))
     check("and says so plainly",
           any("not added" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    harness._BOX.askyesno = lambda *a, **k: True
+
+
+def test_a_photo_can_be_taken_off_the_gallery():
+    """The other half of the same button pair: a photo added by mistake.
+
+    A gallery nobody can edit is the defect this line of work started from, so
+    removal is not a proof and not a leftover: the gallery is read, every photo
+    it holds is listed with the row it lives in, the chosen row is deleted by
+    its own id, and the gallery is read back to show it gone.
+    """
+    print()
+    print("== 14b. a photo can be taken off the gallery ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    listing_id = "94b93f6040f5401daabaa9c936efa5a7"
+    front = "https://cs.example/api/file/front.webp"
+    stray = "https://cs.example/api/file/56-Syl-Apps-1978-79-O-Pee-Chee-front.jpg"
+    rows = [{"id": listing_id, "product_id": 0, "title": "Wurmple",
+             "status": "active", "inventory": 1, "price": "12.50"}]
+    record = {"id": listing_id, "title": "Wurmple", "priceCad": 12.5,
+              "inventory": 1, "primaryImageUrl": front}
+    read_urls, questions, removed, asked = [], [], [], []
+
+    def fake_read(url, cookie="", fetch=None):
+        read_urls.append(url)
+        return {"status": 200,
+                "rows": [{"id": "r1", "product": listing_id,
+                          "imageUrl": front, "sortOrder": 1},
+                         {"id": "bcfed67", "product": listing_id,
+                          "imageUrl": stray, "sortOrder": 2}], "why": ""}
+
+    def fake_remove(listing, session, row_id, **kwargs):
+        removed.append({"listing": listing, "row": row_id,
+                        "base": kwargs.get("base")})
+        return {"field": "images", "label": "Gallery photos",
+                "listing": listing, "photo": "", "row": row_id,
+                "verdict": "removed", "written": True, "restored": True,
+                "before": 2, "after": 1,
+                "why": "The row is gone from the gallery.",
+                "steps": [{"step": "DELETE the gallery row", "status": 204}],
+                "at": "2026-11-03 09:30:00"}
+
+    def yes(title, question, **kwargs):
+        questions.append((title, question))
+        return True
+
+    def ask(title, question, **kwargs):
+        asked.append((title, question))
+        return "2"
+
+    harness._BOX.shown[:] = []
+    harness._BOX.askyesno = yes
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(cs_proof, "read_record",
+                         lambda url, cookie="": (200, json.dumps(record))), \
+            patch.object(cs_proof, "photo_alive", lambda url, **k: (False, "")), \
+            patch.object(cs_proof, "photo_candidates", lambda **k: []), \
+            patch.object(gui, "simpledialog") as prompt, \
+            patch.object(cs_gallery, "read", fake_read), \
+            patch.object(cs_gallery, "remove", fake_remove):
+        prompt.askstring = ask
+        read_into(app, folder, parent, rows)
+        listing_box(parent).selection_set(0)
+        app.lines[:] = []
+        add_buttons = [w for w in parent.walk()
+                       if isinstance(w, gui.ttk.Button) and
+                       w.cget("text") == "Add a photo to the gallery..."]
+        remove_buttons = [w for w in parent.walk()
+                          if isinstance(w, gui.ttk.Button) and
+                          w.cget("text") ==
+                          "Remove a photo from the gallery..."]
+        check("the panel offers one Add button and one Remove button",
+              len(add_buttons) == 1 and len(remove_buttons) == 1,
+              "%d add, %d remove" % (len(add_buttons), len(remove_buttons)))
+        remove_buttons[0].invoke()
+
+    said = "\n".join(text for _tag, text in app.lines)
+    check("the gallery is read before anything is chosen",
+          read_urls and "/api/data/productImage" in read_urls[0] and
+          listing_id in read_urls[0], str(read_urls))
+    check("and the console says how many photos it holds",
+          any("holds 2 photos" in text for _tag, text in app.lines),
+          str(app.lines[:5]))
+    check("the question lists every photo the read brought, numbered",
+          asked and "1. position 1" in asked[0][1] and
+          "2. position 2" in asked[0][1] and front in asked[0][1] and
+          stray in asked[0][1], (asked[0][1] if asked else "")[:300])
+    check("the row is removed by the id of the row that photo lives in",
+          len(removed) == 1 and removed[0]["row"] == "bcfed67" and
+          removed[0]["listing"] == listing_id, str(removed))
+    check("the confirmation names the photo and its row",
+          questions and stray in questions[0][1] and
+          "bcfed67" in questions[0][1], (questions[0][1] if questions else "")[:300])
+    check("and says it is not a proof - the photo stays removed",
+          questions and "not a proof" in questions[0][1],
+          (questions[0][1] if questions else "")[:500])
+    check("the console says the photo is off the gallery",
+          "off the listing's gallery" in said, said[-300:])
+
+    #  Declining the confirmation removes nothing.
+    removed[:] = []
+    questions[:] = []
+    with patch.object(gui, "in_background", sync_background), \
+            patch.object(cs_proof, "read_record",
+                         lambda url, cookie="": (200, json.dumps(record))), \
+            patch.object(cs_proof, "photo_alive", lambda url, **k: (False, "")), \
+            patch.object(cs_proof, "photo_candidates", lambda **k: []), \
+            patch.object(gui, "simpledialog") as prompt, \
+            patch.object(cs_gallery, "read", fake_read), \
+            patch.object(cs_gallery, "remove", fake_remove):
+        prompt.askstring = ask
+        harness._BOX.askyesno = lambda *args, **kwargs: False
+        app.lines[:] = []
+        find(parent, gui.ttk.Button, "Remove a photo from the gallery...").invoke()
+    check("declining the question removes nothing", removed == [], str(removed))
+    check("and says so plainly",
+          any("Nothing was removed" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+
+    #  A number that is not one of the photos removes nothing.
+    removed[:] = []
+    with patch.object(gui, "in_background", sync_background), \
+            patch.object(cs_proof, "read_record",
+                         lambda url, cookie="": (200, json.dumps(record))), \
+            patch.object(cs_proof, "photo_alive", lambda url, **k: (False, "")), \
+            patch.object(cs_proof, "photo_candidates", lambda **k: []), \
+            patch.object(gui, "simpledialog") as prompt, \
+            patch.object(cs_gallery, "read", fake_read), \
+            patch.object(cs_gallery, "remove", fake_remove):
+        prompt.askstring = lambda *a, **k: "9"
+        harness._BOX.askyesno = lambda *args, **kwargs: True
+        app.lines[:] = []
+        find(parent, gui.ttk.Button, "Remove a photo from the gallery...").invoke()
+    check("a number the gallery does not have removes nothing",
+          removed == [], str(removed))
+    check("and says the photo is not one of them",
+          any("is not one of the photos" in text for _tag, text in app.lines),
           str(app.lines[-3:]))
     harness._BOX.askyesno = lambda *a, **k: True
 
@@ -4170,6 +4321,7 @@ def main():
     test_the_panel_writes_a_diagnosis()
     test_the_panel_writes_a_proof()
     test_a_photo_can_be_put_in_the_gallery()
+    test_a_photo_can_be_taken_off_the_gallery()
     test_the_gallery_is_never_written_off()
     test_the_panel_sets_a_proven_price()
     test_the_edit_button_takes_the_price_road()

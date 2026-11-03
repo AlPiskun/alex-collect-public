@@ -78,7 +78,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.32"
+VERSION = "3.33"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -2106,6 +2106,7 @@ TOOLTIPS = {
     "Write the proof": "Write one field on the selected CanadianShopper listing, read the record back, and put the old value back - a real change for the seconds it takes, and the only way to prove the site honours that field; one field, one listing, and nothing on your website",
     "Prove every field...": "Prove every field this app can write on the selected listing in one job: each field is written, read back and put back before the next is touched, an already-settled field is skipped, and a field that does not settle is reported with what to do about it; one confirmed click, and nothing unattended",
     "Add a photo to the gallery...": "Put one photo you choose into the selected listing's gallery - the second picture a card listing should have. The gallery is its own collection of rows (productImage), keyed by the listing's record id, not a field on that record, so the photo is added as a row of its own and the gallery is read back: if the site does not show it, nothing changed and the answer says so. The photo stays, because a gallery photo is what you asked for - the proof is the one that adds a row and removes that same row again",
+    "Remove a photo from the gallery...": "Take one photo off the selected listing's gallery. The gallery is read first so you choose from the photos it really holds, and the photo comes off by the id of its own row - then the gallery is read back again to show it gone. Nothing else on the listing is touched, and no proof is needed: the removal is shown by that second read.",
     "Edit the record's fields...": "Edit this listing's own record - price, title, description, stock count and main photo, each one open only when a saved proof shows the site keeps it, and only the fields you change are sent, then read back; no product id is used and your website is never touched",
     "Set the selected listing's price...": "Set the price on the selected listing's own record - one field, at the record's own id, with the new price read back afterwards; offered only for a field a proof has settled, so it works on listings that carry no product id, and your website is never touched",
     "Choose the cards:": "What decides which unlisted cards come first - dearest, newest, oldest, cheapest, or in the order typed below; the choice is remembered",
@@ -11036,6 +11037,131 @@ def build_csledit(parent, app):
 
         in_background(app, look_at(item, listing_id), found)
 
+
+    def remove_gallery():
+        """Take one photo off the listing's gallery, by its row's own id.
+
+        The gallery is ``productImage`` rows, so a photo comes off by deleting
+        the row that holds it - and the gallery is read back afterwards to show
+        it gone. No proof is needed and none is written: the removal is its own
+        evidence, because the read that follows it would show the row still
+        there if it had not happened.
+
+        Nothing else on the listing is touched, and the row removed is the row
+        the person chose from the list of photos the gallery really holds.
+        """
+        item = proof_guard("Removing a gallery photo")
+        if item is None:
+            return
+        listing_id = cs_edit.listing_id(item)
+        cookie = load_cookie_text() or ""
+        say("Reading this listing's gallery...", "dim")
+
+        def found(answer, error):
+            answer = answer or {}
+            if error is not None:
+                say("The listing could not be read: %s. Nothing was removed."
+                    % error, "err")
+                return
+            held = answer.get("gallery")
+            if held is None:
+                say("%s Nothing was removed: a gallery nobody could read is "
+                    "not a gallery with nothing in it."
+                    % (answer.get("gallery_why")
+                       or "The gallery could not be read."), "err")
+                return
+            if not held:
+                say("The gallery holds no photos, so there is nothing to "
+                    "remove.", "dim")
+                return
+            say("The gallery holds %d photo%s."
+                % (len(held), "" if len(held) == 1 else "s"), "dim")
+            #  Every photo the read brought is listed, numbered, with the row
+            #  it lives in - a list that shows fewer rows than the read is how
+            #  the wrong photo gets picked. The number (or the photo's own
+            #  address) is answered, and the confirmation after it names the
+            #  photo *and* its row, so nothing is removed on a guess.
+            listing_lines = ["%d. position %s - %s"
+                             % (number, row.get("sortOrder"),
+                                row.get("imageUrl"))
+                             for number, row in enumerate(held, 1)]
+            answered = simpledialog.askstring(
+                "Which photo comes off?",
+                "The listing's gallery holds these photos:\n\n%s\n\nType "
+                "the number of the one to take off, or paste its address. "
+                "Nothing is removed until the next question names the photo "
+                "and its row." % "\n".join(listing_lines),
+                initialvalue="", parent=box.winfo_toplevel())
+            if answered is None:
+                say("The photo question was closed, so nothing was removed.",
+                    "dim")
+                return
+            text = str(answered).strip()
+            if not text:
+                say("No photo was named, so nothing was removed.", "dim")
+                return
+            row = None
+            if text.isdigit() and 1 <= int(text) <= len(held):
+                row = held[int(text) - 1]
+            else:
+                wanted = cs_proof.photo_id(text)
+                holders = [entry for entry in held
+                           if cs_proof.photo_id(entry.get("imageUrl"))
+                           == wanted]
+                #  The last row is the one taken off when the same photo is in
+                #  the gallery more than once: it is the most recent, which is
+                #  what a photo added by mistake is.
+                row = holders[-1] if holders else None
+            if row is None:
+                say("%s is not one of the photos in %d the gallery answered "
+                    "with, so nothing was removed."
+                    % (text[:120], len(held)), "err")
+                return
+            photo = row.get("imageUrl") or ""
+            row_id = str(row.get("id") or "").strip()
+            if not row_id:
+                say("The gallery shows that photo and gives no row id for it, "
+                    "so it cannot be removed from here. Take it off on the "
+                    "listing itself.", "err")
+                return
+            named = str(item.get("name") or "that listing")
+            if not ask_yes(
+                    "Remove a photo from the gallery?",
+                    "%s\n\nThe photo taken off: %s\n\nIts row: %s "
+                    "(position %s).\n\nIt is removed by that row's own "
+                    "address and the gallery is read back afterwards, so the "
+                    "answer says whether it really went. Nothing else on the "
+                    "listing is touched, no other field is sent, and this is "
+                    "not a proof: the photo stays removed.\n\nRemove it now?"
+                    % (named, photo, row_id, row.get("sortOrder"))):
+                say("Nothing was removed.", "dim")
+                return
+            say("Removing the photo from %s: %s..." % (named, photo), "cmd")
+            summary.configure(text="Removing a photo from the gallery...")
+
+            def work():
+                return cs_gallery.remove(listing_id, cookie, row_id,
+                                         base=CS_HOME)
+
+            def done(result, failure):
+                if failure is not None:
+                    say("The photo could not be removed: %s. Nothing was "
+                        "removed." % failure, "err")
+                    summary.configure(text="The photo could not be removed: %s"
+                                      % failure)
+                    return
+                verdict = (result or {}).get("verdict")
+                say(cs_gallery.sentence(result),
+                    "ok" if verdict == "removed" else "err")
+                advice = cs_gallery.advice(result)
+                if advice:
+                    say("  What to do: %s" % advice, "dim")
+                summary.configure(text=cs_gallery.sentence(result))
+
+            in_background(app, work, done)
+
+        in_background(app, look_at(item, listing_id), found)
+
     proof_row = ttk.Frame(box)
     proof_row.pack(anchor="w", pady=(4, 0))
     ttk.Label(proof_row, text="Prove a field can be written:").pack(side="left")
@@ -11063,13 +11189,15 @@ def build_csledit(parent, app):
                              command=add_gallery)
     gallery_btn.pack(side="left", padx=(8, 0))
     add_tooltip(gallery_btn, TOOLTIPS["Add a photo to the gallery..."])
-    #  The gallery is the one field a proof cannot reach: a record that does
-    #  not carry it has nothing to put back, so no proof can settle it - and a
-    #  field without a proof was a gallery nobody could change.
-    add_gallery_btn = ttk.Button(proof_row, text="Add a photo to the gallery...",
-                                 command=add_gallery)
-    add_gallery_btn.pack(side="left", padx=(8, 0))
-    add_tooltip(add_gallery_btn, TOOLTIPS["Add a photo to the gallery..."])
+    #  Taking one off again, by the row's own id: a photo added by mistake has
+    #  to be removable, and a gallery nobody can edit is the defect this whole
+    #  line of work started from.
+    remove_gallery_btn = ttk.Button(proof_row,
+                                    text="Remove a photo from the gallery...",
+                                    command=remove_gallery)
+    remove_gallery_btn.pack(side="left", padx=(8, 0))
+    add_tooltip(remove_gallery_btn,
+                TOOLTIPS["Remove a photo from the gallery..."])
 
     list_frame = ttk.Frame(box)
     listing = tk.Listbox(list_frame, height=9, exportselection=False)

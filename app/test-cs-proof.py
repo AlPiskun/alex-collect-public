@@ -676,7 +676,7 @@ def test_the_gallery_proof():
           "sign in to canadianshopper" not in
           cs_proof.advice(result).casefold(), cs_proof.advice(result))
     text = cs_proof.report_text(result, listing={"id": RECORD["id"]},
-                                app_version="3.32")
+                                app_version="3.33")
     check("the proof file says the row and that the photo is still there",
           "As row" in text and "take it off on CanadianShopper" in text)
 
@@ -851,7 +851,7 @@ def test_the_whole_listing_at_once():
         fetch=site.fetch, send=site.send, write=site.write)
     text = cs_proof.listing_report_text(
         results, listing={"id": RECORD["id"], "name": RECORD["title"]},
-        app_version="3.32")
+        app_version="3.33")
     check("the file names every field that was tried",
           all(cs_proof.field_label(result["field"]) in text
               for result in results), "")
@@ -945,6 +945,22 @@ def test_a_photo_of_the_wrong_card_is_never_chosen():
     check("a record with no gallery is not a listing with no gallery",
           photos["why_gallery"] == "" or "carries no gallery"
           not in photos["why_gallery"], photos["why_gallery"])
+    #  No photo of this card at all, and a gallery holding somebody else's:
+    #  "every photo of this card is already in the gallery" is vacuously true
+    #  over an empty list, and it is the wrong sentence twice over - there is
+    #  no photo of this card, and the gallery is not the thing at fault.
+    photos = cs_proof.auto_photos(
+        item={"name": wurmple},
+        record={"primaryImageUrl": "https://cs/api/file/front.jpg"},
+        gallery_rows=[{"id": "r1",
+                       "imageUrl": "https://cs/api/file/apps-front.jpg"}],
+        staged_rows=[], siblings=[], alive=lambda url: (False, ""),
+        card=wurmple)
+    check("no photo of this card is never said as a gallery that holds them "
+          "all",
+          photos["gallery"] == "" and
+          "already in the listing's gallery" not in photos["why_gallery"] and
+          bool(photos["why_main"]), str(photos))
 
     print()
     print("== the gallery is not a key on the record, whatever it is called ==")
@@ -1017,7 +1033,7 @@ def test_the_report():
     text = cs_proof.report_text(result, listing={"id": RECORD["id"],
                                                  "name": RECORD["title"]},
                                 when=datetime(2026, 11, 2, 14, 30, 5),
-                                app_version="3.32")
+                                app_version="3.33")
     check("it names the listing and the record's own id",
           RECORD["title"] in text and RECORD["id"] in text and
           "not a product id" in text, text[:400])
