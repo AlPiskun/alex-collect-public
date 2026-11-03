@@ -57,11 +57,12 @@ FIELDS = (
 )
 
 #: A field a proof can settle that the record-edit form does not offer, and
-#: why: the gallery is a *list* of photos, and a row of text in a form is the
-#: wrong shape for it. It is proved all the same - one more photo on the end,
-#: read back, then the list put back exactly as it was - because "does the site
-#: keep a gallery" is a question with an answer, and the only way to have it is
-#: to ask the record.
+#: why: the gallery is not a field of the record at all - it is ``productImage``
+#: rows keyed by the listing's id (see ``cs_gallery``), so there is no value on
+#: the record to edit. It is proved all the same, by adding one row, reading the
+#: gallery back, removing *that* row by the id the read-back gave and reading
+#: again: "does the site keep a gallery" is a question with an answer, and the
+#: rows are where the answer lives.
 PROOF_ONLY = (
     ("images", "Gallery photos"),
 )
@@ -258,20 +259,19 @@ def plan(field, record, staged_url="", now=None):
     if field not in FIELD_LABELS:
         return {"field": field, "why": "%r is not a field this can prove."
                 % field}
-    #  The gallery's key is the site's to choose, so it is found on the record
-    #  rather than assumed. Everything else is addressed by its own name.
-    planned_key = field
     if field == "images":
-        planned_key = gallery_key(record)
-        found = bool(planned_key)
-        old = (record or {}).get(planned_key) if found else None
-    else:
-        found, old = record_value(record, field)
+        #  There is no record write to plan: the gallery is productImage rows,
+        #  and `prove` proves it by adding, reading and removing one of those.
+        #  Planning a value to put back would be planning the wrong thing.
+        return {"field": field, "label": field_label(field), "why":
+                "The gallery is not a field of the record: it is rows of its "
+                "own at /api/data/productImage, keyed by the listing's id. A "
+                "photo is added as a row, read back, and removed again, so "
+                "there is no value on the record to plan here."}
+    planned_key = field
+    found, old = record_value(record, field)
     label = field_label(field)
     if not found:
-        if field == "images":
-            return {"field": field, "label": label, "missing": True,
-                    "why": gallery_refusal(record)}
         return {"field": field, "label": label, "missing": True,
                 "why": "The record does not carry %s (%s), so there would be "
                        "nothing to put back - and a field that cannot be put "
@@ -310,34 +310,6 @@ def plan(field, record, staged_url="", now=None):
         stamp = (now or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
         trial = "%s\n\n%s %s." % (str(old).rstrip(), MARK, stamp)
         note = "The description with one marker line on the end."
-    elif field == "images":
-        key = str(planned_key or "")
-        entries = (old if isinstance(old, (list, tuple)) else [old])
-        have = gallery_keys(entries)
-        if not have:
-            return {"field": field, "label": label,
-                    "why": "The record carries a gallery (%s) with no photo "
-                           "address in it that could be read, so there is "
-                           "nothing to put back." % key}
-        trial_photo = absolute_photo(staged_url)
-        if not trial_photo:
-            return {"field": field, "label": label,
-                    "why": "The gallery is proven with one more photo from the "
-                           "image staging step - a picture of the same card. "
-                           "Without one there is nothing safe to write."}
-        if not trial_photo.lower().startswith(("http://", "https://")):
-            return {"field": field, "label": label,
-                    "why": "%r is not a web address, so it is not a photo the "
-                           "gallery can hold." % trial_photo}
-        if trial_photo.rstrip("/") in have:
-            return {"field": field, "label": label,
-                    "why": "That photo is already in the listing's gallery, so "
-                           "writing the gallery again would prove nothing."}
-        trial = list(entries) + [_same_photo(entries[-1], trial_photo)]
-        note = ("The gallery with one more photo on the end, which is put "
-                "back to the list it holds now.")
-        return {"field": field, "label": label, "old": old, "trial": trial,
-                "restore": old, "note": note, "key": key}
     else:                                             # primaryImageUrl
         trial = str(staged_url or "").strip()
         if not trial:
@@ -558,38 +530,6 @@ def _entry_url(entry, depth=0):
     return str(entry or "")
 
 
-def gallery_key(record):
-    """The record's own key for the gallery, or ``""`` when it carries none.
-
-    A key is the gallery when it is one of the names marketplaces use, or when
-    it holds a list of photo addresses and is not the main photo. A record with
-    only ``primaryImageUrl`` has no gallery: there is one picture, and a proof
-    cannot add a second to a field the site does not have.
-    """
-    record = record or {}
-    if not isinstance(record, dict):
-        return ""
-    for wanted in GALLERY_KEYS:
-        key = vendor_key(record, wanted)
-        if key:
-            return key
-    #  A name that is only a hint: believed when the list really holds photos.
-    for wanted in GALLERY_WEAK_KEYS:
-        key = vendor_key(record, wanted)
-        if key and _holds_photos(record.get(key), record):
-            return key
-    #  No recognised name at all: a list of photo addresses under a name nobody
-    #  predicted is still the gallery - it is the only list of pictures on the
-    #  record, and that is what a gallery is.
-    for key, value in record.items():
-        if not _holds_photos(value, record):
-            continue
-        if str(key).casefold() == "primaryimageurl":
-            continue
-        return str(key)
-    return ""
-
-
 def _holds_photos(value, record=None):
     """Whether a value is a list of photos, and not the main photo alone."""
     entries = value if isinstance(value, (list, tuple)) else []
@@ -624,74 +564,6 @@ def record_keys(record, limit=0):
     return ", ".join(keys)
 
 
-def gallery_survey(records):
-    """The name the site gives a gallery, learned from the site's own records.
-
-    A listing whose record has no gallery is the one case a proof cannot settle:
-    there is no value to put back, so writing one would create the field. The
-    *other* listings on the same site answer the question without a write - a
-    gallery they do carry is the site's own word for it and the site's own
-    shape - so a listing that has none yet can be asked for in the same key and
-    the same shape rather than a name guessed at.
-
-    ``records`` is anything iterable of records (dicts). ``count`` is how many
-    of them carried a gallery, ``total`` how many were read, and ``shape`` is
-    one example value to copy the shape from. ``key`` is ``""`` when none did.
-    """
-    counts, shapes, total = {}, {}, 0
-    for record in records or ():
-        if not isinstance(record, dict):
-            continue
-        total += 1
-        key = gallery_key(record)
-        if not key:
-            continue
-        counts[key] = counts.get(key, 0) + 1
-        shapes.setdefault(key, record.get(key))
-    if not counts:
-        return {"key": "", "count": 0, "total": total, "shape": None}
-    #  Most of them first, and the first-seen name when two are level: a site
-    #  that spells it two ways is not a site this should guess at.
-    order = list(counts)
-    key = max(order, key=lambda name: (counts[name], -order.index(name)))
-    return {"key": key, "count": counts[key], "total": total,
-            "shape": shapes.get(key)}
-
-
-def gallery_shape(value, photo=""):
-    """How one site holds a gallery: a list of addresses, or a list of maps."""
-    entries = value if isinstance(value, (list, tuple)) else []
-    for entry in entries:
-        if isinstance(entry, dict):
-            return "map"
-        if isinstance(entry, str) and entry.strip():
-            return "url"
-    if isinstance(value, str) and value.strip():
-        return "url"
-    return "map" if photo and photo.strip().startswith("{") else "url"
-
-
-def one_photo(photo, shape="url"):
-    """One photo in the shape the site's gallery uses, ready to write."""
-    photo = absolute_photo(photo)
-    if not photo:
-        return []
-    if str(shape or "") == "map":
-        return [{"url": photo}]
-    return [photo]
-
-
-def like_others(entries, photo):
-    """One photo entry shaped like the gallery it is going into."""
-    entries = list(entries or [])
-    photo = absolute_photo(photo)
-    if not photo:
-        return None
-    if entries:
-        return _same_photo(entries[-1], photo)
-    return one_photo(photo)[0]
-
-
 def known_absent(field, proofs, listing=""):
     """Whether an earlier read of this listing found no such field on it.
 
@@ -701,6 +573,12 @@ def known_absent(field, proofs, listing=""):
     listing - another listing may carry the same field - and it is cleared by
     any later proof run whose read shows the field (see remember()).
     """
+    if str(field or "") == "images":
+        #  The gallery is not a field of the record at all: it is productImage
+        #  rows keyed by the listing's id. So "this record has no such field"
+        #  is always true and never means the listing cannot have a gallery -
+        #  and a mark left by an older version must not stop it being proved.
+        return False
     entry = (proofs or {}).get(str(field or "")) or {}
     if not entry.get("field_missing"):
         return False
@@ -708,28 +586,6 @@ def known_absent(field, proofs, listing=""):
     if listing and named and str(listing) != str(named):
         return False
     return True
-
-
-def gallery_refusal(record):
-    """"There is no gallery on this record", with everything needed to check.
-
-    A refusal has to be as useful as an answer: the record's every key, and
-    what each field that could hold photos actually holds. That is what says
-    whether the site has no gallery at all, or has one under a name this app
-    does not know yet - and it is the same text the proof file keeps, so it can
-    be attached to a plugin report as it is.
-    """
-    lines = ["The record carries no gallery, so a photo written there would "
-             "create a field with nothing to put back.",
-             "Every key it holds: %s." % record_keys(record)]
-    shaped = photo_field_report(record)
-    if shaped:
-        lines.append("The fields that could have held photos:")
-        lines += ["  " + line for line in shaped]
-    else:
-        lines.append("None of them is a list of photos, and none is named for "
-                     "pictures: there is no gallery on this record at all.")
-    return "\n".join(lines)
 
 
 def shape_of(value):
@@ -979,6 +835,45 @@ def send(url, cookie, payload, opener=None, timeout=25):
         return 0, str(exc)
 
 
+def _gallery_base(url):
+    """The site the gallery lives on, taken from the record's own address."""
+    text = str(url or "")
+    cut = text.find("/api/data/product/")
+    return text[:cut] if cut > 0 else ""
+
+
+def gallery_proof(url, cookie="", staged_url="", now=None, fetch=None,
+                  write=None, listing=None):
+    """A listing's gallery proved the way that gallery actually works.
+
+    The gallery is not a field of the product record: it is ``productImage``
+    rows keyed by the record's own id. So this never patches the record. It
+    adds one row, reads the gallery back to show the photo and to learn the
+    row's own id, removes *that* row, and reads again - which is a proof only
+    if the row it removed is the one it named.
+
+    Kept shaped like the other field results - ``field``, ``label``, ``url``,
+    ``verdict``, ``why``, ``steps`` - so one report can hold it beside them.
+    """
+    import cs_gallery                                  # cs_gallery reads this
+
+    #  ``write`` is the gallery's own sender: ``method`` is the verb, and the
+    #  verb is the whole point - a row is added with POST and taken off with
+    #  DELETE. This module's ``send`` is a PATCH and is never used here, so a
+    #  caller cannot inject a sender that turns a removal into an edit.
+    identifier = str(url or "").rstrip("/").rsplit("/", 1)[-1]
+    result = cs_gallery.prove(
+        identifier, cookie, staged_url,
+        base=_gallery_base(url) or cs_gallery.BASE, fetch=fetch,
+        send=write or cs_gallery._send, now=now)
+    result["url"] = url
+    result["label"] = field_label("images")
+    if listing:
+        result["listing"] = str(listing.get("id") or "")
+        result["title"] = str(listing.get("name") or listing.get("title") or "")
+    return result
+
+
 def record_from(body):
     """The record in a detail response, or ``None`` - the public reading."""
     return _record(body)
@@ -998,7 +893,7 @@ def _snippet(body, limit=240):
 
 
 def prove(field, url, cookie="", staged_url="", now=None, fetch=None,
-          send=None, listing=None):
+          send=None, write=None, listing=None):
     """Write one field, read it back, put it back - and say what happened.
 
     The record is read first and the plan is made from *that* read, not from
@@ -1016,10 +911,16 @@ def prove(field, url, cookie="", staged_url="", now=None, fetch=None,
 
     Nothing is written when ``plan`` refuses or the first read fails.
     """
-    fetch = fetch or read_record
-    send = send or globals()["send"]
     now = now or datetime.now()
     field = str(field or "").strip()
+    if field == "images":
+        #  Routed before this function's own machinery: there is no record
+        #  write to make, and this module's ``send`` is a PATCH. The gallery
+        #  has its own collection, its own verbs and its own proof.
+        return gallery_proof(url, cookie, staged_url=staged_url, now=now,
+                             fetch=fetch, write=write, listing=listing)
+    fetch = fetch or read_record
+    send = send or globals()["send"]
     result = {"field": field, "label": field_label(field), "url": url,
               "steps": [], "verdict": "", "written": False, "restored": None,
               "old": None, "trial": None, "restore": None, "after": None,
@@ -1184,6 +1085,9 @@ def advice(result):
     result = result or {}
     verdict = result.get("verdict") or ""
     field = result.get("field") or ""
+    if field == "images":
+        import cs_gallery
+        return cs_gallery.advice(result)
     label = field_label(field) or field
     status = int(result.get("status") or 0)
     if verdict == "written" and result.get("restored") is False:
@@ -1285,7 +1189,8 @@ def same_card(card, title, threshold=PHOTO_MATCH_SCORE):
 
 
 def auto_photos(item=None, record=None, staged="", staged_rows=None,
-                siblings=None, alive=None, card="", threshold=PHOTO_MATCH_SCORE):
+                siblings=None, alive=None, card="", threshold=PHOTO_MATCH_SCORE,
+                gallery_rows=None):
     """The photos a proof may write without asking, and why when there are none.
 
     A proof of a photo field puts a picture on a live listing, so the automatic
@@ -1344,9 +1249,16 @@ def auto_photos(item=None, record=None, staged="", staged_rows=None,
         why += ". Prove it with the photo chooser and pick the row for this "                "card, or paste its address."
     main = safe[0] if safe else ""
     gallery = ""
+    #  What the gallery already holds comes from the gallery's own rows -
+    #  productImage, keyed by the listing's id - and from nothing else. It is
+    #  not a field of the record: a record with no gallery key can have a full
+    #  gallery, which is the mistake this app made for six releases. So when
+    #  the rows were not read, nothing is claimed about them; only the proof
+    #  itself, which reads and writes that collection, can say.
     have = set()
-    if record:
-        for url in gallery_keys((record or {}).get(gallery_key(record) or "")):
+    for row in gallery_rows or ():
+        url = (row or {}).get("imageUrl") if isinstance(row, dict) else row
+        if url:
             have.add(photo_id(url))
     for url in safe:
         if photo_id(url) not in have and url != main:
@@ -1356,15 +1268,7 @@ def auto_photos(item=None, record=None, staged="", staged_rows=None,
         gallery = main
     why_gallery = ""
     if not gallery:
-        if record and not gallery_key(record):
-            #  The field is not there at all: that is a different sentence from
-            #  "everything is already in it", and only the first one explains
-            #  why a gallery proof can never work on this listing.
-            why_gallery = ("the record carries no gallery - no list of photos "
-                           "under any of the names marketplaces use - so there "
-                           "is nothing to add to and nothing to put back. The "
-                           "record holds: %s" % record_keys(record))
-        else:
+        if have and all(photo_id(url) in have for url in safe):
             why_gallery = ("every photo of this card the app can point at is "
                            "already in the listing's gallery, so there is "
                            "nothing new to add")
@@ -1423,7 +1327,7 @@ def missing_result(field, record=None, why=""):
 def prove_listing(url, cookie="", listing=None, fields=None, photo="",
                   gallery_photo="", skip=None, why=None, absent=None,
                   record=None, now=None, fetch=None,
-                  send=None, on_step=None):
+                  send=None, write=None, on_step=None):
     """Prove every field on one listing, one after another, and collect it.
 
     This is the same proof the panel runs one field at a time - write, read
@@ -1466,7 +1370,7 @@ def prove_listing(url, cookie="", listing=None, fields=None, photo="",
                 results.append(skipped(field, "was not attempted: " + reason))
                 continue
         result = prove(field, url, cookie, staged_url=trial, now=now,
-                       fetch=fetch, send=send, listing=listing)
+                       fetch=fetch, send=send, write=write, listing=listing)
         results.append(result)
         if on_step is not None:
             try:
@@ -1593,6 +1497,14 @@ def listing_report_text(results, listing=None, app_version="", when=None):
 def sentence(result):
     """The one line the console says when the proof is done."""
     result = result or {}
+    if result.get("field") == "images" and \
+            result.get("verdict") not in ("skipped", ""):
+        #  The gallery's proof is a row added and removed, not a value written
+        #  and put back, so it words its own sentence. A field that was not
+        #  attempted is worded here, like every other field, so the line still
+        #  says which field it is about.
+        import cs_gallery
+        return cs_gallery.sentence(result)
     label = result.get("label") or field_label(result.get("field"))
     if result.get("verdict") == "skipped":
         why = str(result.get("why") or "").strip() or "it was not written."
@@ -1632,10 +1544,14 @@ def report_text(result, listing=None, when=None, app_version=""):
     label = result.get("label") or field_label(field)
     stamp = when or result.get("at") or datetime.now().strftime(
         "%Y-%m-%d %H:%M:%S")
+    gallery_run = bool(field == "images" and result.get("verdict") and
+                       "row" in result)
     lines = ["CanadianShopper field proof - %s" % stamp,
              "",
-             "Alex Collect %s. One field was sent to one listing, read back, "
-             "and put back." % (app_version or ""),
+             ("Alex Collect %s. One photo was sent to one listing's gallery, "
+              "read back, and removed again." if gallery_run else
+              "Alex Collect %s. One field was sent to one listing, read back, "
+              "and put back.") % (app_version or ""),
              "No other field was sent, and your website was not touched.",
              ""]
     title = (listing.get("name") or listing.get("title") or
@@ -1649,7 +1565,19 @@ def report_text(result, listing=None, when=None, app_version=""):
     if result.get("url"):
         lines.append("Record:     %s" % result["url"])
     lines += ["", "Field:      %s (%s)" % (label, field)]
-    if result.get("old") is not None or result.get("verdict") == "written":
+    if gallery_run:
+        #  A gallery proof is a row added and a row removed, so it says that
+        #  rather than a value written and a value put back.
+        lines += ["Before:     %d photo%s in the gallery"
+                  % (result.get("before") or 0,
+                     "" if (result.get("before") or 0) == 1 else "s"),
+                  "Added:      %s" % (result.get("photo") or "(no photo)"),
+                  "As row:     %s" % (result.get("row") or
+                                      "(the read-back gave no id)"),
+                  "After:      %d photo%s in the gallery"
+                  % (result.get("after") or 0,
+                     "" if (result.get("after") or 0) == 1 else "s")]
+    elif result.get("old") is not None or result.get("verdict") == "written":
         lines.append("Before:     %s" % value_text(field, result.get("old")))
         lines.append("Wrote:      %s" % value_text(field, result.get("trial")))
         lines.append("Read back:  %s" % value_text(field, result.get("after")))
@@ -1688,7 +1616,18 @@ def report_text(result, listing=None, when=None, app_version=""):
             lines.append("       sent: %s" % value_text(field, step["sent"]))
         if step.get("body"):
             lines.append("       answer: %s" % step["body"])
-    if result.get("verdict") == "written":
+    if gallery_run:
+        lines += ["", "What this settles:"]
+        if result.get("verdict") == "written":
+            lines += ["  The gallery takes a photo as a row of its own, the "
+                      "gallery shows it afterwards, and that row is removed "                       "again: the listing is as it was."]
+        elif result.get("verdict") == "added":
+            lines += ["  ! The row could not be removed. The photo is still in "
+                      "the gallery: take it off on CanadianShopper."]
+        else:
+            lines += ["  The gallery is not settled: %s"
+                      % (result.get("why") or sentence(result))]
+    elif result.get("verdict") == "written":
         lines += ["", "What this settles:",
                   "  %s is written at the record's own id, read back, and put "
                   "back." % field]
@@ -1745,7 +1684,11 @@ def remember(folder, result, listing=None, now=None):
                    #  A field the record does not carry is remembered as that,
                    #  so the next "Prove every field" does not start a run for
                    #  a field that is not there. Anything else clears it.
-                   "field_missing": bool(result.get("field_missing")),
+                   #  The gallery is never remembered as a missing field: it
+                   #  is not a record field, and the mark would stop a later
+                   #  version proving it as the rows it really is.
+                   "field_missing": bool(result.get("field_missing")) and
+                                    field != "images",
                    "listing": str(listing.get("id") or
                                   result.get("listing") or ""),
                    "title": str(listing.get("name") or

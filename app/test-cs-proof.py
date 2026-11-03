@@ -48,7 +48,9 @@ class Site:
 
     def __init__(self, record=None, honours=("priceCad", "title", "description",
                                              "inventory", "primaryImageUrl"),
-                 ignore=(), refuse=None, normalise=None, fail_read_after=None):
+                 ignore=(), refuse=None, normalise=None, fail_read_after=None,
+                 gallery=None, gallery_refuse=None, gallery_keeps=True,
+                 fail_gallery_after=None):
         self.record = dict(RECORD if record is None else record)
         self.honours = set(honours)
         self.ignore = set(ignore)
@@ -58,15 +60,54 @@ class Site:
         self.reads = 0
         self.fail_read_after = fail_read_after
         self.sent = []
+        #  The gallery is a collection of its own: productImage rows keyed by
+        #  the listing's id, read and written at their own address.
+        self.gallery = [dict(row) for row in (gallery or [])]
+        self.gallery_refuse = gallery_refuse
+        self.gallery_keeps = gallery_keeps
+        self.fail_gallery_after = fail_gallery_after
+        self.gallery_reads = 0
+        self.gallery_sent = []
+        self.gallery_removed = []
+        self.next_row = len(self.gallery) + 1
 
     def fetch(self, url, cookie=""):
+        if "/api/data/productImage" in str(url):
+            self.gallery_reads += 1
+            if (self.fail_gallery_after is not None and
+                    self.gallery_reads > self.fail_gallery_after):
+                return 500, "<html>the gallery could not be read</html>"
+            return 200, json.dumps({"data": self.gallery})
         self.reads += 1
         if (self.fail_read_after is not None and
                 self.reads > self.fail_read_after):
             return 500, "<html>read failed</html>"
         return 200, json.dumps(self.record)
 
+    def write(self, method, url, cookie, payload):
+        """The gallery's own verbs: POST adds a row, DELETE takes one off."""
+        if method == "DELETE":
+            return self.send(url, cookie, None)
+        return self.send(url, cookie, payload)
+
     def send(self, url, cookie, payload):
+        if "/api/data/productImage" in str(url):
+            if self.gallery_refuse is not None:
+                return self.gallery_refuse, '{"error": "denied"}'
+            if payload is None:
+                gone = str(url).rsplit("/", 1)[-1]
+                self.gallery_removed.append(gone)
+                self.gallery = [row for row in self.gallery
+                                if str(row.get("id")) != gone]
+                return 204, ""
+            self.gallery_sent.append(dict(payload))
+            if self.gallery_keeps:
+                self.gallery.append({"id": "g%d" % self.next_row,
+                                     "product": payload.get("product"),
+                                     "imageUrl": payload.get("imageUrl"),
+                                     "sortOrder": payload.get("sortOrder")})
+                self.next_row += 1
+            return 201, "{}"
         self.sent.append(dict(payload))
         field, value = next(iter(payload.items()))
         if field in self.refuse:
@@ -535,49 +576,109 @@ def test_the_gallery_proof():
           cs_proof.gallery_keys([{"url": "/api/file/a.webp"}]) ==
           ["https://canadianshopper.ca/api/file/a.webp"], "")
 
-    plan = cs_proof.plan("images", GALLERY, staged_url="/api/file/new.webp")
-    check("one more photo goes on the end, a whole address, in the "
-          "gallery's own shape",
-          plan["trial"][-1] == {
-              "url": "https://canadianshopper.ca/api/file/new.webp"} and
-          len(plan["trial"]) == 3, str(plan["trial"]))
-    check("and it is put back to the list the record holds now",
-          plan["restore"] == GALLERY["images"], str(plan["restore"]))
-    stringed = dict(GALLERY, images=["https://cs.example/api/file/a.webp"])
-    check("a gallery of strings gets a string, an object gets an object",
-          cs_proof.plan("images", stringed,
-                        staged_url="https://cs.example/api/file/n.webp"
-                        )["trial"][-1] == "https://cs.example/api/file/n.webp"
-          and isinstance(plan["trial"][-1], dict), "")
-    check("a photo already in the gallery is not a proof of anything",
-          "already in the listing's gallery" in cs_proof.plan(
-              "images", GALLERY,
-              staged_url="https://canadianshopper.ca/api/file/pappin-back.webp"
-          )["why"], "")
-    check("a gallery with no photo to add is refused, not guessed",
-          "image staging step" in cs_proof.plan("images", GALLERY)["why"], "")
-    check("a gallery with nothing readable in it is not touched",
-          "nothing to put back" in cs_proof.plan(
-              "images", dict(GALLERY, images=[{"meta": 1}]))["why"], "")
-    check("a gallery is said as photos, not as a python list",
+    #  The record is never planned to carry a gallery, because it does not.
+    refused = cs_proof.plan("images", GALLERY, staged_url="/api/file/new.webp")
+    check("the gallery is never planned as a write to the record",
+          "not a field of the record" in refused.get("why", "") and
+          "productImage" in refused.get("why", ""), refused.get("why", ""))
+    check("and a gallery is said as photos, not as a python list",
           cs_proof.value_text("images", GALLERY["images"]).startswith(
               "2 photos:"), cs_proof.value_text("images", GALLERY["images"]))
 
-    site = Site(record=GALLERY,
-                honours=("priceCad", "title", "description", "inventory",
-                         "primaryImageUrl", "images"))
     url = "https://canadianshopper.ca/api/data/product/" + RECORD["id"]
+    site = Site(record=GALLERY, gallery=[
+        {"id": "r1", "product": RECORD["id"],
+         "imageUrl": "https://cs.example/api/file/old.webp", "sortOrder": 1}])
     result = cs_proof.prove("images", url, "secret-session",
                             staged_url="https://cs.example/api/file/new.webp",
-                            fetch=site.fetch, send=site.send)
-    check("the gallery is written, read back and proved",
+                            fetch=site.fetch, write=site.write)
+    check("the gallery is proved by adding a row and removing it again",
           result["verdict"] == "written" and result["restored"] is True,
-          result.get("why"))
-    check("the list came back exactly as it was",
-          site.record["images"] == GALLERY["images"], str(site.record["images"]))
-    check("only the gallery field was ever sent",
-          [sorted(payload) for payload in site.sent] ==
-          [["images"], ["images"]], str(site.sent))
+          str(result.get("why"))[:200])
+    check("the row is posted to the gallery's own collection",
+          len(site.gallery_sent) == 1 and
+          site.gallery_sent[0]["imageUrl"] ==
+          "https://cs.example/api/file/new.webp" and
+          site.gallery_sent[0]["product"] == RECORD["id"],
+          str(site.gallery_sent))
+    check("and that same row is the one removed",
+          site.gallery_removed == ["g2"], str(site.gallery_removed))
+    #  The gallery's writes are POST and DELETE; this module's own sender is a
+    #  PATCH. A caller that injects the PATCH sender must not be able to turn a
+    #  removal into an edit, so the gallery is always given its own sender.
+    other = Site(record=GALLERY)
+    patched = []
+
+    def record_sender(*args):
+        patched.append(args)
+        return 200, "{}"
+
+    second = cs_proof.prove("images", url, "secret-session",
+                            staged_url="https://cs.example/api/file/new.webp",
+                            fetch=other.fetch, send=record_sender,
+                            write=other.write)
+    check("the record's own sender is never used for the gallery",
+          second["verdict"] == "written" and patched == [] and
+          len(other.gallery_sent) == 1 and other.gallery_removed == ["g1"],
+          "%s / %s / %s" % (second.get("verdict"), patched,
+                            other.gallery_removed))
+    check("the gallery is exactly as it was",
+          [row["imageUrl"] for row in site.gallery] ==
+          ["https://cs.example/api/file/old.webp"], str(site.gallery))
+    check("no product record was patched at all", site.sent == [],
+          str(site.sent))
+
+    site = Site(record=GALLERY, gallery=[
+        {"id": "r1", "imageUrl": "https://cs.example/api/file/new.webp",
+         "sortOrder": 1}])
+    result = cs_proof.prove("images", url, "secret-session",
+                            staged_url="https://cs.example/api/file/new.webp",
+                            fetch=site.fetch, write=site.write)
+    check("a photo already in the gallery is not added again",
+          result["verdict"] == "same" and site.gallery_sent == [],
+          str(result.get("verdict")))
+
+    site = Site(record=GALLERY, fail_gallery_after=0)
+    result = cs_proof.prove("images", url, "secret-session",
+                            staged_url="https://cs.example/api/file/new.webp",
+                            fetch=site.fetch, write=site.write)
+    check("an unreadable gallery is never written into",
+          result["verdict"] == "unreadable" and site.gallery_sent == [],
+          str(result.get("verdict")))
+
+    site = Site(record=GALLERY, gallery_keeps=False)
+    result = cs_proof.prove("images", url, "secret-session",
+                            staged_url="https://cs.example/api/file/new.webp",
+                            fetch=site.fetch, write=site.write)
+    check("a row the gallery does not show is not settled",
+          result["verdict"] == "ignored" and site.gallery_removed == [],
+          str(result.get("verdict")))
+
+    site = Site(record=GALLERY)
+
+    def refuse_removal(method, address, cookie, payload):
+        if method == "DELETE":
+            return 500, "{}"
+        return site.write(method, address, cookie, payload)
+
+    result = cs_proof.prove("images", url, "secret-session",
+                            staged_url="https://cs.example/api/file/new.webp",
+                            fetch=site.fetch, write=refuse_removal)
+    check("a row that cannot be removed is not a proof",
+          result["verdict"] == "unrestored" and result["restored"] is False,
+          str(result.get("verdict")))
+    check("and the sentence says the photo is still on the listing",
+          "could not be removed" in cs_proof.sentence(result) and
+          "take it off on CanadianShopper" in cs_proof.sentence(result),
+          cs_proof.sentence(result))
+    check("and the advice is to take that row off the listing, not to sign in",
+          "Remove that row" in cs_proof.advice(result) and
+          "sign in to canadianshopper" not in
+          cs_proof.advice(result).casefold(), cs_proof.advice(result))
+    text = cs_proof.report_text(result, listing={"id": RECORD["id"]},
+                                app_version="3.31")
+    check("the proof file says the row and that the photo is still there",
+          "As row" in text and "take it off on CanadianShopper" in text)
 
     print()
     print("== what a person can do about a field that did not settle ==")
@@ -605,17 +706,21 @@ def test_the_gallery_proof():
 def test_the_whole_listing_at_once():
     print()
     print("== every field on the listing, in one job ==")
-    gallery = dict(GALLERY, title=RECORD["title"] + " PROOF")
-    site = Site(record=dict(GALLERY),
+    #  The gallery is a row of its own from the start: the proof must put the
+    #  listing back to exactly this, not to an empty gallery.
+    front_gallery = {"id": "r1", "product": RECORD["id"],
+                     "imageUrl": "https://cs.example/api/file/front-g.webp",
+                     "sortOrder": 1}
+    site = Site(record=dict(GALLERY), gallery=[front_gallery],
                 honours=("priceCad", "title", "description", "inventory",
-                         "primaryImageUrl", "images"))
+                         "primaryImageUrl"))
     url = "https://canadianshopper.ca/api/data/product/" + RECORD["id"]
     results = cs_proof.prove_listing(
         url, "secret-session", listing={"id": RECORD["id"],
                                         "name": RECORD["title"]},
         photo="https://cs.example/api/file/front.webp",
         gallery_photo="https://cs.example/api/file/back.webp",
-        fetch=site.fetch, send=site.send)
+        fetch=site.fetch, send=site.send, write=site.write)
     check("every field the app can prove was proved",
           [result["field"] for result in results] == cs_proof.proof_fields(),
           str([result["field"] for result in results]))
@@ -626,17 +731,17 @@ def test_the_whole_listing_at_once():
           cs_proof.listing_sentence(results))
     main_sent = [payload["primaryImageUrl"] for payload in site.sent
                  if "primaryImageUrl" in payload]
-    gallery_sent = [cs_proof.gallery_keys(payload["images"])
-                    for payload in site.sent if "images" in payload]
+    gallery_sent = [payload["imageUrl"] for payload in site.gallery_sent]
     check("the main photo proof used the front, the gallery the back",
           main_sent and main_sent[0].endswith("front.webp") and
           gallery_sent and
-          "https://cs.example/api/file/back.webp" in gallery_sent[0],
+          gallery_sent[0].endswith("back.webp"),
           str((main_sent[:1], gallery_sent[:1])))
     check("nothing was left changed on the listing",
           site.record["priceCad"] == GALLERY["priceCad"] and
-          site.record["images"] == GALLERY["images"] and
-          site.record["primaryImageUrl"] == GALLERY["primaryImageUrl"],
+          site.record["primaryImageUrl"] == GALLERY["primaryImageUrl"] and
+          [row["imageUrl"] for row in site.gallery] ==
+          ["https://cs.example/api/file/front-g.webp"],
           str(site.record)[:200])
 
     print()
@@ -647,7 +752,7 @@ def test_the_whole_listing_at_once():
     results = cs_proof.prove_listing(
         url, "secret-session", photo="https://cs.example/api/file/f.webp",
         gallery_photo="https://cs.example/api/file/b.webp",
-        fetch=site.fetch, send=site.send)
+        fetch=site.fetch, send=site.send, write=site.write)
     check("the refusal does not stop the other fields being proved",
           len(cs_proof.proven_results(results)) == len(results) - 1,
           cs_proof.listing_sentence(results))
@@ -667,7 +772,7 @@ def test_the_whole_listing_at_once():
     results = cs_proof.prove_listing(
         url, skip=["priceCad"], photo="https://cs.example/api/file/f.webp",
         gallery_photo="https://cs.example/api/file/b.webp",
-        fetch=site.fetch, send=site.send)
+        fetch=site.fetch, send=site.send, write=site.write)
     check("a skipped field is reported, not silently dropped",
           results[0]["verdict"] == "skipped" and
           results[0]["settled_earlier"] is True and
@@ -695,7 +800,7 @@ def test_the_whole_listing_at_once():
     site = Site(record=dict(GALLERY),
                 honours=("priceCad", "title", "description", "inventory",
                          "primaryImageUrl", "images"))
-    results = cs_proof.prove_listing(url, fetch=site.fetch, send=site.send)
+    results = cs_proof.prove_listing(url, fetch=site.fetch, send=site.send, write=site.write)
     photo_results = [result for result in results
                      if result["field"] in cs_proof.photo_fields()]
     check("both photo fields are skipped, with the reason",
@@ -743,10 +848,10 @@ def test_the_whole_listing_at_once():
     results = cs_proof.prove_listing(
         url, "secret-session", photo="https://cs.example/api/file/f.webp",
         gallery_photo="https://cs.example/api/file/b.webp",
-        fetch=site.fetch, send=site.send)
+        fetch=site.fetch, send=site.send, write=site.write)
     text = cs_proof.listing_report_text(
         results, listing={"id": RECORD["id"], "name": RECORD["title"]},
-        app_version="3.30")
+        app_version="3.31")
     check("the file names every field that was tried",
           all(cs_proof.field_label(result["field"]) in text
               for result in results), "")
@@ -814,84 +919,65 @@ def test_a_photo_of_the_wrong_card_is_never_chosen():
     check("and a second photo of this card goes to the gallery",
           cs_proof.auto_photos(
               item={"name": wurmple},
-              record={"primaryImageUrl": "https://cs/api/file/front.jpg",
-                      "images": ["https://cs/api/file/front.jpg"]},
+              record={"primaryImageUrl": "https://cs/api/file/front.jpg"},
+              gallery_rows=[{"id": "r1",
+                             "imageUrl": "https://cs/api/file/front.jpg"}],
               staged_rows=rows2 + [{"title": wurmple + " back",
                                     "url": "https://cs/api/file/back2.jpg"}],
               siblings=[], card=wurmple)["gallery"].endswith("back2.jpg"), "")
     check("a photo already in the gallery is not added twice",
           cs_proof.auto_photos(
               item={"name": wurmple},
-              record={"primaryImageUrl": "https://cs/api/file/front.jpg",
-                      "images": ["https://cs/api/file/front.jpg",
-                                 "https://cs/api/file/wurmple-back.jpg"]},
+              record={"primaryImageUrl": "https://cs/api/file/front.jpg"},
+              gallery_rows=[
+                  {"id": "r1", "imageUrl": "https://cs/api/file/front.jpg"},
+                  {"id": "r2",
+                   "imageUrl":
+                       "https://cs/api/file/wurmple-back.jpg"}],
               staged_rows=rows2, siblings=[], card=wurmple)["gallery"] == "",
           "")
+    #  A record with no gallery field says nothing about the gallery: without
+    #  the rows, nothing is claimed and no "carries no gallery" is invented.
+    photos = cs_proof.auto_photos(item={"name": wurmple},
+                                  record={"primaryImageUrl":
+                                          "https://cs/api/file/front.jpg"},
+                                  staged_rows=rows2, siblings=[], card=wurmple)
+    check("a record with no gallery is not a listing with no gallery",
+          photos["why_gallery"] == "" or "carries no gallery"
+          not in photos["why_gallery"], photos["why_gallery"])
 
     print()
-    print("== the gallery's own key, whatever the site calls it ==")
+    print("== the gallery is not a key on the record, whatever it is called ==")
+    url = "https://canadianshopper.ca/api/data/product/" + RECORD["id"]
     for key in ("images", "galleryImages", "imageUrls", "gallery", "photos"):
         found = dict(RECORD, **{key: ["https://cs/api/file/a.webp",
                                       "https://cs/api/file/b.webp"]})
-        plan = cs_proof.plan("images", found,
-                             staged_url="https://cs/api/file/new.webp")
-        check("a gallery under %r is found and addressed by its own name"
-              % key, plan.get("key") == key and
-              plan["trial"][-1] == "https://cs/api/file/new.webp", str(plan)[:160])
-    check("a list that is not photos is not mistaken for a gallery",
-          cs_proof.gallery_key({"tags": ["vintage", "hockey"]}) == "", "")
-    check("and the main photo on its own is not a gallery",
-          cs_proof.gallery_key({"primaryImageUrl": "/api/file/a.webp"}) == "",
-          "")
-
-    site = Site(record=dict(RECORD, galleryImages=[
-        "https://cs/api/file/a.webp", "https://cs/api/file/b.webp"]),
-        honours=("priceCad", "title", "description", "inventory",
-                 "primaryImageUrl", "images", "galleryImages"))
-    url = "https://canadianshopper.ca/api/data/product/" + RECORD["id"]
-    result = cs_proof.prove("images", url, "secret-session",
-                            staged_url="https://cs/api/file/new.webp",
-                            fetch=site.fetch, send=site.send)
-    check("the gallery is written under the record's own key, not 'images'",
-          result["verdict"] == "written" and
-          [sorted(payload) for payload in site.sent] ==
-          [["galleryImages"], ["galleryImages"]], str(site.sent))
-    check("and the list came back exactly as it was",
-          site.record["galleryImages"] ==
-          ["https://cs/api/file/a.webp", "https://cs/api/file/b.webp"],
-          str(site.record["galleryImages"]))
-
-    print()
-    print("== a field the record does not have is not created by a proof ==")
-    no_gallery = {"id": "a", "title": "Wurmple", "priceCad": 1.0,
-                  "primaryImageUrl": "https://cs/api/file/front.jpg"}
-    plan = cs_proof.plan("images", no_gallery,
-                         staged_url="https://cs/api/file/new.webp")
-    check("the refusal names the keys the record really has",
-          "priceCad" in plan["why"] and "primaryImageUrl" in plan["why"] and
-          "carries no gallery" in plan["why"], plan["why"])
-    site = Site(record=dict(no_gallery))
-    result = cs_proof.prove("images", url, "secret-session",
-                            staged_url="https://cs/api/file/new.webp",
-                            fetch=site.fetch, send=site.send)
-    check("nothing is written when the field is not there",
-          not site.sent and result.get("plan_refused") is True, str(site.sent))
-    check("and the advice is not to sign in again - the record answered",
-          "sign in" not in cs_proof.advice(result).lower() and
-          "nothing to fix" in cs_proof.advice(result).lower(),
-          cs_proof.advice(result))
+        planned = cs_proof.plan("images", found,
+                                staged_url="https://cs/api/file/new.webp")
+        check("a record carrying %r is still not planned as a gallery write"
+              % key, "not a field of the record" in planned.get("why", ""),
+              str(planned)[:160])
+        site = Site(record=found)
+        result = cs_proof.prove("images", url, "secret-session",
+                                staged_url="https://cs/api/file/new.webp",
+                                fetch=site.fetch, write=site.write)
+        check("and %r is never patched on the record, and never read for it"
+              % key,
+              result["verdict"] == "written" and site.sent == [] and
+              site.record.get(key) == found[key], str(site.sent))
 
 
 def test_a_record_with_no_gallery_stops_being_a_problem():
     """The report: a record with 39 keys and no gallery among them.
 
-    The run on 3.26 said "Gallery photos needs attention" and listed
-    "… and 24 more" keys, which is the one part of the answer nobody can check.
-    A field the site's record does not have is not work: it is said, once, with
-    every key in the file behind it, and it stops being counted as a problem.
+    The record's shape is still worth keeping - it is the evidence a plugin
+    author needs - but it is evidence about the *record*, not a verdict on the
+    gallery: the gallery is productImage rows, and a listing whose record shows
+    no gallery can have a full one. So the shape is reported and the field is
+    still offered.
     """
     print()
-    print("== a field this site's record does not have ==")
+    print("== the record's keys are evidence, not a verdict ==")
     record = {"id": "a", "createdAt": "2026-10-01", "vendor": "pokemon",
               "title": "Wurmple", "slug": "wurmple", "description": "A card.",
               "primaryImageUrl": "https://cs/api/file/wurmple-front.jpg",
@@ -904,77 +990,20 @@ def test_a_record_with_no_gallery_stops_being_a_problem():
           any(line.startswith("primaryImageUrl is text") for line in report) and
           any(line.startswith("tags is a list of 2") for line in report),
           str(report))
-    check("and a plain list of words is not mistaken for photos",
-          cs_proof.gallery_key({"tags": ["vintage", "hockey"]}) == "" and
-          cs_proof.gallery_key({"attachments": ["readme.txt"]}) == "", "")
-    check("while a list of file names under an unexpected name is one",
-          cs_proof.gallery_key({"productShots": ["/uploads/a.jpg",
-                                                 "b.png"]}) == "productShots" and
-          cs_proof.gallery_key({"files": ["/api/file/a.jpg"]}) == "files", "")
-    check("and a gallery of maps can keep its photo under any of the usual keys",
-          cs_proof.gallery_key({"media": [{"filename": "a.jpg"},
-                                          {"thumb": {"url": "/uploads/b.jpg"}}]})
-          == "media", "")
-
-    refusal = cs_proof.plan("images", record,
-                            staged_url="https://cs/api/file/back.jpg")
-    check("the refusal names every key, not 'and 24 more'",
-          "and more" not in refusal["why"] and "shippingFlatCad" in
-          refusal["why"] and "primaryImageUrl" in refusal["why"],
-          refusal["why"][:300])
-    check("and it is marked as a field the record does not have",
-          refusal.get("missing") is True, str(refusal)[:120])
-
-    site = Site(record=dict(record))
-    url = "https://canadianshopper.ca/api/data/product/" + record["id"]
-    results = cs_proof.prove_listing(
-        url, "secret-session", fields=["priceCad", "images"],
-        photo="https://cs/api/file/front2.jpg",
-        gallery_photo="https://cs/api/file/back.jpg",
-        fetch=site.fetch, send=site.send)
-    gallery = [result for result in results
-               if result["field"] == "images"][0]
-    check("the gallery is not attempted and nothing is sent for it",
-          gallery["verdict"] == "unreadable" and
-          gallery.get("field_missing") is True and
-          not any("images" in payload for payload in site.sent), str(site.sent))
-    check("and it is counted apart from the fields that need attention",
-          cs_proof.not_here(gallery) and
-          not cs_proof.problem_results(results) and
-          cs_proof.problem_results(results) == [], str(cs_proof.problem_results(
-              results)))
-    sentence = cs_proof.listing_sentence(results)
-    check("the summary says what is settled and what the site does not have",
-          "1 of 2 fields are settled" in sentence and
-          "Gallery photos is not on this site's record" in sentence, sentence)
-    check("and its advice says there is nothing to do, not to sign in",
-          "Nothing to do on the site" in cs_proof.advice(gallery) and
-          "sign in" not in cs_proof.advice(gallery).lower(),
-          cs_proof.advice(gallery))
-    text = cs_proof.report_text(gallery, listing={"id": record["id"]},
-                                app_version="3.30")
-    check("the proof file carries the record's keys for the plugin report",
-          "Every key it holds:" in text and "shippingFlatCad" in text and
-          "tags is a list of 2" in text and "specs is a list of 1" in text,
-          text[-700:])
-    check("and still carries no session",
-          "secret-session" not in text, "")
-
-    print()
-    print("== a record that does have a gallery, under another name ==")
-    owned = dict(record, productShots=["https://cs/api/file/a.jpg",
-                                       "https://cs/api/file/b.jpg"])
-    site = Site(record=dict(owned), honours=("images", "productShots"))
-    result = cs_proof.prove("images", url, "secret-session",
-                            staged_url="https://cs/api/file/new.jpg",
-                            fetch=site.fetch, send=site.send)
-    check("the gallery is found under the name the record uses, and written "
-          "to that name",
-          result["verdict"] == "written" and site.sent and
-          sorted(site.sent[0]) == ["productShots"], str(site.sent[:1]))
-    check("and it is nobody's problem in the summary",
-          not cs_proof.problem_results([result]) and
-          cs_proof.settled_result(result), "")
+    #  gallery_keys is a reader for a value that already *is* a gallery: the
+    #  filtering of what counts as a photo lives in photo_field_report, which
+    #  is what the proof file shows. A list of words is named as a list of
+    #  words there, not as photos.
+    check("a list of words is named as words, not as photos",
+          any(line.startswith("tags is a list of 2") for line in report),
+          str(report))
+    check("the gallery is offered whatever the record's keys say",
+          "images" in cs_proof.proof_fields() and
+          "Gallery photos" in cs_proof.labels(), str(cs_proof.labels()))
+    check("and the record's shape is never the reason a gallery is refused",
+          "not a field of the record" in cs_proof.plan(
+              "images", record, staged_url="https://cs/api/file/back.jpg"
+          ).get("why", ""), "")
 
 
 def test_the_report():
@@ -988,7 +1017,7 @@ def test_the_report():
     text = cs_proof.report_text(result, listing={"id": RECORD["id"],
                                                  "name": RECORD["title"]},
                                 when=datetime(2026, 11, 2, 14, 30, 5),
-                                app_version="3.30")
+                                app_version="3.31")
     check("it names the listing and the record's own id",
           RECORD["title"] in text and RECORD["id"] in text and
           "not a product id" in text, text[:400])
@@ -1058,77 +1087,40 @@ def test_what_the_app_remembers():
               cs_proof.load_proofs(Path(tmp) / "nothing-here") == {}, "")
 
 
-def test_where_this_site_keeps_a_gallery():
-    print()
-    print("== 13. the name a site gives its gallery ==")
-
-    def record(**extra):
-        return dict({"id": "abc", "title": "Wurmple",
-                     "primaryImageUrl": "https://canadianshopper.ca/api/file/f.jpg"},
-                    **extra)
-
-    survey = cs_proof.gallery_survey([record(images=["a"]), record(),
-                                      record(images=["b", "c"])])
-    check("a key most records carry is the name the site uses",
-          survey["key"] == "images" and survey["count"] == 2
-          and survey["total"] == 3, str(survey))
-    check("and one of the values is kept to copy the shape from",
-          survey["shape"] == ["a"], str(survey.get("shape")))
-    check("a record with only a main photo is not a gallery",
-          cs_proof.gallery_survey([record(), record()])["key"] == "", "")
-    check("no records read is said as that, not as a gallery of none",
-          cs_proof.gallery_survey([]) == {"key": "", "count": 0, "total": 0,
-                                          "shape": None},
-          str(cs_proof.gallery_survey([])))
-    maps = cs_proof.gallery_survey([record(images=[{"url": "a"}])])
-    check("a gallery of objects is found by the same survey",
-          maps["key"] == "images", str(maps))
-    check("and its shape is read as objects, not as addresses",
-          cs_proof.gallery_shape(maps["shape"]) == "map",
-          str(cs_proof.gallery_shape(maps["shape"])))
-    check("addresses read as addresses",
-          cs_proof.gallery_shape(["a", "b"]) == "url"
-          and cs_proof.gallery_shape(None) == "url", "")
-    check("one photo is written as a list the site can read",
-          cs_proof.one_photo("/api/file/back.jpg") ==
-          ["https://canadianshopper.ca/api/file/back.jpg"], "")
-    check("in objects when that is the shape the site uses",
-          cs_proof.one_photo("/api/file/back.jpg", "map") ==
-          [{"url": "https://canadianshopper.ca/api/file/back.jpg"}], "")
-    check("no photo is no list, rather than an empty entry",
-          cs_proof.one_photo("") == [], "")
-    check("a new entry copies the shape of the ones beside it",
-          cs_proof.like_others([{"url": "a", "caption": "front"}], "/api/file/b.jpg")
-          == {"url": "https://canadianshopper.ca/api/file/b.jpg",
-              "caption": "front"},
-          str(cs_proof.like_others([{"url": "a", "caption": "front"}],
-                                   "/api/file/b.jpg")))
-    check("and an empty gallery gets a plain address",
-          cs_proof.like_others([], "/api/file/b.jpg") ==
-          "https://canadianshopper.ca/api/file/b.jpg", "")
-
-
 def test_a_field_this_record_does_not_have_is_remembered():
     print()
     print("== 14. \"no such field here\" is remembered, so it is not asked again ==")
     import tempfile
     folder = Path(tempfile.mkdtemp(prefix="alex-absent-"))
     try:
-        absent = cs_proof.missing_result("images", record={"id": "abc",
+        absent = cs_proof.missing_result("title", record={"id": "abc",
                                                            "priceCad": 1})
         cs_proof.remember(folder, absent, listing={"id": "abc"})
         proofs = cs_proof.load_proofs(folder)
         check("a field the record does not carry is saved as that",
-              proofs["images"]["field_missing"] is True, str(proofs))
+              proofs["title"]["field_missing"] is True, str(proofs))
         check("and it is not saved as proven",
-              proofs["images"]["proven"] is False and
-              not cs_proof.settled("images", proofs), str(proofs))
+              proofs["title"]["proven"] is False and
+              not cs_proof.settled("title", proofs), str(proofs))
         check("the same listing is not asked again",
-              cs_proof.known_absent("images", proofs, "abc"), "")
+              cs_proof.known_absent("title", proofs, "abc"), "")
         check("another listing may carry the field, so it is asked there",
-              not cs_proof.known_absent("images", proofs, "def"), "")
+              not cs_proof.known_absent("title", proofs, "def"), "")
         check("a field with no mark is not treated as absent",
-              not cs_proof.known_absent("title", proofs, "abc"), "")
+              not cs_proof.known_absent("description", proofs, "abc"), "")
+
+        #  The gallery is the exception, and it is the whole point: it is not
+        #  a record field, so "the record has no such field" says nothing about
+        #  it. A mark left by an older version must not keep it unproved.
+        gallery = cs_proof.missing_result("images", record={"id": "abc",
+                                                            "priceCad": 1})
+        cs_proof.remember(folder, dict(gallery, field_missing=True),
+                          listing={"id": "abc"})
+        proofs = cs_proof.load_proofs(folder)
+        check("the gallery is never remembered as a missing field",
+              proofs["images"]["field_missing"] is False, str(proofs["images"]))
+        check("and an older mark on it is not believed",
+              not cs_proof.known_absent("images", proofs, "abc"), "")
 
         #  A later run that finds the field clears the mark, because the
         #  record grew it - that is what adding a gallery photo does.
@@ -1160,7 +1152,6 @@ def main():
     test_a_record_with_no_gallery_stops_being_a_problem()
     test_the_report()
     test_what_the_app_remembers()
-    test_where_this_site_keeps_a_gallery()
     test_a_field_this_record_does_not_have_is_remembered()
     print()
     if FAIL:
