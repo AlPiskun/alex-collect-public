@@ -54,7 +54,20 @@ FIELDS = (
     ("primaryImageUrl", "Main photo"),
 )
 
-FIELD_LABELS = {field: label for field, label in FIELDS}
+#: A field a proof can settle that the record-edit form does not offer, and
+#: why: the gallery is a *list* of photos, and a row of text in a form is the
+#: wrong shape for it. It is proved all the same - one more photo on the end,
+#: read back, then the list put back exactly as it was - because "does the site
+#: keep a gallery" is a question with an answer, and the only way to have it is
+#: to ask the record.
+PROOF_ONLY = (
+    ("images", "Gallery photos"),
+)
+
+#: Everything a proof may be run on, in the order it is offered.
+PROOF_FIELDS = FIELDS + PROOF_ONLY
+
+FIELD_LABELS = {field: label for field, label in PROOF_FIELDS}
 
 #: The one field that is never proven by this module, and why. Named rather
 #: than silently left out, because "why is state not in the list" is a fair
@@ -89,13 +102,23 @@ def field_label(field):
 
 def labels():
     """The field names as a person reads them, in the order they are offered."""
-    return [label for _field, label in FIELDS]
+    return [label for _field, label in PROOF_FIELDS]
+
+
+def proof_fields():
+    """Every field a proof may be run on, in the order it is offered."""
+    return [field for field, _label in PROOF_FIELDS]
+
+
+def photo_fields():
+    """The fields whose trial value is a photo, in the order they are offered."""
+    return ["primaryImageUrl", "images"]
 
 
 def field_for(label):
     """The field a chosen label stands for, or ``""``."""
     wanted = str(label or "").strip().casefold()
-    for field, text in FIELDS:
+    for field, text in PROOF_FIELDS:
         if text.casefold() == wanted or field.casefold() == wanted:
             return field
     return ""
@@ -122,6 +145,43 @@ def _number(value):
     return cs_edit.price_number({"price": value})
 
 
+def gallery_keys(value):
+    """Every photo address in a gallery value, as web addresses, sorted.
+
+    A gallery is compared as the *set of photos it holds*, not as a list: the
+    site is free to answer with the photos in another order, and a reordering
+    is not a lost photo. Addresses are made whole first, because the record may
+    answer ``/api/file/x.webp`` where the write sent the whole address - the
+    same picture, and not a difference worth reporting.
+    """
+    entries = value if isinstance(value, (list, tuple)) else [value]
+    keys = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            entry = (entry.get("url") or entry.get("src") or
+                     entry.get("image") or entry.get("path") or "")
+        text = absolute_photo(entry).rstrip("/")
+        if text:
+            keys.append(text)
+    return sorted(keys)
+
+
+def _same_photo(like, url):
+    """A new gallery entry shaped like the one beside it.
+
+    A gallery that holds objects (``{"url": ...}``) must be given back an
+    object, not a bare string: the shape is the site's, and the proof's job is
+    to add a photo, not to change how the field is written.
+    """
+    if isinstance(like, dict):
+        for key in ("url", "src", "image", "path"):
+            if key in like:
+                entry = dict(like)
+                entry[key] = url
+                return entry
+    return url
+
+
 def same(field, left, right):
     """Whether two values of one field are the same value to the site.
 
@@ -140,6 +200,8 @@ def same(field, left, right):
             return int(left) == int(right)
         except (TypeError, ValueError):
             return False
+    if field == "images":
+        return gallery_keys(left) == gallery_keys(right)
     return str(left if left is not None else "").strip() == \
         str(right if right is not None else "").strip()
 
@@ -148,6 +210,13 @@ def value_text(field, value):
     """A value as the report says it: quoted, or named as empty."""
     if value is None:
         return "(not there)"
+    if isinstance(value, (list, tuple)):
+        keys = gallery_keys(value)
+        if not keys:
+            return "(no photos)"
+        shown = ", ".join(keys[:3]) + (" ..." if len(keys) > 3 else "")
+        return "%d photo%s: %s" % (len(keys), "" if len(keys) == 1 else "s",
+                                   shown)
     if isinstance(value, str) and not value.strip():
         return "(empty)"
     text = str(value)
@@ -212,6 +281,33 @@ def plan(field, record, staged_url="", now=None):
         stamp = (now or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
         trial = "%s\n\n%s %s." % (str(old).rstrip(), MARK, stamp)
         note = "The description with one marker line on the end."
+    elif field == "images":
+        entries = (old if isinstance(old, (list, tuple)) else [old])
+        have = gallery_keys(entries)
+        if not have:
+            return {"field": field, "label": label,
+                    "why": "The record carries a gallery with no photo address "
+                           "in it that could be read, so there is nothing to "
+                           "put back."}
+        trial_photo = absolute_photo(staged_url)
+        if not trial_photo:
+            return {"field": field, "label": label,
+                    "why": "The gallery is proven with one more photo from the "
+                           "image staging step - a picture of the same card. "
+                           "Without one there is nothing safe to write."}
+        if not trial_photo.lower().startswith(("http://", "https://")):
+            return {"field": field, "label": label,
+                    "why": "%r is not a web address, so it is not a photo the "
+                           "gallery can hold." % trial_photo}
+        if trial_photo.rstrip("/") in have:
+            return {"field": field, "label": label,
+                    "why": "That photo is already in the listing's gallery, so "
+                           "writing the gallery again would prove nothing."}
+        trial = list(entries) + [_same_photo(entries[-1], trial_photo)]
+        note = ("The gallery with one more photo on the end, which is put "
+                "back to the list it holds now.")
+        return {"field": field, "label": label, "old": old, "trial": trial,
+                "restore": old, "note": note}
     else:                                             # primaryImageUrl
         trial = str(staged_url or "").strip()
         if not trial:
@@ -733,6 +829,228 @@ def prove(field, url, cookie="", staged_url="", now=None, fetch=None,
         result["why"] += (" The old value was sent once more and the record "
                           "still shows it, so nothing is left behind.")
     return result
+
+
+def skipped(field, why):
+    """A result for a field that was not attempted, and the reason why not."""
+    return {"field": str(field or ""), "label": field_label(field),
+            "verdict": "skipped", "why": str(why or ""), "steps": [],
+            "written": False, "restored": None, "status": 0,
+            "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+
+def advice(result):
+    """What the person can do about one field's outcome, in their words.
+
+    A proof that only says "not proven" is a dead end: every verdict this
+    module can reach has a cause and an action, and this is where the action
+    is said. Empty when nothing needs doing.
+    """
+    result = result or {}
+    verdict = result.get("verdict") or ""
+    field = result.get("field") or ""
+    label = field_label(field) or field
+    status = int(result.get("status") or 0)
+    if verdict == "written" and result.get("restored") is False:
+        return ("Put %s back by hand now: open the listing on CanadianShopper "
+                "and set it to %s. Nothing else should be done until it is "
+                "back." % (label.lower(),
+                           value_text(field, result.get("restore"))))
+    if verdict == "written":
+        return ""
+    if verdict == "skipped":
+        return str(result.get("why") or "")
+    if verdict == "refused":
+        if status == 401:
+            return ("Sign in to CanadianShopper again, then save the session "
+                    "cookie in User settings: the site refused the request as "
+                    "signed out.")
+        if status == 403:
+            return ("The account behind the saved session is not allowed to "
+                    "change that listing: sign in as the shop's owner, save "
+                    "the cookie again, and prove %s once more."
+                    % label.lower())
+        if status == 422:
+            return ("The site rejected the value itself (HTTP 422). The exact "
+                    "answer is in the proof file: if it names the shape it "
+                    "expects for %s, that shape is what the field needs."
+                    % label.lower())
+        if status == 429:
+            return ("The site is rate-limiting this session: wait a minute, "
+                    "then prove %s again." % label.lower())
+        if status >= 500:
+            return ("The site had an internal error (HTTP %s): try again in a "
+                    "few minutes." % status)
+        if not status:
+            return ("The request never reached the site: check the connection "
+                    "and prove %s again." % label.lower())
+        return ("The site's answer is in the proof file - attach it to the "
+                "plugin report so the field's route can be checked.")
+    if verdict == "ignored":
+        return ("Open the listing in the CanadianShopper dashboard and set %s "
+                "there once. If the dashboard keeps it, the record endpoint "
+                "does not carry that field and the plugin has to pass it "
+                "through: the proof file is the evidence, and no write path "
+                "should be built on it until it is settled."
+                % label.lower())
+    if verdict == "unreadable":
+        return ("Open the listing on CanadianShopper in a browser. If it asks "
+                "you to sign in, the saved session has expired: sign in, save "
+                "the cookie again in User settings, then prove %s once more."
+                % label.lower())
+    if verdict == "unknown":
+        return ("Check that listing on CanadianShopper before anything else: "
+                "the write was accepted and could not be read back, so the "
+                "field may or may not have changed.")
+    return ""
+
+
+def photo_for_proof(item=None, record=None, staged="", staged_rows=None,
+                    siblings=None, alive=None):
+    """The photo to prove the photo fields with, found rather than asked for.
+
+    The first candidate whose address is a picture of this card and *not* the
+    photo the listing shows now. A sibling - a name guessed from the current
+    main photo - is only used after the site answers for it with an image, so a
+    guess never becomes a write. ``alive`` is injected for tests.
+    """
+    if siblings is None:
+        #  Nothing has looked the pair up yet: the names come from the photo
+        #  the listing shows now, and each one is checked before it is used.
+        siblings = sibling_photos(primary_photo(item=item, record=record))
+    candidates = photo_candidates(item=item, record=record, staged=staged,
+                                  staged_rows=staged_rows, siblings=siblings)
+    if not candidates:
+        return ""
+    if not siblings:
+        return candidates[0]["url"]
+    siblings_set = {str(url).rstrip("/") for url in siblings}
+    for candidate in candidates:
+        url = candidate["url"]
+        if url.rstrip("/") not in siblings_set:
+            return url
+        check = alive or photo_alive
+        ok, _kind = check(url)
+        if ok:
+            return url
+    return ""
+
+
+def prove_listing(url, cookie="", listing=None, fields=None, photo="",
+                  gallery_photo="", skip=None, now=None, fetch=None,
+                  send=None, on_step=None):
+    """Prove every field on one listing, one after another, and collect it.
+
+    This is the same proof the panel runs one field at a time - write, read
+    back, put back - done as one job, because a person asking "can this app
+    write to this listing" should not have to answer it five times. Nothing
+    runs unattended: the caller asks first, and this does the rest.
+
+    ``skip`` is the fields an earlier proof already settled; they are reported
+    as skipped rather than written again. A photo field with no photo to write
+    is skipped with the reason, never guessed at.
+    """
+    results = []
+    already = {str(field) for field in (skip or ())}
+    for field in (fields or proof_fields()):
+        if field in already:
+            results.append(skipped(
+                field, "%s was settled by an earlier proof and was not "
+                "written again." % field_label(field)))
+            continue
+        trial = ""
+        if field in photo_fields():
+            #  Each photo field gets the photo chosen for it: the gallery must
+            #  add one it does not already hold, so the caller's gallery choice
+            #  is never quietly replaced with the main photo's.
+            trial = absolute_photo(gallery_photo if field == "images" else photo)
+            if not trial:
+                results.append(skipped(
+                    field, "No photo of this card was found to prove %s with, "
+                           "so it was not attempted." % field_label(field)
+                           .lower()))
+                continue
+        result = prove(field, url, cookie, staged_url=trial, now=now,
+                       fetch=fetch, send=send, listing=listing)
+        results.append(result)
+        if on_step is not None:
+            try:
+                on_step(result)
+            except Exception:                      # a display must not stop it
+                pass
+    return results
+
+
+def proven_results(results):
+    """The results that settled their field."""
+    return [result for result in (results or []) if proven(result)]
+
+
+def problem_results(results):
+    """The results that did not: refused, ignored, unreadable, unknown."""
+    return [result for result in (results or []) if not proven(result)]
+
+
+def listing_sentence(results):
+    """One line saying how a whole listing's proofs went."""
+    results = list(results or [])
+    if not results:
+        return "No field was proved."
+    good = proven_results(results)
+    bad = problem_results(results)
+    if not bad:
+        return ("All %d fields are settled on this listing: every one was "
+                "written, read back and put back." % len(good))
+    names = ", ".join(result.get("label") or result.get("field")
+                      for result in bad)
+    if not good:
+        return ("No field is settled on this listing: %s need%s attention."
+                % (names, "s" if len(bad) == 1 else ""))
+    return ("%d of %d fields are settled; %s need%s attention."
+            % (len(good), len(results), names,
+               "s" if len(bad) == 1 else ""))
+
+
+def listing_report_text(results, listing=None, app_version="", when=None):
+    """Every field's proof as one file, with the problems and their fixes.
+
+    A single proof is evidence for one field; this is evidence for the
+    listing, which is what a plugin report needs when one field works and
+    another does not.
+    """
+    results = list(results or [])
+    listing = listing or {}
+    stamp = when or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    title = str(listing.get("name") or listing.get("title") or "")
+    listing_id = str(listing.get("id") or "")
+    lines = ["CanadianShopper listing proof - %s" % stamp, "",
+             "Alex Collect %s. Each field below was written to one listing, "
+             "read back, and put back." % (app_version or ""),
+             "No other field was sent, and your website was not touched.", ""]
+    if title:
+        lines.append("Listing:    %s" % title)
+    if listing_id:
+        lines.append("Listing id: %s   (the record's own id, not a product id)"
+                     % listing_id)
+    if results and results[0].get("url"):
+        lines.append("Record:     %s" % results[0]["url"])
+    lines += ["", "In short:   %s" % listing_sentence(results), ""]
+    problems = problem_results(results)
+    if problems:
+        lines.append("Needs attention:")
+        for result in problems:
+            lines.append("  %-16s %s" % (field_label(result.get("field")) + ":",
+                                         sentence(result)))
+            fix = advice(result)
+            if fix:
+                lines.append("  %-16s %s" % ("", fix))
+        lines.append("")
+    for result in results:
+        lines.append("-" * 70)
+        lines.append(report_text(result, listing=listing, when=stamp,
+                                 app_version=app_version).rstrip())
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def sentence(result):

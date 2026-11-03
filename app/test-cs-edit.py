@@ -406,6 +406,162 @@ def read_into(app, folder, parent, payload=None):
     return out
 
 
+def test_every_field_is_proved_in_one_job():
+    """The whole listing, proved by one confirmed click - not six.
+
+    Asked for after every field had been proved one at a time: "can the
+    program create the proofs instead of the user". It cannot run unattended -
+    a proof is a real change to a live listing - but it can do the whole job
+    from one confirmation, skip what an earlier proof settled, find the photos
+    itself, and say what to do about whatever did not settle.
+    """
+    print()
+    print("== the whole listing proved, one confirmed click ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    rows = [{"id": "94b93f6040f5401daabaa9c936efa5a7", "product_id": 0,
+             "sku": "OPC1973-74-112", "title": "Jim Pappin #112",
+             "status": "active", "inventory": 1, "price": "12.50",
+             "images": ["https://cs.example/api/file/current.webp",
+                        "https://cs.example/api/file/other-back.webp"]}]
+    record = json.dumps({
+        "id": rows[0]["id"], "title": "Jim Pappin #112",
+        "primaryImageUrl": "https://cs.example/api/file/current.webp",
+        "images": ["https://cs.example/api/file/current.webp",
+                   "https://cs.example/api/file/gallery.webp"]})
+    asked, questions, shown = [], [], []
+
+    def fake_prove(field, url, cookie="", staged_url="", listing=None,
+                   **kwargs):
+        asked.append({"field": field, "staged": staged_url})
+        good = field != "inventory"
+        return {"field": field, "label": cs_proof.field_label(field),
+                "verdict": "written" if good else "refused", "written": good,
+                "restored": True if good else None, "status": 403 if not good
+                else 200, "restore_status": 200 if good else 0,
+                "old": 1, "trial": 2, "restore": 1, "after": 2, "final": 1,
+                "url": url, "why": "the site's answer",
+                "steps": [{"step": "GET the record", "status": 200}],
+                "at": "2026-11-03 09:00:00"}
+
+    def yes(title, question, **kwargs):
+        questions.append((title, question))
+        return True
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:
+            result, error = None, exc
+        return done(result, error)
+
+    harness._BOX.shown[:] = []
+    harness._BOX.askyesno = yes
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(cs_proof, "staged_photo",
+                         lambda folder, title, extra_folders=(): ""), \
+            patch.object(cs_proof, "staged_photos",
+                         lambda folder, **kwargs: []), \
+            patch.object(cs_proof, "read_record",
+                         lambda url, cookie="": (200, record)), \
+            patch.object(cs_proof, "photo_alive",
+                         lambda url, **k: (True, "image/webp")), \
+            patch.object(cs_proof, "prove", fake_prove):
+        read_into(app, folder, parent, rows)
+        select(parent, "Pappin")
+        app.lines[:] = []
+        find(parent, gui.ttk.Button, "Prove every field...").invoke()
+
+    check("one question at the start, not one per field",
+          len(questions) == 1, str([title for title, _q in questions]))
+    check("and it names every field it is about to write",
+          all(label in questions[0][1] for label in cs_proof.labels()),
+          questions[0][1] if questions else "")
+    check("every field is proved, in the order they are offered",
+          [entry["field"] for entry in asked] == cs_proof.proof_fields(),
+          str([entry["field"] for entry in asked]))
+    photo_writes = {entry["field"]: entry["staged"] for entry in asked
+                    if entry["staged"]}
+    check("a photo is found for each photo field, without asking",
+          photo_writes.get("primaryImageUrl", "").endswith("gallery.webp") and
+          photo_writes.get("images", "").endswith("other-back.webp"),
+          str(photo_writes))
+    check("and the two never get the same photo, because a gallery that "
+          "already holds it proves nothing",
+          photo_writes.get("images") != photo_writes.get("primaryImageUrl"),
+          str(photo_writes))
+    check("the listing's sentence says how it went",
+          any("of 6 fields are settled" in line for _tag, line in app.lines),
+          str(app.lines[-5:]))
+    check("the field that would not settle is named with what to do",
+          any("What to do" in line and "not allowed" in line
+              for _tag, line in app.lines), str(app.lines[-6:]))
+    check("the problem is put in front of the person, not only in the log",
+          any(kind == "showwarning" for kind, _a in harness._BOX.shown),
+          str(harness._BOX.shown)[:300])
+    proof_files = sorted(folder.glob("cs-proof-*.txt"))
+    check("one proof file holds every field tried",
+          len(proof_files) == 1 and
+          all(cs_proof.field_label(field) in
+              proof_files[0].read_text(encoding="utf-8")
+              for field in cs_proof.proof_fields()), str(proof_files))
+    text = proof_files[0].read_text(encoding="utf-8") if proof_files else ""
+    check("and it names the field that needs attention",
+          "Needs attention:" in text and "Stock:" in text, text[:300])
+    saved = cs_proof.load_proofs(folder)
+    check("the fields that settled are remembered; the refused one is not",
+          cs_proof.settled("priceCad", saved) and
+          not cs_proof.settled("inventory", saved), str(saved))
+
+    #  A field an earlier proof settled is not written again - a proof is a
+    #  real change to a live listing, and repeating it proves nothing new.
+    folder2, app2, parent2 = build_panel()
+    cookie2 = folder2 / "cookie.txt"
+    (folder2 / cs_proof.PROOFS_FILE).write_text(json.dumps({
+        "priceCad": {"at": "2026-11-01 10:00:00", "verdict": "written",
+                     "restored": True, "proven": True, "listing": "a",
+                     "title": "Jim Pappin #112"}}), encoding="utf-8")
+    asked[:] = []
+    questions[:] = []
+    harness._BOX.shown[:] = []
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie2), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "open_path", lambda path: True), \
+            patch.object(cs_proof, "staged_photo",
+                         lambda folder, title, extra_folders=(): ""), \
+            patch.object(cs_proof, "staged_photos",
+                         lambda folder, **kwargs: []), \
+            patch.object(cs_proof, "read_record",
+                         lambda url, cookie="": (200, record)), \
+            patch.object(cs_proof, "photo_alive",
+                         lambda url, **k: (True, "image/webp")), \
+            patch.object(cs_proof, "prove", fake_prove):
+        read_into(app2, folder2, parent2, rows)
+        select(parent2, "Pappin")
+        app2.lines[:] = []
+        find(parent2, gui.ttk.Button, "Prove every field...").invoke()
+
+    check("a settled field is left alone",
+          [entry["field"] for entry in asked] ==
+          [field for field in cs_proof.proof_fields() if field != "priceCad"],
+          str([entry["field"] for entry in asked]))
+    check("and the question says which field was already settled",
+          questions and "Already settled, so not written again: Price"
+          in questions[0][1], questions[0][1] if questions else "")
+    check("the job still counts it as done, and the listing has six fields",
+          any("of 6 fields are settled" in line for _tag, line in app2.lines),
+          str(app2.lines[-4:]))
+    check("nothing is left behind for the skipped field",
+          cs_proof.settled("priceCad", cs_proof.load_proofs(folder2)), "")
+    harness._BOX.askyesno = lambda *a, **k: True
+
+
 def test_the_12030_reproduction():
     """The row and the answer plugin 1.0.30 sends, end to end.
 
@@ -1142,7 +1298,7 @@ def test_the_diagnosis_file():
                                   stages=["read", "ids"], plugin="1.0.38",
                                   command="cs-stock.py --stock-out cs-stock.json",
                                   detail=detail, total=2596, editable=0,
-                                  app_version="3.23")
+                                  app_version="3.24")
     check("the file carries the reader's own count line",
           "2596 listings, 0 with a real product id" in text, "")
     check("the app's own count is beside it, so the two can be compared",
@@ -1597,7 +1753,7 @@ def test_the_real_diagnosis_from_the_shop():
                 "--cookie-file cookie.txt",
         detail={"url": cs_edit.detail_url(row["id"]), "status": 200,
                 "content_type": "application/json", "body": json.dumps(record)},
-        total=2596, editable=0, app_version="3.23",
+        total=2596, editable=0, app_version="3.24",
         source="the read this window made at 2026-11-02 13:03:59")
 
     check("the file no longer carries the progress markers",
@@ -2015,7 +2171,8 @@ def test_the_panel_writes_a_proof():
                         "https://cs.example/api/file/other-back.webp"]}]
     asked, questions = [], []
 
-    def fake_prove(field, url, cookie="", staged_url="", listing=None):
+    def fake_prove(field, url, cookie="", staged_url="", listing=None,
+                   **kwargs):
         asked.append({"field": field, "url": url, "staged": staged_url,
                       "listing": dict(listing or {})})
         return {"field": field, "label": cs_proof.field_label(field),
@@ -3639,6 +3796,7 @@ def main():
     test_only_what_changed_is_sent()
     test_the_confirmation_says_what_will_change()
     test_the_plugins_answer_is_read_conservatively()
+    test_every_field_is_proved_in_one_job()
     test_the_12030_reproduction()
     test_a_list_read_before_product_ids()
     test_a_read_with_no_product_ids_at_all()

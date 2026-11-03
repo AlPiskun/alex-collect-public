@@ -77,7 +77,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.23"
+VERSION = "3.24"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -2053,6 +2053,7 @@ TOOLTIPS = {
     "Open the last list": "Open the page written by the last selection (or the newest one on disk); nothing is read again",
     "Save a read diagnosis...": "Write one small text file for a plugin report: the read's own output, the progress phases it reported, one listing row and the detail response its lookup would have read - sanitised, with no cookie, token or password in it",
     "Write the proof": "Write one field on the selected CanadianShopper listing, read the record back, and put the old value back - a real change for the seconds it takes, and the only way to prove the site honours that field; one field, one listing, and nothing on your website",
+    "Prove every field...": "Prove every field this app can write on the selected listing in one job: each field is written, read back and put back before the next is touched, an already-settled field is skipped, and a field that does not settle is reported with what to do about it; one confirmed click, and nothing unattended",
     "Edit the record's fields...": "Edit this listing's own record - price, title, description, stock count and main photo, each one open only when a saved proof shows the site keeps it, and only the fields you change are sent, then read back; no product id is used and your website is never touched",
     "Set the selected listing's price...": "Set the price on the selected listing's own record - one field, at the record's own id, with the new price read back afterwards; offered only for a field a proof has settled, so it works on listings that carry no product id, and your website is never touched",
     "Choose the cards:": "What decides which unlisted cards come first - dearest, newest, oldest, cheapest, or in the order typed below; the choice is remembered",
@@ -10198,6 +10199,135 @@ def build_csledit(parent, app):
     diagnosis_btn.pack(side="left", padx=(8, 0))
     add_tooltip(diagnosis_btn, TOOLTIPS["Save a read diagnosis..."])
 
+    def proof_guard(title="Writing a proof"):
+        """The checks every proof starts with: a plugin, a read, a listing.
+
+        Every one of them is a sentence, not a refusal: a proof needs the
+        plugin for the record's address, a listing to address, and that
+        listing's own id - a name is not an address.
+        """
+        if not plugin_ready(title):
+            return None
+        if not state["items"]:
+            messagebox.showinfo(
+                "Nothing read yet",
+                "Read CanadianShopper's listings first: a proof writes one "
+                "field on one listing, so it needs a listing to address.",
+                parent=box.winfo_toplevel())
+            return None
+        item = selected()
+        if item is None:
+            return None
+        if not cs_edit.listing_id(item):
+            messagebox.showinfo(
+                "That listing has no id",
+                "The list carries no id for that listing, so there is no "
+                "record this app could address.\n\nNothing was written.",
+                parent=box.winfo_toplevel())
+            return None
+        return item
+
+    def batch_photos(item):
+        """The staged photos for this batch, and where they were looked for."""
+        batch_dir = canadianshopper_results_dir(app)
+        extra = [app.settings.get("pipeline_dir", str(WORK)), BASE]
+        card = str(item.get("name") or "")
+        staged = cs_proof.absolute_photo(
+            cs_proof.staged_photo(batch_dir, card, extra_folders=extra))
+        #  The batch's staged rows, best title match first. The site's title
+        #  and the CSV's are rarely the same words - a grade on one and not
+        #  the other - so an exact match is the first candidate and the rest
+        #  of the batch is beside it, each with the title it was staged under.
+        ranked = []
+        for row in cs_proof.staged_photos(batch_dir, extra_folders=extra):
+            ranked.append((cs_edit.score(card, {"name": row["title"]}), row))
+        ranked.sort(key=lambda pair: -pair[0])
+        return {"dir": batch_dir, "extra": extra, "card": card,
+                "staged": staged,
+                "rows": [row for _value, row in ranked[:60]]}
+
+    def look_at(item, listing_id):
+        """One background read that answers what the photo questions need.
+
+        The record is what says which photo the listing shows now (never a
+        candidate - it is what a proof has to put back), which other photos
+        the listing carries, and whether the field exists at all. The card's
+        other photo is then looked up at the address the plugin names its
+        pairs with, and only an address that answers with an image is used.
+        """
+        address = cs_edit.detail_url(listing_id, CS_HOME)
+        cookie = load_cookie_text() or ""
+        cache = batch_photos(item)
+
+        def look():
+            status, body = cs_proof.read_record(address, cookie)
+            record = cs_proof.record_from(body) if status == 200 else None
+            current = cs_proof.primary_photo(item=item, record=record)
+            alive = []
+            for candidate_url in cs_proof.sibling_photos(current):
+                ok, _kind = cs_proof.photo_alive(candidate_url)
+                if ok:
+                    alive.append(candidate_url)
+                else:
+                    say("  %s is not on the site, so it is not offered."
+                        % candidate_url, "dim")
+            return {"status": status, "record": record, "current": current,
+                    "siblings": alive, "cache": cache, "address": address,
+                    "cookie": cookie}
+
+        return look
+
+    def photo_choices(answer, item, field=""):
+        """Every photo a proof could write, best first, from one look."""
+        cache = (answer or {}).get("cache") or {}
+        candidates = cs_proof.photo_candidates(
+            item=item, record=(answer or {}).get("record"),
+            staged=cache.get("staged"), staged_rows=cache.get("rows"),
+            siblings=(answer or {}).get("siblings"))
+        if field == "images":
+            #  A gallery proof adds one photo it does not already hold: the
+            #  gallery's own photos are exactly what it must not write again.
+            have = set(cs_proof.gallery_keys(
+                ((answer or {}).get("record") or {}).get("images")))
+            candidates = [candidate for candidate in candidates
+                          if cs_proof.absolute_photo(
+                              candidate["url"]).rstrip("/") not in have]
+        return candidates
+
+    def save_proofs(results, item, one_file=True):
+        """Write the proof file(s) and remember what each field settled."""
+        results = list(results or [])
+        saved = []
+        if one_file:
+            text = cs_proof.listing_report_text(results, listing=item,
+                                               app_version=VERSION)
+            path = cs_proof.proof_path(BASE)
+            try:
+                path.write_text(text, encoding="utf-8")
+                saved.append(path)
+            except OSError as exc:
+                say("Could not save the proof: %s" % exc, "err")
+        else:
+            for result in results:
+                text = cs_proof.report_text(result, listing=item,
+                                            app_version=VERSION)
+                path = cs_proof.proof_path(BASE)
+                try:
+                    path.write_text(text, encoding="utf-8")
+                    saved.append(path)
+                except OSError as exc:
+                    say("Could not save the proof: %s" % exc, "err")
+        for result in results:
+            #  A skipped field is not a verdict: remembering it would replace
+            #  an earlier proof that is still true.
+            if result.get("verdict") == "skipped":
+                continue
+            cs_proof.remember(BASE, result, listing=item)
+        if saved:
+            say("Proof saved: %s (no cookie, token or password is in it)."
+                % saved[0], "dim")
+        return saved
+
     def prove_field():
         """Write one field, read it back, and put it back - the proof.
 
@@ -10206,26 +10336,10 @@ def build_csledit(parent, app):
         old value showing again after the restore. One listing, one field, and
         a value that says what it is for the seconds it is on the listing.
         """
-        if not plugin_ready("Writing a proof"):
-            return
-        if not state["items"]:
-            messagebox.showinfo(
-                "Nothing read yet",
-                "Read CanadianShopper's listings first: a proof writes one "
-                "field on one listing, so it needs a listing to address.",
-                parent=box.winfo_toplevel())
-            return
-        item = selected()
+        item = proof_guard()
         if item is None:
             return
         listing_id = cs_edit.listing_id(item)
-        if not listing_id:
-            messagebox.showinfo(
-                "That listing has no id",
-                "The list carries no id for that listing, so there is no "
-                "record this app could address.\n\nNothing was written.",
-                parent=box.winfo_toplevel())
-            return
         field = cs_proof.field_for(str(proof_var.get() or ""))
         if field not in cs_proof.FIELD_LABELS:
             messagebox.showinfo(
@@ -10238,8 +10352,8 @@ def build_csledit(parent, app):
         def finish(staged_url):
             """Confirm, write, read back, put back - and say what happened."""
             named = str(item.get("name") or "that listing")
-            if field == "primaryImageUrl" and staged_url:
-                #  The picture, not only the field: a proof of the main photo
+            if field in cs_proof.photo_fields() and staged_url:
+                #  The picture, not only the field: a proof of a photo field
                 #  puts a different image on a live listing, so the
                 #  confirmation names exactly which one before anything is
                 #  sent.
@@ -10276,6 +10390,9 @@ def build_csledit(parent, app):
                     return
                 good = cs_proof.proven(result)
                 say(cs_proof.sentence(result), "ok" if good else "err")
+                fix = cs_proof.advice(result)
+                if fix:
+                    say("  What to do: %s" % fix, "err" if not good else "dim")
                 if result.get("verdict") == "written" and \
                         result.get("restored"):
                     #  This is the sentence a write path may be built on, so
@@ -10292,16 +10409,7 @@ def build_csledit(parent, app):
                     say("The site answered but did not keep the value, so a "
                         "write path must not be built on a 200 for %s alone."
                         % cs_proof.field_label(result.get("field")), "dim")
-                text = cs_proof.report_text(result, listing=item,
-                                            app_version=VERSION)
-                path = cs_proof.proof_path(BASE)
-                saved = None
-                try:
-                    path.write_text(text, encoding="utf-8")
-                    saved = path
-                except OSError as exc:
-                    say("Could not save the proof: %s" % exc, "err")
-                cs_proof.remember(BASE, result, listing=item)
+                saved = save_proofs([result], item, one_file=False)
                 summary.configure(text=cs_proof.sentence(result))
                 if cs_proof.proven(result):
                     #  The sentence that matters next: this panel can now
@@ -10311,74 +10419,28 @@ def build_csledit(parent, app):
                         "beside the app, and every write made on it is read "
                         "back." % cs_proof.field_label(result.get("field")),
                         "ok")
-                if saved is not None:
-                    say("Proof saved: %s (no cookie, token or password is in "
-                        "it)." % saved, "dim")
-                    if not open_path(saved):
-                        messagebox.showinfo(
-                            "Proof written",
-                            "Saved to:\n%s\n\nAttach it to the plugin report "
-                            "if the field is not honoured." % saved,
-                            parent=box.winfo_toplevel())
+                if saved and not open_path(saved[0]):
+                    messagebox.showinfo(
+                        "Proof written",
+                        "Saved to:\n%s\n\nAttach it to the plugin report if "
+                        "the field is not honoured." % saved[0],
+                        parent=box.winfo_toplevel())
 
             in_background(app, work, done)
 
-        if field != "primaryImageUrl":
+        if field not in cs_proof.photo_fields():
             finish("")
             return
-        #  The main photo: gather every picture of *this card* the app can
-        #  point at, and never ask a person to paste an address it could have
-        #  found itself.
-        batch_dir = canadianshopper_results_dir(app)
-        extra = [app.settings.get("pipeline_dir", str(WORK)), BASE]
-        card = str(item.get("name") or "")
-        staged = cs_proof.absolute_photo(
-            cs_proof.staged_photo(batch_dir, card, extra_folders=extra))
-        if staged:
-            say("The staged photo for this card is %s." % staged, "dim")
-        #  The batch's staged rows, best title match first. The site's title
-        #  and the CSV's are rarely the same words - a grade on one and not
-        #  the other - so an exact match is the first candidate and the rest
-        #  of the batch is beside it, each with the title it was staged under.
-        ranked = []
-        for row in cs_proof.staged_photos(batch_dir, extra_folders=extra):
-            ranked.append((cs_edit.score(card, {"name": row["title"]}), row))
-        ranked.sort(key=lambda pair: -pair[0])
-        staged_rows = [row for _value, row in ranked[:60]]
-        roots = cs_proof.staged_roots(batch_dir, extra)
-        if not staged_rows:
+        cache = batch_photos(item)
+        if cache["staged"]:
+            say("The staged photo for this card is %s." % cache["staged"],
+                "dim")
+        roots = cs_proof.staged_roots(cache["dir"], cache["extra"])
+        if not cache["rows"]:
             say("No staged CSV was found. Searched: %s."
                 % "; ".join(str(path) for path in roots), "warn")
         say("Reading the listing's own record to see which photos it carries "
             "and which one it shows now...", "dim")
-        address = cs_edit.detail_url(listing_id, CS_HOME)
-        cookie = load_cookie_text() or ""
-
-        def look():
-            """What the record holds, and which sibling photos are really there.
-
-            One read of the record answers three questions the chooser needs:
-            which photo the listing shows now (never a candidate - it is what
-            a proof has to put back), which other photos the record carries
-            (the plugin uploads the front and the back), and whether the field
-            exists at all. The card's other photo is then looked up at the
-            address the plugin names its pairs with, and only a URL that
-            answers with an image is offered - a guess about a name is not a
-            photo.
-            """
-            status, body = cs_proof.read_record(address, cookie)
-            record = cs_proof.record_from(body) if status == 200 else None
-            current = cs_proof.primary_photo(item=item, record=record)
-            alive = []
-            for candidate_url in cs_proof.sibling_photos(current):
-                ok, _kind = cs_proof.photo_alive(candidate_url)
-                if ok:
-                    alive.append(candidate_url)
-                else:
-                    say("  %s is not on the site, so it is not offered."
-                        % candidate_url, "dim")
-            return {"status": status, "record": record, "current": current,
-                    "siblings": alive}
 
         def with_look(answer, error):
             answer = answer or {}
@@ -10388,9 +10450,7 @@ def build_csledit(parent, app):
                 say("The listing's own record could not be read (%s), so the "
                     "photos below come from the list and the batch only."
                     % ("HTTP %s" % status if status else "no answer"), "warn")
-            candidates = cs_proof.photo_candidates(
-                item=item, record=record, staged=staged,
-                staged_rows=staged_rows, siblings=answer.get("siblings"))
+            candidates = photo_choices(answer, item, field)
             current_photo = answer.get("current") or \
                 cs_proof.primary_photo(item=item)
             say("The listing shows this photo now: %s."
@@ -10412,7 +10472,144 @@ def build_csledit(parent, app):
                 return
             finish(staged_url)
 
-        in_background(app, look, with_look)
+        in_background(app, look_at(item, listing_id), with_look)
+
+    def prove_everything():
+        """Prove every field on the selected listing in one job.
+
+        The same proof the single-field button runs, done as one pass because
+        a person asking "can this app write to this listing" should not have
+        to answer it six times. It is still one confirmed click and never
+        unattended: the confirmation lists the fields, and each is written and
+        put back before the next is touched.
+
+        A field an earlier proof already settled is not written again unless
+        the person asks for it, because a proof is a real change to a live
+        listing.
+        """
+        item = proof_guard("Proving the listing")
+        if item is None:
+            return
+        listing_id = cs_edit.listing_id(item)
+        everything = cs_proof.proof_fields()
+        proofs = cs_proof.load_proofs(BASE)
+        settled_here = [field for field in everything
+                        if cs_proof.settled(field, proofs)]
+        todo = [field for field in everything if field not in settled_here]
+        if not todo:
+            if not ask_yes(
+                    "Every field is already settled",
+                    "Every field was proved writable and put back by an "
+                    "earlier proof:\n\n  %s\n\nProve them all again anyway? "
+                    "Each one is a real change to a live listing for the few "
+                    "seconds it runs." % "\n  ".join(cs_proof.labels())):
+                say("Nothing was written: every field is already settled.",
+                    "dim")
+                return
+            settled_here, todo = [], list(everything)
+        named = str(item.get("name") or "that listing")
+        skipped_line = ""
+        if settled_here:
+            skipped_line = ("\n\nAlready settled, so not written again: %s."
+                            % ", ".join(cs_proof.field_label(field)
+                                        for field in settled_here))
+        if not ask_yes(
+                "Prove %d field%s on one listing?" % (len(todo),
+                                                      "" if len(todo) == 1
+                                                      else "s"),
+                "%s\n\nThis writes these fields one at a time on "
+                "CanadianShopper, reads each one back, and puts the old value "
+                "back before the next:\n\n  %s\n\nA photo field is written "
+                "with a photo of the same card the app can point at. The "
+                "record's own id is the address, no product id is used, and "
+                "your website is not touched.%s\n\nProve them now?"
+                % (named, "\n  ".join(cs_proof.field_label(field)
+                                      for field in todo), skipped_line)):
+            say("The proofs were not confirmed; nothing was written.", "dim")
+            return
+        say("Proving %d field%s on %s: each is written, read back and put "
+            "back..." % (len(todo), "" if len(todo) == 1 else "s", named),
+            "cmd")
+        summary.configure(text="Proving %d fields on %s..."
+                          % (len(todo), named))
+        look = look_at(item, listing_id)
+
+        def work():
+            answer = look()
+            photos = photo_choices(answer, item, "primaryImageUrl")
+            photo = photos[0]["url"] if photos else ""
+            gallery_photo = ""
+            if "images" in todo:
+                for candidate in photo_choices(answer, item, "images"):
+                    if candidate["url"] != photo:
+                        gallery_photo = candidate["url"]
+                        break
+            #  Every field is passed, and the settled ones are *skipped*: the
+            #  report is about the whole listing, so a field an earlier proof
+            #  settled is counted as done rather than left out.
+            results = cs_proof.prove_listing(
+                answer["address"], answer["cookie"], listing=item,
+                fields=everything, skip=settled_here, photo=photo,
+                gallery_photo=gallery_photo)
+            return {"results": results, "answer": answer, "photo": photo,
+                    "gallery_photo": gallery_photo}
+
+        def done(payload, error):
+            if error is not None:
+                say("The proofs could not run: %s. Nothing was written."
+                    % error, "err")
+                summary.configure(text="The proofs could not run: %s" % error)
+                return
+            payload = payload or {}
+            results = payload.get("results") or []
+            for result in results:
+                good = cs_proof.proven(result)
+                say(cs_proof.sentence(result), "ok" if good else "err")
+                fix = cs_proof.advice(result)
+                if fix and not good:
+                    say("  What to do: %s" % fix, "err")
+            if payload.get("photo"):
+                say("The photo used for the main photo was %s."
+                    % payload["photo"], "dim")
+            if payload.get("gallery_photo"):
+                say("The photo added to the gallery was %s."
+                    % payload["gallery_photo"], "dim")
+            saved = save_proofs(results, item)
+            summary.configure(text=cs_proof.listing_sentence(results))
+            say(cs_proof.listing_sentence(results),
+                "err" if cs_proof.problem_results(results) else "ok")
+            problems = cs_proof.problem_results(results)
+            if problems:
+                shown = []
+                for result in problems[:8]:
+                    shown.append("%s\n  %s\n  What to do: %s" % (
+                        cs_proof.field_label(result.get("field")),
+                        cs_proof.sentence(result),
+                        cs_proof.advice(result) or "see the proof file."))
+                if len(problems) > 8:
+                    shown.append("... and %d more in the console."
+                                 % (len(problems) - 8))
+                messagebox.showwarning(
+                    "Some fields are not settled",
+                    "%s\n\n%s\n\n%s" % (
+                        cs_proof.listing_sentence(results),
+                        "\n\n".join(shown),
+                        "The proof file is saved beside the app: attach it to "
+                        "the plugin report if a field needs the plugin's "
+                        "route.\n\nProof: %s" % saved[0] if saved else ""),
+                    parent=box.winfo_toplevel())
+            else:
+                messagebox.showinfo(
+                    "Every field is settled",
+                    "All %d fields can be written at the record's own id: each "
+                    "one was written, read back, and the old value came back."
+                    "\n\nThat is the evidence an edit needs, and this panel "
+                    "can now set them.\n\nProof: %s"
+                    % (len(results), saved[0] if saved else "(not saved)"),
+                    parent=box.winfo_toplevel())
+
+        in_background(app, work, done)
+
 
     proof_row = ttk.Frame(box)
     proof_row.pack(anchor="w", pady=(4, 0))
@@ -10427,6 +10624,13 @@ def build_csledit(parent, app):
                            command=prove_field)
     prove_btn.pack(side="left", padx=(6, 0))
     add_tooltip(prove_btn, TOOLTIPS["Write the proof"])
+    #  The same proof, done as one job: a person asking "can this app write
+    #  to this listing" should not have to answer it six times.
+    prove_all_btn = ttk.Button(proof_row, text="Prove every field...",
+                               style="Task.TButton",
+                               command=prove_everything)
+    prove_all_btn.pack(side="left", padx=(8, 0))
+    add_tooltip(prove_all_btn, TOOLTIPS["Prove every field..."])
 
     list_frame = ttk.Frame(box)
     listing = tk.Listbox(list_frame, height=9, exportselection=False)
