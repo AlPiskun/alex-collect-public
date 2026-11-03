@@ -63,6 +63,7 @@ import stock_compare
 import stock_write
 import doc_images
 import ebay_fill
+import ebay_skip
 import order_pdf
 import quote as quote_model
 import quote_pdf
@@ -79,7 +80,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.34"
+VERSION = "3.35"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1268,6 +1269,16 @@ catalogue to products filed under one category of the website (part of
 its name is enough, and blank means all of it), and says how many
 products that left out.
 
+A card that should never be listed - it is damaged, it is being kept, its
+photos are wrong - is marked once and never offered again. **Skip the
+selected card...** takes it off the page that is already written and out
+of every Quick List after it, in this panel and in the batch's own eBay
+prompt, because both read the same small file beside the app
+(ebay-skips.json). What identifies it is its SKU, which is the same string
+on the website's product and in the batch's CSV; a product id or the title
+stands in when there is no SKU. **Skipped cards...** lists what is marked
+and puts one back. Neither button changes anything on a site.
+
 What it writes is the eBay Quick List page for those cards: one
 draggable, click-to-copy button per field (title, price, SKU, year,
 manufacturer, card number, player, set, condition, grade), each card's
@@ -2134,6 +2145,9 @@ TOOLTIPS = {
     "Compare the last read instead (no new read)": "Compare now against the CanadianShopper list already on disk from an earlier read - it is named with its age wherever its counts appear, so nothing is mistaken for a fresh count, and no read is started",
     "Save the limit": "Remember this number in User Settings, where the same value is used by Fill your eBay store every time it chooses",
     "Open the last list": "Open the page written by the last selection (or the newest one on disk); nothing is read again",
+    "Skip the selected card...": "Mark the selected card to skip: it comes off this page now and out of every eBay Quick List after it - here and in the batch - because this card is never going to be listed; nothing on any site is changed, and Skipped cards... puts it back",
+    "Skipped cards...": "The cards marked to skip, with the SKU each is known by and when it was marked - a card put back here is offered again by the next selection",
+    "Put the selected card back": "Stop skipping the selected card: the next selection offers it again; nothing on any site is changed",
     "Save a read diagnosis...": "Write one small text file for a plugin report: the read's own output, the progress phases it reported, one listing row and the detail response its lookup would have read - sanitised, with no cookie, token or password in it",
     "Find and edit a CanadianShopper listing...": "Open the listing panel on this same section's job: search CanadianShopper by card name, SKU or id, and change one listing there - title, price, stock, state, and the fields a saved proof has settled",
     "Archive listings already at 0...": "Sweep CanadianShopper for listings sitting at quantity 0 and archive them one at a time, without deleting anything",
@@ -5599,7 +5613,11 @@ def build_ebayfill(parent, app):
     box = ttk.Frame(parent)
     box.pack(fill="x")
 
-    state = {"running": False, "page": None}
+    #  ``skips`` is read once and kept in step with the file by the two
+    #  buttons below, so what the panel shows is what the next selection will
+    #  leave out.
+    state = {"running": False, "page": None, "chosen": [], "note": "",
+             "skips": ebay_skip.load(ebay_skip.path_for(BASE))}
 
     #  -- what the pass is doing --------------------------------------------
     progress_row = ttk.Frame(box)
@@ -5827,11 +5845,16 @@ def build_ebayfill(parent, app):
                     "Choosing the cards that are not on eBay yet..."))
             except Exception:
                 pass
+            #  Read again here, not only when the panel was built: a card the
+            #  batch marked to skip since then must be left out of this list
+            #  too, and the file is the one thing both of them write.
+            skips = ebay_skip.load(ebay_skip.path_for(BASE))
             answer = ebay_fill.plan(
                 products, store["items"], limit, sort=criteria["sort"],
                 only_category=criteria["category"],
-                wanted=criteria["wanted"])
-            return {"store": store, "products": products, "answer": answer}
+                wanted=criteria["wanted"], skips=skips)
+            return {"store": store, "products": products, "answer": answer,
+                    "skips": skips}
 
         def done(result, error):
             hide_progress()
@@ -5850,6 +5873,11 @@ def build_ebayfill(parent, app):
             text = ebay_fill.summary(answer)
             summary.configure(text=text)
             say(text, "warn" if not answer["chosen"] else "ok")
+            if isinstance(result.get("skips"), dict):
+                state["skips"] = result["skips"]
+            state["chosen"] = list(answer["chosen"])
+            state["note"] = text
+            redraw_cards()
             if not answer["chosen"]:
                 return
             values = [ebay_fill.values(product, app.settings)
@@ -5925,6 +5953,207 @@ def build_ebayfill(parent, app):
                         or EBAY_ACTIVE_URL)])).pack(side="left")
     add_tooltip(row.winfo_children()[-1], TOOLTIPS["Open the eBay listing page"])
 
+    #  -- the cards on the page, and the ones that are never offered ---------
+    #  The page holds every chosen card, so the list holds every chosen card:
+    #  a list that stopped at twenty is a list the twenty-first card cannot be
+    #  marked from. Marking writes a note in the app folder, not a site change.
+    cards_label = ttk.Label(box, text="No cards chosen yet.",
+                            style="Dim.TLabel", wraplength=780,
+                            justify="left")
+    cards_label.pack(anchor="w", pady=(8, 2))
+    cards_frame = ttk.Frame(box)
+    cards_frame.pack(fill="x")
+    cards_list = tk.Listbox(cards_frame, height=8, exportselection=False)
+    cards_scroll = ttk.Scrollbar(cards_frame, orient="vertical",
+                                 command=cards_list.yview)
+    cards_list.configure(yscrollcommand=cards_scroll.set)
+    cards_list.pack(side="left", fill="both", expand=True)
+    cards_scroll.pack(side="right", fill="y")
+
+    skip_row = ttk.Frame(box)
+    skip_row.pack(anchor="w", pady=(4, 0))
+    skip_note = ttk.Label(box, text="", style="Dim.TLabel", wraplength=780,
+                          justify="left")
+    skip_note.pack(anchor="w", pady=(2, 0))
+
+    def skip_text():
+        """The line under the buttons: what the next list will leave out."""
+        count = len(state["skips"])
+        if not count:
+            return ("No card is marked to skip. Select a card above to leave "
+                    "it out of this list and every later one.")
+        return ("%s %s left out of every list, here and in the batch."
+                % (ebay_skip.summary(state["skips"]).rstrip("."),
+                   "is" if count == 1 else "are"))
+
+    def redraw_cards():
+        """Show the page's cards, every one of them, and the skips beside them."""
+        try:
+            cards_list.delete(0, "end")
+            chosen = state["chosen"]
+            width = len(str(len(chosen)))
+            for index, product in enumerate(chosen, 1):
+                cards_list.insert("end", ebay_fill.row_text(
+                    product, number=index, width=width))
+            if chosen:
+                cards_label.configure(text=(
+                    "%d card%s on this page, in the order they are listed. "
+                    "Select the one to leave out of this list and every later "
+                    "one." % (len(chosen), "" if len(chosen) == 1 else "s")))
+            elif state["note"]:
+                cards_label.configure(text="No card is on this page.")
+            else:
+                cards_label.configure(text="No cards chosen yet.")
+            skip_note.configure(text=skip_text())
+        except Exception:
+            pass          # the window went away; the file is still right
+
+    def rewrite_page(note):
+        """Write the page again, in the file this selection wrote.
+
+        The same file on purpose: one page per selection, and a card marked to
+        skip is gone from the one that is already open in the browser's tab
+        the moment it is reloaded - not only from the next page.
+        """
+        page = state["page"]
+        if not page or not Path(page).is_file():
+            return ""
+        text, _templates = ebay_fill.render(state["chosen"], app.settings,
+                                            note=note)
+        try:
+            Path(page).write_text(text, encoding="utf-8")
+        except OSError as exc:
+            say("The page could not be written again: %s" % exc, "err")
+            return ""
+        return page
+
+    def skip_selected():
+        """Mark the selected card to skip, and take it off this page."""
+        picked = cards_list.curselection()
+        if not picked:
+            messagebox.showinfo(
+                "Pick a card first",
+                "Select the card on the list above - the one that should never "
+                "be offered for eBay again.")
+            return
+        index = int(picked[0])
+        if not 0 <= index < len(state["chosen"]):
+            return
+        product = state["chosen"][index]
+        key = ebay_skip.key_of(product)
+        if not key:
+            messagebox.showinfo(
+                "That card cannot be marked",
+                "It has no SKU and no product id, so there is nothing a later "
+                "list could recognize it by.\n\nNothing was changed.")
+            return
+        if not messagebox.askyesno(
+                "Mark this card to skip?",
+                "%s\n\nIt comes off this page now, and out of every eBay Quick "
+                "List after this one - in this panel and in the batch.\n\n"
+                "Nothing on any site is changed: this is one line in "
+                "ebay-skips.json beside the app, and Skipped cards... puts it "
+                "back.\n\nMark it now?" % (ebay_fill.title_of(product)
+                                            or "That card"),
+                parent=box.winfo_toplevel()):
+            say("Nothing was marked.", "dim")
+            return
+        marked = ebay_skip.mark(state["skips"], key, product)
+        path = ebay_skip.path_for(BASE)
+        saved = ebay_skip.save(path, marked)
+        say(ebay_skip.marked_sentence(product, saved, path),
+            "ok" if saved else "err")
+        if not saved:
+            return          # a mark that was not saved is not a skip
+        state["skips"] = marked
+        state["chosen"] = [row for position, row in enumerate(state["chosen"])
+                           if position != index]
+        note = ("%s is marked to skip, so it is not on this page and will not "
+                "be offered again. %d card%s on the page now."
+                % (ebay_fill.title_of(product) or "That card",
+                   len(state["chosen"]), "" if len(state["chosen"]) == 1
+                   else "s"))
+        state["note"] = note
+        summary.configure(text=note)
+        page = rewrite_page(note)
+        if page:
+            say("The page was written again without it: %s" % page, "dim")
+        redraw_cards()
+
+    def show_skipped():
+        """The cards marked to skip, and the way to put one back."""
+        top = tk.Toplevel(app)
+        top.title("Cards marked to skip")
+        top.transient(app)
+        top.geometry("780x420")
+        frame = ttk.Frame(top, padding=(12, 10))
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="These cards are never offered on an eBay Quick "
+                             "List - not here, and not in the batch.",
+                  wraplength=740, justify="left").pack(anchor="w")
+        listing = tk.Listbox(frame, height=12, exportselection=False)
+        listing.pack(fill="both", expand=True, pady=(8, 0))
+        note = ttk.Label(frame, text="", wraplength=740, justify="left")
+        note.pack(anchor="w", pady=(6, 0))
+
+        def fill():
+            listing.delete(0, "end")
+            rows = ebay_skip.rows(state["skips"])
+            width = len(str(len(rows)))
+            for index, row in enumerate(rows, 1):
+                listing.insert("end", "%s. %s  [%s]  marked %s" % (
+                    str(index).rjust(width or 1), row["title"], row["key"],
+                    row["at"] or "earlier"))
+            note.configure(text=("%d card%s marked to skip."
+                                 % (len(rows), "" if len(rows) == 1 else "s"))
+                           if rows else
+                           "No card is marked to skip: every unlisted card is "
+                           "offered.")
+
+        def put_back():
+            picked = listing.curselection()
+            if not picked:
+                note.configure(text="Select the card to put back first.")
+                return
+            rows = ebay_skip.rows(state["skips"])
+            index = int(picked[0])
+            if not 0 <= index < len(rows):
+                return
+            row = rows[index]
+            kept = ebay_skip.unmark(state["skips"], row["key"])
+            path = ebay_skip.path_for(BASE)
+            saved = ebay_skip.save(path, kept)
+            if saved:
+                state["skips"] = kept
+            say(ebay_skip.unmarked_sentence({"title": row["title"]}, saved,
+                                            path), "ok" if saved else "err")
+            fill()
+            skip_note.configure(text=skip_text())
+            note.configure(text=(("%s is offered again - press Find the cards "
+                                 "to list next to include it." % row["title"])
+                                if saved else note.cget("text")))
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", pady=(8, 0))
+        back_btn = ttk.Button(buttons, text="Put the selected card back",
+                              command=put_back)
+        back_btn.pack(side="left")
+        add_tooltip(back_btn, TOOLTIPS["Put the selected card back"])
+        ttk.Button(buttons, text="Close", command=top.destroy).pack(
+            side="right")
+        fill()
+        attach_tooltips(top)
+
+    skip_btn = ttk.Button(skip_row, text="Skip the selected card...",
+                          command=skip_selected)
+    skip_btn.pack(side="left")
+    add_tooltip(skip_btn, TOOLTIPS["Skip the selected card..."])
+    skipped_btn = ttk.Button(skip_row, text="Skipped cards...",
+                             command=show_skipped)
+    skipped_btn.pack(side="left", padx=6)
+    add_tooltip(skipped_btn, TOOLTIPS["Skipped cards..."])
+    redraw_cards()
+
     panel_note(box, (
         "Reads your website's whole catalogue and your eBay store's active "
         "listings, then keeps the cards that are not on eBay yet and fit "
@@ -5941,7 +6170,14 @@ def build_ebayfill(parent, app):
         "Left out, and said on the console: cards with no price, cards the "
         "website has none of, unpublished products, anything outside the "
         "category you named, and anything already listed. The order and the "
-        "limit are remembered in User Settings."))
+        "limit are remembered in User Settings.\n\n"
+        "A card that must never be listed - damaged, kept, photographed "
+        "wrong - can be marked once: select it on the list above and press "
+        "*Skip the selected card...*. It comes off the page that is already "
+        "open and out of every later Quick List, in this panel and in the "
+        "batch, because both read the same small file beside the app. "
+        "*Skipped cards...* lists them and puts one back. Nothing on any site "
+        "is changed by either button."))
 
 
 def build_combine(parent, app):
