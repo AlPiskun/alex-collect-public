@@ -74,12 +74,22 @@ def main():
     task_ids = {pid for _group, ids in gui.groups_for(True) for pid in ids}
     check("settings, plugins, and logs are removed from task buttons",
           not ({"cookie", "plugins", "logs"} & task_ids))
-    check("the listing panel sits with the other after-a-sale jobs",
-          dict(gui.groups_for(True))["After a sale"][:5] ==
-          ["sold", "checklist", "stock", "csedit", "zerostock"] and
-          "csedit" not in {pid for _group, ids in gui.groups_for(False)
-                           for pid in ids},
-          str(dict(gui.groups_for(True))["After a sale"]))
+    #  Comparing and editing are one job, so the stock work left "After a
+    #  sale" for a section of its own, with one place per marketplace and the
+    #  shop's own two jobs inside its place.
+    check("the stock work has its own section, one per marketplace",
+          dict(gui.groups_for(True))["Edit stock"] ==
+          ["stock", "editfb", "editeb"] and
+          "Edit stock" not in [name for name, _ids in
+                               gui.groups_for(False)],
+          str(dict(gui.groups_for(True))["Edit stock"]))
+    check("and the shop's own section is named for the shop",
+          gui.TITLES["stock"] == "Edit stock - CanadianShopper" and
+          gui.TITLES["editfb"] == "Edit stock - Facebook" and
+          gui.TITLES["editeb"] == "Edit stock - eBay" and
+          gui.MENU_LABELS["stock"] == "CanadianShopper" and
+          gui.MENU_LABELS["editfb"] == "Facebook" and
+          gui.MENU_LABELS["editeb"] == "eBay", "")
     check("and it is its own panel, with its own help",
           gui.TITLES["csedit"] == "Find and edit a CanadianShopper listing" and
           gui.PANEL_BUILDERS["csedit"] is gui.build_csledit and
@@ -89,9 +99,10 @@ def main():
     check("core task menu omits plugin-only tasks",
           not ({"stage", "wire", "zerostock", "rerun"} & core_ids))
     check("task sections are Sell to a customer, Sell a new batch, After a "
-          "sale, and Photos",
+          "sale, Edit stock, and Photos",
           [name for name, _ids in gui.groups_for(True)] ==
-          ["Sell to a customer", "Sell a new batch", "After a sale", "Photos"],
+          ["Sell to a customer", "Sell a new batch", "After a sale",
+           "Edit stock", "Photos"],
           [name for name, _ids in gui.groups_for(True)])
     #  The three separate marketplace steps that used to have their own box
     #  are gone from the menu: the pipeline does that work itself, and the

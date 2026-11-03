@@ -2052,6 +2052,11 @@ TOOLTIPS = {
     "Save the limit": "Remember this number in User Settings, where the same value is used by Fill your eBay store every time it chooses",
     "Open the last list": "Open the page written by the last selection (or the newest one on disk); nothing is read again",
     "Save a read diagnosis...": "Write one small text file for a plugin report: the read's own output, the progress phases it reported, one listing row and the detail response its lookup would have read - sanitised, with no cookie, token or password in it",
+    "Find and edit a CanadianShopper listing...": "Open the listing panel on this same section's job: search CanadianShopper by card name, SKU or id, and change one listing there - title, price, stock, state, and the fields a saved proof has settled",
+    "Archive listings already at 0...": "Sweep CanadianShopper for listings sitting at quantity 0 and archive them one at a time, without deleting anything",
+    "Open the %s cookie file": "Open the private file this marketplace's session cookie goes in - the whole Cookie header can be pasted at once, on one line or several, and the file never leaves this computer",
+    "Read the saved %s page": "Read the newest page saved from a browser signed in to this marketplace - found in the app's folder and in Downloads, recognised by what is in it - and compare that, for when the site refuses the app's own request",
+    "Copy what needs changing": "Put the rows on the clipboard as a worklist - one card per line with both counts and the site's own state - for pasting into that site's own editor, because nothing is written there from here",
     "Write the proof": "Write one field on the selected CanadianShopper listing, read the record back, and put the old value back - a real change for the seconds it takes, and the only way to prove the site honours that field; one field, one listing, and nothing on your website",
     "Prove every field...": "Prove every field this app can write on the selected listing in one job: each field is written, read back and put back before the next is touched, an already-settled field is skipped, and a field that does not settle is reported with what to do about it; one confirmed click, and nothing unattended",
     "Edit the record's fields...": "Edit this listing's own record - price, title, description, stock count and main photo, each one open only when a saved proof shows the site keeps it, and only the fields you change are sent, then read back; no product id is used and your website is never touched",
@@ -3460,8 +3465,12 @@ PANEL_ORDER = ["cookie", "pipeline", "combine", "ebayfill", "stage",
 GROUPS_FULL = [("Sell to a customer", ["ordertext", "quote"]),
                ("Sell a new batch", ["pipeline", "combine", "ebayfill",
                                      "markets"]),
-               ("After a sale", ["sold", "checklist", "stock", "csedit",
-                                 "zerostock", "ordersheet"]),
+               ("After a sale", ["sold", "checklist", "ordersheet"]),
+               #  One section per marketplace, because comparing and editing
+               #  are the same job: the shop's own editing, and the two sites
+               #  the app can only read. Finding a CS listing and archiving the
+               #  ones at zero now live inside the CanadianShopper section.
+               ("Edit stock", ["stock", "editfb", "editeb"]),
                ("Photos", ["square", "rerun", "newphotos"])]
 
 
@@ -3489,7 +3498,9 @@ TITLES = {
     "rerun": "Re-point photos",
     "sold": "A card sold - mark it everywhere",
     "checklist": "The tick-off checklist",
-    "stock": "Stock on every site",
+    "stock": "Edit stock - CanadianShopper",
+    "editfb": "Edit stock - Facebook",
+    "editeb": "Edit stock - eBay",
     "csedit": "Find and edit a CanadianShopper listing",
     "zerostock": "Archive CanadianShopper listings already at 0",
     "ordersheet": "Print an order as a PDF",
@@ -3512,7 +3523,9 @@ MENU_LABELS = {
     "rerun": "Re-point photos",
     "sold": "A card sold",
     "checklist": "The checklist",
-    "stock": "Compare stock",
+    "stock": "CanadianShopper",
+    "editfb": "Facebook",
+    "editeb": "eBay",
     "csedit": "Find a CS listing",
     "zerostock": "Archive listings at 0",
     "ordersheet": "Print an order",
@@ -3535,6 +3548,10 @@ BLURBS = {
     "rerun": "CanadianShopper plugin: restore cached front/back photos after an import. No Woo export or image uploads needed; preview before applying.",
     "sold": "Record where the sale happened and follow up on the other listings.",
     "checklist": "See what is still outstanding and tick it off.",
+    "editfb": "Compare stock with Facebook and mark what needs changing "
+              "there, without changing anything on either site.",
+    "editeb": "Compare stock with eBay and mark what needs changing there, "
+              "without changing anything on either site.",
     "stock": "Find the cards whose counts disagree between your website "
              "and CanadianShopper, sort the list, and fix what needs it.",
     "csedit": "Search CanadianShopper by card name, then rename, reprice, "
@@ -6401,7 +6418,23 @@ def build_sold(parent, app):
                   anchor="w", pady=(6, 0))
 
 
-def build_stock(parent, app):
+def build_stock(parent, app, site_id="cs"):
+    """Compare the website with one marketplace, and edit that marketplace.
+
+    The comparison engine is the same for all three, so the panel is: built
+    once for CanadianShopper (where the correction can be written) and once
+    each for eBay and Facebook (where it cannot - neither publishes an API, and
+    the app reads the page the seller is signed in to). What differs is the
+    site's own read, the actions that site can take, and the words - so one
+    panel with a site beside it, rather than three copies of the same list that
+    would drift apart the first time one of them was fixed.
+    """
+    site_id = str(site_id or "cs")
+    market_site = site_id if site_id in market_stock.SITES else ""
+    is_cs = not market_site
+    site_info = market_stock.SITES.get(market_site) or {}
+    site_label = site_info.get("label") or "CanadianShopper"
+    market_panel = {"ebay": "editeb", "facebook": "editfb"}.get(market_site, "")
     #  One job, on demand: which cards have a different number on two sites,
     #  and then the correction. Nothing here runs during a sale - the sale
     #  panel says plainly that comparing is a separate job.
@@ -6411,7 +6444,7 @@ def build_stock(parent, app):
     #  count is one confirmed click for the whole list, a selection for the
     #  exceptions, and a card that only exists on one side can be dismissed so
     #  it stops coming back.
-    panel_header(parent, app, "stock")
+    panel_header(parent, app, market_panel or "stock")
     box = ttk.Frame(parent)
     box.pack(fill="x")
 
@@ -6426,7 +6459,7 @@ def build_stock(parent, app):
     if saved_sort not in dict(stock_compare.SORTS):
         saved_sort = stock_compare.DEFAULT_SORT
     state = {"card": focus, "rows": [], "pairs": [], "only_woo": [],
-             "only_other": [], "label": "CanadianShopper", "mode": "count",
+             "only_other": [], "label": site_label, "mode": "count",
              "skipped": 0, "catalog": {}, "items": [], "sort": saved_sort,
              "stale": None, "started": None}
     statuses = {}
@@ -7963,8 +7996,9 @@ def build_stock(parent, app):
                     "re-read a repeated page once; update the plugin and "
                     "compare again before acting on the states above." %
                     (reader, CS_STOCK_CACHE_VERSION), "warn")
-            publish_ready.pack(anchor="w", pady=(3, 0))
-        else:
+            if publish_ready is not None:
+                publish_ready.pack(anchor="w", pady=(3, 0))
+        elif publish_ready is not None:
             publish_ready.pack_forget()
         if drafts:
             app.console_line(
@@ -8588,27 +8622,32 @@ def build_stock(parent, app):
         anchor="w")
     row = ttk.Frame(box)
     row.pack(anchor="w", pady=(2, 0))
-    ttk.Button(row, text="Compare stock (WooCommerce and CanadianShopper)",
-               style="Task.TButton", command=compare_cs).pack(side="left")
-    ttk.Button(row, text="Compare stock with eBay",
-               command=lambda: compare_market("ebay")).pack(side="left", padx=8)
-    ttk.Button(row, text="Compare stock with Facebook",
-               command=lambda: compare_market("facebook")).pack(side="left")
+    if is_cs:
+        #  The site this panel edits, and the two that are compared elsewhere:
+        #  each marketplace has its own section, with its own button, so a
+        #  button can never compare one site and then fix another.
+        ttk.Button(row, text="Compare stock (WooCommerce and CanadianShopper)",
+                   style="Task.TButton", command=compare_cs).pack(side="left")
+    else:
+        ttk.Button(row, text="Compare stock with %s" % site_label,
+                   style="Task.TButton",
+                   command=lambda s=market_site: compare_market(s)).pack(
+                       side="left")
 
     #  The page the site saved is found, not chosen: the app looks in its own
     #  folder and in Downloads, newest first, and recognises the page by what
     #  is in it. Picking a file is still there for the odd case of wanting an
-    #  older or a downloaded one.
-    row_saved = ttk.Frame(box)
-    row_saved.pack(anchor="w", pady=(2, 0))
-    ttk.Button(row_saved, text="Read the saved eBay page",
-               command=lambda: read_saved_page("ebay")).pack(side="left")
-    ttk.Button(row_saved, text="Read the saved Facebook page",
-               command=lambda: read_saved_page("facebook")).pack(
-                   side="left", padx=8)
-    ttk.Button(row_saved, text="Choose a saved page...",
-               command=lambda: read_saved_page(None, choose=True)).pack(
-                   side="left")
+    #  older or a downloaded one. CanadianShopper needs none of it - it is read
+    #  through the plugin - so this row belongs to the marketplace panels.
+    if not is_cs:
+        row_saved = ttk.Frame(box)
+        row_saved.pack(anchor="w", pady=(2, 0))
+        ttk.Button(row_saved, text="Read the saved %s page" % site_label,
+                   command=lambda s=market_site: read_saved_page(s)).pack(
+                       side="left")
+        ttk.Button(row_saved, text="Choose a saved page...",
+                   command=lambda: read_saved_page(None, choose=True)).pack(
+                       side="left", padx=8)
 
     #  A read of a whole shop takes minutes; this compares the list from the
     #  last one without starting another, and says how old it is. Its own row,
@@ -8735,121 +8774,225 @@ def build_stock(parent, app):
 
     #  The actions belong to the list and sit right under it, so "fix this" is
     #  never a scroll away from what it fixes.
+    def copy_changes():
+        """The list as a worklist on the clipboard - the edit these sites take.
+
+        eBay and Facebook publish no API this app can write to and the app
+        never sends a change to either, so what it can do is be precise about
+        what needs changing and put it one paste away from the site's own
+        editor: a card per line, with the counts and the site's own state.
+        """
+        rows = selected_rows() or state["rows"]
+        if not rows:
+            messagebox.showinfo(
+                "Nothing to copy",
+                "Compare first: the list is what would be copied, and it is "
+                "empty.", parent=box.winfo_toplevel())
+            return
+        lines = [stock_compare.label_action(row, state["label"], state["mode"])
+                 for row in rows]
+        try:
+            app.clipboard_clear()
+            app.clipboard_append("\n".join(lines))
+        except Exception as exc:                 # no clipboard on this desktop
+            messagebox.showwarning(
+                "Could not copy",
+                "The list could not be put on the clipboard: %s" % exc,
+                parent=box.winfo_toplevel())
+            return
+        app.console_line(
+            "%d row%s copied: the cards that differ between your website and "
+            "%s." % (len(rows), "" if len(rows) == 1 else "s", state["label"]),
+            "ok")
+
     action_row = ttk.Frame(box)
-    first = ttk.Frame(action_row)
-    first.pack(anchor="w")
-    ttk.Button(first, text="Set CanadianShopper to the website's counts...",
-               style="Task.TButton", command=set_all).pack(side="left")
-    ttk.Button(first, text="Fix the selected cards...",
-               command=set_selected).pack(side="left", padx=6)
-    second = ttk.Frame(action_row)
-    second.pack(anchor="w", pady=(3, 0))
-    ttk.Button(second, text="Set the website to the selected cards' counts...",
-               command=set_website_selected).pack(side="left")
-    ttk.Button(second, text="Open the selected cards on the website",
-               command=open_on_website).pack(side="left", padx=6)
-    third = ttk.Frame(action_row)
-    third.pack(anchor="w", pady=(3, 0))
-    ttk.Button(third, text="Set CanadianShopper to the website's prices...",
-               style="Task.TButton",
-               command=reprice_all).pack(side="left")
-    ttk.Button(third, text="Reprice the selected cards...",
-               command=reprice_selected).pack(side="left", padx=6)
-    third_l = ttk.Frame(action_row)
-    third_l.pack(anchor="w", pady=(3, 0))
-    ttk.Button(third_l, text="List the selected cards on CanadianShopper...",
-               style="Task.TButton", command=list_selected).pack(side="left")
-    ttk.Button(third_l, text="List every website-only card...",
-               command=list_every_website_only_card).pack(side="left", padx=6)
-    fifth = ttk.Frame(action_row)
-    fifth.pack(anchor="w", pady=(3, 0))
-    ttk.Button(fifth, text="Create website products for the selected cards...",
-               style="Task.TButton",
-               command=create_website_products).pack(side="left")
-    ttk.Button(fifth, text="Create website products for every "
-                           "CanadianShopper-only card...",
-               command=create_products_every_listing).pack(side="left", padx=6)
-    fourth = ttk.Frame(action_row)
-    fourth.pack(anchor="w", pady=(3, 0))
-    ttk.Button(fourth, text="Ignore the selected cards",
-               command=ignore_selected).pack(side="left")
-    ttk.Button(fourth, text="Restore ignored cards...",
-               command=restore_ignored).pack(side="left", padx=6)
+    if not is_cs:
+        #  The marketplace panels cannot write to the site, so their actions
+        #  are the honest ones: copy the worklist, open the website side, and
+        #  stop asking about a card.
+        market_row = ttk.Frame(action_row)
+        market_row.pack(anchor="w")
+        ttk.Button(market_row, text="Copy what needs changing",
+                   style="Task.TButton", command=copy_changes).pack(
+                       side="left")
+        ttk.Button(market_row, text="Open the selected cards on the website",
+                   command=open_on_website).pack(side="left", padx=6)
+        quiet_row = ttk.Frame(action_row)
+        quiet_row.pack(anchor="w", pady=(3, 0))
+        ttk.Button(quiet_row, text="Ignore the selected cards",
+                   command=ignore_selected).pack(side="left")
+        ttk.Button(quiet_row, text="Restore ignored cards...",
+                   command=restore_ignored).pack(side="left", padx=6)
+        action_row.pack_forget()
+    #  The CanadianShopper corrections exist only on its own panel: on eBay
+    #  and Facebook there is nowhere to write a count to, so the buttons are
+    #  not built at all - not built and hidden, which is a widget that could
+    #  still be pressed.
+    if is_cs:
+        cs_rows = ttk.Frame(action_row)
+        cs_rows.pack(anchor="w")
+        first = ttk.Frame(cs_rows)
+        first.pack(anchor="w")
+        ttk.Button(first, text="Set CanadianShopper to the website's counts...",
+                   style="Task.TButton", command=set_all).pack(side="left")
+        ttk.Button(first, text="Fix the selected cards...",
+                   command=set_selected).pack(side="left", padx=6)
+        second = ttk.Frame(cs_rows)
+        second.pack(anchor="w", pady=(3, 0))
+        ttk.Button(second, text="Set the website to the selected cards' counts...",
+                   command=set_website_selected).pack(side="left")
+        ttk.Button(second, text="Open the selected cards on the website",
+                   command=open_on_website).pack(side="left", padx=6)
+        third = ttk.Frame(cs_rows)
+        third.pack(anchor="w", pady=(3, 0))
+        ttk.Button(third, text="Set CanadianShopper to the website's prices...",
+                   style="Task.TButton",
+                   command=reprice_all).pack(side="left")
+        ttk.Button(third, text="Reprice the selected cards...",
+                   command=reprice_selected).pack(side="left", padx=6)
+        third_l = ttk.Frame(cs_rows)
+        third_l.pack(anchor="w", pady=(3, 0))
+        ttk.Button(third_l, text="List the selected cards on CanadianShopper...",
+                   style="Task.TButton", command=list_selected).pack(side="left")
+        ttk.Button(third_l, text="List every website-only card...",
+                   command=list_every_website_only_card).pack(side="left", padx=6)
+        fifth = ttk.Frame(cs_rows)
+        fifth.pack(anchor="w", pady=(3, 0))
+        ttk.Button(fifth, text="Create website products for the selected cards...",
+                   style="Task.TButton",
+                   command=create_website_products).pack(side="left")
+        ttk.Button(fifth, text="Create website products for every "
+                               "CanadianShopper-only card...",
+                   command=create_products_every_listing).pack(side="left", padx=6)
+        fourth = ttk.Frame(cs_rows)
+        fourth.pack(anchor="w", pady=(3, 0))
+        ttk.Button(fourth, text="Ignore the selected cards",
+                   command=ignore_selected).pack(side="left")
+        ttk.Button(fourth, text="Restore ignored cards...",
+                   command=restore_ignored).pack(side="left", padx=6)
     action_row.pack_forget()
 
     #  Shown only when a comparison finds listings that exist but are not on
     #  sale: a count cannot activate those, publishing can.
-    publish_ready = ttk.Button(
-        box, text="Publish the ready drafts...",
-        command=lambda: publish_drafts(
-            0, "Some of these cards have a draft listing on CanadianShopper. "
-               "Publishing activates the drafts that pass every readiness "
-               "check; a draft that is not ready is left alone."))
-    publish_ready.pack_forget()
+    if is_cs:
+        publish_ready = ttk.Button(
+            box, text="Publish the ready drafts...",
+            command=lambda: publish_drafts(
+                0, "Some of these cards have a draft listing on "
+                   "CanadianShopper. Publishing activates the drafts that pass "
+                   "every readiness check; a draft that is not ready is left "
+                   "alone."))
+        publish_ready.pack_forget()
+    else:
+        #  Nothing on eBay or Facebook is published from here, so the button
+        #  that would is not built: a widget that cannot do its job in this
+        #  panel is a defect, not a placeholder.
+        publish_ready = None
 
+    if is_cs:
+        #  Where the two CS jobs that used to be their own sections now live:
+        #  this section is the shop's editing, so finding a listing and
+        #  archiving the ones sitting at zero belong beside the comparison
+        #  rather than in two more places to remember.
+        nav_row = ttk.Frame(box)
+        nav_row.pack(anchor="w", pady=(8, 0))
+        find_btn = ttk.Button(
+            nav_row, text="Find and edit a CanadianShopper listing...",
+            command=lambda: app.show_panel("csedit"))
+        find_btn.pack(side="left")
+        add_tooltip(find_btn,
+                    "Search CanadianShopper by card name, SKU or id and change "
+                    "one listing there - the same panel, opened from this "
+                    "section")
+        sweep_btn = ttk.Button(
+            nav_row, text="Archive listings already at 0...",
+            command=lambda: app.show_panel("zerostock"))
+        sweep_btn.pack(side="left", padx=6)
+        add_tooltip(sweep_btn,
+                    "Sweep CanadianShopper for listings sitting at quantity 0 "
+                    "and archive them, one at a time, without deleting "
+                    "anything")
+        ttk.Label(box,
+                  text="The list is what needs attention: a card whose two "
+                       "counts differ, a card whose listing on the other site "
+                       "is not on sale, or a card that exists on one side "
+                       "only. A card at zero on your website that is not on "
+                       "the other site is not listed: there is nothing to set "
+                       "and nothing to sell. The list can be sorted from the "
+                       "chooser above it, and the read shows a progress bar "
+                       "while it runs. The website is usually the right one, "
+                       "so the first button sets every differing count to the "
+                       "website's - after showing exactly what would change "
+                       "and asking. Select rows to fix or ignore just those; "
+                       "ignoring a card that is not on the other site stops it "
+                       "being compared again, and nothing on either site is "
+                       "changed by comparing or by ignoring. When the website "
+                       "is the one that is wrong, select the card and set the "
+                       "website to the other side's count - the same "
+                       "confirmation applies, and Read/Write keys are needed "
+                       "- or open its product page and change it there. A "
+                       "card that is on the website and no longer on "
+                       "CanadianShopper can be put back: the listing buttons "
+                       "write the same import file the batch pipeline writes, "
+                       "from the website product itself, then offer to import "
+                       "it and publish the drafts - all with the publisher's "
+                       "own confirmations, including the typed PUBLISH.",
+                  style="Dim.TLabel", wraplength=680,
+                  justify="left").pack(anchor="w", pady=(6, 0))
+        return
+
+    # ------------------------------------------------- eBay / Facebook only
+    info = site_info
     ttk.Label(box,
-              text="The list is what needs attention: a card whose two counts "
-                   "differ, a card whose listing on the other site is not on "
-                   "sale, or a card that exists on one side only. A card at "
-                   "zero on your website that is not on the other site is not "
-                   "listed: there is nothing to set and nothing to sell. The "
-                   "list can be sorted from the chooser above it, and the "
-                   "read shows a progress bar while it runs. The "
-                   "website is usually the right one, so the first button sets "
-                   "every differing count to the website's - after showing "
-                   "exactly what would change and asking. Select rows to fix "
-                   "or ignore just those; ignoring a card that is not on the "
-                   "other site stops it being compared again, and nothing on "
-                   "either site is changed by comparing or by ignoring. When "
-                   "the website is the one that is wrong, select the card and "
-                   "set the website to the other side's count - the same "
-                   "confirmation applies, and Read/Write keys are needed - or "
-                   "open its product page and change it there. A card that is "
-                   "on the website and no longer on CanadianShopper can be put "
-                   "back: the listing buttons write the same import file the "
-                   "batch pipeline writes, from the website product itself, "
-                   "then offer to import it and publish the drafts - all with "
-                   "the publisher's own confirmations, including the typed "
-                   "PUBLISH.",
+              text="The list is what needs attention: a card whose count "
+                   "differs, a card whose listing there is not on sale, or a "
+                   "card that exists on one side only. Nothing on %s is "
+                   "changed from here - the site publishes no list this app "
+                   "can write to, so the list is the worklist: select the rows "
+                   "you want and Copy what needs changing, then make the "
+                   "change in the site's own editor; or open the card on your "
+                   "website and change the count there, where the panel can "
+                   "write it. Ignoring a card stops it being compared again "
+                   "without changing anything anywhere." % site_label,
               style="Dim.TLabel", wraplength=680, justify="left").pack(
                   anchor="w", pady=(6, 0))
 
-    # ---------------------------------------------------------- sessions
-    ttk.Label(box, text="Your eBay and Facebook sessions", style="H2.TLabel"
+    ttk.Label(box, text="Your %s session" % site_label, style="H2.TLabel"
               ).pack(anchor="w", pady=(12, 0))
-    for site_id, caption in (("ebay", "Open the eBay cookie file"),
-                             ("facebook", "Open the Facebook cookie file")):
-        info = market_stock.SITES[site_id]
-        line = ttk.Frame(box)
-        line.pack(anchor="w", pady=(2, 0))
-        ttk.Button(line, text=caption,
-                   command=lambda s=site_id: open_market_cookie(app, s)
-                   ).pack(side="left")
-        label = ttk.Label(line, text="no session saved" if not (
-            BASE / info["cookie"]).is_file() else "session saved",
-            style="Dim.TLabel")
-        label.pack(side="left", padx=(6, 0))
-        statuses[site_id] = label
+    line = ttk.Frame(box)
+    line.pack(anchor="w", pady=(2, 0))
+    cookie_btn = ttk.Button(
+        line, text="Open the %s cookie file" % site_label,
+        command=lambda s=market_site: open_market_cookie(app, s))
+    cookie_btn.pack(side="left")
+    add_tooltip(cookie_btn,
+                "The private file the %s session cookie goes in; the app reads "
+                "the page you are signed in to, and nothing is ever written "
+                "back to the site" % site_label)
+    label = ttk.Label(line, text="no session saved" if not (
+        BASE / info["cookie"]).is_file() else "session saved",
+        style="Dim.TLabel")
+    label.pack(side="left", padx=(6, 0))
+    statuses[market_site] = label
 
     ttk.Label(box,
-              text="Both sites need a signed-in session, and both check "
-                   "whether a request comes from a browser - eBay answers "
-                   "with a \"Pardon our interruption\" page and Facebook with "
-                   "HTTP 400. Nothing is changed when that happens, and the "
+              text="%s needs a signed-in session, and it checks whether a "
+                   "request comes from a browser - eBay answers with a "
+                   "\"Pardon our interruption\" page and Facebook with HTTP "
+                   "400. Nothing is changed when that happens, and the "
                    "comparison does not stop: the app looks for the page saved "
                    "from a signed-in browser - in its own folder and in "
                    "Downloads, newest first, recognised by what is in it - and "
                    "reads that instead, saying which file it used. Every live "
-                   "read also writes the app's own copy (ebay-active.html, "
-                   "fb-selling.html) from the page the site really sent, and "
-                   "eBay is read up to 250 listings, the whole of a free "
-                   "store. Facebook renders its first batch and loads the rest "
-                   "as you scroll, so a page saved after scrolling covers more "
-                   "than a request can - when it does, that page is the one "
-                   "compared. The cookie goes in ebay-cookie.txt or "
-                   "fb-cookie.txt; the whole Cookie header can be pasted at "
-                   "once, on one line or several. Nothing on either site is "
-                   "ever changed from this panel.",
+                   "read also writes the app's own copy (%s) from the page the "
+                   "site really sent. eBay is read up to 250 listings, the "
+                   "whole of a free store; Facebook renders its first batch "
+                   "and loads the rest as you scroll, so a page saved after "
+                   "scrolling covers more than a request can - when it does, "
+                   "that page is the one compared. The cookie goes in %s; the "
+                   "whole Cookie header can be pasted at once, on one line or "
+                   "several. Nothing on %s is ever changed from this panel."
+                   % (site_label, info["page"], info["cookie"], site_label),
               style="Dim.TLabel", wraplength=680, justify="left").pack(
                   anchor="w", pady=(6, 0))
 
@@ -14174,6 +14317,8 @@ PANEL_BUILDERS = {
     "sold": build_sold,
     "checklist": build_checklist,
     "stock": build_stock,
+    "editfb": lambda parent, app: build_stock(parent, app, "facebook"),
+    "editeb": lambda parent, app: build_stock(parent, app, "ebay"),
     "csedit": build_csledit,
     "zerostock": build_zerostock,
     "ordersheet": build_ordersheet,

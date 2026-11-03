@@ -460,12 +460,13 @@ def test_site_rows():
               "kijiji" in exc.message, exc.message)
 
 
-def build_panel(folder=None):
+def build_panel(folder=None, site="ebay"):
+    """One marketplace's panel - each site has its own section now."""
     folder = folder or Path(tempfile.mkdtemp())
     harness.install_plugin("1.0.20", folder / "plugin")
     app = harness.FakeApp(folder)
     parent = harness.FakeWidget()
-    gui.build_stock(parent, app)
+    gui.build_stock(parent, app, site)
     return folder, app, parent
 
 
@@ -503,20 +504,48 @@ def test_panel():
     print()
     print("== 5. the panel compares eBay and Facebook on demand ==")
     folder, app, parent = build_panel()
-    ebay = find(parent, gui.ttk.Button, "Compare stock with eBay")
-    fb = find(parent, gui.ttk.Button, "Compare stock with Facebook")
-    check("there is one comparison button per site",
-          ebay is not None and fb is not None, "")
-    check("the CanadianShopper comparison is still there",
-          find(parent, gui.ttk.Button,
-               "Compare stock (WooCommerce and CanadianShopper)") is not None,
+    folder_fb, app_fb, parent_fb = build_panel(None, "facebook")
+    folder_cs, app_cs, parent_cs = build_panel(None, "cs")
+    check("the eBay section has eBay's own comparison button, and no other",
+          find(parent, gui.ttk.Button, "Compare stock with eBay") is not None
+          and find(parent, gui.ttk.Button, "Compare stock with Facebook") is None
+          and find(parent, gui.ttk.Button,
+                   "Compare stock (WooCommerce and CanadianShopper)") is None,
           "")
-    check("both sites show they have no session yet",
+    check("the Facebook section has its own, and no other",
+          find(parent_fb, gui.ttk.Button, "Compare stock with Facebook")
+          is not None and
+          find(parent_fb, gui.ttk.Button, "Compare stock with eBay") is None,
+          "")
+    check("and the CanadianShopper section compares the shop it can edit",
+          find(parent_cs, gui.ttk.Button,
+               "Compare stock (WooCommerce and CanadianShopper)") is not None
+          and find(parent_cs, gui.ttk.Button,
+                   "Compare stock with eBay") is None, "")
+    check("each section asks for its own session, and only its own",
           len([w for w in parent.walk() if isinstance(w, gui.ttk.Label)
-               and str(w.cget("text")) == "no session saved"]) == 2,
+               and str(w.cget("text")) == "no session saved"]) == 1 and
+          len([w for w in parent_fb.walk() if isinstance(w, gui.ttk.Label)
+               and str(w.cget("text")) == "no session saved"]) == 1 and
+          not [w for w in parent_cs.walk() if isinstance(w, gui.ttk.Label)
+               and str(w.cget("text")) == "no session saved"],
+          "")
+    check("nothing on eBay is written from its section",
+          find(parent, gui.ttk.Button,
+               "Set CanadianShopper to the website's counts...") is None and
+          find(parent, gui.ttk.Button, "Copy what needs changing") is not None,
           str([w.cget("text") for w in parent.walk()
-               if isinstance(w, gui.ttk.Label)]))
+               if isinstance(w, gui.ttk.Button)])[:300])
+    check("while the shop's own section still fixes counts and prices",
+          find(parent_cs, gui.ttk.Button,
+               "Set CanadianShopper to the website's counts...") is not None and
+          find(parent_cs, gui.ttk.Button, "Copy what needs changing") is None,
+          "")
+    check("and the section says the list is the worklist",
+          any("Nothing on eBay is changed from here" in str(w.cget("text"))
+              for w in parent.walk() if isinstance(w, gui.ttk.Label)), "")
 
+    ebay = find(parent, gui.ttk.Button, "Compare stock with eBay")
     opened, shown = [], []
     harness._BOX.showinfo = lambda *a, **k: shown.append(a)
     with patch.object(gui, "BASE", folder), \
@@ -566,6 +595,13 @@ def test_panel():
           not app.runs, str(app.runs))
 
     # ---- a login wall is a login wall, not an empty shop
+    #  Facebook has its own section now, so the rest of this test reads the
+    #  same folder through the Facebook panel - the same cookie files, the same
+    #  saved pages, one panel per marketplace.
+    folder_fb, app_fb, parent_fb = build_panel(folder, "facebook")
+    fb = find(parent_fb, gui.ttk.Button, "Compare stock with Facebook")
+    fb_listing = next((w for w in parent_fb.walk()
+                       if isinstance(w, gui.tk.Listbox)), None)
     warned = []
     real_warning = harness._BOX.showwarning
     harness._BOX.showwarning = lambda *a, **k: warned.append(a)
@@ -585,9 +621,10 @@ def test_panel():
     check("and that nothing was read or changed",
           warned and "Nothing was read" in str(warned[0]), str(warned))
     check("the status says it is not signed in",
-          find(parent, gui.ttk.Label, "not signed in") is not None, "")
+          find(parent_fb, gui.ttk.Label, "not signed in") is not None, "")
     check("the old eBay list is cleared rather than left looking current",
-          not listing.items, str(listing.items))
+          fb_listing is not None and not fb_listing.items,
+          str(fb_listing.items if fb_listing else None))
     harness._BOX.showwarning = real_warning
 
     # ---- a page nobody understands says so, and keeps the copy
@@ -629,7 +666,7 @@ def test_panel():
     check("a site that cannot be reached is reported",
           errors and "Could not reach" in str(errors[0]), str(errors))
     check("and it does not claim a copy was kept",
-          find(parent, gui.ttk.Label, "could not be read") is not None, "")
+          find(parent_fb, gui.ttk.Label, "could not be read") is not None, "")
 
 
 def test_one_card_market():
@@ -640,7 +677,7 @@ def test_one_card_market():
     app = harness.FakeApp(folder)
     app._stock_filter = "#189 Gene Tenace 1972 O-Pee-Chee Baseball Card"
     parent = harness.FakeWidget()
-    gui.build_stock(parent, app)
+    gui.build_stock(parent, app, "ebay")
     (folder / "ebay-cookie.txt").write_text("SID=abc\n", encoding="utf-8")
     with patch.object(gui, "BASE", folder), \
             patch.object(gui, "read_woo_credentials",
@@ -796,6 +833,7 @@ def test_panel_names_the_wall():
 
     warned[:] = []
     (folder / "fb-cookie.txt").write_text("c_user=1\n", encoding="utf-8")
+    folder, app, parent = build_panel(folder, "facebook")
     with patch.object(gui, "BASE", folder), \
             patch.object(gui, "read_woo_credentials",
                          lambda path=None: ("https://shop.example", "ck_a",
@@ -1032,6 +1070,7 @@ def test_the_panel_finds_the_page_itself():
     fb_saved = folder / "Marketplace - Selling.html"
     fb_saved.write_text(FB_PAGE * 6, encoding="utf-8")
     (folder / "fb-cookie.txt").write_text("c_user=1\n", encoding="utf-8")
+    folder, app, parent = build_panel(folder, "facebook")
     app.lines.clear()
     with patch.object(gui, "BASE", folder), \
             patch.object(gui, "read_woo_credentials",
