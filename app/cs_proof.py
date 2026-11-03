@@ -349,7 +349,49 @@ def primary_photo(item=None, record=None):
     return ""
 
 
-def photo_candidates(item=None, record=None, staged=""):
+def staged_photos(folder, batches=8):
+    """Every staged photo the batch holds: ``[{"title", "url"}]``, newest first.
+
+    The exact-title lookup answers "is *this* card staged". When it does not -
+    the site's title and the CSV's are rarely the same words, a grade on the end
+    of one and not the other - the person still needs a way in, and the batch's
+    own staged rows are it: the same photos the plugin uploaded for this batch,
+    listed with the title each was staged under so the right card can be picked
+    by eye.
+    """
+    folder = Path(folder or ".")
+    found = []
+    for where in (folder, folder / "cs-ready"):
+        try:
+            found.extend(where.glob(STAGED_PATTERN))
+        except OSError:
+            continue
+    try:
+        files = sorted(found, key=lambda path: path.stat().st_mtime,
+                       reverse=True)[:max(1, int(batches or 8))]
+    except OSError:
+        return []
+    rows, seen = [], set()
+    for path in files:
+        try:
+            with path.open(newline="", encoding="utf-8-sig",
+                           errors="replace") as handle:
+                for row in csv.DictReader(handle):
+                    url = str((row or {}).get("image_url") or "").strip()
+                    if STAGED_PHOTO not in url:
+                        continue
+                    url = absolute_photo(url)
+                    if url in seen:
+                        continue
+                    seen.add(url)
+                    rows.append({"title": str((row or {}).get("title")
+                                              or "").strip(), "url": url})
+        except (OSError, csv.Error, TypeError):
+            continue
+    return rows
+
+
+def photo_candidates(item=None, record=None, staged="", staged_rows=None):
     """Every photo a proof could safely write, best first, with where it came from.
 
     A proof of the main photo must write a picture of *the same card*, because
@@ -378,6 +420,14 @@ def photo_candidates(item=None, record=None, staged=""):
         found.append({"url": text, "source": source})
 
     add(staged, "the image staging step's photo of this card")
+    #  The batch's other staged rows, already ranked by the caller: the site's
+    #  title and the CSV's are rarely the same words, and a person can see
+    #  which card a photo was staged for from the title beside it.
+    for row in staged_rows or []:
+        title = str((row or {}).get("title") or "").strip()
+        add((row or {}).get("url"),
+            "the batch's staged photo of %r" % title if title else
+            "a staged photo in this batch")
     for text in _photo_values(record or {}):
         add(text, "a photo on this listing's own record")
     for text in _photo_values(item or {}):

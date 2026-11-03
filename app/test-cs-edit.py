@@ -2105,13 +2105,20 @@ def test_the_panel_writes_a_proof():
         return kwargs.get("initialvalue") or ""
 
     def press_photo(url, button="Use this photo"):
-        """Pick a photo in the chooser, the way a person does."""
+        """Pick a photo in the chooser, the way a person does.
+
+        The chooser is a list, not a column of radio buttons - a batch can hold
+        hundreds of staged photos - so the row whose address ends with ``url``
+        is clicked, then the button is pressed.
+        """
         def press(window):
             for widget in window.walk():
-                if (isinstance(widget, gui.ttk.Radiobutton) and
-                        str(widget.cget("value")) == url):
-                    widget.invoke()
-                    break
+                if not isinstance(widget, gui.tk.Listbox):
+                    continue
+                for index, text in enumerate(widget.items):
+                    if str(text).rstrip().endswith(url):
+                        widget.selection_set(index)
+                        break
             target = next((w for w in window.walk()
                            if isinstance(w, gui.ttk.Button) and
                            str(w.cget("text")) == button), None)
@@ -2215,8 +2222,59 @@ def test_the_panel_writes_a_proof():
                      press=lambda window: find(
                          window, gui.ttk.Button, "Cancel").invoke())
     check("closing the chooser writes no proof",
-          not asked and any("No photo was chosen" in text
+          not asked and any("photo question was closed" in text
                             for _tag, text in app.lines), str(app.lines[-2:]))
+
+    #  The report that started this: the site's title and the batch CSV's are
+    #  not the same words, so the exact-title lookup finds nothing and the
+    #  person was left with a paste box. The batch's own staged rows are
+    #  offered instead, best title match first, each with the title it was
+    #  staged under - and the right one can be clicked.
+    asked[:] = []
+    app.lines[:] = []
+    import csv as _csv
+    batch = folder / "canadianshopper_products" / "cs-ready"
+    batch.mkdir(parents=True, exist_ok=True)
+    with (batch / "canadianshopper_import_20260301_01_of_01.csv").open(
+            "w", newline="", encoding="utf-8") as handle:
+        writer = _csv.DictWriter(handle, ["title", "image_url"])
+        writer.writeheader()
+        writer.writerow({"title": "1973-74 O-Pee-Chee Jim Pappin #112 EX-MT",
+                         "image_url": "/api/file/pappin.webp"})
+        writer.writerow({"title": "1966-67 Topps Bobby Orr #35",
+                         "image_url": "/api/file/orr.webp"})
+    with_photo_proof(None, press=press_photo(
+        "https://canadianshopper.ca/api/file/pappin.webp"))
+    check("a staged row whose title is not the same words is still offered",
+          any("pappin.webp" in text for _tag, text in app.lines),
+          str(app.lines[-6:]))
+    check("and clicking it writes that photo",
+          asked and asked[-1]["staged"] ==
+          "https://canadianshopper.ca/api/file/pappin.webp", str(asked[-1:]))
+
+    #  The list is ranked by the title it was staged under, so the card's own
+    #  row is the one already selected.
+    picked = {}
+    with_photo_proof(None, press=lambda window: picked.update(
+        {"rows": next((w.items for w in window.walk()
+                       if isinstance(w, gui.tk.Listbox)), [])}) or find(
+        window, gui.ttk.Button, "Cancel").invoke())
+    check("the list says which title each photo was staged for",
+          picked.get("rows") and "Jim Pappin #112 EX-MT" in picked["rows"][0],
+          str(picked.get("rows")))
+
+    #  An empty address box is a different answer from a closed question, and
+    #  the console says which one happened.
+    app.lines[:] = []
+    bare_asked[:] = []
+    with_photo_proof(None, ask=lambda *a, **k: None,
+                     press=lambda window: find(
+                         window, gui.ttk.Button, "Cancel").invoke())
+    check("a closed chooser and an empty box read differently",
+          any("photo question was closed" in text
+              for _tag, text in app.lines) and
+          not any("address box was left empty" in text
+                  for _tag, text in app.lines), str(app.lines[-3:]))
 
     #  Pasting an address the list does not know still works.
     asked[:] = []

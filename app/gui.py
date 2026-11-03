@@ -9527,19 +9527,21 @@ def build_csledit(parent, app):
         """
         parent = box.winfo_toplevel()
         if not candidates:
-            return str(simpledialog.askstring(
+            answer = simpledialog.askstring(
                 "The staged photo URL",
                 "The address of the staged photo of this card - the one the "
                 "image staging step prepared. It replaces the listing's main "
                 "photo for the seconds the proof runs and is then put back, so "
-                "it has to show the same card.\n\nNo staged photo was found "
-                "for this card in the batch folder: run the image staging "
-                "step, or paste the address here.",
-                initialvalue="", parent=parent) or "").strip()
+                "it has to show the same card.\n\nNothing staged was found "
+                "in the batch folder for this card, and the list carries no "
+                "photo it could offer: run the image staging step, or paste "
+                "the address here.",
+                initialvalue="", parent=parent)
+            return None if answer is None else str(answer).strip()
         top = tk.Toplevel(parent)
         top.title("Which photo?")
         top.transient(parent)
-        top.geometry("780x460")
+        top.geometry("820x520")
         top.grab_set()
         body = ttk.Frame(top)
         body.pack(fill="both", expand=True, padx=10, pady=(10, 4))
@@ -9551,18 +9553,35 @@ def build_csledit(parent, app):
                   "back, and puts the old photo back. Each one is a picture of "
                   "this card, already on CanadianShopper:", wraplength=740,
                   justify="left").pack(anchor="w", pady=(0, 6))
-        var = tk.StringVar(master=body, value=candidates[0]["url"])
+        #  A list rather than a column of radio buttons: a batch can hold
+        #  hundreds of staged photos, and the one that is this card has to be
+        #  findable in it - each row says what the photo was staged for.
+        picker_frame = ttk.Frame(body)
+        picker_frame.pack(fill="both", expand=True)
+        picker = tk.Listbox(picker_frame, height=12, exportselection=False)
+        picker_scroll = ttk.Scrollbar(picker_frame, orient="vertical",
+                                      command=picker.yview)
+        picker.configure(yscrollcommand=picker_scroll.set)
+        picker.pack(side="left", fill="both", expand=True)
+        picker_scroll.pack(side="right", fill="y")
         for candidate in candidates:
-            ttk.Radiobutton(
-                body, text="%s\n%s" % (candidate["source"].capitalize(),
-                                        candidate["url"]),
-                variable=var, value=candidate["url"]).pack(anchor="w", pady=2)
+            picker.insert("end", "%s  -  %s" % (candidate["source"],
+                                                candidate["url"]))
+        if candidates:
+            picker.selection_set(0)
+            picker.see(0)
         buttons = ttk.Frame(top)
         buttons.pack(fill="x", padx=10, pady=(4, 10))
         chosen = {"url": None}
 
         def use_this():
-            chosen["url"] = str(var.get() or "").strip()
+            picked = picker.curselection()
+            if not picked:
+                messagebox.showinfo("Which photo?",
+                                    "Click the photo to write, then press "
+                                    "\"Use this photo\".", parent=top)
+                return
+            chosen["url"] = candidates[picked[0]]["url"]
             top.destroy()
 
         def paste_one():
@@ -10223,22 +10242,40 @@ def build_csledit(parent, app):
             #  person picks, and can still paste an address the list does not
             #  know. Every candidate is a picture of the same card, because the
             #  listing really shows it for the seconds the proof runs.
-            staged = cs_proof.absolute_photo(cs_proof.staged_photo(
-                canadianshopper_results_dir(app),
-                str(item.get("name") or "")))
+            batch_dir = canadianshopper_results_dir(app)
+            card = str(item.get("name") or "")
+            staged = cs_proof.absolute_photo(
+                cs_proof.staged_photo(batch_dir, card))
             if staged:
                 say("The staged photo for this card is %s." % staged, "dim")
-            candidates = cs_proof.photo_candidates(item=item, staged=staged)
+            #  The batch's staged rows, best title match first. The site's
+            #  title and the CSV's are rarely the same words - a grade on one
+            #  and not the other - so an exact match is the first candidate and
+            #  the rest of the batch is beside it, each with the title it was
+            #  staged under. A person can see which is the card; the app cannot
+            #  guess it from a name it does not recognise.
+            ranked = []
+            for row in cs_proof.staged_photos(batch_dir):
+                ranked.append((cs_edit.score(card, {"name": row["title"]}),
+                               row))
+            ranked.sort(key=lambda pair: -pair[0])
+            staged_rows = [row for _value, row in ranked[:40]]
+            candidates = cs_proof.photo_candidates(
+                item=item, staged=staged, staged_rows=staged_rows)
             current_photo = cs_proof.primary_photo(item=item)
-            for candidate in candidates:
+            for candidate in candidates[:8]:
                 say("  the proof could write %s (%s)"
                     % (candidate["url"], candidate["source"]), "dim")
+            if len(candidates) > 8:
+                say("  ... and %d more staged photo(s) in the list."
+                    % (len(candidates) - 8), "dim")
             staged_url = choose_proof_photo(candidates, current_photo)
             if staged_url is None:
-                say("No photo was chosen, so nothing was written.", "dim")
+                say("The photo question was closed, so nothing was written.",
+                    "dim")
                 return
             if not staged_url:
-                say("No staged photo URL was given, so nothing was written.",
+                say("The address box was left empty, so nothing was written.",
                     "dim")
                 return
         label = cs_proof.field_label(field)

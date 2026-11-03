@@ -407,6 +407,33 @@ def test_the_photos_a_proof_may_write():
           "https://cs.example/api/file/current.webp", "")
     check("no photos at all is no candidates, not an invented one",
           cs_proof.photo_candidates(item={"id": "a"}) == [], "")
+    #  The batch's own staged rows: a card whose CSV title and site title are
+    #  not the same words still needs a way in, and the list is it.
+    folder = Path(tempfile.mkdtemp())
+    ready = folder / "cs-ready"
+    ready.mkdir()
+    import csv as _csv
+    with (ready / "canadianshopper_import_20260301_01_of_01.csv").open(
+            "w", newline="", encoding="utf-8") as handle:
+        writer = _csv.DictWriter(handle, ["title", "image_url"])
+        writer.writeheader()
+        writer.writerow({"title": "Card A", "image_url": "/api/file/a.webp"})
+        writer.writerow({"title": "Card B", "image_url":
+                         "https://shop.example/b.jpg"})
+        writer.writerow({"title": "Card A", "image_url": "/api/file/a.webp"})
+    rows = cs_proof.staged_photos(folder)
+    check("every staged row is offered, with the title it was staged for",
+          rows == [{"title": "Card A",
+                    "url": "https://canadianshopper.ca/api/file/a.webp"}],
+          str(rows))
+    check("a row the staging step has not rewritten is not offered",
+          not any("shop.example" in row["url"] for row in rows), str(rows))
+    offered = cs_proof.photo_candidates(staged_rows=rows)
+    check("the batch's rows reach the photo list, named by their titles",
+          offered and offered[0]["url"] ==
+          "https://canadianshopper.ca/api/file/a.webp" and
+          "Card A" in offered[0]["source"], str(offered))
+
     check("a photo address is made whole the same way everywhere",
           cs_proof.absolute_photo("/api/file/x.webp") ==
           "https://canadianshopper.ca/api/file/x.webp" and
