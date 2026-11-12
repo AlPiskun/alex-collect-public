@@ -688,8 +688,10 @@ def test_pdf(root):
           == (827, 1169), quote_pdf.build_pages(sample(), dpi=100)[0].size)
 
     #  A letterhead longer than the band holds used to print its last line
-    #  half on the white page under the colour.
-    check("a long letterhead is cut down to the lines that fit",
+    #  half on the white page under the colour, and the band itself could not
+    #  be read: its two smaller lines were a third of the way to white, 2.5:1
+    #  against their own background.
+    check("a letterhead longer than a fixed band is joined, never dropped",
           quote_pdf.contact_lines("18 Maple Row\nOrangeville, ON\n"
                                   "L9W 2C3\npiskuncards.ca", 2) ==
           ["18 Maple Row",
@@ -701,13 +703,80 @@ def test_pdf(root):
           ["18 Maple Row", "piskuncards.ca"])
     check("with no room at all, nothing is drawn",
           quote_pdf.contact_lines("anything", 0) == [])
+
+    def band_page(look_contact):
+        doc = sample()
+        doc["look"]["contact"] = look_contact
+        return quote_pdf.build_pages(doc, dpi=100)[0]
+
+    page_for = quote_pdf.Page(100)
+    fonts = quote_pdf.fonts_for(page_for)
+
+    def laid_out(contact):
+        return quote_pdf.contact_layout(page_for, contact, fonts,
+                                        page_for.margin, page_for.pt(18),
+                                        "QUOTE")
+
+    website = "https://www.piskuncards.ca/shop/all-cards?page=2"
+    layout = laid_out("18 Maple Row\nOrangeville, ON L9W 2C3\n"
+                      "(519) 555-0142\n" + website)
+    check("every line the shop typed is laid out, the website included",
+          layout["lines"][:3] == ["18 Maple Row", "Orangeville, ON L9W 2C3",
+                                  "(519) 555-0142"]
+          and layout["lines"][-1] == website, layout["lines"])
+    check("the band grows to hold them rather than cutting the last off",
+          layout["height"] > page_for.pt(quote_pdf.BAND * 72)
+          and layout["top"] + len(layout["lines"]) * layout["line_height"]
+          <= layout["height"] - page_for.pt(4),
+          (layout["height"], layout["top"]
+           + len(layout["lines"]) * layout["line_height"]))
+    check("and it will not grow past what the paper's design allows",
+          laid_out("\n".join("line %d" % n for n in range(40)))["height"]
+          <= page_for.pt(quote_pdf.MAX_BAND * 72) + 1, "")
+
+    #  A web address is one word: it cannot wrap, and the old wrapper cut it
+    #  at the column. The block steps down in size instead, so the address is
+    #  whole - half an address is not an address.
+    long_url = ("https://www.piskuncards.ca/category/hockey/"
+                "1980s-o-pee-chee-and-topps?sort=price&per_page=60")
+    long = laid_out("18 Maple Row\n" + long_url)
+    check("a web address too wide for the band is drawn whole, smaller",
+          long["lines"][-1] == long_url
+          and quote_pdf.CONTACT_SMALLEST <= quote_pdf.CONTACT_POINTS, long)
+    check("and it is never drawn down past what can still be read",
+          quote_pdf.CONTACT_SMALLEST >= 6.5, quote_pdf.CONTACT_SMALLEST)
+
+    #  The letterhead and the number are read off the colour, not assumed:
+    #  the same two mixes on a navy band as on a yellow one.
+    for name, colour in (("navy", (31, 78, 121)), ("red", (198, 40, 40)),
+                         ("yellow", (250, 230, 120)), ("grey", (200, 200, 200))):
+        check("the letterhead on a %s band is readable (5.5:1 or better)"
+              % name, quote_pdf.contrast(quote_pdf.quiet_on(colour, 5.5),
+                                         colour) >= 5.49,
+              round(quote_pdf.contrast(quote_pdf.quiet_on(colour, 5.5),
+                                       colour), 2))
+        check("and the number on a %s band reads at least as well as it"
+              % name,
+              quote_pdf.contrast(quote_pdf.quiet_on(colour, 7.0), colour)
+              >= quote_pdf.contrast(quote_pdf.quiet_on(colour, 5.5), colour)
+              and quote_pdf.contrast(quote_pdf.quiet_on(colour, 7.0),
+                                     colour) >= 4.5,
+              round(quote_pdf.contrast(quote_pdf.quiet_on(colour, 7.0),
+                                       colour), 2))
+    check("the old letterhead grey failed that bar on a navy band",
+          quote_pdf.contrast(quote_pdf.tint((31, 78, 121), 0.35),
+                             (31, 78, 121)) < 3.0, "")
+
     tall = sample()
-    tall["look"]["contact"] = ("18 Maple Row\nOrangeville, ON L9W 2C3\n"
-                               "piskuncards.ca")
+    tall["look"].update({"contact": "18 Maple Row\nOrangeville, ON L9W 2C3\n"
+                                    "(519) 555-0142\npiskuncards.ca",
+                         "color": "#1F4E79"})
     tall_page = quote_pdf.build_pages(tall, dpi=100)[0]
-    edge = int(round(quote_pdf.BAND * 100))
-    #  Row ``edge`` is the band's own last row; the ink that used to spill was
-    #  in the white rows under it, before the parties block starts.
+    edge = quote_pdf.band_bottom(tall_page, 100)
+    check("the band is taller than an empty letterhead's",
+          edge > int(round(quote_pdf.BAND * 100)), edge)
+    #  The rows just under the colour must be white: the ink that used to
+    #  spill was in them, before the parties block starts.
     below = {tall_page.getpixel((x, y)) for y in range(edge + 1, edge + 6)
              for x in range(30, 700)}
     check("no line of it is drawn on the white page under the band",

@@ -179,7 +179,7 @@ class PluginManager:
     """Install, list, enable, disable, and remove local plugin ZIPs."""
 
     def __init__(self, root=None, host_api=PLUGIN_API_VERSION,
-                 core_version="3.35"):
+                 core_version="3.36"):
         self.root = Path(root) if root is not None else default_plugin_root()
         self.root = self.root.expanduser()
         self.host_api = host_api

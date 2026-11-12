@@ -80,7 +80,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.35"
+VERSION = "3.36"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -13286,9 +13286,12 @@ def build_quote(parent, app):
     ttk.Button(logo_row, text="No logo", command=lambda: logo_var.set("")).pack(
         side="left", padx=(6, 0))
     ttk.Label(look, text="Contact lines printed beside the logo (address, "
-                         "phone, website - one per line):",
+                         "phone, website - one per line). The band on the "
+                         "printed page grows to hold every line typed here:",
               style="Dim.TLabel").pack(anchor="w", pady=(6, 0))
-    contact_box = tk.Text(look, height=2, wrap="word", font=("Consolas", 9))
+    #  Four rows, not two: the address alone is two lines on most shops, and
+    #  a box showing half of what is printed is how a website gets dropped.
+    contact_box = tk.Text(look, height=4, wrap="word", font=("Consolas", 9))
     contact_box.pack(fill="x")
 
     #  -- 5. save, print, order -------------------------------------------
