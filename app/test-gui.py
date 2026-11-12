@@ -175,6 +175,25 @@ def main():
     #  version and the folder that version came from.
     print("== 0. Alex Collect %s, from %s ==" % (
         gui.VERSION, Path(gui.__file__).resolve().parent))
+    #  And whether this folder is the checkout at all. A folder one word
+    #  different - an old copy of the app kept beside the clone - runs its own
+    #  older gui.py and its own older test files, and the checklist then
+    #  answers "can't open file" sixteen times for files it has never held.
+    #  Said once, before any of its failures are read.
+    absent = [name for name in ("version_sync.py", "test-version.py",
+                                "test-order-pdf.py")
+              if not (HERE / name).is_file()]
+    if absent:
+        print("=" * 70)
+        print("  NOT THE CHECKOUT: this folder has no %s."
+              % ", ".join(absent))
+        print("  What follows tests the code here, not the version a pull")
+        print("  request is about. The checklist in docs/TESTING.md begins")
+        print("  with `python version_sync.py --check`; if that says it")
+        print("  cannot open the file, stop and run the suite from the")
+        print("  clone being reviewed - `git log -1` there is the commit")
+        print("  named in the PR.")
+        print("=" * 70)
     import tkinter.messagebox as mb
     answers = {"askyesno": True, "shown": [],
                "ai_url": "https://ai.example/chat", "opened_urls": [],

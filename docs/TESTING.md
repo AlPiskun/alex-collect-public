@@ -65,7 +65,18 @@ The top commit must match the PR page on GitHub.
 
 ## 4. Run the suite
 
-`test-gui.py` prints the version and the folder it is testing on its first
+**First, be in the right folder.** The checklist starts with `python
+version_sync.py --check`, and a folder that answers *can't open file
+version_sync.py* is not the checkout under review — it is an older copy of the
+app, often one word different in its name (`alex-collect-app` beside
+`alex-collect-public`). Every later command then answers the same thing for
+files that copy has never held, and the one file that *does* run prints a
+plausible failure nobody should read. A real checkout holds `version_sync.py`,
+`test-version.py` and `test-order-pdf.py`; if any of the three is missing, stop
+and `cd` to the clone being reviewed. `test-gui.py` now says so above its first
+check when it is run from such a folder.
+
+`test-gui.py` then prints the version and the folder it is testing on its first
 line — for example `== 0. Alex Collect 3.36, from
 C:\...\alex-collect-public\app ==`. Check that against the PR before reading
 any failure: a clone left on an older commit has an older `gui.py` beside an
