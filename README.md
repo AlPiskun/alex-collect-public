@@ -78,27 +78,75 @@ The CanadianShopper plugin is a separate, privately maintained package and is no
 
 Step-by-step instructions for checking a branch on Windows - including the one-time git setup and the common traps - are in [docs/TESTING.md](docs/TESTING.md).
 
-From the `app` directory:
+**One command runs the whole checklist** - from the repository's top folder, or
+from anywhere with the full path:
+
+```sh
+python check.py
+```
+
+It reads the version out of `app/gui.py`, says which folder it is about to
+test, runs every check below in order, shows each one's last line, and ends
+with what failed and the command that reads one on its own. `--list` says what
+it would run and `--only ebay` runs just the checks whose name contains that
+word. It finds the checkout from its own location, so it cannot be started in
+the wrong folder by accident: pointed at a folder that is not a checkout, it
+says so and names the files that are missing, instead of printing a page of
+"can't open file" - which is what the checklist looks like when it is run in
+an older copy of the app that happens to sit next door.
+
+The same work, one script at a time, from the `app` directory:
 
 ```sh
 python version_sync.py --check
+python test-version.py
 python test-gui.py
-python test-order-pdf.py
 python test-gui-ergonomics.py
-python test-linux-packaging.py
 python test-ai-agent-flow.py
+python test-custom-ai-commands.py
 python test-user-settings.py
 python test-plugin-manager.py
 python test-core-sales.py
 python test-facebook-feed.py
 python test-facebook-delivery.py
 python test-ebay-quicklist.py
+python test-ebay-fill.py
+python test-ebay-skip.py
 python test-pipeline-output-organization.py
 python test-category-plan.py
 python test-market-rerun.py
 python test-pipeline-listing.py
-python test-custom-ai-commands.py
+python test-ai-prompts.py
+python test-process-utils.py
+python test-photo-replace.py
+python test-photo-queue.py
+python test-photo-assign.py
+python test-photo-sheets.py
+python test-photo-panel.py
+python test-tool-dialog.py
+python test-linux-packaging.py
+python test-image-store.py
+python test-woo-orders.py
+python test-sale-preview.py
+python test-stock-compare.py
+python test-cs-edit.py
+python test-cs-proof.py
+python test-cs-record.py
+python test-cs-gallery.py
+python test-cs-stage.py
+python test-cs-listing.py
+python test-cs-products.py
+python test-market-stock.py
+python test-stock-write.py
+python test-woo-edit.py
+python test-woo-create.py
+python test-order-panel.py
+python test-order-pdf.py
+python test-order-sheet.py
+python test-quote.py
+python test-woo-media.py
 python ../installer/test-bundled-config.py
+python test-check-runner.py
 ```
 
 The GUI test needs a working desktop display (or Xvfb on headless Linux).

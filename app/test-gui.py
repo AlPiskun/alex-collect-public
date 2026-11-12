@@ -34,6 +34,47 @@ XVFB = None
 TMP = Path(tempfile.gettempdir())
 
 
+def _utf8_guard(source):
+    """The feed's own lines that make its console streams UTF-8.
+
+    Returns the source of the loop that reconfigures ``sys.stdout`` and
+    ``sys.stderr`` - whatever quoting, spacing or error mode it is written
+    with - or ``""`` when the file has no such loop. Read out of the syntax
+    tree, not by looking for a string: a check that insists on one spelling
+    fails when the line is merely rewritten.
+    """
+    import ast
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return ""
+    for node in tree.body:
+        if not isinstance(node, ast.For):
+            continue
+        targets = node.iter.elts if isinstance(node.iter, (ast.Tuple,
+                                                           ast.List)) else []
+        streams = {elt.attr for elt in targets
+                   if isinstance(elt, ast.Attribute)
+                   and isinstance(elt.value, ast.Name)
+                   and elt.value.id == "sys"}
+        if not {"stdout", "stderr"} <= streams:
+            continue
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Call):
+                continue
+            func = inner.func
+            if not (isinstance(func, ast.Attribute)
+                    and func.attr == "reconfigure"):
+                continue
+            encodings = [keyword.value for keyword in inner.keywords
+                         if keyword.arg == "encoding"]
+            for value in encodings:
+                if (isinstance(value, ast.Constant)
+                        and str(value.value).lower().replace("-", "") == "utf8"):
+                    return ast.get_source_segment(source, node) or ""
+    return ""
+
+
 def check(name, cond, extra=""):
     global PASS, FAIL
     if cond:
@@ -1987,21 +2028,34 @@ def main():
         ok = False
     check("the feed companion compiles", ok)
     feed_src = feed.read_text(encoding="utf-8")
-    check("the feed forces UTF-8 for Unicode console output",
-          "reconfigure(encoding=\"utf-8\", errors=\"replace\")"
-          in feed_src)
-    # Reproduce the Windows redirected-stream default and prove the same
-    # reconfigure step can print the emoji that crashed on the test PC.
+    #  Read the guard out of the feed and RUN it, rather than looking for one
+    #  spelling of it in the text. The check used to demand the exact string
+    #  `reconfigure(encoding="utf-8", errors="replace")`, so the same, working
+    #  code failed it as soon as it was written with single quotes, a space
+    #  after a comma, or errors='strict' - a check that punished punctuation.
+    guard = _utf8_guard(feed_src)
+    check("the feed has a guard that reconfigures its console streams",
+          bool(guard), guard[:80])
     enc_env = os.environ.copy()
-    enc_env["PYTHONIOENCODING"] = "cp1252"
-    enc_probe = subprocess.run(
+    enc_env["PYTHONIOENCODING"] = "cp1252"      # Windows' redirected default
+    emoji = "\U0001f195 New products: 1"
+    probe = subprocess.run(
         [sys.executable, "-c",
-         "import sys; sys.stdout.reconfigure(encoding='utf-8', "
-         "errors='replace'); print('🆕 New products: 1')"],
+         "import sys\n%s\nprint(%r)" % (guard, emoji)],
         capture_output=True, env=enc_env)
-    check("UTF-8 console survives a cp1252 redirected stream",
-          enc_probe.returncode == 0 and b"New products: 1" in enc_probe.stdout
-          and b"UnicodeEncodeError" not in enc_probe.stderr)
+    check("the feed forces UTF-8 for Unicode console output",
+          probe.returncode == 0 and b"New products: 1" in probe.stdout
+          and b"UnicodeEncodeError" not in probe.stderr,
+          (probe.returncode, probe.stdout[-120:], probe.stderr[-200:]))
+    #  And the check can fail: without the feed's own guard the very same
+    #  child dies on the same emoji, so a green line above means something.
+    bare = subprocess.run(
+        [sys.executable, "-c", "print(%r)" % emoji],
+        capture_output=True, env=enc_env)
+    check("and without it the same stream really does fail",
+          bare.returncode != 0 or b"UnicodeEncodeError" in bare.stderr
+          or b"New products" not in bare.stdout,
+          (bare.returncode, bare.stdout[-80:], bare.stderr[-120:]))
 
     check("the feed ships with no one-off diagnostic IDs",
           "10290" not in feed_src and 'CHECK_IDS = []' in feed_src)

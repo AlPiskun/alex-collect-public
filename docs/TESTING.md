@@ -82,6 +82,28 @@ C:\...\alex-collect-public\app ==`. Check that against the PR before reading
 any failure: a clone left on an older commit has an older `gui.py` beside an
 older test file, and its failures look exactly like the current work's.
 
+**One command runs all of it.** From the checkout's top folder, or from
+anywhere at all with the full path:
+
+```cmd
+cd C:\Users\Owner\Documents\GitHub\alex-collect-public
+python check.py
+```
+
+It reads the version out of `gui.py`, names the folder it is about to test,
+runs every script in the list below in that order, shows each one's last line,
+and ends with a tally of what failed and the exact command that reads one on
+its own. `python check.py --list` says what it would run;
+`python check.py --only ebay` runs just the checks whose name contains
+"ebay". Because it finds the checkout from its own location, it cannot be
+started in the wrong folder by accident: pointed at one that is not a
+checkout, it says so and names the files that are missing instead of printing
+a page of "can't open file". `test-check-runner.py` checks the runner itself,
+including that the list below and its own list are the same list.
+
+The rest of this page is the same work one script at a time, which is what to
+do when one of them fails and the whole story is wanted.
+
 Run `python version_sync.py --check` first, and believe it: it reads the
 version out of `gui.py` and compares every other place that has to say it, and
 it is the one check that failed while the rest were green. Both `.iss` files
@@ -110,6 +132,8 @@ python test-core-sales.py
 python test-facebook-feed.py
 python test-facebook-delivery.py
 python test-ebay-quicklist.py
+python test-ebay-fill.py
+python test-ebay-skip.py
 python test-pipeline-output-organization.py
 python test-category-plan.py
 python test-market-rerun.py
@@ -119,7 +143,10 @@ python test-process-utils.py
 python test-photo-replace.py
 python test-photo-queue.py
 python test-photo-assign.py
+python test-photo-sheets.py
 python test-photo-panel.py
+python test-tool-dialog.py
+python test-linux-packaging.py
 python test-image-store.py
 python test-woo-orders.py
 python test-sale-preview.py
@@ -127,20 +154,21 @@ python test-stock-compare.py
 python test-cs-edit.py
 python test-cs-proof.py
 python test-cs-record.py
+python test-cs-gallery.py
 python test-cs-stage.py
-python test-ebay-fill.py
-python test-ebay-skip.py
+python test-cs-listing.py
+python test-cs-products.py
 python test-market-stock.py
 python test-stock-write.py
 python test-woo-edit.py
-python test-cs-listing.py
+python test-woo-create.py
 python test-order-panel.py
+python test-order-pdf.py
 python test-order-sheet.py
 python test-quote.py
-python test-order-pdf.py
 python test-woo-media.py
-python test-woo-create.py
-python ..\installer\test-bundled-config.py
+python ../installer/test-bundled-config.py
+python test-check-runner.py
 ```
 
 Notes:
@@ -151,6 +179,7 @@ Notes:
 | `test-gui-ergonomics.py` | Tk | Headless-ish layout assertions - the task groups (including the new eBay store panel and the console's follow-the-end rule: new output scrolls into view only while the end is on screen, and leaves the view alone once the reader has scrolled up). The shop's stock window is driven the same way, with the products already read and the writer replaced: the rows it lists and the search that narrows them, the product it picks and the count it starts at, a count that is not a number and a product the shop does not count both refused before anything is sent, one write for one product, and the number the website answered with reported with the old one beside it. |
 | `test-ai-agent-flow.py`, `test-custom-ai-commands.py` | Tk | Import `gui.py`, so they need the toolkit. |
 | `test-facebook-feed.py` | pandas, openpyxl | Also the nested-helper launcher: the console python, `-u`, the helper's own folder, a helper that explains itself not being retried, a silent failure retried once on the app's own interpreter, and the child's pipes - stdout/stderr owned by the pipeline, stdin never the app's, unbuffered, no console window. Plus the stale-workbook check: a failed export names the older `facebook_delta_*.xlsx` instead of letting it look like this run's. And the workbook-lock check, which reads the shipped `locked_files` out of `facebook_feed.py`: a free workbook is not called locked, a locked one is named with its reason kept, a workbook that does not exist yet is not a lock, and the answer comes before the first feed request. |
+| `test-check-runner.py` | nothing | The one-command runner, `check.py` at the top of the repository: the checkout is found from the folder the runner itself lives in and from a folder inside it, a folder that is not a checkout is refused by name (with the files it is missing, rather than a page of "can't open file"), the version is read out of `gui.py` without importing Tk, the plan starts with `version_sync.py --check`, every script it plans exists, every `test-*.py` on disk is either in the list or run last with the addition said out loud, a script's verdict is its exit code and its last printed line, a failing script makes the run fail and is named in the tally with the command that reads it, and the list in `docs/TESTING.md` is the same list the runner walks. |
 | `test-user-settings.py`, `test-ebay-quicklist.py` | Pillow | Prints `Pillow is required` and stops if missing. |
 | `test-linux-packaging.py` | Tk, Xvfb | Linux only; skips itself on Windows. |
 | `test-market-rerun.py`, `test-pipeline-listing.py` | Pillow | Pipeline regression suite; no GUI. `test-pipeline-listing.py` also reads the plugin version rules: 1.0.27 is the streaming version, an unreadable or missing manifest is never treated as new, and it checks the SKU a card is given: a title naming a dark or light back carries that printing in the SKU (so two printings of one card are two products rather than one SKU), a title naming neither keeps the SKU it always had, and two rows on one SKU are printed with what to do about it while the CSV is being written. |
