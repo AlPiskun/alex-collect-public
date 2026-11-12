@@ -914,6 +914,13 @@ class SyncThread:
     therefore run on a real thread, which is what they were written for; the
     panel's own work (no arguments) still runs at once, which is the whole
     point of the stand-in.
+
+    Being a thread means being *joinable*, too. The reader thread is waited on
+    (``self.stdout_thread.join(self._remaining_time(endtime))``) and then asked
+    whether it is still alive, and the first version of this stand-in answered
+    neither question: ``AttributeError: 'SyncThread' object has no attribute
+    'join'``. A thread that has already run its work has nothing to wait for,
+    so its join returns at once and it is never alive.
     """
 
     _real = threading.Thread
@@ -923,14 +930,22 @@ class SyncThread:
         self.args = tuple(args or ())
         self.kwargs = dict(kwargs or {})
         self.daemon = daemon
+        self._thread = None
 
     def start(self):
         if self.args or self.kwargs:
-            thread = self._real(target=self.target, args=self.args,
-                                kwargs=self.kwargs, daemon=self.daemon)
-            thread.start()
+            self._thread = self._real(target=self.target, args=self.args,
+                                      kwargs=self.kwargs, daemon=self.daemon)
+            self._thread.start()
             return
         self.target()
+
+    def join(self, timeout=None):
+        if self._thread is not None:
+            self._thread.join(timeout)
+
+    def is_alive(self):
+        return self._thread is not None and self._thread.is_alive()
 
 
 def build(app):
@@ -1000,9 +1015,9 @@ def test_the_thread_stand_in_forwards_arguments():
     at_once.start()
     check("work with no arguments runs immediately", got == ["ran"], got)
     passed = []
-    SyncThread(target=lambda fh, buffer, flag=None: passed.append(
-        (fh, buffer, flag)), args=("stdout", "buffer"), kwargs={"flag": 1}
-    ).start()
+    reader = SyncThread(target=lambda fh, buffer, flag=None: passed.append(
+        (fh, buffer, flag)), args=("stdout", "buffer"), kwargs={"flag": 1})
+    reader.start()
     real = threading.Event()
     for _ in range(200):
         if passed:
@@ -1010,6 +1025,14 @@ def test_the_thread_stand_in_forwards_arguments():
         real.wait(0.02)
     check("a target with arguments gets every one of them",
           passed == [("stdout", "buffer", 1)], passed)
+    #  A pipe waits for its reader thread and then asks whether it is still
+    #  running. The first version of this stand-in answered neither question
+    #  and the suite died here on Windows with "'SyncThread' object has no
+    #  attribute 'join'" - so both are exercised on the kind of thread a pipe
+    #  makes, which is the one with arguments.
+    reader.join(1)
+    check("and the thread it made can be joined and asked if it is alive",
+          reader.is_alive() is False, reader.is_alive())
     #  And the process it was patched into still works, which is the point:
     #  the app pipes the system command it runs to privatise a saved quote.
     with patch_object(gui.threading, "Thread", SyncThread):
@@ -1018,6 +1041,12 @@ def test_the_thread_stand_in_forwards_arguments():
     check("a piped child process still runs under the stand-in",
           result.returncode == 0 and "a piped line" in result.stdout,
           (result.returncode, result.stdout, result.stderr[:200]))
+    #  The at-once thread is joinable too - there is simply nothing to wait for.
+    done = SyncThread(target=lambda: None)
+    done.start()
+    done.join(1)
+    check("a thread with nothing left to do can be joined, and is finished",
+          done.is_alive() is False, done.is_alive())
 
 
 def test_private_files(root):
