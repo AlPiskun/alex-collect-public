@@ -1,9 +1,15 @@
-Alex Collect 3.35 — public core package
+Alex Collect 3.36 — public core package
 
 Root:
   LICENSE                         MIT license for the core
   README.md                       installation and project overview
   requirements.txt                Python dependencies
+  check.py                        run the whole test checklist from one
+                                   command: finds the checkout from its own
+                                   folder, names the version and folder under
+                                   test, and refuses by name outside a
+                                   checkout instead of printing "can't open
+                                   file" forty times
   START Alex Collect.bat          Windows launcher
   install-linux.sh                Linux user install helper
   start-alexcollect.sh            Linux launcher

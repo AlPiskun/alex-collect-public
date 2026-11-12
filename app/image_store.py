@@ -234,6 +234,14 @@ def delete(files):
             size = path.stat().st_size
         except OSError:
             size = 0
+        if path.is_dir():
+            #  Named in the seller's words rather than the operating system's:
+            #  Windows says "[WinError 5] Access is denied" for a folder and
+            #  Linux says "Is a directory", and neither tells a person that
+            #  what they ticked was not a picture.
+            failed.append({"name": path.name, "path": path,
+                           "why": "it is a folder, not an image"})
+            continue
         try:
             path.unlink()
         except OSError as exc:

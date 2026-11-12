@@ -12,6 +12,7 @@ with the documented flags - before any of that.
 """
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -167,14 +168,22 @@ def test_counts_and_names():
     check("the staged CSVs are the ones the plugin says it wrote",
           cs_stage.ready_csvs(stage) ==
           ["cs-ready/canadianshopper_import_001.csv"], "")
+    #  Absolute means absolute on the machine running this: on Windows a path
+    #  with no drive is not absolute, so the two answers are built from a root
+    #  that machine really has rather than written as "/batch", which passed
+    #  on Linux and failed on the seller's PC.
+    batch = Path("/batch") if os.name != "nt" else Path("C:/batch")
+    ready = Path("/ready") if os.name != "nt" else Path("C:/ready")
     check("a relative answer is resolved from the batch folder it was given",
-          cs_stage.output_paths(stage, "/batch") ==
-          [Path("/batch/cs-ready/canadianshopper_import_001.csv")],
-          str(cs_stage.output_paths(stage, "/batch")))
+          cs_stage.output_paths(stage, str(batch)) ==
+          [batch / "cs-ready" / "canadianshopper_import_001.csv"],
+          str(cs_stage.output_paths(stage, str(batch))))
     check("an absolute answer is left exactly as the plugin wrote it",
           cs_stage.output_paths(
-              {"files": [{"output": "/ready/a.csv"}]}, "/batch") ==
-          [Path("/ready/a.csv")], "")
+              {"files": [{"output": str(ready / "a.csv")}]}, str(batch)) ==
+          [ready / "a.csv"],
+          str(cs_stage.output_paths({"files": [{"output": str(ready / "a.csv")}]},
+                                    str(batch))))
     check("an error answer is read for its own reason",
           cs_stage.fatal_message({"error": "no session"}) == "no session" and
           cs_stage.fatal_message({"message": "no batch"}) == "no batch" and
@@ -373,15 +382,23 @@ def test_a_plugin_without_the_action_keeps_the_old_command():
     print()
     print("== 8. an older plugin keeps the command it documents ==")
     folder = Path(tempfile.mkdtemp())
-    results = batch(folder)
-    app, parent = build_panel(folder)
+    batch(folder)
+    #  The panel is BUILT inside the patch, not before it. A panel adds its
+    #  buttons from what the plugin offers at that moment, so one built first
+    #  and stubbed afterwards offers the preview on any machine where the real
+    #  plugin is installed - the seller's PC, and not the Linux this suite was
+    #  first written on. The check then said "the preview is not offered"
+    #  about a panel that had already been handed one.
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: ("/plugins/cs/tools/cs-image-sync.py"
                                       if action == cs_stage.LEGACY_ACTION
                                       else "")):
+        app, parent = build_panel(folder)
         find(parent, gui.ttk.Button,
              "Stage the photos (square + host + rewrite CSVs)").invoke()
-    run = app.runs[-1] if app.runs else {}
+        run = app.runs[-1] if app.runs else {}
+        preview_missing = find(
+            parent, gui.ttk.Button, "Preview the staging (no upload)") is None
     args = run.get("args") or []
     check("without the action the old prepare command is used",
           args[:2] == ["--mode", "prepare"], str(args))
@@ -389,11 +406,20 @@ def test_a_plugin_without_the_action_keeps_the_old_command():
           "--csv" in args and args[args.index("--csv") + 1].endswith(
               "canadianshopper_import_001.csv"), str(args))
     check("and the preview is not offered, because it would not be a preview",
-          find(parent, gui.ttk.Button, "Preview the staging (no upload)")
-          is None, "")
+          preview_missing, "")
     check("the old command is the plugin's own image-sync script",
           run.get("tool") == "/plugins/cs/tools/cs-image-sync.py",
           str(run.get("tool")))
+
+    #  The same panel, built where the plugin does offer the preview, has one.
+    #  That is what makes the check above a statement about what the panel was
+    #  built with rather than about a button that never exists at all.
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/tools/cs-photo-stage.py"):
+        _app, newer = build_panel(folder)
+    check("a panel built with the newer plugin does offer the preview",
+          find(newer, gui.ttk.Button, "Preview the staging (no upload)")
+          is not None, "")
 
 
 def main():

@@ -163,6 +163,26 @@ def test_facts():
     check("with the quote's own total", solo["total"] == 3.0, solo["total"])
     check("and the look that was handed to it",
           solo["look"]["color"] == "#C62828", solo["look"])
+    #  A quote printed as an order sheet with no website order to read from:
+    #  its address used to be flattened by the single-line tidying, and the
+    #  sheet went out reading "18 Maple Row Orangeville, ON L9W 2C3".
+    saved = quote_model.new_quote(number="Q-2026-0010", currency="C$",
+                                  today=date(2026, 10, 30))
+    saved["customer"].update({"name": "Dana Whitfield",
+                              "address": "18 Maple Row\nOrangeville, ON "
+                                         "L9W 2C3"})
+    quote_model.add_item(saved, {"id": 8, "name": "A typed card",
+                                 "price": "3.00"})
+    from_saved = order_pdf.document(quote=saved)
+    check("a quote with no order keeps its address as the lines typed",
+          from_saved["customer"]["address"] ==
+          "18 Maple Row\nOrangeville, ON L9W 2C3", from_saved["customer"])
+    saved_page = order_pdf.build_pages(from_saved, dpi=100)[0][0]
+    saved_spans = _ink_spans(saved_page, quote_pdf.Page(100).margin,
+                             quote_pdf.Page(100).right - 200, 0,
+                             quote_pdf.Page(100).height)
+    check("and those lines are drawn one above the other, not run together",
+          len(saved_spans) >= 4, saved_spans)
     lined = order_pdf.document(quote=quote, order=order,
                                look={"contact": "18 Maple Row\npiskuncards.ca"})
     check("a two-line contact block is not run onto one line",
@@ -306,6 +326,117 @@ def test_paper():
           counts)
 
 
+# ------------------------------------------------- 3b. the letterhead and the #
+def _ink_spans(image, x0, x1, y0, y1, background=(255, 255, 255), gap=2):
+    """The rows of ``image`` that carry ink, as (first_row, last_row) pairs."""
+    spans = []
+    run = None
+    for y in range(y0, y1):
+        ink = any(image.getpixel((x, y)) != background for x in range(x0, x1))
+        if ink:
+            run = y if run is None else run
+        elif run is not None:
+            spans.append((run, y - 1))
+            run = None
+    if run is not None:
+        spans.append((run, y1 - 1))
+    #  A descender or a dotted i can break one line into two runs a row apart.
+    merged = []
+    for span in spans:
+        if merged and span[0] - merged[-1][1] <= gap:
+            merged[-1] = (merged[-1][0], span[1])
+        else:
+            merged.append(span)
+    return merged
+
+
+LETTERHEAD = ("18 Maple Row\nOrangeville, ON L9W 2C3\n(519) 555-0142\n"
+              "https://www.piskuncards.ca/shop")
+
+
+def test_letterhead_and_number():
+    print()
+    print("== 3b. the address, the URL and the order number can be read ==")
+    quote = quote_with_cards()
+    sheet = order_pdf.document(quote=quote, order=order_for(quote))
+    sheet["look"]["contact"] = LETTERHEAD
+    dpi = 100
+    page = order_pdf.build_pages(sheet, dpi=dpi)[0][0]
+
+    #  The shop's own four lines used to be cut to the band's two, and the
+    #  website wrapped onto the third and was thrown away: the sheet went out
+    #  with no address for the shop's web page on it.
+    layout = quote_pdf.contact_layout(page_for := quote_pdf.Page(dpi),
+                                      LETTERHEAD,
+                                      quote_pdf.fonts_for(page_for),
+                                      page_for.margin, page_for.pt(18),
+                                      "ORDER")
+    check("all four lines of the letterhead are drawn, not two",
+          len(layout["lines"]) == 4, layout["lines"])
+    check("the website is the last of them, whole",
+          layout["lines"][-1] == "https://www.piskuncards.ca/shop",
+          layout["lines"])
+    band_bottom = quote_pdf.band_bottom(page, dpi)
+    check("the band grew to hold them",
+          band_bottom >= layout["top"] + layout["lines"].__len__()
+          * layout["line_height"],
+          (band_bottom, layout["top"] + len(layout["lines"])
+           * layout["line_height"]))
+    #  And the ink is really on the paper: the letterhead's column holds the
+    #  shop's name and then one run of ink for each line typed under it, the
+    #  last of which is still inside the colour.
+    band_colour = (31, 78, 121)
+    spans = _ink_spans(page, page_for.margin, page_for.right - 200,
+                       page_for.pt(6), band_bottom, background=band_colour)
+    check("the letterhead's column really holds five lines of ink",
+          len(spans) == 5, spans)
+    last_row = spans[-1][1] if spans else 0
+    check("the last of them - the website - is on the colour, not under it",
+          spans and spans[-1][1] <= band_bottom - 2, (spans[-1:], band_bottom))
+    check("and no line of it hangs on the white page below the colour",
+          {page.getpixel((x, band_bottom + 3))
+           for x in range(30, 700)} == {quote_pdf.WHITE}, band_bottom)
+
+    #  Read, not assumed: the two quiet colours clear a printed page's bar on
+    #  every band colour, and the grey this sheet used to print was 2.5:1.
+    check("the old letterhead grey was too faint to read (under 3:1)",
+          quote_pdf.contrast(quote_pdf.tint(band_colour, 0.35), band_colour)
+          < 3.0, "")
+    check("the letterhead on the order now clears 4.5:1",
+          quote_pdf.contrast(quote_pdf.quiet_on(band_colour, 5.5),
+                             band_colour) >= 4.5, "")
+    check("and so does the order number in the band",
+          quote_pdf.contrast(quote_pdf.quiet_on(band_colour, 7.0),
+                             band_colour) >= 4.5, "")
+
+    #  The number is the one fact a packer matches the parcel to, so it is
+    #  drawn larger than the letterhead's lines and larger than it used to be.
+    fonts = quote_pdf.fonts_for(page_for)
+    check("the band's number is set larger than a footnote",
+          fonts["number"].size > fonts["small_bold"].size
+          and fonts["number"].size >= 1.4 * fonts["small_bold"].size,
+          (fonts["number"].size, fonts["small_bold"].size))
+    check("and the letterhead is larger than it was as a footnote too",
+          fonts["contact"].size > page_for.pt(8.4) - 1,
+          (fonts["contact"].size, page_for.pt(8.4)))
+
+    #  The number in the facts block, under the band: its ink is taller than
+    #  the date's on the line below, and taller than the status's.
+    plain = order_pdf.document(quote=quote, order=order_for(quote))
+    plain["look"]["contact"] = LETTERHEAD
+    facts = order_pdf.build_pages(plain, dpi=dpi)[0][0]
+    value_x = page_for.margin + int((page_for.right - page_for.margin) * 0.64) \
+        + page_for.pt(80)
+    spans = _ink_spans(facts, value_x, min(facts.width, value_x + page_for.pt(150)),
+                       quote_pdf.band_bottom(facts, dpi) + 8,
+                       quote_pdf.band_bottom(facts, dpi) + page_for.pt(140))
+    heights = [last - first + 1 for first, last in spans]
+    #  The number against the date under it: both are figures with no
+    #  descender, so the ink says how big the type is without a guess.
+    check("the ORDER number in the facts block is set larger than the date",
+          len(heights) >= 2 and heights[0] > heights[1], (heights, spans))
+
+
 # ------------------------------------------------------------------ 4. pages
 def test_pages():
     print()
@@ -373,6 +504,7 @@ def main():
     test_facts()
     test_pictures()
     test_paper()
+    test_letterhead_and_number()
     test_pages()
     test_private_file()
     print()

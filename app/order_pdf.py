@@ -74,6 +74,20 @@ def _number(value):
         return None
 
 
+def _block(value):
+    """Several lines of a quote's own, kept as lines.
+
+    The address box in the quote panel is four lines, and a quote printed as
+    an order sheet with no website order to read from used to have its
+    address flattened into one line by the whitespace-flattening used for a
+    single field: "18 Maple Row Orangeville, ON L9W 2C3" on one line, which
+    is not an address anybody can pack against. Each line is tidied; the
+    breaks are kept.
+    """
+    lines = [_text(line) for line in str(value or "").splitlines()]
+    return "\n".join(line for line in lines if line)
+
+
 def _address_lines(fields):
     """Woo's address fields as the lines that go on an envelope."""
     lines = []
@@ -238,7 +252,10 @@ def document(quote=None, order=None, look=None, currency="", today=None):
     quote_customer = quote.get("customer") or {}
     for key in ("name", "address", "email", "phone"):
         if not _text(customer.get(key)):
-            customer[key] = _text(quote_customer.get(key))
+            #  The address is a block, not a field: its own line breaks are
+            #  what makes it an address. The rest are single lines.
+            customer[key] = (_block(quote_customer.get(key)) if key == "address"
+                             else _text(quote_customer.get(key)))
 
     sums = _totals_from_order(order, items) if order else {}
     if not sums:
@@ -396,26 +413,33 @@ def _party_block(page, document, fonts, y):
         y_text += page.pt(13)
 
     x = page.margin + int((page.right - page.margin) * 0.64)
-    rows = [("ORDER", "#%s" % (document.get("number") or "-")),
-            ("DATE", document.get("date") or "-"),
-            ("STATUS", document.get("status") or "-"),
+    #  The order's own number is the one fact a packer matches the parcel to,
+    #  so it is set larger than the rows under it and given room of its own.
+    rows = [("ORDER", "#%s" % (document.get("number") or "-"),
+             fonts["h2"], page.pt(22)),
+            ("DATE", document.get("date") or "-", fonts["body_bold"],
+             page.pt(15)),
+            ("STATUS", document.get("status") or "-", fonts["body_bold"],
+             page.pt(15)),
             ("CARDS", "%d (%d item%s)" % (document.get("lines") or 0,
                                           document.get("units") or 0,
                                           "" if (document.get("units") or 0) == 1
-                                          else "s"))]
+                                          else "s"), fonts["body_bold"],
+             page.pt(15))]
     if document.get("paid"):
         #  Only when money actually arrived: "Not paid yet" would just repeat
         #  the status line a row above it.
-        rows.append(("PAID", document["paid"]))
+        rows.append(("PAID", document["paid"], fonts["body_bold"],
+                     page.pt(15)))
     if document.get("quote_number"):
-        rows.append(("FROM QUOTE", document["quote_number"]))
+        rows.append(("FROM QUOTE", document["quote_number"],
+                     fonts["body_bold"], page.pt(15)))
     y_row = y
-    value = fonts["body_bold"]
-    for heading, value_text in rows:
+    for heading, value_text, value, pitch in rows:
         page.draw.text((x, y_row), heading, font=label, fill=page.colour)
         page.draw.text((x + page.pt(80), y_row), str(value_text), font=value,
                        fill=quote_pdf.INK)
-        y_row += page.pt(15)
+        y_row += pitch
     return max(y_text, y_row) + page.pt(10)
 
 

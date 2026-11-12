@@ -28,6 +28,9 @@ app/sku-audit-*.csv
 app/ebay_fill/
 app/ebay-skips.json
 
+# The whole output of a failing check, kept for a bug report
+check-failures/
+
 # Temporary runtime files
 *.log
 *.tmp

@@ -14,7 +14,9 @@ imported.
 import importlib.util
 import json
 import os
+import subprocess
 import sys
+import threading
 import tempfile
 from datetime import date
 from pathlib import Path
@@ -688,8 +690,10 @@ def test_pdf(root):
           == (827, 1169), quote_pdf.build_pages(sample(), dpi=100)[0].size)
 
     #  A letterhead longer than the band holds used to print its last line
-    #  half on the white page under the colour.
-    check("a long letterhead is cut down to the lines that fit",
+    #  half on the white page under the colour, and the band itself could not
+    #  be read: its two smaller lines were a third of the way to white, 2.5:1
+    #  against their own background.
+    check("a letterhead longer than a fixed band is joined, never dropped",
           quote_pdf.contact_lines("18 Maple Row\nOrangeville, ON\n"
                                   "L9W 2C3\npiskuncards.ca", 2) ==
           ["18 Maple Row",
@@ -701,13 +705,80 @@ def test_pdf(root):
           ["18 Maple Row", "piskuncards.ca"])
     check("with no room at all, nothing is drawn",
           quote_pdf.contact_lines("anything", 0) == [])
+
+    def band_page(look_contact):
+        doc = sample()
+        doc["look"]["contact"] = look_contact
+        return quote_pdf.build_pages(doc, dpi=100)[0]
+
+    page_for = quote_pdf.Page(100)
+    fonts = quote_pdf.fonts_for(page_for)
+
+    def laid_out(contact):
+        return quote_pdf.contact_layout(page_for, contact, fonts,
+                                        page_for.margin, page_for.pt(18),
+                                        "QUOTE")
+
+    website = "https://www.piskuncards.ca/shop/all-cards?page=2"
+    layout = laid_out("18 Maple Row\nOrangeville, ON L9W 2C3\n"
+                      "(519) 555-0142\n" + website)
+    check("every line the shop typed is laid out, the website included",
+          layout["lines"][:3] == ["18 Maple Row", "Orangeville, ON L9W 2C3",
+                                  "(519) 555-0142"]
+          and layout["lines"][-1] == website, layout["lines"])
+    check("the band grows to hold them rather than cutting the last off",
+          layout["height"] > page_for.pt(quote_pdf.BAND * 72)
+          and layout["top"] + len(layout["lines"]) * layout["line_height"]
+          <= layout["height"] - page_for.pt(4),
+          (layout["height"], layout["top"]
+           + len(layout["lines"]) * layout["line_height"]))
+    check("and it will not grow past what the paper's design allows",
+          laid_out("\n".join("line %d" % n for n in range(40)))["height"]
+          <= page_for.pt(quote_pdf.MAX_BAND * 72) + 1, "")
+
+    #  A web address is one word: it cannot wrap, and the old wrapper cut it
+    #  at the column. The block steps down in size instead, so the address is
+    #  whole - half an address is not an address.
+    long_url = ("https://www.piskuncards.ca/category/hockey/"
+                "1980s-o-pee-chee-and-topps?sort=price&per_page=60")
+    long = laid_out("18 Maple Row\n" + long_url)
+    check("a web address too wide for the band is drawn whole, smaller",
+          long["lines"][-1] == long_url
+          and quote_pdf.CONTACT_SMALLEST <= quote_pdf.CONTACT_POINTS, long)
+    check("and it is never drawn down past what can still be read",
+          quote_pdf.CONTACT_SMALLEST >= 6.5, quote_pdf.CONTACT_SMALLEST)
+
+    #  The letterhead and the number are read off the colour, not assumed:
+    #  the same two mixes on a navy band as on a yellow one.
+    for name, colour in (("navy", (31, 78, 121)), ("red", (198, 40, 40)),
+                         ("yellow", (250, 230, 120)), ("grey", (200, 200, 200))):
+        check("the letterhead on a %s band is readable (5.5:1 or better)"
+              % name, quote_pdf.contrast(quote_pdf.quiet_on(colour, 5.5),
+                                         colour) >= 5.49,
+              round(quote_pdf.contrast(quote_pdf.quiet_on(colour, 5.5),
+                                       colour), 2))
+        check("and the number on a %s band reads at least as well as it"
+              % name,
+              quote_pdf.contrast(quote_pdf.quiet_on(colour, 7.0), colour)
+              >= quote_pdf.contrast(quote_pdf.quiet_on(colour, 5.5), colour)
+              and quote_pdf.contrast(quote_pdf.quiet_on(colour, 7.0),
+                                     colour) >= 4.5,
+              round(quote_pdf.contrast(quote_pdf.quiet_on(colour, 7.0),
+                                       colour), 2))
+    check("the old letterhead grey failed that bar on a navy band",
+          quote_pdf.contrast(quote_pdf.tint((31, 78, 121), 0.35),
+                             (31, 78, 121)) < 3.0, "")
+
     tall = sample()
-    tall["look"]["contact"] = ("18 Maple Row\nOrangeville, ON L9W 2C3\n"
-                               "piskuncards.ca")
+    tall["look"].update({"contact": "18 Maple Row\nOrangeville, ON L9W 2C3\n"
+                                    "(519) 555-0142\npiskuncards.ca",
+                         "color": "#1F4E79"})
     tall_page = quote_pdf.build_pages(tall, dpi=100)[0]
-    edge = int(round(quote_pdf.BAND * 100))
-    #  Row ``edge`` is the band's own last row; the ink that used to spill was
-    #  in the white rows under it, before the parties block starts.
+    edge = quote_pdf.band_bottom(tall_page, 100)
+    check("the band is taller than an empty letterhead's",
+          edge > int(round(quote_pdf.BAND * 100)), edge)
+    #  The rows just under the colour must be white: the ink that used to
+    #  spill was in them, before the parties block starts.
     below = {tall_page.getpixel((x, y)) for y in range(edge + 1, edge + 6)
              for x in range(30, 700)}
     check("no line of it is drawn on the white page under the band",
@@ -830,13 +901,51 @@ class TextBox(FakeWidget):
 
 
 class SyncThread:
-    """The panel hands its network work to a thread; here it runs at once."""
+    """The panel hands its network work to a thread; here it runs at once.
 
-    def __init__(self, target=None, daemon=None, **kwargs):
+    It has to be a thread for *everything* in the run, not only for the panel:
+    on Windows ``subprocess`` starts a reader thread of its own for every
+    piped stream (``Popen._readerthread(target, fh, buffer)``), and the app
+    pipes the system's own command - ``icacls``, run to make a saved quote
+    readable by this account only. This stand-in dropped the arguments that
+    call comes with, so the reader thread raised "missing 2 required
+    positional arguments" in a background thread on Windows and nowhere else,
+    and the suite died with no failing check to read. Real arguments are
+    therefore run on a real thread, which is what they were written for; the
+    panel's own work (no arguments) still runs at once, which is the whole
+    point of the stand-in.
+
+    Being a thread means being *joinable*, too. The reader thread is waited on
+    (``self.stdout_thread.join(self._remaining_time(endtime))``) and then asked
+    whether it is still alive, and the first version of this stand-in answered
+    neither question: ``AttributeError: 'SyncThread' object has no attribute
+    'join'``. A thread that has already run its work has nothing to wait for,
+    so its join returns at once and it is never alive.
+    """
+
+    _real = threading.Thread
+
+    def __init__(self, target=None, args=(), kwargs=None, daemon=None, **extra):
         self.target = target
+        self.args = tuple(args or ())
+        self.kwargs = dict(kwargs or {})
+        self.daemon = daemon
+        self._thread = None
 
     def start(self):
+        if self.args or self.kwargs:
+            self._thread = self._real(target=self.target, args=self.args,
+                                      kwargs=self.kwargs, daemon=self.daemon)
+            self._thread.start()
+            return
         self.target()
+
+    def join(self, timeout=None):
+        if self._thread is not None:
+            self._thread.join(timeout)
+
+    def is_alive(self):
+        return self._thread is not None and self._thread.is_alive()
 
 
 def build(app):
@@ -891,6 +1000,53 @@ def build(app):
                            if "TOTAL" in str(w._kw.get("text") or "")) \
         if any("TOTAL" in str(w._kw.get("text") or "") for w in widgets) else None
     return parts
+
+
+def test_the_thread_stand_in_forwards_arguments():
+    print()
+    print("== 11b. the thread stand-in passes on what it was given ==")
+    #  The panel's own work takes no arguments and runs at once; anything that
+    #  does take arguments - Windows' subprocess reader threads, above all -
+    #  gets a real thread. Without this the suite died in a background thread
+    #  on Windows with "missing 2 required positional arguments" and no failing
+    #  check to read, which is the worst kind of failure to be handed.
+    got = []
+    at_once = SyncThread(target=lambda: got.append("ran"))
+    at_once.start()
+    check("work with no arguments runs immediately", got == ["ran"], got)
+    passed = []
+    reader = SyncThread(target=lambda fh, buffer, flag=None: passed.append(
+        (fh, buffer, flag)), args=("stdout", "buffer"), kwargs={"flag": 1})
+    reader.start()
+    real = threading.Event()
+    for _ in range(200):
+        if passed:
+            break
+        real.wait(0.02)
+    check("a target with arguments gets every one of them",
+          passed == [("stdout", "buffer", 1)], passed)
+    #  A pipe waits for its reader thread and then asks whether it is still
+    #  running. The first version of this stand-in answered neither question
+    #  and the suite died here on Windows with "'SyncThread' object has no
+    #  attribute 'join'" - so both are exercised on the kind of thread a pipe
+    #  makes, which is the one with arguments.
+    reader.join(1)
+    check("and the thread it made can be joined and asked if it is alive",
+          reader.is_alive() is False, reader.is_alive())
+    #  And the process it was patched into still works, which is the point:
+    #  the app pipes the system command it runs to privatise a saved quote.
+    with patch_object(gui.threading, "Thread", SyncThread):
+        result = subprocess.run([sys.executable, "-c", "print('a piped line')"],
+                                capture_output=True, text=True)
+    check("a piped child process still runs under the stand-in",
+          result.returncode == 0 and "a piped line" in result.stdout,
+          (result.returncode, result.stdout, result.stderr[:200]))
+    #  The at-once thread is joinable too - there is simply nothing to wait for.
+    done = SyncThread(target=lambda: None)
+    done.start()
+    done.join(1)
+    check("a thread with nothing left to do can be joined, and is finished",
+          done.is_alive() is False, done.is_alive())
 
 
 def test_private_files(root):
@@ -1249,6 +1405,7 @@ def main():
         test_order()
         test_pdf(root)
         test_pictures_and_links(root)
+        test_the_thread_stand_in_forwards_arguments()
         test_private_files(root)
         test_panel(root)
     print()

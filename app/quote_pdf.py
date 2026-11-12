@@ -132,17 +132,59 @@ def text_on(colour):
     return INK if luminance > 0.62 else WHITE
 
 
+def mix(colour, target, amount):
+    """``colour`` moved towards ``target``; 0 keeps it, 1 is the target."""
+    amount = max(0.0, min(1.0, float(amount)))
+    return tuple(int(round(channel + (other - channel) * amount))
+                 for channel, other in zip(colour[:3], target[:3]))
+
+
 def tint(colour, amount):
     """``colour`` mixed towards white; ``amount`` 0 is the colour, 1 is white."""
-    amount = max(0.0, min(1.0, float(amount)))
-    return tuple(int(round(channel + (255 - channel) * amount))
-                 for channel in colour[:3])
+    return mix(colour, WHITE, amount)
 
 
 def shade(colour, amount):
     """``colour`` mixed towards black - used for the totals bar's edge."""
     amount = max(0.0, min(1.0, float(amount)))
     return tuple(int(round(channel * (1.0 - amount))) for channel in colour[:3])
+
+
+def luminance(colour):
+    """How bright a colour looks to the eye: 0 is black, 1 is white."""
+    def channel(value):
+        value = value / 255.0
+        return (value / 12.92 if value <= 0.03928
+                else ((value + 0.055) / 1.055) ** 2.4)
+    red, green, blue = colour[:3]
+    return (0.2126 * channel(red) + 0.7152 * channel(green)
+            + 0.0722 * channel(blue))
+
+
+def contrast(first, second):
+    """How far apart two colours are to the eye - 1 is the same, 21 is black
+    on white. The ratio a printed page is judged by."""
+    one, other = luminance(first), luminance(second)
+    return (max(one, other) + 0.05) / (min(one, other) + 0.05)
+
+
+def quiet_on(colour, ratio=4.5):
+    """A second colour for writing on ``colour`` that can still be read.
+
+    The letterhead used to be ``tint(colour, 0.35)`` - the band mixed a third
+    of the way to white - and on a dark band that is only 2.5:1 against its
+    own background: a shop's address and website nobody can read off the
+    paper. So the quiet colour is mixed towards whichever text colour the band
+    gets (white on a dark one, ink on a pale one) and only as far as it must be
+    to clear ``ratio`` - 4.5:1 is what a page of print is asked for, and it is
+    the same rule on a yellow quote as on a navy one.
+    """
+    text = text_on(colour)
+    for step in range(1, 101):
+        candidate = mix(colour, text, step / 100.0)
+        if contrast(candidate, colour) >= ratio:
+            return candidate
+    return text
 
 
 # --------------------------------------------------------------------- page
@@ -263,12 +305,13 @@ def _table_rows(page, quote, fonts):
 
 
 def contact_lines(contact, room):
-    """The shop's contact block, cut down to what the band can hold.
+    """The shop's contact block, cut down to ``room`` lines.
 
-    A shop that lists its name, its street, its town and its website gave four
-    lines; a band one inch tall holds two under the shop's name. The lines
-    past the last that fits are joined onto it with a dot rather than dropped,
-    because the website is usually the one that would fall off the edge.
+    The lines past the last that fits are joined onto it with a dot rather
+    than dropped, because the website is usually the one that would fall off
+    the edge. The band no longer needs this - it grows to hold the whole
+    block, and only uses this for a letterhead taller than any band may be -
+    but it is the rule that keeps a line from being silently lost.
     """
     lines = [line.strip() for line in str(contact or "").splitlines()
              if line.strip()]
@@ -280,6 +323,70 @@ def contact_lines(contact, room):
     return lines[:room - 1] + [" \u00b7 ".join(lines[room - 1:])]
 
 
+#: The most the band may grow to, in inches, to hold the shop's letterhead.
+#: Past this the remaining lines are joined onto the last one with a dot.
+MAX_BAND = 1.75
+
+#: The letterhead's own size, in points, and the smallest it may be reduced
+#: to so that one unbreakable line - a long web address - still fits.
+CONTACT_POINTS = 9.4
+CONTACT_SMALLEST = 6.8
+
+
+def contact_layout(page, contact, fonts, x, top, title):
+    """The shop's lines, wrapped, and the band that holds them.
+
+    Returns ``{lines, font, line_height, top, height}``.
+
+    A shop that lists a street, a town, a phone and a website gave four lines,
+    and the band holds two under the shop's name. The lines used to be cut to
+    two and *then* wrapped, so the website wrapped onto a third line that was
+    thrown away - the shop's sheet went out with no address for its own web
+    page on it. Nothing is dropped now: the band grows to hold the whole
+    block (up to :data:`MAX_BAND`), and past that the rest is joined onto the
+    last line rather than lost. A line with no space in it to break at - a
+    long web address is one word - is drawn a little smaller until it fits,
+    because half a web address is not a web address.
+    """
+    space = page.pt(2)
+    #  The letterhead starts under the shop's name rather than at a height
+    #  guessed from the band's top: with a logo the name sits a little lower,
+    #  and a guessed line put the address through the name.
+    try:
+        company_ascent, company_descent = fonts["company"].getmetrics()
+        company_height = company_ascent + company_descent
+    except AttributeError:
+        company_height = page.pt(18)
+    contact_top = top + company_height + page.pt(3)
+    width = max(page.pt(120), page.right
+                - page.text_width(title, fonts["title"]) - page.pt(16) - x)
+    typed = [line.strip() for line in str(contact or "").splitlines()
+             if line.strip()]
+    size = CONTACT_POINTS
+    while True:
+        font = page.font(size)
+        longest = max([page.text_width(word, font)
+                       for line in typed for word in line.split()] or [0])
+        if longest <= width or size <= CONTACT_SMALLEST:
+            break
+        size -= 0.2
+    try:
+        ascent, descent = font.getmetrics()
+        line_height = ascent + descent + space
+    except AttributeError:                # a face that reports no metrics
+        line_height = page.pt(13) + space
+    lines = []
+    for line in typed:
+        lines.extend(page.wrap(line, font, width))
+    room = max(1, int((page.pt(MAX_BAND * 72) - page.pt(6) - contact_top)
+                      // line_height))
+    if len(lines) > room:
+        lines = contact_lines("\n".join(lines), room)[:room]
+    needed = contact_top + len(lines) * line_height + page.pt(6)
+    return {"lines": lines, "font": font, "line_height": line_height,
+            "top": contact_top, "height": max(page.pt(BAND * 72), needed)}
+
+
 def draw_band(page, look, title, number, fonts, first_page=True):
     """The coloured block across the top: logo, company, and the number.
 
@@ -287,15 +394,21 @@ def draw_band(page, look, title, number, fonts, first_page=True):
     is not a promise to keep two drawings in step - it is one drawing, called
     with a different word on the right ("QUOTE", "ORDER") and a different
     number under it.
+
+    The heading goes in the band's own text colour, and everything under it -
+    the shop's address and website, and the document's number - in a second
+    colour that is light enough to read on the band but not so light that it
+    fades into it. Both are chosen from the colour the shop picked, so a navy
+    quote and a yellow one are equally legible.
     """
     look = look or {}
     colour = page.colour
     on_colour = page.on_colour
-    band_height = page.pt(BAND * 72) if first_page else page.pt(52)
-    page.bar(0, 0, page.width, band_height, colour)
+    base = page.pt(BAND * 72) if first_page else page.pt(52)
     x = page.margin
     top = page.pt(18)
-    logo_height = band_height - page.pt(30)
+    pad = page.pt(5)
+    plate = None
     drawn_logo = False
     if page.logo is not None:
         logo = page.logo
@@ -303,7 +416,7 @@ def draw_band(page, look, title, number, fonts, first_page=True):
         #  band: a shop's logo is often dark, and a dark logo on a dark
         #  colour is a quote that arrives looking blank. The plate is only as
         #  big as the logo, so it reads as part of the design.
-        pad = page.pt(5)
+        logo_height = base - page.pt(30)
         scale = min((logo_height - pad * 2) / logo.height,
                     (page.width * 0.24) / max(1, logo.width))
         size = (max(1, int(logo.width * scale)),
@@ -312,55 +425,47 @@ def draw_band(page, look, title, number, fonts, first_page=True):
         plate = [x - pad, top + max(0, (logo_height - size[1]) // 2) - pad,
                  x + size[0] + pad, top + max(0, (logo_height - size[1]) // 2)
                  + size[1] + pad]
-        page.draw.rounded_rectangle(plate, radius=page.pt(4), fill=WHITE)
-        page.image.paste(logo, (x, plate[1] + pad),
-                         logo if logo.mode == "RGBA" else None)
         x += size[0] + pad * 2 + page.pt(12)
         drawn_logo = True
+
+    contact = str(look.get("contact") or "").strip() if first_page else ""
+    company_y = top + (page.pt(6) if drawn_logo or not first_page else 0)
+    band_height = base
+    layout = None
+    if contact:
+        layout = contact_layout(page, contact, fonts, x, company_y, title)
+        band_height = layout["height"]
+
+    page.bar(0, 0, page.width, band_height, colour)
+    if plate is not None:
+        page.draw.rounded_rectangle(plate, radius=page.pt(4), fill=WHITE)
+        page.image.paste(logo, (plate[0] + pad, plate[1] + pad),
+                         logo if logo.mode == "RGBA" else None)
     company = str(look.get("company") or "").strip() or "Alex Collect"
-    page.draw.text((x, top + (page.pt(6) if drawn_logo or not first_page else 0)),
-                   company, font=fonts["company"], fill=on_colour)
+    page.draw.text((x, company_y), company, font=fonts["company"],
+                   fill=on_colour)
     if first_page:
-        contact = str(look.get("contact") or "").strip()
-        if contact:
-            #  Only the lines that fit inside the band. A shop that lists its
-            #  address, its town and its website gave three lines, and a band
-            #  one inch tall holds two under the name - the third used to be
-            #  drawn past the colour and hung, cut in half, on the white page
-            #  below it.
-            #  Pillow lays a line out from its top edge, so the room is
-            #  counted downwards from the same top the text is drawn at - and
-            #  the last line has to end before the band's lower edge, which is
-            #  what keeps an address from being cut in half on the white page.
-            #  Anything past the last line that fits goes onto it separated by
-            #  a dot, so a website is not simply dropped from the letterhead.
-            space = page.pt(2)
-            line_height = page.pt(10.5) + space
-            contact_top = top + page.pt(20)
-            left = band_height - page.pt(6) - contact_top
-            room = max(0, int(left // line_height))
-            lines = contact_lines(contact, room)
-            if lines:
-                limit = page.right - page.text_width(title, fonts["title"]) \
-                    - page.pt(16)
-                wrapped = page.wrap("\n".join(lines), fonts["small"],
-                                    max(page.pt(120), limit - x))
-                page.draw.multiline_text(
-                    (x, contact_top), "\n".join(wrapped[:room]),
-                    font=fonts["small"], fill=tint(colour, 0.35),
-                    spacing=space)
+        if layout and layout["lines"]:
+            page.draw.multiline_text((x, layout["top"]),
+                                     "\n".join(layout["lines"]),
+                                     font=layout["font"],
+                                     fill=quiet_on(colour, 5.5),
+                                     spacing=page.pt(2))
         width = page.text_width(title, fonts["title"])
         page.draw.text((page.right - width, top), title, font=fonts["title"],
                        fill=on_colour)
+        #  The number is how the sheet is found again among a day's papers, so
+        #  it is drawn in the number face - larger than the letterhead's quiet
+        #  lines, brighter still, and under the document's title.
         number = "#%s" % (number or "-")
-        width = page.text_width(number, fonts["small_bold"])
-        page.draw.text((page.right - width, top + page.pt(24)), number,
-                       font=fonts["small_bold"], fill=tint(colour, 0.35))
+        width = page.text_width(number, fonts["number"])
+        page.draw.text((page.right - width, top + page.pt(22)), number,
+                       font=fonts["number"], fill=quiet_on(colour, 7.0))
     else:
         number = "#%s" % (number or "-")
-        width = page.text_width(number, fonts["small_bold"])
-        page.draw.text((page.right - width, page.pt(19)), number,
-                       font=fonts["small_bold"], fill=tint(colour, 0.35))
+        width = page.text_width(number, fonts["number"])
+        page.draw.text((page.right - width, page.pt(17)), number,
+                       font=fonts["number"], fill=quiet_on(colour, 7.0))
     return band_height
 
 
@@ -584,7 +689,10 @@ def _fonts(page):
     return {"title": page.font(21, True), "company": page.font(15, True),
             "h2": page.font(13, True), "body": page.font(10),
             "body_bold": page.font(10, True), "small": page.font(8.4),
-            "small_bold": page.font(8.4, True), "label": page.font(7.6, True)}
+            "small_bold": page.font(8.4, True), "label": page.font(7.6, True),
+            #  The band's own two: the letterhead's address and website, and
+            #  the document's number. Both were smaller than a footnote.
+            "contact": page.font(9.4), "number": page.font(12, True)}
 
 
 def _load_logo(path):
@@ -626,6 +734,23 @@ def draw_footers(pages, left_text, dpi):
         page.draw.text((page.right - page.text_width(right, fonts["small"]),
                         y + page.pt(6)), right, font=fonts["small"], fill=SOFT)
     return pages
+
+
+def band_bottom(image, dpi=PRINT_DPI):
+    """How far the colour block at the top of ``image`` reaches, in pixels.
+
+    Read back off the drawn page - the band's height is not a constant any
+    more, it is whatever the shop's letterhead needed - so a check can say
+    where the colour ends and the white paper begins.
+    """
+    x = max(0, image.width - 2)
+    colour = image.getpixel((x, 0))
+    if colour == WHITE:
+        return 0
+    y = 0
+    while y + 1 < image.height and image.getpixel((x, y + 1)) == colour:
+        y += 1
+    return y
 
 
 #  The shared pieces, under names a second document may call.
