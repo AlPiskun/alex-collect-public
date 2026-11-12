@@ -868,9 +868,13 @@ def test_deleting_only_what_is_ticked(root):
     stubborn = root / "delete-me" / "a-folder.webp"
     stubborn.mkdir()
     failed = image_store.delete([stubborn])
+    #  The reason is the app's own, so it reads the same on every machine:
+    #  Windows said "[WinError 5] Access is denied" here and Linux said "Is a
+    #  directory", and this check was written around the Linux words.
     check("something that cannot be deleted is named with the reason",
           failed["deleted"] == [] and failed["failed"] and
-          "director" in failed["failed"][0]["why"].lower(),
+          "folder" in failed["failed"][0]["why"].lower() and
+          "not an image" in failed["failed"][0]["why"].lower(),
           str(failed["failed"]))
     check("and nothing claims to have been deleted",
           not any(line.startswith("Deleted")

@@ -200,6 +200,16 @@ def test_reading_a_verdict():
                == "ALL CHECKS PASSED (7)", "")
     check_that("a script that printed nothing says nothing rather than crash",
                check.final_line("") == "" and check.final_line(None) == "", "")
+    #  A failing check line is the one that STARTS with FAIL: a PASS whose own
+    #  name contains the word ("PASS  the failed rows are the ones...") used to
+    #  fill the list and hide the failure that mattered.
+    shown = check.failed_checks(
+        "  PASS  the failed rows are the ones the plugin called errors\n"
+        "  PASS  and a failure names the card\n"
+        "  FAIL  the one that really failed {'why': 'x'}\n"
+        "FAILED 1   PASSED 2\n")
+    check_that("only the line that starts with FAIL is shown",
+               shown == ["FAIL  the one that really failed {'why': 'x'}"], shown)
 
 
 # ------------------------------------------------------- 4. the two refusals

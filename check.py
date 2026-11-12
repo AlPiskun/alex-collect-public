@@ -177,11 +177,16 @@ def failed_checks(text, limit=6):
     """The lines of a failed script's output that name what failed.
 
     A suite prints one line per check, so the useful part of a failing run is
-    every line with FAIL in it - not the tally at the bottom, which says how
-    many without saying which.
+    the lines that *start* with FAIL - not the tally at the bottom, which says
+    how many without saying which, and not a PASS line whose own name happens
+    to contain the word ("PASS  the failed rows are the ones the plugin called
+    errors"). Matching anywhere in the line showed six PASSes and hid the one
+    failure, which is worse than showing nothing.
     """
+    #  "FAIL " with a space: the tally at the bottom reads "FAILED 1   PASSED
+    #  2", and that is a count, not a check.
     lines = [line.strip() for line in str(text or "").splitlines()
-             if "FAIL" in line.upper()]
+             if line.strip().upper().startswith("FAIL ")]
     return lines[:limit]
 
 

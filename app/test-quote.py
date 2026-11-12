@@ -14,7 +14,9 @@ imported.
 import importlib.util
 import json
 import os
+import subprocess
 import sys
+import threading
 import tempfile
 from datetime import date
 from pathlib import Path
@@ -899,12 +901,35 @@ class TextBox(FakeWidget):
 
 
 class SyncThread:
-    """The panel hands its network work to a thread; here it runs at once."""
+    """The panel hands its network work to a thread; here it runs at once.
 
-    def __init__(self, target=None, daemon=None, **kwargs):
+    It has to be a thread for *everything* in the run, not only for the panel:
+    on Windows ``subprocess`` starts a reader thread of its own for every
+    piped stream (``Popen._readerthread(target, fh, buffer)``), and the app
+    pipes the system's own command - ``icacls``, run to make a saved quote
+    readable by this account only. This stand-in dropped the arguments that
+    call comes with, so the reader thread raised "missing 2 required
+    positional arguments" in a background thread on Windows and nowhere else,
+    and the suite died with no failing check to read. Real arguments are
+    therefore run on a real thread, which is what they were written for; the
+    panel's own work (no arguments) still runs at once, which is the whole
+    point of the stand-in.
+    """
+
+    _real = threading.Thread
+
+    def __init__(self, target=None, args=(), kwargs=None, daemon=None, **extra):
         self.target = target
+        self.args = tuple(args or ())
+        self.kwargs = dict(kwargs or {})
+        self.daemon = daemon
 
     def start(self):
+        if self.args or self.kwargs:
+            thread = self._real(target=self.target, args=self.args,
+                                kwargs=self.kwargs, daemon=self.daemon)
+            thread.start()
+            return
         self.target()
 
 
@@ -960,6 +985,39 @@ def build(app):
                            if "TOTAL" in str(w._kw.get("text") or "")) \
         if any("TOTAL" in str(w._kw.get("text") or "") for w in widgets) else None
     return parts
+
+
+def test_the_thread_stand_in_forwards_arguments():
+    print()
+    print("== 11b. the thread stand-in passes on what it was given ==")
+    #  The panel's own work takes no arguments and runs at once; anything that
+    #  does take arguments - Windows' subprocess reader threads, above all -
+    #  gets a real thread. Without this the suite died in a background thread
+    #  on Windows with "missing 2 required positional arguments" and no failing
+    #  check to read, which is the worst kind of failure to be handed.
+    got = []
+    at_once = SyncThread(target=lambda: got.append("ran"))
+    at_once.start()
+    check("work with no arguments runs immediately", got == ["ran"], got)
+    passed = []
+    SyncThread(target=lambda fh, buffer, flag=None: passed.append(
+        (fh, buffer, flag)), args=("stdout", "buffer"), kwargs={"flag": 1}
+    ).start()
+    real = threading.Event()
+    for _ in range(200):
+        if passed:
+            break
+        real.wait(0.02)
+    check("a target with arguments gets every one of them",
+          passed == [("stdout", "buffer", 1)], passed)
+    #  And the process it was patched into still works, which is the point:
+    #  the app pipes the system command it runs to privatise a saved quote.
+    with patch_object(gui.threading, "Thread", SyncThread):
+        result = subprocess.run([sys.executable, "-c", "print('a piped line')"],
+                                capture_output=True, text=True)
+    check("a piped child process still runs under the stand-in",
+          result.returncode == 0 and "a piped line" in result.stdout,
+          (result.returncode, result.stdout, result.stderr[:200]))
 
 
 def test_private_files(root):
@@ -1318,6 +1376,7 @@ def main():
         test_order()
         test_pdf(root)
         test_pictures_and_links(root)
+        test_the_thread_stand_in_forwards_arguments()
         test_private_files(root)
         test_panel(root)
     print()

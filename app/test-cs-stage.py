@@ -383,14 +383,22 @@ def test_a_plugin_without_the_action_keeps_the_old_command():
     print("== 8. an older plugin keeps the command it documents ==")
     folder = Path(tempfile.mkdtemp())
     batch(folder)
-    app, parent = build_panel(folder)
+    #  The panel is BUILT inside the patch, not before it. A panel adds its
+    #  buttons from what the plugin offers at that moment, so one built first
+    #  and stubbed afterwards offers the preview on any machine where the real
+    #  plugin is installed - the seller's PC, and not the Linux this suite was
+    #  first written on. The check then said "the preview is not offered"
+    #  about a panel that had already been handed one.
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: ("/plugins/cs/tools/cs-image-sync.py"
                                       if action == cs_stage.LEGACY_ACTION
                                       else "")):
+        app, parent = build_panel(folder)
         find(parent, gui.ttk.Button,
              "Stage the photos (square + host + rewrite CSVs)").invoke()
-    run = app.runs[-1] if app.runs else {}
+        run = app.runs[-1] if app.runs else {}
+        preview_missing = find(
+            parent, gui.ttk.Button, "Preview the staging (no upload)") is None
     args = run.get("args") or []
     check("without the action the old prepare command is used",
           args[:2] == ["--mode", "prepare"], str(args))
@@ -398,11 +406,20 @@ def test_a_plugin_without_the_action_keeps_the_old_command():
           "--csv" in args and args[args.index("--csv") + 1].endswith(
               "canadianshopper_import_001.csv"), str(args))
     check("and the preview is not offered, because it would not be a preview",
-          find(parent, gui.ttk.Button, "Preview the staging (no upload)")
-          is None, "")
+          preview_missing, "")
     check("the old command is the plugin's own image-sync script",
           run.get("tool") == "/plugins/cs/tools/cs-image-sync.py",
           str(run.get("tool")))
+
+    #  The same panel, built where the plugin does offer the preview, has one.
+    #  That is what makes the check above a statement about what the panel was
+    #  built with rather than about a button that never exists at all.
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/tools/cs-photo-stage.py"):
+        _app, newer = build_panel(folder)
+    check("a panel built with the newer plugin does offer the preview",
+          find(newer, gui.ttk.Button, "Preview the staging (no upload)")
+          is not None, "")
 
 
 def main():
