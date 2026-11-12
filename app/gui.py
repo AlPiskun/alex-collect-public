@@ -2738,8 +2738,16 @@ class App(tk.Tk):
         #  "they never started", and that question has cost one round trip
         #  with the plugin's author already. Kept for the whole run, in the
         #  order they arrived, without repeats.
-        if stage and stage not in self._run_stages:
-            self._run_stages.append(stage)
+        stages = getattr(self, "_run_stages", None)
+        if stages is None:
+            #  A bar that cannot be drawn must never stop the work it is
+            #  describing, and that includes the bookkeeping beside it: an app
+            #  built without on_run_start (a headless run, or a harness that
+            #  carries only what the bar needs) would otherwise raise here and
+            #  have the whole event dropped by the protocol's own guard.
+            stages = self._run_stages = []
+        if stage and stage not in stages:
+            stages.append(stage)
         if stage == "finish":
             self.progress_hide()
             self._progress_finished = True

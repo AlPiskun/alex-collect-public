@@ -12,6 +12,7 @@ with the documented flags - before any of that.
 """
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -167,14 +168,22 @@ def test_counts_and_names():
     check("the staged CSVs are the ones the plugin says it wrote",
           cs_stage.ready_csvs(stage) ==
           ["cs-ready/canadianshopper_import_001.csv"], "")
+    #  Absolute means absolute on the machine running this: on Windows a path
+    #  with no drive is not absolute, so the two answers are built from a root
+    #  that machine really has rather than written as "/batch", which passed
+    #  on Linux and failed on the seller's PC.
+    batch = Path("/batch") if os.name != "nt" else Path("C:/batch")
+    ready = Path("/ready") if os.name != "nt" else Path("C:/ready")
     check("a relative answer is resolved from the batch folder it was given",
-          cs_stage.output_paths(stage, "/batch") ==
-          [Path("/batch/cs-ready/canadianshopper_import_001.csv")],
-          str(cs_stage.output_paths(stage, "/batch")))
+          cs_stage.output_paths(stage, str(batch)) ==
+          [batch / "cs-ready" / "canadianshopper_import_001.csv"],
+          str(cs_stage.output_paths(stage, str(batch))))
     check("an absolute answer is left exactly as the plugin wrote it",
           cs_stage.output_paths(
-              {"files": [{"output": "/ready/a.csv"}]}, "/batch") ==
-          [Path("/ready/a.csv")], "")
+              {"files": [{"output": str(ready / "a.csv")}]}, str(batch)) ==
+          [ready / "a.csv"],
+          str(cs_stage.output_paths({"files": [{"output": str(ready / "a.csv")}]},
+                                    str(batch))))
     check("an error answer is read for its own reason",
           cs_stage.fatal_message({"error": "no session"}) == "no session" and
           cs_stage.fatal_message({"message": "no batch"}) == "no batch" and
@@ -373,7 +382,7 @@ def test_a_plugin_without_the_action_keeps_the_old_command():
     print()
     print("== 8. an older plugin keeps the command it documents ==")
     folder = Path(tempfile.mkdtemp())
-    results = batch(folder)
+    batch(folder)
     app, parent = build_panel(folder)
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: ("/plugins/cs/tools/cs-image-sync.py"

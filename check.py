@@ -22,6 +22,7 @@ suite ends with its own tally.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -146,6 +147,56 @@ def final_line(text):
     return ""
 
 
+#: Where a failing script's whole output is kept, so a paste is never the
+#: only record of what happened.
+FAILURE_DIR = "check-failures"
+
+
+def save_failure(root, name, stdout, stderr):
+    """Write one script's whole output to ``check-failures/<name>.txt``.
+
+    A terminal shows a window of a run and a chat message shows less of it.
+    The file holds everything the script said, so the next question - "what
+    exactly did it print before that?" - is answered by opening one file.
+    Returns the path, or ``None`` when even that cannot be written.
+    """
+    try:
+        folder = Path(root) / FAILURE_DIR
+        folder.mkdir(exist_ok=True)
+        path = folder / (Path(name).stem + ".txt")
+        path.write_text("$ python %s\n\n--- what it printed ---\n%s\n"
+                        "--- what it printed to the error stream ---\n%s\n"
+                        % (name, stdout or "", stderr or ""),
+                        encoding="utf-8", errors="replace")
+        return path
+    except OSError:
+        return None
+
+
+def failed_checks(text, limit=6):
+    """The lines of a failed script's output that name what failed.
+
+    A suite prints one line per check, so the useful part of a failing run is
+    every line with FAIL in it - not the tally at the bottom, which says how
+    many without saying which.
+    """
+    lines = [line.strip() for line in str(text or "").splitlines()
+             if "FAIL" in line.upper()]
+    return lines[:limit]
+
+
+def error_tail(text, limit=4):
+    """The last lines of a script's stderr - a traceback's own last words.
+
+    A script that stops on an exception prints no tally at all, so its last
+    line of standard output is an ordinary PASS and reads as though nothing
+    went wrong. The traceback is where the reason is.
+    """
+    lines = [line.rstrip() for line in str(text or "").splitlines()
+             if line.strip()]
+    return lines[-limit:]
+
+
 def verdict(returncode):
     return "PASS" if returncode == 0 else "FAIL"
 
@@ -167,14 +218,30 @@ def run(root, only=None, say=print):
             say("  FAIL  %s - the file is not in this folder" % name)
             failures.append(name)
             continue
-        command = [sys.executable, str(path), *args]
+        #  ``-u`` because a script that dies mid-run otherwise loses whatever
+        #  was still in its output buffer, and the last line shown would be
+        #  from a minute before the crash - which is exactly the wrong clue.
+        #  The two environment variables keep a Windows pipe from encoding the
+        #  child's output as cp1252 and failing on a character it cannot hold.
+        command = [sys.executable, "-u", str(path), *args]
+        environment = dict(os.environ, PYTHONIOENCODING="utf-8",
+                           PYTHONUTF8="1")
         result = subprocess.run(command, cwd=str(path.parent),
                                 capture_output=True, text=True,
-                                errors="replace")
+                                errors="replace", env=environment)
         line = final_line(result.stdout) or final_line(result.stderr)
         say("  %-4s  %-40s %s" % (verdict(result.returncode), name, line))
         if result.returncode != 0:
             failures.append(name)
+            for said in failed_checks(result.stdout):
+                say("          %s" % said)
+            if result.stderr.strip():
+                say("          the script stopped with an error:")
+                for said in error_tail(result.stderr):
+                    say("            %s" % said)
+            kept = save_failure(root, name, result.stdout, result.stderr)
+            if kept is not None:
+                say("          its whole output is in %s" % kept)
     say("")
     if failures:
         say("FAILED %d of %d: %s" % (len(failures), len(entries),

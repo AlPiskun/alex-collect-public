@@ -669,8 +669,19 @@ def test_every_place_is_behind_the_question():
     print("== 13. every place a new batch's images are written asks first ==")
     source = (APP / "gui.py").read_text(encoding="utf-8")
 
-    def method(name, where=source):
-        """One method's own lines, from its def to the next one at its level."""
+    def method(name, where=source, cls=None):
+        """One method's own lines, from its def to the next one at its level.
+
+        ``cls`` holds the search inside that class. gui.py has more than one
+        ``run`` - the Woo stock window has one too, forty-five hundred lines
+        earlier - and without the class this check read the stock window's
+        method and reported that the batch never asks, which was never true.
+        """
+        if cls:
+            head = where.find("class %s(" % cls)
+            if head >= 0:
+                next_class = where.find("\nclass ", head + 1)
+                where = where[head:next_class if next_class > 0 else len(where)]
         start = where.find("def %s(" % name)
         if start < 0:
             return ""
@@ -679,7 +690,7 @@ def test_every_place_is_behind_the_question():
 
     for name, why in (("run_split_only", "the split step"),
                       ("run", "the whole batch")):
-        body = method(name)
+        body = method(name, cls="PipelineDialog")
         check("%s asks before it writes" % why,
               "prepare_image_folder" in body, name)
         #  Before the run is handed to the runner, whatever this dialog calls

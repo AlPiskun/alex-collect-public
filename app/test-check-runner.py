@@ -12,12 +12,10 @@ list), and that it reads a script's verdict the way the script reports it.
 """
 import contextlib
 import io
-import os
 import re
 import subprocess
 import sys
 import tempfile
-import textwrap
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -144,6 +142,53 @@ def test_the_plan():
                planned[:2] == ["version_sync.py", "test-version.py"], planned[:3])
 
 
+def test_the_failure_record():
+    print()
+    print("== 2b. a failure keeps its whole output ==")
+    root = Path(tempfile.mkdtemp())
+    kept = check.save_failure(root, "test-broken.py", "line one\nFAIL x\n",
+                              "Traceback...\nValueError: nope\n")
+    said = kept.read_text(encoding="utf-8") if kept else ""
+    check_that("a failing script's output is written to a file",
+               kept is not None and kept.parent.name == "check-failures",
+               kept)
+    check_that("with what it printed and what it died of",
+               "FAIL x" in said and "ValueError: nope" in said, said[:120])
+    check_that("named after the script, so two runs do not collide",
+               kept.name == "test-broken.txt", kept.name)
+    check_that("and the reason is never summarised away",
+               "--- what it printed to the error stream ---" in said, "")
+
+
+def test_a_crash_is_shown():
+    print()
+    print("== 2c. a script that dies is not summarised away ==")
+    root = fake_checkout(Path(tempfile.mkdtemp()) / "clone",
+                         tests=("test-version.py",))
+    (root / "app" / "test-crash.py").write_text(
+        "import sys\n"
+        "print('  PASS  a check that passed')\n"
+        "raise ValueError('the reason it stopped')\n", encoding="utf-8")
+    run = subprocess.run(
+        [sys.executable, str(ROOT / "check.py"), "--root", str(root),
+         "--only", "crash"],
+        capture_output=True, text=True, errors="replace")
+    said = run.stdout + run.stderr
+    check_that("a script that stops on an error fails the run",
+               run.returncode == 1, run.returncode)
+    check_that("and the reason is on screen, not only the last PASS line",
+               "the reason it stopped" in said, said[-500:])
+    check_that("with the failing lines it printed, named",
+               "FAIL" in said or "stopped with an error" in said, said[-500:])
+    kept = root / "check-failures" / "test-crash.txt"
+    check_that("its whole output is kept in check-failures/", kept.is_file(),
+               sorted(str(p) for p in (root / "check-failures").glob("*"))
+               if (root / "check-failures").is_dir() else "no folder")
+    check_that("and the file holds the traceback, not a summary",
+               kept.is_file() and "ValueError" in kept.read_text(encoding="utf-8"),
+               "")
+
+
 # ----------------------------------------------------------- 3. the reading
 def test_reading_a_verdict():
     print()
@@ -226,6 +271,8 @@ def main():
     print("=" * 62)
     test_finds_the_checkout()
     test_the_plan()
+    test_the_failure_record()
+    test_a_crash_is_shown()
     test_reading_a_verdict()
     test_it_says_so_out_loud()
     test_a_real_run()
