@@ -783,12 +783,24 @@ document.querySelectorAll('.snippet').forEach(function(btn){btn.addEventListener
 def write_page(page, folder, built=None):
     """Write the page beside the app and return its path.
 
-    One file per run, named with the minute, so yesterday's selection is still
+    One file per run, named with the second, so yesterday's selection is still
     there to compare against and nothing is overwritten by accident.
+
+    Two runs in the same second used to land on the same name and the second
+    replaced the first - exactly the "by accident" this promises not to do, and
+    a seller who presses the button twice after a slow read loses the list they
+    were reading. The second page of a second gets "_2", the third "_3", and so
+    on. The suffix is an underscore rather than a dash so the newest still
+    sorts last: "_" comes after every name that ends at the extension, which is
+    what "Open the last list" picks up.
     """
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     stamp = (built or datetime.now()).strftime("%Y%m%d_%H%M%S")
     path = folder / ("ebay_fill_%s.html" % stamp)
+    same_second = 1
+    while path.exists():
+        same_second += 1
+        path = folder / ("ebay_fill_%s_%d.html" % (stamp, same_second))
     path.write_text(page, encoding="utf-8")
     return path

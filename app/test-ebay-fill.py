@@ -568,6 +568,23 @@ def test_the_values_and_the_page():
               second.name == "ebay_fill_20261102_093005.html", second.name)
         check("and both are kept, not overwritten",
               len(list(folder.glob("ebay_fill_*.html"))) == 2, "")
+        #  Two runs in the SAME second name their page the same thing. The
+        #  second must not replace the first: a seller who presses the button
+        #  again after a slow read would lose the list they were reading, and
+        #  "Open the last list" would open the older one and say it is newer.
+        third = ebay_fill.write_page(
+            "<html></html>", folder, built=datetime(2026, 11, 2, 9, 30, 5))
+        check("a second run in the same second is kept beside the first",
+              third.name == "ebay_fill_20261102_093005_2.html" and
+              len(list(folder.glob("ebay_fill_*.html"))) == 3, third.name)
+        #  "Open the last list" globs the folder and takes the last name, so
+        #  the newer page of the same second has to sort after its sibling.
+        #  Compared with its sibling, not with the folder, which also holds the
+        #  page written with the real clock a moment ago.
+        of_that_second = sorted(folder.glob("ebay_fill_20261102_093005*.html"))
+        check("and the newest still sorts last, so Open the last list gets it",
+              of_that_second[-1] == third,
+              [item.name for item in of_that_second])
 
 
 def sync_background(app, work, done):
@@ -759,6 +776,13 @@ def test_the_panel():
               for _tag, text in app.lines), str(app.lines[:3]))
 
     #  -- and nothing to fall back on is said plainly, not guessed at
+    #  Counted before the run and compared after it: the number of pages on
+    #  that path depends on how many runs before this one crossed a second, so
+    #  a literal count was a statement about how fast the machine is. It read
+    #  backwards on Windows, where the run above took long enough to start a
+    #  new second - and so wrote its page as a second file instead of
+    #  replacing the first, which is right.
+    pages_before = sorted((folder / "ebay_fill").glob("*.html"))
     app.lines[:] = []
     with patch.object(gui, "read_woo_credentials",
                       lambda path=None: ("https://shop.example", "ck", "cs")), \
@@ -773,8 +797,9 @@ def test_the_panel():
     check("with no saved page it says what to do instead of choosing blind",
           any("no saved page" in text for _tag, text in app.lines),
           str(app.lines[-3:]))
+    pages_after = sorted((folder / "ebay_fill").glob("*.html"))
     check("and nothing was added to the folder on that path",
-          len(sorted((folder / "ebay_fill").glob("*.html"))) == 1, "")
+          pages_after == pages_before, (len(pages_before), len(pages_after)))
 
     #  -- the limit is a setting, saved where the others are
     seen = {}
