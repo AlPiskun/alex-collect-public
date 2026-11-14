@@ -109,8 +109,16 @@ SHAPE = re.compile(r'^\d+\.\d{2}$')
 #: edits; a binary that carries a version is a build artefact, not a source.
 SCAN_SUFFIXES = (".py", ".md", ".txt", ".iss", ".bat", ".sh", ".json",
                  ".example", ".cmd")
+#: Folders the scan never reads. The last two are generated *by* the checks:
+#: check-failures/ holds each failing script's whole output, and every one of
+#: those scripts opens with the banner naming the app, the version and the
+#: folder - which the scan then read as a declaration, so a saved failure made
+#: the version check fail on the *next* run, blaming a log for a number it had
+#: merely echoed. app/pipeline/ is the user's working folder for the same
+#: reason: it holds what the app produced, not what anyone edits.
+#: (No version is written into this comment: the scan reads this file too.)
 SKIP_FOLDERS = {".git", "__pycache__", "Output", "node_modules", ".venv",
-                "runtime", ".pytest_cache"}
+                "runtime", ".pytest_cache", "check-failures", "pipeline"}
 
 
 def source():
