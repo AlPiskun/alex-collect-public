@@ -244,6 +244,21 @@ def test_a_copy_that_lags_is_caught():
               version_sync.read_version() == "9.99"
               and not version_sync.disagreements("9.99"),
               str(version_sync.disagreements("9.99")))
+        #  A saved failure is not a declaration. check.py writes each failing
+        #  script's whole output into check-failures/, and every one of those
+        #  scripts opens with the banner naming the app, the version and the
+        #  folder - so the file the runner wrote could fail the version check
+        #  on its next run, blaming a log for a number it had only echoed.
+        logs = repo / "check-failures"
+        logs.mkdir(parents=True, exist_ok=True)
+        (logs / "test-gui.txt").write_text(
+            "== Alex Collect %s, from C:\\checkout ==\n"
+            "  PASS the thing that passed\n" % version, encoding="utf-8")
+        lines, good = version_sync.report()
+        check("a failure log the runner saved is not read as a declaration",
+              good, "\n".join(lines))
+        (logs / "test-gui.txt").unlink()
+
         check("a version that is not a version is still refused",
               _refused("3.9") and _refused("three") and _refused(""), "")
     finally:

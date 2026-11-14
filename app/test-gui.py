@@ -174,6 +174,23 @@ def restore_runtime_files(preserved):
             pass
 
 
+def by_style(root, style):
+    """The widgets carrying a ttk style, skipping the plain tk ones.
+
+    The same trap as widget_texts(): walk() reaches tk.Frame containers, and
+    asking one for -style raises TclError, which ends the script instead of
+    failing one check. Every check that filters on a style goes through here.
+    """
+    found = []
+    for w in walk(root):
+        try:
+            if w.cget("style") == style:
+                found.append(w)
+        except Exception:
+            continue
+    return found
+
+
 def find_button(root, text, exact=True):
     for w in walk(root):
         try:
@@ -353,13 +370,15 @@ def main():
           all(pid in gui.TAB_EXTRA["Edit stock"]
               for pid in ("square", "rerun")),
           str(task_sections))
+    #  widget_texts(), not a list comprehension over cget("text"): walk()
+    #  visits the plain frames too, and a ttk.Frame has no -text option, so
+    #  the direct call ends the whole script with TclError instead of a FAIL.
     check("and replacing a card's photos is a task in Edit stock",
           "newphotos" in gui.groups_for(True)[-1][1] and
-          "Replace card photos" in [w.cget("text") for w in
-                                    walk(tasks_frame(app))],
+          "Replace card photos" in widget_texts(tasks_frame(app)),
           str(task_sections))
-    task_labels = [w.cget("text") for w in walk(tasks_frame(app))
-                   if w.cget("style") == "TaskMenu.TButton"]
+    task_labels = [str(w.cget("text"))
+                   for w in by_style(tasks_frame(app), "TaskMenu.TButton")]
     check("the print-an-order button is in the after-a-sale section",
           task_labels.index("Print an order") > task_labels.index("A card sold")
           and task_labels.index("Print an order") > task_labels.index(
@@ -398,8 +417,8 @@ def main():
     app.cs_addon = True
     app.show_mode("menu")
     app.update()
-    with_addon = [w.cget("text") for w in walk(tasks_frame(app))
-                  if w.cget("style") == "TaskMenu.TButton"]
+    with_addon = [str(w.cget("text"))
+                  for w in by_style(tasks_frame(app), "TaskMenu.TButton")]
     check("with the add-on installed the shop has its own button there",
           "CanadianShopper" in with_addon and
           with_addon.index("CanadianShopper") < with_addon.index("Facebook") <
@@ -1050,9 +1069,12 @@ def main():
     #  means what it says: nothing is sent anywhere.
     check("and cancelling the window sends nothing to the shop either",
           replacement_args(photos_cap.calls) is None, str(photos_cap.calls))
+    #  The console is read the way this suite reads it everywhere: it is a
+    #  real Text widget, not a list of lines on the app.
+    said = app.console.get("1.0", "end")
     check("the console says where the pictures are instead",
-          any("nothing on the website or the shop was changed" in text
-              for _tag, text in app.lines[-4:]), str(app.lines[-4:]))
+          "nothing on the website or the shop was changed" in said,
+          said[-300:])
 
     # -- an http site is refused before anything is sent -------------------
     fresh_sitting()
