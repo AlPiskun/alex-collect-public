@@ -13,6 +13,7 @@
 
 import atexit
 import contextlib
+import gc
 import json
 import os
 import shutil
@@ -162,16 +163,38 @@ def menu_entry_index(menu, label):
 
 
 def restore_runtime_files(preserved):
-    """Put the user's runtime files back. Safe to call more than once."""
+    """Put the user's runtime files back. Safe to call more than once.
+
+    A file the checks created is deleted again; one that was already there is
+    written back exactly as it was. Both can meet a Windows file that another
+    process still has open - an editor the app opened, or a scan after the run
+    - and a file held open cannot be removed there (WinError 32). That is a
+    fact about the machine, not a defect, so it is retried, and anything still
+    held is named in one line rather than ending a finished 300-check run with
+    a traceback. Returns the paths that could not be put back.
+    """
+    held = []
+    gc.collect()
     for path, original in preserved.items():
-        try:
-            if original is None:
-                path.unlink()
-            else:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(original)
-        except FileNotFoundError:
-            pass
+        for attempt in range(4):
+            try:
+                if original is None:
+                    path.unlink()
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(original)
+                break
+            except FileNotFoundError:
+                break
+            except OSError:
+                if attempt == 3:
+                    held.append(path)
+                else:
+                    time.sleep(0.25)
+    if held:
+        print("  NOTE  could not put back, still open somewhere: %s"
+              % ", ".join(str(path.name) for path in held))
+    return held
 
 
 def by_style(root, style):
@@ -269,6 +292,14 @@ def main():
     gui.launch_urls = lambda urls, browser_id="system", new_window=False: (
         answers["opened_urls"].extend((url, 2) for url in urls) or
         "Test browser")
+    #  The app opens files and folders on the person's own desktop: a .txt in
+    #  Notepad, a folder in Explorer. A check must never do that - it flashes
+    #  windows at whoever is running it, and on Windows Notepad holds the file
+    #  open, which is how a finished run ended in WinError 32 while putting the
+    #  runtime files back. What the app would open is recorded instead.
+    answers["opened_paths"] = []
+    gui.open_path = lambda path: (
+        answers["opened_paths"].append(str(path)) or True)
     mb.showinfo = lambda *a, **k: answers["shown"].append(("info", a))
     mb.showwarning = lambda *a, **k: answers["shown"].append(("warn", a))
     mb.showerror = lambda *a, **k: answers["shown"].append(("error", a))
@@ -1357,6 +1388,21 @@ def main():
                "Description template:", "Category:",
                "Product ID template:", "Image URL template:",
                "Batch folder (card_pipeline.py):", "Scanner folder:")))
+    #  This window opens the keys file, and on a real desktop that is Notepad
+    #  holding it open - which is what stopped the cleanup at the end of a
+    #  Windows run with WinError 32. It is recorded, and this is the button
+    #  that does it, so the guard is proved rather than assumed.
+    keys_button = find_button(app, "Open WooCommerce API keys")
+    if keys_button is not None:
+        before_keys = len(answers["opened_paths"])
+        keys_button.invoke()
+        app.update()
+        opened_now = answers["opened_paths"][before_keys:]
+        check("opening the keys file from Settings records it, never launches "
+              "an editor",
+              bool(opened_now) and
+              opened_now[-1].replace("\\", "/").endswith("/woo-keys.txt"),
+              str(opened_now))
     app._pipeline_var.set(str(TMP / "pipeline-test"))
     app._scan_var.set(str(TMP / "scan-test"))
     app._user_setting_vars["woo_site_url"].set("https://shop.example")
