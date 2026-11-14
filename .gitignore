@@ -37,6 +37,9 @@ check-failures/
 app/sold-orders-seen.json
 app/cs-orders.json
 app/cs-sold-preview.txt
+# The cards you type in "Type the cards...": one per line, saved beside the
+# app and read back next time. Your own sales, not part of the app.
+app/sold-cards.txt
 
 .DS_Store
 Thumbs.db
