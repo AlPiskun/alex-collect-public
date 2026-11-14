@@ -253,6 +253,12 @@ def main():
         print("  named in the PR.")
         print("=" * 70)
     import tkinter.messagebox as mb
+    #  "next_choice" is what the person does at the one window section 6
+    #  opens: None is Cancel (sends nothing anywhere), False ticks "Keep
+    #  those photos", and anything else is the plain press. The default is
+    #  Cancel so that a scenario which forgets to say sends nothing rather
+    #  than writing to a shop - so a scenario that means to replace has to
+    #  say so, or its checks read the cancel path and fail.
     answers = {"askyesno": True, "shown": [],
                "ai_url": "https://ai.example/chat", "opened_urls": [],
                "next_choice": None, "next_prompts": []}
@@ -805,6 +811,7 @@ def main():
                                      {"id": 9, "src": "https://shop.example/"
                                       "wp-content/uploads/2026/10/"
                                       "certificate.webp"}]}])
+    folders = []               # folders a finished replacement offered
     FAKE_KEYS = ("https://shop.example", "ck_abc", "cs_secret")
     NO_WORDPRESS = ("https://shop.example", "", "")
     WITH_WORDPRESS = ("https://shop.example", "owner",
@@ -815,6 +822,9 @@ def main():
         #  The review window fetches the product's own photos behind itself.
         #  Nothing here reaches the network, so it is answered with "none
         #  arrived" and the window falls back to the file names as captions.
+        #  A finished replacement also offers the folder it saved into, and
+        #  opening it is a real Explorer window on whoever is running the
+        #  checks - so that is recorded in `folders` instead.
         with patch.object(gui, "has_woo_credentials",
                           lambda path=None: True), \
                 patch.object(gui, "read_woo_credentials",
@@ -825,6 +835,8 @@ def main():
                 patch.object(gui, "open_woo_keys_file",
                              lambda a, site="": opened_keys.append(site)), \
                 patch.object(gui, "woo_get", lambda *a, **k: ONE_PRODUCT), \
+                patch.object(gui, "open_path",
+                             lambda path: folders.append(str(path)) or True), \
                 patch.object(gui.doc_images, "fetch_images",
                              lambda urls, folder, **k: {}):
             if kwargs.get("upload"):
@@ -966,8 +978,11 @@ def main():
     #  The key press above went through a pair before it found no keys were
     #  saved, so the card scenarios start from a clean sheet again.
     fresh_sitting()
-    #  This block checks that the plugin is called, so the offer has to be
-    #  accepted; every other question here is still declined.
+    #  This is the whole errand - pick, name, press, send - so the window is
+    #  pressed, not cancelled: pressing is what these checks are about, and
+    #  the window's own "nothing is sent until this button is pressed" is what
+    #  the Cancel scenario further down proves from the other side.
+    answers["next_choice"] = True
     mb.askyesno = lambda title, *a, **k: title == \
         "Replace the CanadianShopper photos?"
     with photo_patch():
@@ -1001,6 +1016,13 @@ def main():
           str(args))
     check("without an Application Password nothing is uploaded",
           not uploads, str(uploads))
+    #  The press is what carries the run to the end of the path, so the folder
+    #  a finished replacement offers is the proof it got there rather than
+    #  stopping at the window - a window answered with Cancel sends and offers
+    #  nothing, which is what the Cancel scenario below checks from its side.
+    check("pressing the button offers the folder the pictures were saved in",
+          folders[-1:] == [str(replace_root / "replacements")],
+          str(folders[-2:]))
     check("the sitting had six card images to work through",
           len(app.photo_pool) == 6 and app.photo_pool.progress() == (2, 6),
           str((len(app.photo_pool), app.photo_pool.progress())))
@@ -1060,6 +1082,8 @@ def main():
 
     fresh_sitting()
     answers["next_choice"] = None         # Cancel = leave the shop alone
+    folders_before = len(folders)
+    opened_before = len(answers["opened_urls"])
     with photo_patch(wordpress=WITH_WORDPRESS, upload=fake_upload):
         find_button(app, "Find the card...").invoke()
         app.update()
@@ -1069,6 +1093,14 @@ def main():
     #  means what it says: nothing is sent anywhere.
     check("and cancelling the window sends nothing to the shop either",
           replacement_args(photos_cap.calls) is None, str(photos_cap.calls))
+    #  The pages that are opened after a press are part of the same answer:
+    #  a cancelled window opens none and offers no folder, so pressing is the
+    #  only thing that leads anywhere.
+    check("and cancelling opens no page and offers no folder",
+          len(answers["opened_urls"]) == opened_before and
+          len(folders) == folders_before,
+          "%s %s" % (answers["opened_urls"][opened_before:],
+                     folders[folders_before:]))
     #  The console is read the way this suite reads it everywhere: it is a
     #  real Text widget, not a list of lines on the app.
     said = app.console.get("1.0", "end")
@@ -1144,6 +1176,9 @@ def main():
     fresh_sitting()
     warnings_before = len(answers["shown"])
     asked.clear()
+    #  The front still goes: this scenario is about what the plugin is sent,
+    #  not about the person walking away from the window.
+    answers["next_choice"] = True
     mb.askyesno = lambda title, *a, **k: title == \
         "Replace the CanadianShopper photos?"
     with patch.object(gui, "has_woo_credentials", lambda path=None: True), \

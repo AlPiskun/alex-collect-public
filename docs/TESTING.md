@@ -77,7 +77,7 @@ and `cd` to the clone being reviewed. `test-gui.py` now says so above its first
 check when it is run from such a folder.
 
 `test-gui.py` then prints the version and the folder it is testing on its first
-line — for example `== 0. Alex Collect 3.38, from
+line — for example `== 0. Alex Collect 3.39, from
 C:\...\alex-collect-public\app ==`. Check that against the PR before reading
 any failure: a clone left on an older commit has an older `gui.py` beside an
 older test file, and its failures look exactly like the current work's.
@@ -183,7 +183,7 @@ Notes:
 
 | Test | Needs | Notes |
 | --- | --- | --- |
-| `test-gui.py` | Tk | Boots a real window; flashes dialogs for a minute or two. ~230 checks. The task menu's sections are checked by name, so a section added to `GROUPS_FULL` must be added here too - and every id in `PANEL_ORDER` must have a title, a blurb, a menu label, a help text and a builder, which `test-gui-ergonomics.py` also checks without a display. `test-tool-dialog.py` reads this file and fails on a call to an `app.`/`runner.` method that does not exist, so a typo in it is caught without a Windows machine. |
+| `test-gui.py` | Tk | Boots a real window; flashes dialogs for a minute or two. ~310 checks. The photo-replacement section answers every window through one stand-in for the person (`auto_pick`), and its default answer is **Cancel** - so a scenario that means to replace has to say so with `answers["next_choice"]`, or its checks read the "nothing was sent" path and fail with `None`. The task menu's sections are checked by name, so a section added to `GROUPS_FULL` must be added here too - and every id in `PANEL_ORDER` must have a title, a blurb, a menu label, a help text and a builder, which `test-gui-ergonomics.py` also checks without a display. `test-tool-dialog.py` reads this file and fails on a call to an `app.`/`runner.` method that does not exist, so a typo in it is caught without a Windows machine. |
 | `test-gui-ergonomics.py` | Tk | Headless-ish layout assertions - the task groups (including the new eBay store panel and the console's follow-the-end rule: new output scrolls into view only while the end is on screen, and leaves the view alone once the reader has scrolled up). The shop's stock window is driven the same way, with the products already read and the writer replaced: the rows it lists and the search that narrows them, the product it picks and the count it starts at, a count that is not a number and a product the shop does not count both refused before anything is sent, one write for one product, and the number the website answered with reported with the old one beside it. |
 | `test-ai-agent-flow.py`, `test-custom-ai-commands.py` | Tk | Import `gui.py`, so they need the toolkit. |
 | `test-facebook-feed.py` | pandas, openpyxl | Also the nested-helper launcher: the console python, `-u`, the helper's own folder, a helper that explains itself not being retried, a silent failure retried once on the app's own interpreter, and the child's pipes - stdout/stderr owned by the pipeline, stdin never the app's, unbuffered, no console window. Plus the stale-workbook check: a failed export names the older `facebook_delta_*.xlsx` instead of letting it look like this run's. And the workbook-lock check, which reads the shipped `locked_files` out of `facebook_feed.py`: a free workbook is not called locked, a locked one is named with its reason kept, a workbook that does not exist yet is not a lock, and the answer comes before the first feed request. |
