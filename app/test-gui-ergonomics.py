@@ -80,10 +80,19 @@ def main():
     #  the shop's own jobs inside its place.
     check("the stock work has its own section, one place per site",
           dict(gui.groups_for(True))["Edit stock"] ==
-          ["woostock", "stock", "editfb", "editeb"] and
+          ["woostock", "stock", "editfb", "editeb", "newphotos"] and
           dict(gui.groups_for(False))["Edit stock"] ==
           ["woostock", "square", "newphotos", "editfb", "editeb"],
           str(dict(gui.groups_for(False))["Edit stock"]))
+    #  Replacing a card's photos writes to the website first and to the shop
+    #  after, so it is not the shop's own work: it is a job of its own in the
+    #  Edit stock section, in the tabs and in the task menu both. It spent a
+    #  while folded into the shop's place, which is exactly where the seller
+    #  could not find it.
+    check("replacing a card's photos has its own place in Edit stock",
+          "newphotos" in dict(gui.groups_for(True))["Edit stock"] and
+          gui.MENU_LABELS["newphotos"] == "Replace card photos" and
+          gui.TITLES["newphotos"] == "Replace a card's photos", "")
     #  Every id a section offers must be a panel: a title, a blurb, a sentence
     #  of help, a menu label and a builder for each. A panel added to the menu
     #  without one of them is a button that opens nothing - which is what the
@@ -125,17 +134,21 @@ def main():
           ["Sell to a customer", "Sell a new batch", "After a sale",
            "Edit stock"],
           [name for name, _ids in gui.groups_for(True)])
-    #  The shop's three photo tools moved into the shop's place, so they are
+    #  The shop's two photo tools stay in the shop's place, so they are
     #  stacked inside the CanadianShopper tab rather than having a tab of their
     #  own - and they have their own buttons on the panel in the task menu.
     check("the shop's photo tools are stacked in the shop's tab",
           [pid for pid in gui.TAB_EXTRA["Edit stock"]] ==
-          ["csedit", "zerostock", "square", "rerun", "newphotos"],
+          ["csedit", "zerostock", "square", "rerun"],
           str(gui.TAB_EXTRA["Edit stock"]))
     check("and none of them is a task of its own",
-          not ({"square", "rerun", "newphotos"} &
+          not ({"square", "rerun"} &
                {pid for _group, ids in gui.groups_for(True) for pid in ids}),
           "")
+    check("while replacing a card's photos is a task, not a fold",
+          "newphotos" in
+          {pid for _group, ids in gui.groups_for(True) for pid in ids} and
+          "newphotos" not in gui.TAB_EXTRA["Edit stock"], "")
     check("while the core menu keeps the two that need no plugin",
           {"square", "newphotos"} <=
           {pid for _group, ids in gui.groups_for(False) for pid in ids},

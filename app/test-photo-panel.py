@@ -1159,6 +1159,186 @@ def test_website_first():
           UPLOADS[0]["keep_ids"] == [9], str(UPLOADS))
 
 
+# ------------------------------------------------- the pictures, and one press
+def sync_background(app, work, done):
+    """Run a background job the way the window's thread would have.
+
+    The real ``in_background`` catches whatever the work raises and hands it
+    to the caller's ``done``; a test that let it escape would never reach the
+    error path a panel is supposed to explain.
+    """
+    try:
+        result, error = work(), None
+    except Exception as exc:              # noqa: BLE001 - the panel draws it
+        result, error = None, exc
+    return done(result, error)
+
+
+def a_picture(image):
+    """A stand-in for a Tk photo, so the *visual* path is the one taken.
+
+    On a real screen ``as_photo`` answers a PhotoImage; in a headless run it
+    answers None and the panel deliberately falls back to the plain questions.
+    Patching it here is what lets the picture windows be driven at all.
+    """
+    return object() if image is not None else None
+
+
+def press_windows(answer_for, asked):
+    """Answer each window by the words on its buttons, in the order it opens.
+
+    ``answer_for`` is a list of captions: the first one a window actually has
+    is pressed, so a window that is skipped on this run is skipped here too.
+    The captions each window offered are recorded for the checks.
+    """
+    def press(window):
+        #  Every caption on the window, not only the buttons: what the window
+        #  *says* - "On your website now", the name of each picture - is most
+        #  of what there is to check about it.
+        texts = [str(w.cget("text")) for w in window.walk()
+                 if w.cget("text")]
+        asked.append(texts)
+        for wanted in answer_for:
+            if wanted in texts:
+                next(w for w in window.walk()
+                     if isinstance(w, gui.ttk.Button) and
+                     str(w.cget("text")) == wanted).invoke()
+                return
+        window.destroy()
+    return press
+
+
+def drive_pictures(app, sheet, answer_for, asked, yes_for=(),
+                   wordpress=("owner", "pw"), product=None, found=True,
+                   keep_old=False):
+    """Drive the panel with pictures drawn, and every window scripted."""
+    product = product or PRODUCT
+    parent = FakeWidget()
+    gui.build_newphotos(parent, app)
+    widgets = list(parent.walk())
+    find = next(w for w in widgets if w.cget("text") == "Find the card...")
+    entry = next(w._kw["textvariable"] for w in find.parent.walk()
+                 if w._kw.get("textvariable") is not None)
+    entry.set("gretzky")
+    PICKER["press"] = press_windows(answer_for, asked)
+    _BOX.askyesno = lambda title, *a, **k: title in yes_for
+    _DIALOG.askopenfilenames = lambda **k: (str(sheet),)
+    keys = ("https://shop.example", "ck_live", "cs_live")
+    wp = ("https://shop.example",) + tuple(wordpress or ("", ""))
+    with patch.object(gui, "has_woo_credentials", lambda path=None: True), \
+            patch.object(gui, "read_woo_credentials", lambda path=None: keys), \
+            patch.object(gui, "read_wordpress_credentials", lambda path=None: wp), \
+            patch.object(gui, "woo_get",
+                         lambda *a, **k: (200, [product] if found else [])), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui.doc_images, "fetch_images",
+                         lambda urls, folder, **k: {}):
+        find.invoke()
+    return asked
+
+
+def test_the_picture_window_does_both_sites():
+    print()
+    print("== 25. one window, pictures of both sides, one press ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    sheet = make_sheet(folder / "Scan-1.jpg")
+    app = FakeApp(folder)
+    UPLOADS.clear()
+    asked = []
+    with patch.object(gui.photo_thumbs, "as_photo", a_picture), \
+            patch.object(gui.woo_media, "replace_product_photos",
+                         fake_upload):
+        drive_pictures(app, sheet,
+                       ["Use this image", "Use this image",
+                        "Replace the photos", "Close"], asked)
+    files = sorted(p.name for p in (folder / "replacements").glob("*.webp"))
+    check("the pictures are chosen as before", len(files) == 2, str(files))
+    check("the window offers both places on one button",
+          any("Replace the photos" in texts for texts in asked), str(asked))
+    check("and it says which picture is the front",
+          _has_caption(asked, "Front - the new main photo"),
+          str(asked[-3:]))
+    check("and that the old photos are on the same window",
+          _has_caption(asked, "On your website now"), str(asked[-3:]))
+    check("pressing it uploads to the website", len(UPLOADS) == 1,
+          str(UPLOADS))
+    args = replace_args(app)
+    check("and replaces the shop's listing in the same press",
+          flag(args, "--front") is not None and flag(args, "--back") is not None,
+          str(args))
+    seen = _all_labels(asked)
+    check("no second question about the website was asked",
+          "Put these photos on the website?" not in seen, seen[:300])
+    check("nor a second one about the shop",
+          "Replace the CanadianShopper photos?" not in seen, seen[:300])
+    check("the result window names the places that were written",
+          _has_caption(asked, "Your website: replaced") and
+          _has_caption(asked, "CanadianShopper: sent"), str(asked[-1:]))
+    check("and says Facebook is by hand",
+          _has_caption(asked, "Facebook: open its selling page"),
+          str(asked[-1:]))
+
+
+def _has_caption(asked, wanted):
+    """Whether any window carried a caption starting with ``wanted``."""
+    for texts in asked:
+        for text in texts:
+            if str(text).startswith(wanted):
+                return True
+    return False
+
+
+def test_the_picture_window_shows_the_old_photos():
+    print()
+    print("== 26. the old photos are on the window too ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    sheet = make_sheet(folder / "Scan-1.jpg")
+    app = FakeApp(folder)
+    labels = []
+    asked = []
+    with patch.object(gui.photo_thumbs, "as_photo", a_picture), \
+            patch.object(gui.woo_media, "replace_product_photos",
+                         fake_upload):
+        asked = drive_pictures(app, sheet,
+                               ["Use this image", "Use this image",
+                                "Replace the photos", "Close"],
+                               labels)
+    seen = _all_labels(asked)
+    check("the window names what is on the product now",
+          "On your website now" in seen, seen[:300])
+    check("and the picture that is going on is captioned as the front",
+          "Front - the new main photo" in seen, seen[:300])
+
+
+def _all_labels(asked):
+    """Every caption any window carried, as one string."""
+    return " ".join(str(text) for texts in asked for text in texts)
+
+
+def test_cancelling_the_picture_window_writes_nothing():
+    print()
+    print("== 27. cancelling that window sends nothing ==")
+    folder = Path(tempfile.mkdtemp())
+    install_plugin("1.0.16", folder / "plugin")
+    sheet = make_sheet(folder / "Scan-1.jpg")
+    app = FakeApp(folder)
+    UPLOADS.clear()
+    asked = []
+    with patch.object(gui.photo_thumbs, "as_photo", a_picture), \
+            patch.object(gui.woo_media, "replace_product_photos",
+                         fake_upload):
+        drive_pictures(app, sheet,
+                       ["Use this image", "Use this image", "Cancel"], asked)
+    check("nothing was uploaded to the website", not UPLOADS, str(UPLOADS))
+    check("nothing was sent to the shop", not app.runs, str(app.runs))
+    check("and the console says the pictures are only saved",
+          any("nothing on the website or the shop was changed" in text
+              for _tag, text in app.lines),
+          str(app.lines[-2:]))
+
+
 def test_actions_above_the_words():
     print()
     print("== 20. the work sits on top; the words sit underneath ==")
@@ -2345,6 +2525,9 @@ def main():
     test_pinned_help_still_opens()
     test_the_page_fills_the_window()
     test_the_scroll_bar_is_drawn_when_the_page_grows()
+    test_the_picture_window_does_both_sites()
+    test_the_picture_window_shows_the_old_photos()
+    test_cancelling_the_picture_window_writes_nothing()
     test_the_order_queue()
     test_one_way_to_name_the_cards()
     test_grid_fits_a_small_screen()

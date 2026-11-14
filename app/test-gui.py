@@ -344,13 +344,19 @@ def main():
           task_sections == ["Sell to a customer", "Sell a new batch",
                             "After a sale", "Edit stock"],
           str(task_sections))
-    #  The photo tools are no longer a section of their own: they are reached
-    #  from the CanadianShopper place in Edit stock, because squaring a photo
-    #  and re-pointing a listing's pictures is the same job as editing stock.
-    check("the photo tools live in the shop's place, not a section of their own",
+    #  The photo tools are no longer a section of their own: squaring a photo
+    #  and re-pointing a listing's pictures are reached from the shop's place
+    #  in Edit stock. Replacing a card's photos is not one of those - it writes
+    #  to the website first - so it is an entry of its own in that section.
+    check("the shop's photo tools live in the shop's place, not a section",
           "Photos" not in task_sections and
           all(pid in gui.TAB_EXTRA["Edit stock"]
-              for pid in ("square", "rerun", "newphotos")),
+              for pid in ("square", "rerun")),
+          str(task_sections))
+    check("and replacing a card's photos is a task in Edit stock",
+          "newphotos" in gui.groups_for(True)[-1][1] and
+          "Replace card photos" in [w.cget("text") for w in
+                                    walk(tasks_frame(app))],
           str(task_sections))
     task_labels = [w.cget("text") for w in walk(tasks_frame(app))
                    if w.cget("style") == "TaskMenu.TButton"]
@@ -379,10 +385,11 @@ def main():
                    for _group, ids in gui.groups_for(True) for pid in ids]
     check("the Edit stock section is one place per site, your website first",
           dict(gui.groups_for(True))["Edit stock"] ==
-          ["woostock", "stock", "editfb", "editeb"] and
+          ["woostock", "stock", "editfb", "editeb", "newphotos"] and
           [gui.MENU_LABELS[pid] for pid in
            dict(gui.groups_for(True))["Edit stock"]] ==
-          ["WooCommerce", "CanadianShopper", "Facebook", "eBay"],
+          ["WooCommerce", "CanadianShopper", "Facebook", "eBay",
+           "Replace card photos"],
           str(addon_order))
     check("and finding a listing and sweeping the zeros are not menu entries",
           not ({"Find a CS listing", "Archive listings at 0"} &
@@ -786,6 +793,9 @@ def main():
 
     @contextlib.contextmanager
     def photo_patch(**kwargs):
+        #  The review window fetches the product's own photos behind itself.
+        #  Nothing here reaches the network, so it is answered with "none
+        #  arrived" and the window falls back to the file names as captions.
         with patch.object(gui, "has_woo_credentials",
                           lambda path=None: True), \
                 patch.object(gui, "read_woo_credentials",
@@ -795,7 +805,9 @@ def main():
                                                           NO_WORDPRESS)), \
                 patch.object(gui, "open_woo_keys_file",
                              lambda a, site="": opened_keys.append(site)), \
-                patch.object(gui, "woo_get", lambda *a, **k: ONE_PRODUCT):
+                patch.object(gui, "woo_get", lambda *a, **k: ONE_PRODUCT), \
+                patch.object(gui.doc_images, "fetch_images",
+                             lambda urls, folder, **k: {}):
             if kwargs.get("upload"):
                 with patch.object(gui.woo_media, "replace_product_photos",
                                   kwargs["upload"]):
@@ -830,13 +842,57 @@ def main():
             _pos += 1
     _sheet.save(sheet)
 
+    #  Every window the replacement opens is answered here, because this suite
+    #  runs with a real Tk and so takes the pictured path: the two pickers
+    #  ("Use this image"), the window that says what will happen and what will
+    #  not ("Replace the photos"), and the one that says it is done ("Close").
+    answers.setdefault("window_text", [])
+
+    def window_text(window):
+        """Every caption on a window, as one string."""
+        words = []
+        for widget in walk(window):
+            try:
+                text = widget.cget("text")
+            except Exception:             # noqa: BLE001 - not every widget has one
+                continue
+            if text:
+                words.append(str(text))
+        return " ".join(words)
+
     def auto_pick(window):
-        """Stand in for the user choosing the first image in the picker."""
+        """Stand in for the user at whichever window is open."""
+        answers["window_text"].append(window_text(window))
         button = find_button(window, "Use this image")
         if button is not None:
             button.invoke()
-        else:
-            window.destroy()
+            return
+        go = (find_button(window, "Replace the photos") or
+              find_button(window, "Save the pictures"))
+        if go is not None:
+            #  The three answers the plain questions used to take, mapped onto
+            #  the one window: Cancel sends nothing, "keep the old photos"
+            #  leaves the gallery alone, and the plain press replaces the pair.
+            choice = answers.get("next_choice")
+            if choice is None:
+                cancel = find_button(window, "Cancel")
+                if cancel is not None:
+                    cancel.invoke()
+                    return
+            elif choice is False:
+                for widget in walk(window):
+                    if isinstance(widget, gui.ttk.Checkbutton) and \
+                            str(widget.cget("text")).startswith(
+                                "Keep those photos"):
+                        widget.invoke()
+                        break
+            go.invoke()
+            return
+        close = find_button(window, "Close")
+        if close is not None:
+            close.invoke()
+            return
+        window.destroy()
 
     old_wait_window = app.wait_window
     app.wait_window = auto_pick
@@ -989,9 +1045,14 @@ def main():
         find_button(app, "Find the card...").invoke()
         app.update()
     check("cancelling uploads nothing", not uploads, str(uploads))
-    check("cancelling does not skip the plugin step",
-          replacement_args(photos_cap.calls) is not None,
-          str(photos_cap.calls))
+    #  Cancel used to answer only the website question, so the shop was still
+    #  asked and written to. It is the same word on one window now, and it
+    #  means what it says: nothing is sent anywhere.
+    check("and cancelling the window sends nothing to the shop either",
+          replacement_args(photos_cap.calls) is None, str(photos_cap.calls))
+    check("the console says where the pictures are instead",
+          any("nothing on the website or the shop was changed" in text
+              for _tag, text in app.lines[-4:]), str(app.lines[-4:]))
 
     # -- an http site is refused before anything is sent -------------------
     fresh_sitting()
@@ -1049,9 +1110,11 @@ def main():
         find_button(app, "Find the card...").invoke()
         app.update()
     warnings = answers["shown"][warnings_before:]
+    pictured = " ".join(answers["window_text"])
     check("1.0.14 is refused because the mode arrived in 1.0.15",
           any(kind == "warn" and "1.0.15" in str(payload)
-              for kind, payload in warnings), str(warnings))
+              for kind, payload in warnings) or "1.0.15" in pictured,
+          "%s %s" % (warnings, pictured[-300:]))
     check("nothing is sent to a 1.0.14 plugin",
           replacement_args(photos_cap.calls) is None, str(photos_cap.calls))
 
@@ -1074,10 +1137,12 @@ def main():
     check("1.0.15 still replaces the front", older is not None, str(older))
     check("1.0.15 is never sent a back it would only append",
           older is not None and "--back" not in older, str(older))
+    pictured = " ".join(answers["window_text"])
     check("the user is told the back was left out",
           any(kind == "warn" and "back" in str(payload).lower()
-              for kind, payload in answers["shown"][warnings_before:]),
-          str(answers["shown"][warnings_before:]))
+              for kind, payload in answers["shown"][warnings_before:]) or
+          ("back" in pictured.lower() and "front only" in pictured.lower()),
+          "%s %s" % (answers["shown"][warnings_before:], pictured[-300:]))
 
     # -- a sitting that has used every image says so ------------------------
     #  Three cards take all six images off the sheet. The fourth press cannot

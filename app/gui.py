@@ -80,7 +80,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.36"
+VERSION = "3.37"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1658,46 +1658,57 @@ order list on the website can be opened from the same row.
 """
 
 DOCS["newphotos"] = """\
-Better photos for one card (a rescan, a condition change, a cracked slab),
-or for every card on an order that still needs them nine at a time.
+New pictures for one card - a rescan, a condition change, a cracked slab - or
+for every card on an order that still needs them, nine at a time.
 
-* After a sale, type the order's number and press "Build the queue from
-  this order...". Every card on it that can still be bought goes in a
-  queue: a card that went to zero is sold out, and a card whose stock is
-  not tracked has no count that says it is for sale, so both are named
-  in the console rather than silently left out.
-* The queue shows nine cards at a time, because a card sheet holds nine.
-  The order can be rearranged with Move up and Move down when the scans
-  come off the sheet in a different order.
-* "Mark these photographed", and applying them from "Assign photos to
-  cards...", both remember what is done, so the next sitting starts at
-  the tenth card instead of the first. "Start this order again" forgets
-  that and offers every card again; nothing on the website changes.
+The panel is three steps, in the order the work happens:
 
-One card on its own: type its name or SKU and press Find.
+1. The cards. Type an order's number and press "Build the queue from this
+   order..." to get the cards that sold but can still be bought, nine at a
+   time, rearranged with Move up and Move down when the scans come off the
+   sheet in another order. "Mark these photographed" remembers them, so the
+   next sitting starts at the tenth card. For one card on its own, skip to
+   step 3 and type its name or SKU.
+2. The photographs. "Add sheets..." loads the scan sheets - the front one and
+   the back one, in any order, more than one at a time. Each is split into its
+   nine positions, the empty (black) slots are ignored, and the pictures stay
+   loaded for the whole sitting: the sheet is shown on the panel, not just
+   counted, so what is loaded can be seen at a glance. "Assign photos to
+   cards..." lines a whole sheet up with cards and replaces them in a batch.
+3. Replace. Type the card's name or SKU and press "Find the card...". With the
+   website keys saved the product is found and its edit page opens; without
+   them the filtered product list opens and the app offers to set the keys up,
+   which makes this one click next time.
 
-* With your website API keys saved, the card is looked up and its
-  product edit page opens straight away. Without them you get the
-  product list filtered to what you typed - and the app offers to set
-  the keys up, which makes this a one-click job next time.
-* Choose the folder holding the replacement images and it opens for you.
-* If the replacements are a 9-card sheet, the split step cuts it into
-  the nine front (and optional back) images.
-* The CanadianShopper store, eBay active listings, and Facebook selling
-  pages open too, so every marketplace is one tab away.
-* With the WordPress username and Application Password saved (lines 4-5
-  of woo-keys.txt) the new photos are uploaded and set on the product
-  here, and each one is also filed under that product in the media
-  library - so the library shows them attached instead of listing them
-  under Unattached.
+Then one window decides everything. It shows the product's own photos beside
+the two pictures that were chosen, names the three places with what each will
+do, and has one button:
 
-With the CanadianShopper plugin installed you can also re-wire the
-gallery photos. Two separate offers: "Wire this card's photos?" touches
-only the one listing, matched by its full title, and writes nothing
-unless exactly one staged row and one listing match - it needs plugin
-1.0.14 or newer. "Wire the whole staged batch?" is the broader job from
-the Wire the photos panel and is not limited to this card. Without the
-plugin the pages still open and the photo upload stays manual."""
+* Your website - the front becomes the main photo and the back follows it.
+  That needs the WordPress username and Application Password as lines 4-5 of
+  woo-keys.txt; without them the pictures are saved in replacements/ and you
+  upload them yourself. The old front and back come off the product (the files
+  stay in your media library) unless "keep those photos" is ticked, and every
+  other gallery photo is left alone. The new files are also filed under the
+  product in the media library, so they stop reading as Unattached.
+* CanadianShopper - the same press replaces that one listing's photos, with no
+  staged CSV. Plugin 1.0.16 or newer replaces the back as well; 1.0.15 is sent
+  the front alone and the window says so, because its back would be added
+  beside the old one. A listing's main photo is kept apart from its gallery, so
+  when the old back cannot be identified from its filename the panel asks
+  which row it is rather than guessing.
+* Facebook - by hand, always: its selling page opens with the two pictures in
+  the replacements folder beside it, ready to drag on. Nothing is uploaded
+  there and nothing is submitted anywhere.
+
+The result window then shows the two pictures again with one line per place,
+so "did it work" is a picture and a sentence rather than a console to read.
+Where a screen cannot draw a picture at all, the panel asks the same questions
+in plain text and does exactly the same work.
+
+The CanadianShopper store, eBay active listings and Facebook selling pages
+open in the same pass, and the replacements folder opens with them. Whole-batch
+wiring stays a separate action in its own panel."""
 
 DOCS["markets"] = """\
 Redo ONE marketplace without repeating the AI, split, or image steps.
@@ -2224,6 +2235,9 @@ TOOLTIPS = {
     "Pick photo(s)...": "Choose the photos this panel works on",
     "Use this image": "Take the picture selected above as this card's image",
     "Another scan...": "Load a different scan when the image is not on these sheets",
+    "Replace the photos": "Do everything listed on this window: upload the new front and back to your website, then replace this listing's photos on CanadianShopper - the ones left ticked",
+    "Save the pictures": "Write the two pictures into the replacements folder and open the pages to upload them by hand, because nothing here can upload them",
+    "Open the folder with the pictures": "Open the replacements folder so the same two files can be dragged onto the Facebook listing",
     # -- dialogs ----------------------------------------------------------
     "Use this photo": "Write the photo selected above to this listing's main photo for the seconds the proof runs, read the record back, then put the old photo back",
     "Paste an address...": "Type the address of a photo of this card - a staged one, or one CanadianShopper already hosts - instead of choosing from the list",
@@ -3578,18 +3592,27 @@ GROUPS_FULL = [("Sell to a customer", ["ordertext", "quote"]),
                #  later, the words they are missing), then the shop, then the
                #  two sites the app can only read. Finding a CS listing and
                #  archiving the ones at zero live inside the shop's place.
-               ("Edit stock", ["woostock", "stock", "editfb", "editeb"])]
+               #  Replacing a card's pictures ends the section rather than
+               #  hiding in the shop's place: it writes to the website first
+               #  and then to the shop, so it belongs to no single one of
+               #  them - and a seller looking for it looked under Edit stock.
+               ("Edit stock", ["woostock", "stock", "editfb", "editeb",
+                               "newphotos"])]
 
 
 #: Panels that belong *inside* another group's tab without being a task of
-#: their own. The shop's place in Edit stock is the whole of the shop's *and*
-#: its photos' editing - comparing, finding one listing, sweeping the zeros,
-#: squaring a photo, re-pointing the photos that are already hosted, and
-#: replacing a card's pictures - so the tabs view stacks those inside the one
-#: tab, where the task menu reaches them from the buttons on the panel itself.
-#: Without the add-on none of them exists.
-TAB_EXTRA = {"Edit stock": ["csedit", "zerostock", "square", "rerun",
-                            "newphotos"]}
+#: their own. The shop's place in Edit stock is the whole of the shop's own
+#: editing - comparing, finding one listing, sweeping the zeros, squaring a
+#: photo and re-pointing the photos that are already hosted - so the tabs view
+#: stacks those inside the one tab, where the task menu reaches them from the
+#: buttons on the panel itself. Without the add-on none of them exists.
+#:
+#: Replacing a card's pictures is NOT in here. It used to be, and that is where
+#: it could not be found: the job writes to the website first and to the shop
+#: after, so it is not the shop's own work, and a seller looking for "replace
+#: the photos" looked under Edit stock and saw only the per-site panels. It is
+#: a panel of its own in that section now, in both the tabs and the task menu.
+TAB_EXTRA = {"Edit stock": ["csedit", "zerostock", "square", "rerun"]}
 
 
 def groups_for(has_cs):
@@ -9669,11 +9692,15 @@ def build_stock(parent, app, site_id="cs"):
                         "quantity 0 and archive them, one at a time, without "
                         "deleting anything")
             #  The photos of the listings being edited belong here too: a
-            #  square that will not upload, a listing pointing at the wrong
-            #  file, and a card that needs its pictures replaced are all the
-            #  same job as the row above them. In a tab these are stacked
-            #  underneath (TAB_EXTRA), so the buttons are built only where a
-            #  click has somewhere to go.
+            #  square that will not upload and a listing pointing at the wrong
+            #  file are the same job as the row above them. In a tab these are
+            #  stacked underneath (TAB_EXTRA), so the buttons are built only
+            #  where a click has somewhere to go.
+            #
+            #  Replacing a card's pictures is deliberately not one of them: it
+            #  writes to the website first, so it is a panel of its own in the
+            #  Edit stock section of the tabs and the task menu. It was here
+            #  for a while, and that is exactly where it could not be found.
             photo_row = ttk.Frame(box)
             photo_row.pack(anchor="w", pady=(4, 0))
             for text, wanted, tip in (
@@ -9682,10 +9709,7 @@ def build_stock(parent, app, site_id="cs"):
                      "save a square copy to upload by hand"),
                     ("Re-point photos...", "rerun",
                      "Point listings at photos that are already hosted, "
-                     "from the cache, without uploading anything again"),
-                    ("Replace card photos...", "newphotos",
-                     "Find a card and replace its pictures on the "
-                     "website")):
+                     "from the cache, without uploading anything again")):
                 nav = ttk.Button(photo_row, text=text,
                                  command=lambda pid=wanted:
                                  app.show_panel(pid))
@@ -14465,8 +14489,13 @@ def build_newphotos(parent, app):
             messagebox.showwarning(
                 "Some sheets were not added", "\n".join(failed), parent=app)
         if added:
-            status("%d sheet%s loaded - %d images to use." % (
-                added, "" if added == 1 else "s", len(pool.unused())))
+            #  The next thing to do, at the moment it becomes possible: this
+            #  is where a sitting used to stall with the scans loaded and no
+            #  idea which of the buttons came next.
+            status("%d sheet%s loaded - %d image%s to use. Now type the "
+                   "card's name or SKU in Step 3 and press Find the card..."
+                   % (added, "" if added == 1 else "s", len(pool.unused()),
+                      "" if len(pool.unused()) == 1 else "s"))
         return bool(added)
 
     def refresh_sheets():
@@ -14474,6 +14503,7 @@ def build_newphotos(parent, app):
         label = sheets_text["label"]
         if label is None:
             return
+        refresh_strip()
         if not pool.sheets:
             label.configure(text="No replacement sheets loaded yet - Add "
                             "sheets starts here, and they stay loaded for the "
@@ -14516,12 +14546,83 @@ def build_newphotos(parent, app):
                 "sheet again." % total, parent=app)
         return False
 
+    def plan_the_photos(product, wants_back, old_pair_ids=()):
+        """What comes off the product, what stays, and what is left alone.
+
+        Nothing is uploaded or written here: this is the answer the review
+        window shows before anything happens, and the same answer the plain
+        questions used to work out for themselves.
+
+        Returns ``None`` when the question about a gallery row that does not
+        say whether it is the old back was closed, which means "change
+        nothing".
+        """
+        rows = woo_media.existing_images(product)
+        remove_ids = list(old_pair_ids)
+        if wants_back:
+            #  A gallery that predates the -front/-back naming has no readable
+            #  back, and pair_ids() would quietly treat the first row as the
+            #  only one to replace - leaving the old back beside the new one.
+            #  Ask instead of assuming.
+            try:
+                unread = photo_replace.unread_back_rows(rows)
+            except Exception:                 # noqa: BLE001 - never fatal
+                unread = []
+            #  The row already being replaced as the front is not a candidate
+            #  for the back, so it is not offered again.
+            unread = [row for row in unread
+                      if row["id"] not in set(remove_ids)]
+            if unread:
+                choice = choose_old_back(unread, product.get("name") or "")
+                if choice.get("cancel"):
+                    return None
+                remove_ids += [i for i in (choice.get("remove") or [])
+                               if i not in remove_ids]
+        staying = [row for row in rows if row["id"] not in set(remove_ids)]
+        leaving = [row for row in rows if row["id"] in set(remove_ids)]
+        return {"rows": rows, "remove_ids": remove_ids, "staying": staying,
+                "leaving": leaving}
+
+    def offer_wordpress_password():
+        """Offer the two extra lines that let the app upload by itself.
+
+        Once per session: a repeated nag is worse than a manual upload, and
+        the offer is still here next time the app starts. It is asked before
+        the review window as well as inside the upload, because a window that
+        says "the website cannot be done" with no way to fix it in front of
+        you is a worse answer than the one-time question.
+        """
+        site, key, secret = read_woo_credentials()
+        _wp_site, username, app_password = read_wordpress_credentials()
+        if not (key and secret) or (username and app_password):
+            return False
+        if getattr(app, "_wp_upload_asked", False):
+            return False
+        app._wp_upload_asked = True
+        if messagebox.askyesno(
+                "Upload replacements straight from here?",
+                "Alex Collect can upload the new photos and set them on the "
+                "product by itself.\n\nThat needs two more lines in "
+                "woo-keys.txt: your WordPress username and an Application "
+                "Password (Users > Profile > Application Passwords).\n\nAdd "
+                "them now? The file is private and only this account can read "
+                "it.", parent=app):
+            open_woo_keys_file(app, site)
+            return True
+        return False
+
     def upload_to_site(app, product, front_path, back_path=None,
-                       old_pair_ids=()):
+                       old_pair_ids=(), plan=None, decided=None):
         """Upload the pair and make it the product's photos on the website.
 
         Returns True when the website was updated. Nothing is sent when the
         site, the keys, or the user's consent are missing.
+
+        ``plan`` is what :func:`plan_the_photos` worked out. ``decided`` is
+        the review window's answer - it has already shown the old photos and
+        the new ones side by side and been pressed once, so the questions
+        below are not asked a second time. Without either, this does exactly
+        what it always did: asks, then acts.
         """
         site, key, secret = read_woo_credentials()
         wp_site, username, app_password = read_wordpress_credentials()
@@ -14530,20 +14631,7 @@ def build_newphotos(parent, app):
         if not (key and secret):
             return False
         if not (username and app_password):
-            #  Only ask once per session; a repeated nag is worse than a
-            #  manual upload, and the offer is still here next time the app
-            #  starts.
-            if not getattr(app, "_wp_upload_asked", False):
-                app._wp_upload_asked = True
-                if messagebox.askyesno(
-                        "Upload replacements straight from here?",
-                        "Alex Collect can upload the new photos and set them "
-                        "on the product by itself.\n\nThat needs two more "
-                        "lines in woo-keys.txt: your WordPress username and an "
-                        "Application Password (Users > Profile > Application "
-                        "Passwords).\n\nAdd them now? The file is private and "
-                        "only this account can read it.", parent=app):
-                    open_woo_keys_file(app, site)
+            offer_wordpress_password()
             return False
         base = woo_media.site_root(wp_site or site)
         if not base:
@@ -14560,53 +14648,42 @@ def build_newphotos(parent, app):
         #  The old pair comes off the product before the new one goes on, so a
         #  listing never carries two backs. Removing a photo from a product is
         #  not deleting it: the file stays in the media library.
-        rows = woo_media.existing_images(product)
-        remove_ids = list(old_pair_ids)
-        if back_path is not None:
-            #  A gallery that predates the -front/-back naming has no readable
-            #  back, and pair_ids() would quietly treat the first row as the
-            #  only one to replace - leaving the old back beside the new one.
-            #  Ask instead of assuming.
-            try:
-                import photo_replace
-                unread = photo_replace.unread_back_rows(rows)
-            except ImportError:
-                unread = []
-            #  The row already being replaced as the front is not a candidate
-            #  for the back, so it is not offered again.
-            unread = [row for row in unread
-                      if row["id"] not in set(remove_ids)]
-            if unread:
-                choice = choose_old_back(unread, product.get("name") or "")
-                if choice.get("cancel"):
-                    return False
-                remove_ids += [i for i in (choice.get("remove") or [])
-                               if i not in remove_ids]
-
-        staying = [row for row in rows if row["id"] not in set(remove_ids)]
-        leaving = [row for row in rows if row["id"] in set(remove_ids)]
-        plan = ["Upload %s and make them the photos for:" % photos, "",
-                product.get("name") or "(untitled product)"]
-        if leaving:
-            plan += ["", "Taken off this product (the image files stay in "
-                     "your media library):"]
-            plan += ["  - %s" % (row["name"] or row["id"]) for row in leaving]
-        if staying:
-            plan += ["", "Left alone:"]
-            plan += ["  - %s" % (row["name"] or row["id"]) for row in staying]
-        plan += ["", "Yes - take those off and put the new photos on",
-                 "No - add the new photos and leave every existing one",
-                 "Cancel - do not upload"]
-        #  Yes means "replace the old pair", which is the opposite of keeping
-        #  it - an easy inversion, so the name says what the answer means.
-        replace_old = messagebox.askyesnocancel(
-            "Put these photos on the website?", "\n".join(plan), parent=app)
-        if replace_old is None:
-            return False
-        if replace_old:
-            keep_ids = [row["id"] for row in staying]
+        if plan is None:
+            plan = plan_the_photos(product, back_path is not None,
+                                   old_pair_ids)
+            if plan is None:
+                return False
+        staying, leaving = plan["staying"], plan["leaving"]
+        if decided is not None:
+            #  The review window already showed what leaves and what stays,
+            #  with pictures of both sides, and was pressed once.
+            keep_ids = (None if decided.get("keep_old")
+                        else [row["id"] for row in staying])
+            replace_old = bool(leaving) and not decided.get("keep_old")
         else:
-            keep_ids = None
+            words = ["Upload %s and make them the photos for:" % photos, "",
+                     product.get("name") or "(untitled product)"]
+            if leaving:
+                words += ["", "Taken off this product (the image files stay "
+                          "in your media library):"]
+                words += ["  - %s" % (row["name"] or row["id"])
+                          for row in leaving]
+            if staying:
+                words += ["", "Left alone:"]
+                words += ["  - %s" % (row["name"] or row["id"])
+                          for row in staying]
+            words += ["", "Yes - take those off and put the new photos on",
+                      "No - add the new photos and leave every existing one",
+                      "Cancel - do not upload"]
+            #  Yes means "replace the old pair", which is the opposite of
+            #  keeping it - an easy inversion, so the name says what the
+            #  answer means.
+            replace_old = messagebox.askyesnocancel(
+                "Put these photos on the website?", "\n".join(words),
+                parent=app)
+            if replace_old is None:
+                return False
+            keep_ids = [row["id"] for row in staying] if replace_old else None
         status("Uploading %s..." % photos)
         try:
             result = woo_media.replace_product_photos(
@@ -14979,6 +15056,326 @@ def build_newphotos(parent, app):
         app.wait_window(top)
         return answer
 
+    # -- what each place can be told to do -----------------------------------
+    def offerable():
+        """What every place can do for this card, and what it says when not.
+
+        The review window and the sentence on the panel are both built from
+        this, so the two can never disagree about what pressing the button
+        does. It reads the keys and the plugin version and nothing else.
+        """
+        _site, key, secret = read_woo_credentials(keys_file)
+        _wp, username, password = read_wordpress_credentials(keys_file)
+        website = {"possible": bool(key and secret and username and password)}
+        if not (key and secret):
+            website["why"] = ("no website keys are saved yet, so the pictures "
+                              "are saved here and uploaded by hand")
+        elif not (username and password):
+            website["why"] = ("the WordPress username and Application "
+                              "Password are not saved yet, so the pictures "
+                              "are saved but not uploaded")
+        cs = {"possible": False, "back": False}
+        if not getattr(app, "cs_addon", True):
+            cs["why"] = "the CanadianShopper plugin is not installed"
+        elif not photo_replace_available():
+            cs["why"] = ("CanadianShopper plugin %s or newer is needed for "
+                         "one card's photos; this copy is %s"
+                         % (CS_PHOTO_REPLACE_VERSION,
+                            plugin_version() or "unknown"))
+        else:
+            cs["possible"] = True
+            cs["back"] = photo_back_replaceable()
+        facebook = {"possible": False,
+                    "why": ("Facebook has no upload here. Its selling page "
+                            "opens with the pictures beside it, and you add "
+                            "them there by hand")}
+        return {"website": website, "cs": cs, "facebook": facebook}
+
+    def thumbs_cache():
+        """The sitting's small pictures, decoded once and kept."""
+        cache = getattr(app, "_tile_thumbs", None)
+        if cache is None:
+            cache = photo_thumbs.Thumbnails()
+            app._tile_thumbs = cache
+        return cache
+
+    def picture(parent, path, keep, caption=""):
+        """One file as a picture with its caption under it.
+
+        ``keep`` holds the Tk image objects: one that nothing references is
+        garbage collected and leaves an empty box where a photo should be.
+        """
+        cell = ttk.Frame(parent)
+        cell.pack(side="left", padx=6, pady=2)
+        photo = None
+        try:
+            photo = photo_thumbs.as_photo(thumbs_cache().get(str(path)))
+        except Exception:                 # noqa: BLE001 - a picture is a bonus
+            photo = None
+        if photo is not None:
+            keep.append(photo)
+            ttk.Label(cell, image=photo).pack()
+        else:
+            ttk.Label(cell, text="(no picture)", style="Dim.TLabel").pack()
+        ttk.Label(cell, text=caption or Path(str(path)).name,
+                  style="Dim.TLabel", wraplength=150, justify="left").pack()
+        return cell
+
+    def pictures_work(*paths):
+        """Whether this screen can draw a picture of at least one file.
+
+        Tk without image support - and a test harness - answers no, and the
+        panel then uses the plain questions it always used. A build that
+        cannot draw a picture must still be able to replace photos.
+        """
+        for path in paths:
+            if path is None:
+                continue
+            try:
+                if photo_thumbs.as_photo(
+                        thumbs_cache().get(str(path))) is not None:
+                    return True
+            except Exception:             # noqa: BLE001 - treat as no picture
+                return False
+        return False
+
+    def review_window(product, front_path, back_path, plan, can):
+        """The old photos beside the new ones, and one button that does both.
+
+        This is the window the whole panel was missing: the two pickers say
+        *which* pictures, and then four questions used to ask one at a time
+        whether to upload, what to take off, and whether the shop should be
+        told as well. Here the answer to all of it is one picture of what is
+        there now, one picture of what would replace it, the three places
+        named with what each will do, and a single button.
+
+        Returns ``None`` when no picture can be drawn, which sends the caller
+        down the path that asks the plain questions instead.
+        """
+        if not pictures_work(front_path, back_path):
+            return None
+        top = tk.Toplevel(app)
+        app.photo_review_window = top      # kept so a test can drive it
+        top.title("Replace these photos?")
+        top.transient(app)
+        width = min(980, max(620, app.winfo_screenwidth() - 60))
+        height = min(720, max(480, app.winfo_screenheight() - 90))
+        top.geometry("%dx%d" % (width, height))
+        top.grab_set()
+        keep = []
+        answer = {"go": False, "website": False, "cs": False,
+                  "keep_old": False}
+
+        ttk.Label(top, text=product.get("name") or "(untitled product)",
+                  font=("TkDefaultFont", 11, "bold"),
+                  wraplength=width - 60, justify="left").pack(
+                      anchor="w", padx=12, pady=(10, 0))
+        if product.get("sku"):
+            ttk.Label(top, text="SKU %s" % product["sku"],
+                      style="Dim.TLabel").pack(anchor="w", padx=12)
+
+        body = ScrollFrame(top)
+        body.pack(fill="both", expand=True, padx=8, pady=(6, 0))
+        sides = ttk.Frame(body.inner)
+        sides.pack(fill="x", pady=(0, 6))
+        now = ttk.LabelFrame(sides, text="On your website now", padding=(6, 4))
+        now.pack(side="left", fill="both", expand=True)
+        going = ttk.LabelFrame(sides, text="Going on", padding=(6, 4))
+        going.pack(side="left", fill="both", expand=True, padx=(8, 0))
+        picture(going, front_path, keep, caption="Front - the new main photo")
+        if back_path is not None:
+            picture(going, back_path, keep,
+                    caption="Back - goes behind the front")
+
+        def show_now():
+            """The product's own photos, fetched behind the window."""
+            urls = [str(image.get("src") or "")
+                    for image in (product.get("images") or [])
+                    if isinstance(image, dict)]
+            urls = [url for url in urls if url][:4]
+            if not urls:
+                ttk.Label(now, text="No photos on the product yet",
+                          style="Dim.TLabel").pack(anchor="w")
+                return
+            row = ttk.Frame(now)
+            row.pack(anchor="w")
+            labels = {}
+            for url in urls:
+                cell = ttk.Frame(row)
+                cell.pack(side="left", padx=6, pady=2)
+                label = ttk.Label(cell, text="loading...", style="Dim.TLabel")
+                label.pack()
+                ttk.Label(cell, text=url.rstrip("/").rsplit("/", 1)[-1],
+                          style="Dim.TLabel", wraplength=150,
+                          justify="left").pack()
+                labels[url] = label
+
+            def work():
+                return doc_images.fetch_images(urls, replace_dir() / "shown")
+
+            def arrived(found, error):
+                for url, label in labels.items():
+                    path = (found or {}).get(url)
+                    photo = None
+                    if path is not None:
+                        try:
+                            photo = photo_thumbs.as_photo(
+                                thumbs_cache().get(str(path)))
+                        except Exception:     # noqa: BLE001 - one photo
+                            photo = None
+                    try:
+                        if photo is None:
+                            label.configure(text="(no picture)")
+                        else:
+                            keep.append(photo)
+                            label.configure(image=photo, text="")
+                    except Exception:         # noqa: BLE001 - window closed
+                        pass
+
+            in_background(app, work, arrived)
+
+        show_now()
+
+        plan_box = ttk.LabelFrame(
+            body.inner, text="What pressing the button will do",
+            padding=(6, 4))
+        plan_box.pack(fill="x", pady=(0, 4))
+        website_var = tk.BooleanVar(master=top,
+                                    value=can["website"]["possible"])
+        cs_var = tk.BooleanVar(master=top, value=can["cs"]["possible"])
+        keep_var = tk.BooleanVar(master=top, value=False)
+
+        def tick(text, var, enabled, why=""):
+            row = ttk.Frame(plan_box)
+            row.pack(fill="x", anchor="w")
+            box = ttk.Checkbutton(row, text=text, variable=var)
+            if not enabled:
+                box.configure(state="disabled")
+            box.pack(side="left")
+            if why and not enabled:
+                ttk.Label(row, text="  (%s)" % why.rstrip("."),
+                          style="Dim.TLabel").pack(side="left")
+
+        main = "replace the main photo"
+        if back_path is not None:
+            main += " and put the back behind it"
+        tick("Your website - %s" % main, website_var,
+             can["website"]["possible"], can["website"].get("why", ""))
+        cs_text = "CanadianShopper - replace this listing's photos"
+        if back_path is not None and not can["cs"]["back"] and \
+                can["cs"]["possible"]:
+            cs_text = ("CanadianShopper - replace the front only: this plugin "
+                       "would add the back beside the old one")
+        tick(cs_text, cs_var, can["cs"]["possible"], can["cs"].get("why", ""))
+        ttk.Label(plan_box, text="Facebook - %s." %
+                  can["facebook"]["why"], style="Dim.TLabel",
+                  wraplength=width - 80, justify="left").pack(anchor="w",
+                                                              pady=(4, 0))
+        if plan["leaving"]:
+            ttk.Label(plan_box, text=(
+                "Taken off this product (%d): %s. The image files stay in "
+                "your media library." % (
+                    len(plan["leaving"]),
+                    ", ".join(row["name"] or str(row["id"])
+                              for row in plan["leaving"]))),
+                style="Dim.TLabel", wraplength=width - 80,
+                justify="left").pack(anchor="w", pady=(4, 0))
+            ttk.Checkbutton(plan_box, variable=keep_var,
+                            text="Keep those photos on the product as well, "
+                                 "with the new pair in front of them"
+                            ).pack(anchor="w", pady=(2, 0))
+        if plan["staying"]:
+            ttk.Label(plan_box, text="Left alone: %s" % ", ".join(
+                row["name"] or str(row["id"]) for row in plan["staying"]),
+                style="Dim.TLabel", wraplength=width - 80,
+                justify="left").pack(anchor="w", pady=(2, 0))
+
+        def leave():
+            answer["go"] = True
+            answer["website"] = bool(website_var.get())
+            answer["cs"] = bool(cs_var.get())
+            answer["keep_old"] = bool(keep_var.get())
+            top.destroy()
+
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=12, pady=10)
+        writes = can["website"]["possible"] or can["cs"]["possible"]
+        ttk.Button(buttons, text="Replace the photos" if writes
+                   else "Save the pictures", command=leave).pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=top.destroy).pack(
+            side="right", padx=8)
+        ttk.Label(buttons, text="Nothing is sent until this button is "
+                  "pressed.", style="Dim.TLabel").pack(side="left")
+        top.protocol("WM_DELETE_WINDOW", top.destroy)
+        attach_tooltips(top)
+        app.wait_window(top)
+        return answer
+
+    def results_window(product, front_path, back_path, done, how):
+        """What is where now, with the pictures that were just sent.
+
+        After the work the question is not "what will happen" but "did it,
+        and can I see it", so it is answered with the same two pictures and
+        one line per place. Skipped when no picture can be drawn, where the
+        console has already said the same thing in words.
+        """
+        if not pictures_work(front_path, back_path):
+            return
+        top = tk.Toplevel(app)
+        app.photo_result_window = top
+        top.title("The photos are done")
+        top.transient(app)
+        width = min(760, max(560, app.winfo_screenwidth() - 60))
+        top.geometry("%dx%d" % (width, 520))
+        top.grab_set()
+        keep = []
+        ttk.Label(top, text="Done: %s" % (product.get("name") or "this card"),
+                  font=("TkDefaultFont", 11, "bold"),
+                  wraplength=width - 60, justify="left").pack(
+                      anchor="w", padx=12, pady=(10, 4))
+        row = ttk.Frame(top)
+        row.pack(anchor="w", padx=12)
+        picture(row, front_path, keep, caption="Front - the new main photo")
+        if back_path is not None:
+            picture(row, back_path, keep, caption="Back")
+        can = how["can"]
+        lines = []
+        if done.get("website"):
+            lines.append("Your website: replaced - the front is the main "
+                         "photo and the back follows it.")
+        elif how.get("wanted") and can["website"]["possible"]:
+            lines.append("Your website: the photos were not put on it - the "
+                         "console says why, and the files are in "
+                         "replacements/.")
+        else:
+            lines.append("Your website: not uploaded by the app (%s); the "
+                         "pictures are in replacements/."
+                         % can["website"].get("why", "nothing was asked for"))
+        if done.get("cs"):
+            lines.append("CanadianShopper: sent to the plugin, which reports "
+                         "in the console when the listing is done.")
+        elif how.get("wanted_cs"):
+            lines.append("CanadianShopper: the plugin did not take it - the "
+                         "console says why.")
+        else:
+            lines.append("CanadianShopper: not sent (%s)."
+                         % can["cs"].get("why", "it was not ticked"))
+        lines.append("Facebook: open its selling page and add the two "
+                     "pictures by hand.")
+        for line in lines:
+            ttk.Label(top, text=line, wraplength=width - 40, justify="left"
+                      ).pack(anchor="w", padx=12, pady=1)
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=12, pady=8)
+        ttk.Button(buttons, text="Close", command=top.destroy).pack(
+            side="right")
+        ttk.Button(buttons, text="Open the folder with the pictures",
+                   command=lambda: open_path(Path(front_path).parent)).pack(
+                       side="left")
+        top.protocol("WM_DELETE_WINDOW", top.destroy)
+        attach_tooltips(top)
+        app.wait_window(top)
+
     def wire_card(product, front, back=None):
         """Replace the one card's photos on CanadianShopper, no CSV involved."""
 
@@ -15126,6 +15523,61 @@ def build_newphotos(parent, app):
         if back is not None:
             pool.take(back, label)
         refresh_sheets()
+
+        #  One window from here: the product's own photos beside the two that
+        #  were just chosen, the three places named with what each will do, and
+        #  one button that does the lot - the website first, then the shop.
+        #  Where no picture can be drawn at all (no image support in this Tk)
+        #  it returns None and the questions below run instead, exactly as
+        #  they always did, so a build without pictures still replaces photos.
+        decided, plan = None, None
+        if single_product(product):
+            #  Before the window, so a site that cannot be written to yet can
+            #  be fixed with the file in front of you rather than read about.
+            offer_wordpress_password()
+            can = offerable()
+            plan = plan_the_photos(product, saved_back is not None,
+                                   old_pair_ids)
+            if plan is None:
+                #  The question about a gallery whose rows do not say which
+                #  one is the old back was closed: change nothing.
+                status("Cancelled: nothing was sent.")
+                return
+            decided = review_window(product, saved, saved_back, plan, can)
+        if decided is not None:
+            if not decided["go"]:
+                status("Cancelled. The pictures are saved in %s and nothing "
+                       "was sent." % saved.parent)
+                app.console_line(
+                    "Cancelled: the new pictures are in %s, and nothing on "
+                    "the website or the shop was changed." % saved.parent,
+                    "dim")
+                return
+            sent = {"website": False, "cs": False}
+            if decided["website"]:
+                #  The uploader has the last word: an http site, a missing
+                #  password or a refusal all come back False, and the window
+                #  at the end says what was written rather than what was
+                #  asked for.
+                sent["website"] = bool(upload_to_site(
+                    app, product, saved, saved_back, old_pair_ids,
+                    plan=plan, decided=decided))
+            if decided["cs"] and can["cs"]["possible"]:
+                #  1.0.15 can replace the front but only APPENDS a back, which
+                #  would leave the old back photo on the listing - the review
+                #  window has already said so, and the back is held back here.
+                send_back = saved_back if can["cs"].get("back") else None
+                wire_card(product, saved, send_back)
+                sent["cs"] = True
+            results_window(product, saved, saved_back, sent,
+                           {"wanted": decided["website"],
+                            "wanted_cs": decided["cs"], "can": can})
+            if urls:
+                app.open_webpages(urls)
+                if open_path(saved.parent):
+                    app.console_line("Opened %s for the saved images." %
+                                     saved.parent, "dim")
+            return
 
         # The website photo comes first: the shop is what customers buy from,
         # and the marketplace copies are wired from the same card afterwards.
@@ -15380,6 +15832,17 @@ def build_newphotos(parent, app):
                 return
         replace(query, product)
 
+    #  Three steps, numbered, in the order the work happens. The panel used to
+    #  read as one pile of controls - an order queue, a sheets row, a name box
+    #  - with nothing saying which came first or what to do after the scans
+    #  were loaded, which is exactly where a sitting stalled. A step that is
+    #  still ahead of you says so in one line under its own heading.
+    ttk.Label(box, text="Step 1 of 3 - the cards",
+              font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+    ttk.Label(box, text="An order's nine, or one card by its name or SKU. "
+              "Either way the pictures come next.", style="Dim.TLabel",
+              wraplength=780, justify="left").pack(anchor="w")
+
     #  Which cards are being photographed: an order's queue, nine at a time.
     #  This is the first question of a sitting - the cards come before the
     #  scans - so it sits above the sheets.
@@ -15421,6 +15884,12 @@ def build_newphotos(parent, app):
 
     #  Sheets next: this is where the images come from, the way the pipeline
     #  starts from the scans rather than from a card name.
+    ttk.Label(box, text="Step 2 of 3 - the photographs",
+              font=("TkDefaultFont", 10, "bold")).pack(anchor="w", pady=(8, 0))
+    ttk.Label(box, text="Add the scan sheets. Each one holds nine cards and "
+              "they stay loaded for the whole sitting, so the next card does "
+              "not need them again.", style="Dim.TLabel", wraplength=780,
+              justify="left").pack(anchor="w")
     sheets_row = ttk.Frame(box)
     sheets_row.pack(anchor="w", pady=(4, 0))
     ttk.Button(sheets_row, text="Add sheets...",
@@ -15430,8 +15899,48 @@ def build_newphotos(parent, app):
     ttk.Button(sheets_row, text="Assign photos to cards...",
                command=open_assign_window).pack(side="left", padx=(10, 0))
 
+    #  The pictures themselves, not just a count. "18 images used 2 of 18"
+    #  says nothing about whether the right sheet was loaded; the nine cards
+    #  on it do. Built only where a picture can be drawn at all - a Tk
+    #  without image support keeps the count and nothing else changes.
+    tile_strip = ttk.Frame(box)
+    tile_strip.pack(fill="x", pady=(4, 0))
+
+    def refresh_strip():
+        """Show the images still unused, so the sheet is visible, not counted."""
+        for child in list(tile_strip.winfo_children()):
+            try:
+                child.destroy()
+            except Exception:              # noqa: BLE001 - already gone
+                pass
+        keep = getattr(app, "_tile_strip_photos", None)
+        if keep is None:
+            keep = []
+            app._tile_strip_photos = keep
+        keep[:] = []
+        tiles = list(pool.unused())
+        if not tiles:
+            return
+        if not pictures_work(*[tile.get("path") for tile in tiles[:1]]):
+            return
+        ttk.Label(tile_strip, text="On your sheets, still to use:",
+                  style="Dim.TLabel").pack(anchor="w")
+        grid = ttk.Frame(tile_strip)
+        grid.pack(anchor="w")
+        for row_tiles in photo_thumbs.rows(tiles):
+            line = ttk.Frame(grid)
+            line.pack(anchor="w")
+            for tile in row_tiles:
+                picture(line, tile.get("path"), keep,
+                        caption=photo_thumbs.caption(tile))
+        if len(tiles) > 27:
+            ttk.Label(tile_strip, text="... and %d more." % (len(tiles) - 27),
+                      style="Dim.TLabel").pack(anchor="w")
+
+    ttk.Label(box, text="Step 3 of 3 - replace these photos",
+              font=("TkDefaultFont", 10, "bold")).pack(anchor="w", pady=(8, 0))
     row = ttk.Frame(box)
-    row.pack(anchor="w", pady=4)
+    row.pack(anchor="w", pady=(2, 4))
     ttk.Label(row, text="Card name or SKU:").pack(side="left")
     entry = ttk.Entry(row, textvariable=term, width=42)
     entry.pack(side="left", padx=6)
@@ -15446,10 +15955,39 @@ def build_newphotos(parent, app):
                        "Connection panel." %
                        app.settings.get("scan_dir", DEFAULT_SCAN_DIR)))
                ).pack(side="left", padx=8)
+    #  What pressing Find will actually do, said before it is pressed and
+    #  built from the same answer the review window uses - so the sentence and
+    #  the window can never disagree. "When credentials are entered" the work
+    #  is one pass over both sites; the answer says which of them it will be.
+    will_do = ttk.Label(box, text="", style="Dim.TLabel", wraplength=780,
+                        justify="left")
+    will_do.pack(anchor="w", pady=(2, 0))
+
+    def describe_what_follows():
+        can = offerable()
+        parts = []
+        if can["website"]["possible"]:
+            parts.append("Find uploads the new front and back to your website "
+                         "and sets them on the product")
+        else:
+            parts.append("Find opens the product list and the pictures are "
+                         "saved in replacements/ (%s)"
+                         % can["website"]["why"])
+        if can["cs"]["possible"]:
+            parts.append("CanadianShopper then replaces this listing's photos "
+                         "in the same pass")
+        else:
+            parts.append("CanadianShopper is left alone (%s)"
+                         % can["cs"]["why"])
+        parts.append("Facebook is always by hand: its page opens with the "
+                     "pictures beside it")
+        will_do.configure(text=". ".join(parts).replace("..", ".") + ".")
+
     sheets_text["label"] = ttk.Label(notes, text="", style="Dim.TLabel",
                                      wraplength=780, justify="left")
     sheets_text["label"].pack(anchor="w", pady=(2, 0))
     hint.pack(anchor="w", pady=(2, 0))
+    describe_what_follows()
     refresh_queue()
     refresh_sheets()
 

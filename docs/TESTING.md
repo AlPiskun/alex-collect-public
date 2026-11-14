@@ -77,7 +77,7 @@ and `cd` to the clone being reviewed. `test-gui.py` now says so above its first
 check when it is run from such a folder.
 
 `test-gui.py` then prints the version and the folder it is testing on its first
-line — for example `== 0. Alex Collect 3.36, from
+line — for example `== 0. Alex Collect 3.37, from
 C:\...\alex-collect-public\app ==`. Check that against the PR before reading
 any failure: a clone left on an older commit has an older `gui.py` beside an
 older test file, and its failures look exactly like the current work's.

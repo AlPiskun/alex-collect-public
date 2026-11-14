@@ -87,10 +87,15 @@ def test_the_section_and_the_tabs():
              if isinstance(w, gui.ttk.Button)]
     neighbours = ("Find and edit a CanadianShopper listing...",
                   "Archive listings already at 0...",
-                  "Square up a photo...", "Re-point photos...",
-                  "Replace card photos...")
-    check("the task-menu shop panel offers its five neighbours as buttons",
+                  "Square up a photo...", "Re-point photos...")
+    check("the task-menu shop panel offers its four neighbours as buttons",
           all(text in texts for text in neighbours), str(texts))
+    #  Replacing a card's photos is not one of them any more: it writes to the
+    #  website before the shop, so it is a panel of its own in the Edit stock
+    #  section. A button here would hide the panel directly below it in a tab,
+    #  and in the task menu it would point at a job the section already lists.
+    check("and the photo replacement is not folded in here",
+          "Replace card photos..." not in texts, str(texts))
     check("and the photo tools are in the shop's own place, not a section of "
           "their own",
           "Photos" not in [name for name, _ids in gui.groups_for(True)],
@@ -132,12 +137,15 @@ def test_the_section_and_the_tabs():
     index = labels.index("Edit stock")
     tab = notebook.tabs[index][0]
     panels = [w for w in tab.walk() if getattr(w, "_section_titled", False)]
-    expected = (["woostock", "stock", "editfb", "editeb"] +
+    expected = (["woostock", "stock", "editfb", "editeb", "newphotos"] +
                 list(gui.TAB_EXTRA["Edit stock"]))
     check("the shop's tab holds the shop's panels and its photo tools, in "
           "order",
           [p.cget("text") for p in panels] == [gui.TITLES[pid]
                                                 for pid in expected],
+          str([p.cget("text") for p in panels]))
+    check("and replacing a card's photos is a section of its own there",
+          gui.TITLES["newphotos"] in [p.cget("text") for p in panels],
           str([p.cget("text") for p in panels]))
     app.cs_addon = False
     tabs2 = harness.FakeWidget()
