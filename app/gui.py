@@ -58,6 +58,7 @@ import cs_proof
 import cs_record
 import cs_stage
 import cs_listing
+import cs_picture
 import cs_products
 import stock_compare
 import stock_write
@@ -80,7 +81,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.43"
+VERSION = "3.44"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1515,6 +1516,15 @@ full address - the main photo above is only one of them - and **Add a photo to
 the gallery...** and **Remove a photo from the gallery...** change them from
 there.
 
+**Use a picture from this computer...** is the third way in, and the one for a
+picture that is not on the site, in the batch or in a paste box at all: the
+front or the back is chosen, a file is picked, and the *squared* picture - the
+card centred on white, the same padding ``SquareImages.bat`` does - is shown in
+one window with one button before anything is written. Then the plugin hosts it
+and puts it at position 1 or 2. A back is replaced as one half of the card's
+pair, so the front the listing shows now goes with it unchanged: the old back
+is replaced rather than doubled, and it does not have to be removed first.
+
 Every change is named field by field before it is sent - "Stock: 2 -> 5",
 "State: archived -> on sale" - and only the fields that changed are sent (with
 the title, which is how the plugin finds the listing), so an edit can never put
@@ -2168,6 +2178,8 @@ TOOLTIPS = {
     "Write the proof": "Write one field on the selected CanadianShopper listing, read the record back, and put the old value back - a real change for the seconds it takes, and the only way to prove the site honours that field; one field, one listing, and nothing on your website",
     "Prove every field...": "Prove every field this app can write on the selected listing in one job: each field is written, read back and put back before the next is touched, an already-settled field is skipped, and a field that does not settle is reported with what to do about it; one confirmed click, and nothing unattended",
     "Add a photo to the gallery...": "Put one photo you choose into the selected listing's gallery - the second picture a card listing should have. The gallery is its own collection of rows (productImage), keyed by the listing's record id, not a field on that record, so the photo is added as a row of its own and the gallery is read back: if the site does not show it, nothing changed and the answer says so. The photo stays, because a gallery photo is what you asked for - the proof is the one that adds a row and removes that same row again",
+    "Use this picture": "Host the squared picture on CanadianShopper and put it in the photo's place - the front as the main photo, the back as the second one, with the old back replaced rather than doubled",
+    "Use a picture from this computer...": "Take a picture off this computer and put it on the selected listing - the front (its main photo) or the back (the second photo). The picture is padded onto a white square first, the way SquareImages.bat does it, so the storefront's square box has nothing left to crop; then the CanadianShopper plugin hosts it and places it at position 1 or 2. A back is only replaced as one half of a card's pair, so the front the listing shows now is sent with it unchanged. Nothing is written until you have seen the squared picture and confirmed it, and the old back is replaced rather than doubled - you do not have to take it off first",
     "Remove a photo from the gallery...": "Take one photo off the selected listing's gallery. The gallery is read first so you choose from the photos it really holds, and the photo comes off by the id of its own row - then the gallery is read back again to show it gone. Nothing else on the listing is touched, and no proof is needed: the removal is shown by that second read.",
     "Edit the record's fields...": "Edit this listing's own record - price, title, description, stock count and main photo, each one open only when a saved proof shows the site keeps it, and only the fields you change are sent, then read back; the gallery's photos are listed below them with their own addresses, and are added or removed from there; no product id is used and your website is never touched",
     "Set the selected listing's price...": "Set the price on the selected listing's own record - one field, at the record's own id, with the new price read back afterwards; offered only for a field a proof has settled, so it works on listings that carry no product id, and your website is never touched",
@@ -11213,6 +11225,16 @@ def build_csledit(parent, app):
         add_tooltip(gallery_remove_btn,
                     "Take one photo off this listing's gallery by its own "
                     "row, then read the gallery back to show it gone")
+        #  The picture that is not anywhere yet. It is here as well as beside
+        #  the panel's own gallery buttons because this is the window that
+        #  lists the photos: a person looking at a wrong back is already in
+        #  this form, and should not have to close it to fix it.
+        picture_btn = ttk.Button(
+            photo_row, text="Use a picture from this computer...",
+            command=lambda: replace_with_picture(after_photo_change))
+        picture_btn.pack(side="left", padx=6)
+        add_tooltip(picture_btn,
+                    TOOLTIPS["Use a picture from this computer..."])
         read_photos()
 
         buttons = ttk.Frame(top)
@@ -11983,6 +12005,300 @@ def build_csledit(parent, app):
 
         in_background(app, look_at(item, listing_id), found)
 
+    def replace_with_picture(on_done=None):
+        """A picture on this computer becomes one of this listing's photos.
+
+        The listing's photos could be chosen only from what was already
+        *somewhere*: the batch's staged uploads, the rows the gallery holds, or
+        an address pasted by hand. A card whose back was photographed on its
+        own - or a picture that is simply new - had no way in at all, so the
+        seller squared it in another program, uploaded it in the vendor
+        dashboard and pointed the listing at it by hand.
+
+        The same job here, in four steps that are each visible: which photo,
+        which file, the *squared* picture in one window with one button, and
+        then the plugin - which hosts it and puts it at position 1 or 2. The
+        core never uploads to the site itself.
+
+        A back is one half of a card's pair, and the plugin replaces the pair:
+        so a back swap sends the front the listing shows now with it, unchanged,
+        which is why the seller no longer has to remove the old back first.
+        """
+        item = proof_guard("Replacing a photo with a picture")
+        if item is None:
+            return
+        title = str(item.get("name") or "").strip()
+        listing_id = cs_edit.listing_id(item)
+        if not title:
+            say("That listing has no title, and the plugin finds the card it "
+                "replaces by title. Nothing was written.", "err")
+            return
+        if not photo_replace_available():
+            words = cs_picture.missing_plugin("front", plugin_version())
+            messagebox.showinfo("The plugin cannot place a picture", words,
+                                parent=box.winfo_toplevel())
+            say(words, "err")
+            return
+        #  1.0.16 is the first plugin that replaces the listing's back row
+        #  instead of adding a second back beside it, so the front is offered
+        #  on its own until then - and the window says which it is.
+        can_back = photo_back_replaceable()
+
+        def draw_picture(parent, path, keep):
+            """The squared picture at a size a window can show."""
+            photo = None
+            try:
+                photo = photo_thumbs.as_photo(
+                    photo_thumbs.thumbnail(str(path), (280, 280)))
+            except Exception:             # noqa: BLE001 - a picture is a bonus
+                photo = None
+            if photo is None:
+                ttk.Label(parent, text="(this build cannot draw the picture)",
+                          style="Dim.TLabel").pack(anchor="w")
+                return
+            #  A PhotoImage nothing references is collected and leaves an empty
+            #  box where the picture should be.
+            keep.append(photo)
+            ttk.Label(parent, image=photo).pack(anchor="w")
+
+        def ask_slot(current, back_now):
+            """Which of the card's two photos the picture is for, or None."""
+            top = tk.Toplevel(app)
+            top.title("Which photo is the new picture for?")
+            top.transient(app)
+            top.geometry("660x430")
+            top.grab_set()
+            body = ttk.Frame(top)
+            body.pack(fill="both", expand=True, padx=12, pady=(12, 4))
+            ttk.Label(body, text=title, font=("", 10, "bold"), wraplength=620,
+                      justify="left").pack(anchor="w")
+            ttk.Label(body, text="The listing shows this as its front now:",
+                      font=("", 9, "bold")).pack(anchor="w", pady=(10, 0))
+            ttk.Label(body, text=current or "(the record names no front photo)",
+                      wraplength=620, justify="left").pack(anchor="w")
+            ttk.Label(body, text="and this as its back:",
+                      font=("", 9, "bold")).pack(anchor="w", pady=(10, 0))
+            ttk.Label(body, text=back_now or "(no back photo in the gallery)",
+                      wraplength=620, justify="left").pack(anchor="w")
+            if can_back:
+                note = ("A back is only replaced as one half of the card's "
+                        "pair, so the front shown now is sent with it, "
+                        "unchanged: the card's front picture stays the same. "
+                        "The old back is replaced, not doubled.")
+            else:
+                note = ("This plugin (%s) cannot replace a back without adding "
+                        "a second one beside it, so only the front is offered. "
+                        "CanadianShopper 1.0.16 or newer can do both."
+                        % (plugin_version() or "of an unknown version"))
+            ttk.Label(body, text=note, wraplength=620, justify="left",
+                      style="Dim.TLabel").pack(anchor="w", pady=(12, 0))
+            chosen = {"slot": None}
+
+            def pick(slot):
+                chosen["slot"] = slot
+                top.destroy()
+
+            buttons = ttk.Frame(top)
+            buttons.pack(fill="x", padx=12, pady=(4, 12))
+            front_btn = ttk.Button(
+                buttons, text="The front (the card's main photo)",
+                command=lambda: pick("front"))
+            front_btn.pack(side="left")
+            add_tooltip(front_btn,
+                        "The picture becomes the listing's main photo; its "
+                        "back is left exactly as it is")
+            back_btn = ttk.Button(
+                buttons, text="The back (the second photo)",
+                command=lambda: pick("back"),
+                state=("normal" if can_back else "disabled"))
+            back_btn.pack(side="left", padx=8)
+            add_tooltip(back_btn,
+                        "The picture replaces the second photo; the front "
+                        "shown now is sent with it, unchanged, because the "
+                        "plugin replaces a card's photos as a pair")
+            ttk.Button(buttons, text="Cancel", command=top.destroy).pack(
+                side="right")
+            top.protocol("WM_DELETE_WINDOW", top.destroy)
+            attach_tooltips(top)
+            app.wait_window(top)
+            return chosen["slot"]
+
+        def review(prepared):
+            """The pictured window: what is about to be written, once."""
+            top = tk.Toplevel(app)
+            top.title("Use this picture?")
+            top.transient(app)
+            top.geometry("740x640")
+            top.grab_set()
+            body = ttk.Frame(top)
+            body.pack(fill="both", expand=True, padx=12, pady=(12, 4))
+            keep = []
+            cell = ttk.Frame(body)
+            cell.pack(anchor="w", pady=(0, 8))
+            draw_picture(cell, prepared["squared"]["path"], keep)
+            squared = prepared["squared"]
+            if squared.get("padded"):
+                size = "%dx%d padded to %dx%d on white" % (
+                    tuple(squared["before"]) + tuple(squared["after"]))
+            else:
+                size = "already square at %dx%d, so nothing was added" % tuple(
+                    squared["after"])
+            ttk.Label(body, text="%s - %s"
+                      % (Path(str(squared["path"])).name, size),
+                      style="Dim.TLabel", wraplength=700,
+                      justify="left").pack(anchor="w")
+            for line in cs_picture.review_lines(
+                    title, prepared["slot"], prepared["rows"],
+                    prepared["current"]):
+                ttk.Label(body, text=line, wraplength=700, justify="left"
+                          ).pack(anchor="w", pady=(6, 0))
+            answer = {"use": False}
+
+            def use_it():
+                answer["use"] = True
+                top.destroy()
+
+            buttons = ttk.Frame(top)
+            buttons.pack(fill="x", padx=12, pady=(4, 12))
+            ttk.Button(buttons, text="Cancel", command=top.destroy).pack(
+                side="right")
+            use_btn = ttk.Button(buttons, text="Use this picture",
+                                 command=use_it)
+            use_btn.pack(side="right", padx=8)
+            add_tooltip(use_btn,
+                        "Square was already done; this hosts the picture on "
+                        "CanadianShopper and puts it in the photo's place")
+            top.protocol("WM_DELETE_WINDOW", top.destroy)
+            attach_tooltips(top)
+            app.wait_window(top)
+            if answer["use"]:
+                write(prepared)
+            else:
+                say("The picture was not confirmed, so nothing was written.",
+                    "dim")
+
+        def write(prepared):
+            """Square done, confirmed: pair it, then let the plugin place it."""
+            slot = prepared["slot"]
+            summary.configure(text="Preparing the picture for the plugin...")
+
+            def work():
+                #  A back is paired with the front this listing shows now, and
+                #  fetching that is a network call - so it is off the window
+                #  thread like every other slow call.
+                front_copy = None
+                if slot == "back":
+                    cookie = load_cookie_text() or ""
+                    front_copy = cs_picture.download(
+                        prepared["current"], prepared["folder"],
+                        prepared["pair"],
+                        fetch=lambda url: cs_products.fetch_bytes(
+                            url, cookie=cookie))
+                return cs_picture.prepare(prepared["folder"], prepared["pair"],
+                                          slot, prepared["squared"]["path"],
+                                          front_copy)
+
+            def ready(written, failure):
+                if failure is not None:
+                    say(cs_picture.words_or_nothing(failure), "err")
+                    summary.configure(text="The picture could not be prepared.")
+                    return
+                say("Handing the picture to the plugin, which hosts it on "
+                    "CanadianShopper and puts it at position %d..."
+                    % cs_picture.position(slot), "cmd")
+                summary.configure(text="Replacing %s..."
+                                  % cs_picture.slot_words(slot))
+
+                def after(rc):
+                    words = cs_picture.done_words(rc, slot, title)
+                    say(words, "ok" if rc == 0 else "err")
+                    summary.configure(text=words)
+                    #  A gallery list on screen is stale the moment a photo is
+                    #  replaced, and a stale list is how the wrong row is
+                    #  picked.
+                    if on_done is not None and rc == 0:
+                        on_done()
+
+                app.run_tool(
+                    TOOL_ACTION(CS_PHOTO_REPLACE) or "cs-image-sync.py",
+                    cs_picture.args(title, written["front"],
+                                    written.get("back"), CS_COOKIE_FILE),
+                    "Use a picture on this listing",
+                    cwd=app.settings.get("pipeline_dir", str(WORK)),
+                    on_done=after)
+
+            in_background(app, work, ready)
+
+        def found(answer, error):
+            """What the listing shows now, then the four visible steps."""
+            answer = answer or {}
+            if error is not None:
+                say("The listing could not be read: %s. Nothing was written."
+                    % error, "err")
+                return
+            current = str(answer.get("current") or "")
+            rows = answer.get("gallery")
+            if rows is None:
+                #  The gallery could not be read: the front is still knowable
+                #  from the record and the plugin reads the gallery itself, so
+                #  the pictures can still be replaced - but the window must not
+                #  claim to know what the back is.
+                say("%s The plugin reads the gallery itself, so a picture can "
+                    "still be replaced." % (answer.get("gallery_why")
+                                            or "The gallery could not be "
+                                            "read."), "dim")
+                rows = ()
+            back_now = cs_picture.back_url(rows, current)
+            slot = ask_slot(current, back_now)
+            if slot is None:
+                say("No photo was chosen, so nothing was written.", "dim")
+                return
+            if slot == "back" and not can_back:
+                words = cs_picture.missing_plugin("back", plugin_version())
+                messagebox.showinfo("The plugin cannot replace a back yet",
+                                    words, parent=box.winfo_toplevel())
+                say(words, "err")
+                return
+            picked = filedialog.askopenfilename(
+                title="Which picture is the new %s?" % slot,
+                initialdir=app.settings.get("scan_dir", str(BASE)),
+                filetypes=[("Pictures", "*.jpg *.jpeg *.png *.webp *.bmp "
+                                        "*.tif *.tiff"),
+                           ("All files", "*.*")])
+            if not picked:
+                say("No picture was chosen, so nothing was written.", "dim")
+                return
+            folder = (Path(app.settings.get("pipeline_dir") or WORK)
+                      / "replacements")
+            pair = cs_picture.pair_name(current, title)
+            if not pair:
+                say("This listing has no front photo and no title to name one "
+                    "from, so the plugin could not be told which card the "
+                    "picture belongs to. Nothing was written.", "err")
+                return
+            say("Squaring the picture...", "dim")
+            summary.configure(text="Squaring the picture...")
+
+            def work():
+                #  Squaring reads and re-encodes a file, which is slow enough
+                #  on a big photo to freeze the window, so it is off the
+                #  window thread like every other slow call.
+                squared = cs_picture.square_file(picked, folder, pair, slot,
+                                                 like=current)
+                return {"squared": squared, "folder": folder, "pair": pair,
+                        "slot": slot, "current": current, "rows": rows}
+
+            def squared(prepared, failure):
+                if failure is not None:
+                    say(cs_picture.words_or_nothing(failure), "err")
+                    summary.configure(text="The picture could not be squared.")
+                    return
+                review(prepared)
+
+            in_background(app, work, squared)
+
+        in_background(app, look_at(item, listing_id), found)
+
     proof_row = ttk.Frame(box)
     proof_row.pack(anchor="w", pady=(4, 0))
     ttk.Label(proof_row, text="Prove a field can be written:").pack(side="left")
@@ -12019,6 +12335,15 @@ def build_csledit(parent, app):
     remove_gallery_btn.pack(side="left", padx=(8, 0))
     add_tooltip(remove_gallery_btn,
                 TOOLTIPS["Remove a photo from the gallery..."])
+    #  The third way to change a listing's photos, and the one the other two
+    #  could not do: a picture that is not on the site, in the batch or in a
+    #  paste box at all. It is squared here and hosted by the plugin, so the
+    #  seller never has to square a file by hand and upload it in a dashboard.
+    picture_btn = ttk.Button(proof_row,
+                             text="Use a picture from this computer...",
+                             command=replace_with_picture)
+    picture_btn.pack(side="left", padx=(8, 0))
+    add_tooltip(picture_btn, TOOLTIPS["Use a picture from this computer..."])
 
     list_frame = ttk.Frame(box)
     listing = tk.Listbox(list_frame, height=9, exportselection=False)
