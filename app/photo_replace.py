@@ -188,8 +188,19 @@ def replacement_stem(image_name):
     A counter already on the name is dropped so replacements keep counting from
     the original: ``...-front-1.webp`` yields ``...-front``, which makes the
     next free name ``...-front-2.webp`` rather than ``...-front-1-1.webp``.
+
+    The name is a filename taken off a shop, not a path on this computer, so it
+    is split by hand rather than through ``Path``. Windows path semantics read
+    ``a:b`` as drive ``a:`` plus name ``b`` - so a photo whose name holds a
+    colon came back as one letter there and in full elsewhere, and the two
+    machines disagreed about which card a pair belonged to. Every machine now
+    reads a name the same way, which is what makes the fallback in
+    ``cs_picture.pair_name`` the same decision everywhere.
     """
-    stem = Path(str(image_name or "")).stem
+    name = str(image_name or "").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    dot = name.rfind(".")
+    stem = name[:dot] if dot > 0 else name
+    stem = stem.strip()
     if not stem:
         return ""
     parts = stem.rsplit("-", 1)

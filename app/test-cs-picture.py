@@ -127,8 +127,10 @@ def test_squaring():
           tool.encode is square_images.encode, "a second copy has appeared")
     one = tool.pad_to_square(Image.new("RGB", (300, 400), (5, 5, 5)))
     two = square_images.pad_to_square(Image.new("RGB", (300, 400), (5, 5, 5)))
+    #  tobytes() rather than getdata(): the same comparison, and getdata() is
+    #  deprecated in the Pillow these machines run (removed in Pillow 14).
     check("and pads a card to the very same pixels",
-          one.size == two.size and list(one.getdata()) == list(two.getdata()),
+          one.size == two.size and one.tobytes() == two.tobytes(),
           (one.size, two.size))
 
 
@@ -158,6 +160,50 @@ def test_names():
           cs_picture.pair_name("https://cs.ca/api/file/a:b?c|d-front.webp",
                                TITLE) == "dallas-smith-12-1991-o-pee-chee",
           cs_picture.pair_name("https://cs.ca/api/file/a:b?c|d-front.webp", TITLE))
+    #  The same address read on a machine that is not this one. A URL path is
+    #  POSIX-shaped whatever the operating system, and `Path("a:b").name` is
+    #  "b" on Windows - "a:" reads as a drive - so the pair name came back as
+    #  one letter and the pair went to the plugin under the wrong card. Read
+    #  through the split, every machine answers the same.
+    colon = cs_picture.pair_name("https://cs.ca/api/file/a:b-front.webp", TITLE)
+    check("a colon in the address never becomes a one-letter pair name",
+          colon == "dallas-smith-12-1991-o-pee-chee" and colon != "b", colon)
+    check("the address is read the same way on every operating system",
+          cs_picture.pair_name("https://cs.ca/api/file/x-front.webp", TITLE)
+          == "x" and
+          cs_picture.pair_name("https://cs.ca/api/file/folder/x-front.webp",
+                               TITLE) == "x", "")
+    #  And the trap itself, stated: Windows path semantics read that address
+    #  as the single letter "b", which is exactly what the suite caught on the
+    #  Windows machine and what no amount of reading it here would have shown.
+    #  PureWindowsPath is available on every platform, so this is the same
+    #  fact everywhere.
+    from pathlib import PureWindowsPath
+    check("path semantics read that address as one letter - which is why the "
+          "address is split by hand",
+          PureWindowsPath("a:b").name == "b",
+          PureWindowsPath("a:b").name)
+    #  The colon check above can only catch a relapse on the machine that has
+    #  the disagreeing semantics, so the rule itself is checked: a shop's
+    #  filename and a photo's address are read as strings, by hand, in both
+    #  places that do it. Nothing here puts them through Path.
+    import ast
+    import inspect
+    import textwrap
+    for function in (photo_replace.replacement_stem, cs_picture._filename):
+        source = textwrap.dedent(inspect.getsource(function))
+        #  The docstring names the trap ("PureWindowsPath(...)"), so the code
+        #  is what is read - the words explaining it are not the bug.
+        node = ast.parse(source).body[0]
+        said = ""
+        if (node.body and isinstance(node.body[0], ast.Expr) and
+                isinstance(node.body[0].value, ast.Constant) and
+                isinstance(node.body[0].value.value, str)):
+            said = node.body[0].value.value
+        code = source.replace(said, "")
+        check("%s reads a name or an address as a string, not a path"
+              % function.__name__, "Path(" not in code and
+              "pathlib" not in code, code.strip().splitlines()[0])
     check("the two slots are position 1 and 2", (
         cs_picture.position("front"), cs_picture.position("back")) == (1, 2),
         cs_picture.position("front"))
@@ -255,6 +301,14 @@ def test_the_front_photo():
           photo_replace.side_of(saved.name) == "front", saved.name)
     check("and it keeps the site's own extension",
           saved.suffix == ".webp", saved.suffix)
+    #  Its own fetch: the one above is counted, and this address is not the
+    #  one the record gave.
+    odd = cs_picture.download(
+        "https://cs.ca/api/file/a:b-front.webp?x=1", work, "dallas-smith",
+        fetch=lambda url: b"front-bytes")
+    check("an odd address still gives a name the disk can hold, with its "
+          "extension kept", odd.suffix == ".webp" and ":" not in odd.name,
+          odd.name)
     check("the address it asked for is the one the record gave",
           seen == [FRONT], seen)
 
