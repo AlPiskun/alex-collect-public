@@ -43,7 +43,6 @@ WHAT THE OPTIONS DO
 
 import argparse
 import glob
-import io
 import os
 import re
 import subprocess
@@ -55,6 +54,8 @@ try:
     Image.MAX_IMAGE_PIXELS = None
 except ImportError:
     sys.exit("Pillow is required.   Install it with:   python -m pip install Pillow")
+
+import square_images
 
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".gif")
 DEFAULT_SUFFIX = "-square"
@@ -72,31 +73,11 @@ def parse_bg(text):
     raise SystemExit("! --bg must be 'white', 'black' or '#RRGGBB'")
 
 
-def pad_to_square(im, bg=(255, 255, 255), keep_alpha=False, size=None):
-    """Centre the image on a square canvas (same routine as pad-and-upload.py)."""
-    w, h = im.size
-    side = max(w, h)
-    if keep_alpha:
-        canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
-        src = im.convert("RGBA")
-    else:
-        canvas = Image.new("RGB", (side, side), bg)
-        src = im.convert("RGBA")
-        flat = Image.new("RGBA", src.size, bg + (255,))
-        src = Image.alpha_composite(flat, src).convert("RGB")
-    canvas.paste(src, ((side - w) // 2, (side - h) // 2))
-    if size and size != side:
-        canvas = canvas.resize((size, size), Image.LANCZOS)
-    return canvas
-
-
-def encode(img, fmt, quality):
-    buf = io.BytesIO()
-    if fmt == "png":
-        img.save(buf, "PNG", optimize=True)
-        return buf.getvalue(), "image/png", ".png"
-    img.convert("RGB").save(buf, "JPEG", quality=quality, optimize=True, progressive=True)
-    return buf.getvalue(), "image/jpeg", ".jpg"
+#  The padding itself lives in square_images, so this tool, the bulk stage and
+#  the "use a picture from this computer" button pad a card the same way. These
+#  two names stay as they were for anything that reads this file.
+pad_to_square = square_images.pad_to_square
+encode = square_images.encode
 
 
 def expand_inputs(values):
