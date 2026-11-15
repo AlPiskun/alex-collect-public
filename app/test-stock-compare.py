@@ -2095,6 +2095,16 @@ def test_the_fix_flow():
     check("the dialog points at the plugin, not at the person",
           any("plugin" in str(payload) for payload in infos), str(infos))
     check("and nothing is run against it", not app.runs, str(app.runs))
+    #  The plan is put on the clipboard so it can be pasted into the plugin's
+    #  own editor. This went unproved while the fake app had no
+    #  update_idletasks: the copy took the flush for a failure, the dialog
+    #  dropped "and on your clipboard", and the run logged "could not copy
+    #  the stock plan" - a green check over a copy that never happened.
+    check("the changes are put on the clipboard",
+          bool(app.clipboard.strip()), repr(app.clipboard))
+    check("and the dialog says so, because they really are there",
+          any("on your clipboard" in str(payload) for payload in infos),
+          str(infos))
 
     # ---- nothing written means nothing leaves the list
     folder, app, parent = build_panel()

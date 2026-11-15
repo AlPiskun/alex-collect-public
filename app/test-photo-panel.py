@@ -350,6 +350,19 @@ class FakeApp:
     def clipboard_append(self, text):
         self.clipboard += str(text)
 
+    def update_idletasks(self):
+        """The flush a real Tk root gets after a clipboard write.
+
+        Without it, every panel driven through this harness that copies
+        something - the sale title, the stock plan - took the copy for a
+        failure and said so in the app's log, so the checks proved the
+        failure path instead of the one a seller meets.
+        """
+        return None
+
+    def update(self):
+        return None
+
     def run_tool(self, tool, args, title, cwd=None, on_done=None, confirm=None):
         #  on_done is kept, not just accepted: the sold panel only records an
         #  order as added when the tool reports success, so the test has to be

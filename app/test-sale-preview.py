@@ -739,6 +739,81 @@ def test_follow_up_pages():
           str(app.runs[-1:]))
     check("and it still opens the follow-up pages",
           bool(app.opened), str(app.opened))
+    #  The title goes on the clipboard so it can be pasted into the store's
+    #  search. This used to be unprovable: the fake app had no
+    #  update_idletasks, the copy took the flush for a failure, and the run
+    #  logged "could not copy sale title" while the check above passed.
+    check("and the title it opened those pages for is on the clipboard",
+          app.clipboard == "Gretzky", repr(app.clipboard))
+
+
+def test_copying_to_the_clipboard():
+    print()
+    print("== 13. a copy says what really happened ==")
+    #  The two clipboard calls are the copy; the flush after them is not. A
+    #  window that cannot flush has still been given the text, and calling
+    #  that a failed copy sends the person looking for a fault that is not
+    #  there - which is exactly what a fake app without a Tk root produced.
+    class Flushless:
+        def __init__(self, fail_flush=False, fail_copy=False):
+            self.clipboard = ""
+            self.fail_flush = fail_flush
+            self.fail_copy = fail_copy
+
+        def clipboard_clear(self):
+            if self.fail_copy:
+                raise RuntimeError("no clipboard on this desktop")
+            self.clipboard = ""
+
+        def clipboard_append(self, text):
+            self.clipboard += str(text)
+
+        def update_idletasks(self):
+            if self.fail_flush:
+                raise RuntimeError("Tk is not idle")
+
+        def update(self):
+            return None
+
+    worked = Flushless()
+    check("a copy that sticks says so", gui.to_clipboard(worked, "plan") is True,
+          worked.clipboard)
+    check("and the text is where the next paste will look",
+          worked.clipboard == "plan", worked.clipboard)
+
+    stuck = Flushless(fail_flush=True)
+    with patch.object(gui, "log", lambda *a, **k: None):
+        copied = gui.to_clipboard(stuck, "plan")
+    check("a window that cannot flush does not turn a copy into a failure",
+          copied is True, copied)
+    check("and the text it already has is still there",
+          stuck.clipboard == "plan", stuck.clipboard)
+
+    nowhere = Flushless(fail_copy=True)
+    said = []
+    with patch.object(gui, "log", lambda line: said.append(line)):
+        copied = gui.to_clipboard(nowhere, "plan")
+    check("a desktop with no clipboard is a real failure, reported as one",
+          copied is False, copied)
+    check("with the reason in the log rather than swallowed",
+          said and "no clipboard" in said[0], said)
+
+    class Rootless:
+        """A stand-in with no Tk root at all - the shape of a test harness."""
+
+        def __init__(self):
+            self.clipboard = ""
+
+        def clipboard_clear(self):
+            self.clipboard = ""
+
+        def clipboard_append(self, text):
+            self.clipboard += str(text)
+
+    rootless = Rootless()
+    check("a stand-in with no flush methods at all still copies",
+          gui.to_clipboard(rootless, "x") is True and
+          rootless.clipboard == "x", rootless.clipboard)
 
 
 def main():
@@ -755,6 +830,7 @@ def main():
     test_panel_without_keys()
     test_cs_channel()
     test_follow_up_pages()
+    test_copying_to_the_clipboard()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))

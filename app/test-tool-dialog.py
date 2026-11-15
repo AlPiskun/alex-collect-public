@@ -11,8 +11,10 @@ runs without a display.
 
 import json
 import sys
+import tempfile
 import types
 from pathlib import Path
+from unittest.mock import patch
 
 FAIL = 0
 PASSED = 0
@@ -421,11 +423,23 @@ def test_progress_markers():
                              "item": {"name": "Card"}}) + gui._TOOL_DIALOG_END)
     check("an unknown stage is shown as it arrives",
           "resize" in app.progress_label.text, app.progress_label.text)
-    runner._consume_dialog_protocol(marker + "{not json" + gui._TOOL_DIALOG_END)
+    #  A broken event is dropped, and written to the log - never to the
+    #  console, and never into the log beside the app. That log is the
+    #  seller's record of what the app did; a check run that appends "tool
+    #  progress protocol failed" to it leaves a line that reads like a fault
+    #  the checks found in a run where everything passed.
+    this_runs_log = Path(tempfile.mkdtemp()) / "gui-log.txt"
+    with patch.object(gui, "LOG_FILE", this_runs_log):
+        runner._consume_dialog_protocol(marker + "{not json" +
+                                        gui._TOOL_DIALOG_END)
     check("a broken event is dropped, not fatal",
           app.progress_bar.cget("value") == 3 and
           app.progress_label.text.startswith("[4/9]"),
           str(app.progress_bar.kw))
+    kept = (this_runs_log.read_text(encoding="utf-8")
+            if this_runs_log.is_file() else "")
+    check("and it is recorded in the log the run was given, not the console",
+          "tool progress protocol failed" in kept, repr(kept))
     runner._consume_dialog_protocol(
         marker + json.dumps({"index": 0, "total": 0, "stage": "start"}) +
         gui._TOOL_DIALOG_END)
