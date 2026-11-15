@@ -112,6 +112,14 @@ def tasks_frame(app):
 
 
 def walk(widget):
+    """``widget`` and everything under it, skipping a window that has closed.
+
+    A closed dialog is still a Python object, and asking it for its children
+    raises TclError - "bad window path name" - which ends the script instead of
+    failing one check. Nothing under a window that is gone is worth walking.
+    """
+    if widget is None or not widget.winfo_exists():
+        return
     yield widget
     for c in widget.winfo_children():
         yield from walk(c)
@@ -1286,6 +1294,9 @@ def main():
     if hasattr(app, "_wp_upload_asked"):
         del app._wp_upload_asked
     mb.askyesno = lambda *a, **k: answers["askyesno"]
+    #  Back to the default - Cancel - so no later window inherits "yes" from
+    #  the last photo scenario: that answer belonged to that one window.
+    answers["next_choice"] = None
     mb.askyesnocancel = lambda *a, **k: (
         answers["next_prompts"].append((a, k)) or answers["next_choice"])
     gui.filedialog.askopenfilename = lambda **k: ""
@@ -1577,6 +1588,12 @@ def main():
         entries[1].delete(0, "end"); entries[1].insert(0, str(back_scan))
         long_answer = "SEO Image titles:\n" + "x" * 220
         prior_questions = len(answers["next_prompts"])
+        #  Answered "Cancel: do nothing for now", because this section drives
+        #  the two phases itself with the dialog's own buttons. Answering Yes
+        #  is the app's other road: it starts the whole chain and closes the
+        #  window, so the buttons below would have no window to press.
+        answers["next_choice"] = None
+        calls_before_prompt = len(cap.calls)
         app.clipboard_clear(); app.clipboard_append(long_answer); app.update()
         dlg.refresh_clip()
         app.update()
@@ -1584,6 +1601,11 @@ def main():
               len(answers["next_prompts"]) == prior_questions + 1 and
               "build the CSV" in answers["next_prompts"][-1][0][1],
               str(answers["next_prompts"][-1:] ))
+        check("cancelling that prompt runs nothing and leaves the dialog open",
+              len(cap.calls) == calls_before_prompt and
+              bool(dlg.winfo_exists()),
+              "%s %s" % (len(cap.calls) - calls_before_prompt,
+                         dlg.winfo_exists()))
         #  The products question is a real modal window; it is answered for
         #  this run and checked on its own in section 20b.
         real_ask_products = gui.ask_create_products
