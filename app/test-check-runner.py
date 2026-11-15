@@ -210,6 +210,47 @@ def test_reading_a_verdict():
         "FAILED 1   PASSED 2\n")
     check_that("only the line that starts with FAIL is shown",
                shown == ["FAIL  the one that really failed {'why': 'x'}"], shown)
+    #  Which of a script's errors is the reason. A run that dies can leave a
+    #  second traceback behind - the tidy-up (atexit) failing on the way out -
+    #  and the last lines of the output are then the second one, which went
+    #  wrong only because the first did. Two rounds of a Windows crash were
+    #  read as a locked file for exactly that reason.
+    double = ("Traceback (most recent call last):\n"
+              '  File "x.py", line 2, in <module>\n'
+              "    main()\n"
+              "_tkinter.TclError: the real cause\n"
+              "Error in atexit._run_exitfuncs:\n"
+              "Traceback (most recent call last):\n"
+              '  File "x.py", line 9, in tidy_up\n'
+              "    path.unlink()\n"
+              "PermissionError: [WinError 32] the file is in use\n")
+    said, more = check.error_reason(double)
+    check_that("the first error is the one shown, not the tidy-up's",
+               said[-1] == "_tkinter.TclError: the real cause" and more == 1,
+               (said, more))
+    check_that("and the tidy-up's own line is never offered as the reason",
+               "the file is in use" not in " ".join(said), said)
+    chained = ("Traceback (most recent call last):\n"
+               '  File "x.py", line 1, in <module>\n'
+               "    1/0\n"
+               "ZeroDivisionError: division by zero\n"
+               "\n"
+               "During handling of the above exception, another exception "
+               "occurred:\n"
+               "\n"
+               "Traceback (most recent call last):\n"
+               '  File "x.py", line 2, in <module>\n'
+               "    raise ValueError('second')\n"
+               "ValueError: second\n")
+    said2, more2 = check.error_reason(chained)
+    check_that("the sentence that announces the next error is not the reason",
+               said2[-1] == "ZeroDivisionError: division by zero", said2)
+    check_that("an error stream with no traceback keeps its own words",
+               check.error_reason("Pillow is required\n") == (["Pillow is required"], 0),
+               check.error_reason("Pillow is required\n"))
+    check_that("and an empty one says nothing rather than crash",
+               check.error_reason("") == ([], 0) and
+               check.error_reason(None) == ([], 0), "")
 
 
 # ------------------------------------------------------- 4. the two refusals
@@ -275,6 +316,38 @@ def test_a_real_run():
                "python test-broken.py" in said, said[-300:])
 
 
+def test_a_crash_after_a_crash_is_still_one_cause():
+    print()
+    print("== 2d. a run that dies, and then fails again on the way out ==")
+    root = fake_checkout(Path(tempfile.mkdtemp()) / "clone",
+                         tests=("test-version.py",))
+    (root / "app" / "test-two-crashes.py").write_text(
+        "import atexit\n"
+        "def tidy_up():\n"
+        "    raise OSError('the tidy-up could not delete the file')\n"
+        "atexit.register(tidy_up)\n"
+        "print('  PASS  a check that passed')\n"
+        "raise ValueError('the reason it stopped')\n", encoding="utf-8")
+    run = subprocess.run(
+        [sys.executable, str(ROOT / "check.py"), "--root", str(root),
+         "--only", "two-crashes"],
+        capture_output=True, text=True, errors="replace")
+    said = run.stdout + run.stderr
+    check_that("a run whose tidy-up also fails still fails the run",
+               run.returncode == 1, run.returncode)
+    check_that("the reason it stopped is the one on screen",
+               "the reason it stopped" in said, said[-600:])
+    check_that("the tidy-up's error is counted, not shown as the reason",
+               "the tidy-up could not delete the file" not in said, said[-600:])
+    check_that("and the summary says another traceback followed it",
+               "more traceback" in said, said[-600:])
+    kept = root / "check-failures" / "test-two-crashes.txt"
+    check_that("both are in the file the runner keeps",
+               kept.is_file() and "the tidy-up could not delete the file"
+               in kept.read_text(encoding="utf-8"),
+               kept if kept.is_file() else "no file")
+
+
 def main():
     print("=" * 62)
     print("  THE ONE-COMMAND RUNNER")
@@ -283,6 +356,7 @@ def main():
     test_the_plan()
     test_the_failure_record()
     test_a_crash_is_shown()
+    test_a_crash_after_a_crash_is_still_one_cause()
     test_reading_a_verdict()
     test_it_says_so_out_loud()
     test_a_real_run()
