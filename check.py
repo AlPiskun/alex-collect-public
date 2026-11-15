@@ -190,16 +190,69 @@ def failed_checks(text, limit=6):
     return lines[:limit]
 
 
-def error_tail(text, limit=4):
-    """The last lines of a script's stderr - a traceback's own last words.
+TRACEBACK_HEAD = "Traceback (most recent call last):"
+
+#: Lines that introduce the *next* error rather than ending this one: what
+#: Python prints before a tidy-up's traceback ("Error in
+#: atexit._run_exitfuncs:", "Exception ignored in atexit callback: ..."), and
+#: the notices between a chained pair.
+TRAILERS = ("error in ", "exception ignored", "during handling of the above "
+            "exception", "the above exception was the direct cause")
+
+
+def is_trailer(line):
+    """Whether a line only announces the error that follows it."""
+    text = str(line or "").strip().lower()
+    return any(text.startswith(start) for start in TRAILERS)
+
+
+def error_blocks(text):
+    """Every traceback in a script's stderr, in the order it was printed."""
+    lines = [line.rstrip() for line in str(text or "").splitlines()]
+    starts = [i for i, line in enumerate(lines)
+              if line.strip().startswith(TRACEBACK_HEAD)]
+    blocks = []
+    for n, start in enumerate(starts):
+        stop = starts[n + 1] if n + 1 < len(starts) else len(lines)
+        block = [line for line in lines[start:stop] if line.strip()]
+        if block:
+            blocks.append(block)
+    return blocks
+
+
+def error_reason(text, limit=3):
+    """What stopped a script: the FIRST error it printed, and how many follow.
 
     A script that stops on an exception prints no tally at all, so its last
     line of standard output is an ordinary PASS and reads as though nothing
-    went wrong. The traceback is where the reason is.
+    went wrong - the traceback is where the reason is.
+
+    A run that dies can print more than one traceback: the one that stopped it,
+    and a later one from a tidy-up hook (atexit) that failed on the way out.
+    The last lines of the output are then the *second* error, which went wrong
+    only because the first did. A crash at the end of test-gui.py was read for
+    two rounds as a locked keys file for exactly that reason, so the cause -
+    the first traceback, with its own last words - is what is shown, and any
+    after it are counted rather than put up as the reason. Everything stays in
+    the file the runner keeps.
     """
-    lines = [line.rstrip() for line in str(text or "").splitlines()
-             if line.strip()]
-    return lines[-limit:]
+    blocks = error_blocks(text)
+    if not blocks:
+        said = [line.strip() for line in str(text or "").splitlines()
+                if line.strip()]
+        return said[:limit], 0
+    block = error_blocks(text)[0]
+    #  The line before the next traceback is not part of this one: it is the
+    #  sentence that introduces it ("Error in atexit._run_exitfuncs:", the
+    #  chaining notices). The reason is the exception line under it.
+    while block and is_trailer(block[-1]):
+        block = block[:-1]
+    said = [block[0].strip()] if block else []
+    if len(block) > 2:
+        said.append("  ...")
+    if len(block) > 1:
+        said.append(block[-1].strip())
+    return said[:limit], len(blocks) - 1
 
 
 def verdict(returncode):
@@ -241,9 +294,19 @@ def run(root, only=None, say=print):
             for said in failed_checks(result.stdout):
                 say("          %s" % said)
             if result.stderr.strip():
+                said, more = error_reason(result.stderr)
                 say("          the script stopped with an error:")
-                for said in error_tail(result.stderr):
-                    say("            %s" % said)
+                for line in said:
+                    say("            %s" % line)
+                if more:
+                    #  Named, not shown: a tidy-up fails because the run
+                    #  already did, so it is never the reason.
+                    where = ("from the tidy-up on the way out"
+                             if "atexit" in result.stderr
+                             else "later in the output")
+                    say("            (%d more traceback%s after it, %s - the "
+                        "first error above is the reason)"
+                        % (more, "" if more == 1 else "s", where))
             kept = save_failure(root, name, result.stdout, result.stderr)
             if kept is not None:
                 say("          its whole output is in %s" % kept)

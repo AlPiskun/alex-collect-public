@@ -77,7 +77,7 @@ and `cd` to the clone being reviewed. `test-gui.py` now says so above its first
 check when it is run from such a folder.
 
 `test-gui.py` then prints the version and the folder it is testing on its first
-line — for example `== 0. Alex Collect 3.42, from
+line — for example `== 0. Alex Collect 3.43, from
 C:\...\alex-collect-public\app ==`. Check that against the PR before reading
 any failure: a clone left on an older commit has an older `gui.py` beside an
 older test file, and its failures look exactly like the current work's.
@@ -93,10 +93,15 @@ python check.py
 It reads the version out of `gui.py`, names the folder it is about to test,
 runs every script in the list below in that order, shows each one's last line,
 and ends with a tally of what failed and the exact command that reads one on
-its own. For each failure it also prints the check lines that failed and the
-last lines of the error if the script stopped on one, and writes that script's
-whole output to `check-failures/<name>.txt` - so a crash is diagnosed from a
-file rather than from a summary. That folder is generated output, like
+its own. For each failure it also prints the check lines that failed and, if
+the script stopped on one, **the first error it printed** - not the last lines
+of the output, because a run that dies can leave a second traceback behind (its
+tidy-up, `atexit`, failing on the way out) and the tail is then the second one,
+which went wrong only because the first did. Two rounds of a Windows crash were
+read as a locked file for exactly that reason. A later traceback is counted
+rather than shown. Every script's whole output is written to
+`check-failures/<name>.txt` - so a crash is diagnosed from a file rather than
+from a summary. That folder is generated output, like
 `app/pipeline/`, so the version check reads neither of them: every script here
 opens with a banner naming the app and the version, and read as a declaration a
 saved failure made the *next* run's version check fail - blaming a log for a
@@ -187,7 +192,7 @@ Notes:
 | `test-gui-ergonomics.py` | Tk | Headless-ish layout assertions - the task groups (including the new eBay store panel and the console's follow-the-end rule: new output scrolls into view only while the end is on screen, and leaves the view alone once the reader has scrolled up). The shop's stock window is driven the same way, with the products already read and the writer replaced: the rows it lists and the search that narrows them, the product it picks and the count it starts at, a count that is not a number and a product the shop does not count both refused before anything is sent, one write for one product, and the number the website answered with reported with the old one beside it. |
 | `test-ai-agent-flow.py`, `test-custom-ai-commands.py` | Tk | Import `gui.py`, so they need the toolkit. |
 | `test-facebook-feed.py` | pandas, openpyxl | Also the nested-helper launcher: the console python, `-u`, the helper's own folder, a helper that explains itself not being retried, a silent failure retried once on the app's own interpreter, and the child's pipes - stdout/stderr owned by the pipeline, stdin never the app's, unbuffered, no console window. Plus the stale-workbook check: a failed export names the older `facebook_delta_*.xlsx` instead of letting it look like this run's. And the workbook-lock check, which reads the shipped `locked_files` out of `facebook_feed.py`: a free workbook is not called locked, a locked one is named with its reason kept, a workbook that does not exist yet is not a lock, and the answer comes before the first feed request. |
-| `test-check-runner.py` | nothing | The one-command runner, `check.py` at the top of the repository - including what it does with a failure: the failing check lines, the traceback's own words, the whole output kept in `check-failures/`, and `-u` so a crash does not lose the last of the buffered output: the checkout is found from the folder the runner itself lives in and from a folder inside it, a folder that is not a checkout is refused by name (with the files it is missing, rather than a page of "can't open file"), the version is read out of `gui.py` without importing Tk, the plan starts with `version_sync.py --check`, every script it plans exists, every `test-*.py` on disk is either in the list or run last with the addition said out loud, a script's verdict is its exit code and its last printed line, a failing script makes the run fail and is named in the tally with the command that reads it, and the list in `docs/TESTING.md` is the same list the runner walks. |
+| `test-check-runner.py` | nothing | The one-command runner, `check.py` at the top of the repository - including what it does with a failure: the failing check lines, the first error's own words (a tidy-up that fails after the crash is counted, never shown as the reason), the whole output kept in `check-failures/`, and `-u` so a crash does not lose the last of the buffered output: the checkout is found from the folder the runner itself lives in and from a folder inside it, a folder that is not a checkout is refused by name (with the files it is missing, rather than a page of "can't open file"), the version is read out of `gui.py` without importing Tk, the plan starts with `version_sync.py --check`, every script it plans exists, every `test-*.py` on disk is either in the list or run last with the addition said out loud, a script's verdict is its exit code and its last printed line, a failing script makes the run fail and is named in the tally with the command that reads it, and the list in `docs/TESTING.md` is the same list the runner walks. |
 | `test-user-settings.py`, `test-ebay-quicklist.py` | Pillow | Prints `Pillow is required` and stops if missing. |
 | `test-linux-packaging.py` | Tk, Xvfb | Linux only; skips itself on Windows. |
 | `test-market-rerun.py`, `test-pipeline-listing.py` | Pillow | Pipeline regression suite; no GUI. `test-pipeline-listing.py` also reads the plugin version rules: 1.0.27 is the streaming version, an unreadable or missing manifest is never treated as new, and it checks the SKU a card is given: a title naming a dark or light back carries that printing in the SKU (so two printings of one card are two products rather than one SKU), a title naming neither keeps the SKU it always had, and two rows on one SKU are printed with what to do about it while the CSV is being written. |
