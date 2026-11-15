@@ -93,9 +93,29 @@ def _slug(text):
 
 
 def _filename(url):
-    """The last piece of a photo's address, without the query string."""
+    """The last piece of a photo's address, without the query string.
+
+    Split on "/" rather than through ``Path``: a URL's path is always
+    POSIX-shaped, and Windows does not agree. ``PureWindowsPath("a:b").name``
+    is "b" - "a:" reads as a drive - so a photo called ``a:b-front.webp``
+    came back as the pair name "b" on Windows and as the title's own name
+    everywhere else. A name the filesystem cannot hold has to fall back, and
+    it only does if every machine reads the address the same way. The rest of
+    the app already splits these strings by hand (``woo_media.
+    image_name_from_url``, ``cs_proof.photo_id``); this was the one place
+    that asked ``Path`` about a URL.
+    """
     path = urllib.parse.urlparse(str(url or "")).path
-    return Path(urllib.parse.unquote(path)).name
+    return urllib.parse.unquote(path).rstrip("/").rsplit("/", 1)[-1]
+
+
+def _suffix(name):
+    """A bare filename's extension, without path semantics."""
+    text = str(name or "").rsplit("/", 1)[-1]
+    dot = text.rfind(".")
+    if dot <= 0 or dot == len(text) - 1:
+        return ""
+    return text[dot:].lower()
 
 
 def pair_name(front_url="", title=""):
@@ -188,7 +208,7 @@ def download(url, folder, pair="", fetch=None):
         raise PictureError(
             "The front photo came back empty from %s, so the back has nothing "
             "to be paired with. Nothing was written." % url)
-    suffix = Path(_filename(url)).suffix.lower()
+    suffix = _suffix(_filename(url))
     if suffix not in (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp",
                       ".tif", ".tiff"):
         suffix = ".jpg"

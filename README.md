@@ -1,4 +1,4 @@
-# Alex Collect 3.45
+# Alex Collect 3.46
 
 Alex Collect is a local desktop control panel for organizing a small trading-card selling workflow. It brings together the card pipeline, WooCommerce order inputs, customer quotes, a sale checklist, photo utilities, and optional plugins.
 
