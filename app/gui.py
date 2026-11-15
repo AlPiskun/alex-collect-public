@@ -81,7 +81,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.44"
+VERSION = "3.45"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -275,7 +275,12 @@ def cs_plugin_note(what=""):
 
 
 SETTINGS_FILE = BASE / "gui-settings.json"
-LOG_FILE = BASE / "gui-log.txt"
+#  Where the app's own log is written. `check.py` sets ALEX_COLLECT_GUI_LOG to
+#  a temporary file for every script it runs, so a check run never writes into
+#  the seller's log - a green run used to leave "could not copy..." lines in
+#  gui-log.txt, which reads exactly like a fault the checks had found.
+LOG_FILE = Path(os.environ.get("ALEX_COLLECT_GUI_LOG")
+                or (BASE / "gui-log.txt"))
 CHECKLIST = BASE / "sold-cards-checklist.csv"
 CS_COOKIE_FILE = BASE / "cookie.txt"
 #  eBay's own active-listings page, used when User Settings has no other. It
@@ -644,16 +649,37 @@ def classify_clipboard(text, settings=None):
 
 
 def to_clipboard(app, text):
-    """Best-effort clipboard copy; returns True when it stuck."""
+    """Put ``text`` on the clipboard; True when the text got there.
+
+    The two clipboard calls *are* the copy. The flush after them
+    (``update_idletasks``/``update``) is what hands ownership to the system
+    clipboard and is worth doing - but it is not the copy: a window that
+    cannot flush has still been given the text, and reporting "could not
+    copy" over it sends the person looking for a fault that is not there.
+
+    That is not hypothetical. Six call sites wrote their own three-line
+    version with the flush inside the same ``try``, so a harness without a
+    Tk root - and any build where the flush fails - reported a copy that had
+    already happened as a failure, and left "could not copy..." in the log of
+    a run where every copy worked.
+
+    One place owns it now, so "did it copy" has one answer everywhere.
+    """
     try:
         app.clipboard_clear()
         app.clipboard_append(text)
-        app.update_idletasks()
-        app.update()
-        return True
-    except Exception as e:
+    except Exception as e:                 # no clipboard on this desktop
         log("clipboard failed: %s" % e)
         return False
+    for flush in ("update_idletasks", "update"):
+        flush_it = getattr(app, flush, None)
+        if flush_it is None:
+            continue                       # a stand-in without a Tk root
+        try:
+            flush_it()
+        except Exception as e:             # the text is on it already
+            log("copied, but %s failed: %s" % (flush, e))
+    return True
 
 
 PIPELINE_PROMPT_HINTS = [
@@ -7096,12 +7122,8 @@ def build_sold(parent, app):
                     "Several cards were entered; use the checklist links one "
                     "card at a time to avoid opening many Edge tabs.", "dim")
             else:
-                try:
-                    app.clipboard_clear()
-                    app.clipboard_append(title)
-                    app.update_idletasks()
-                except Exception as exc:
-                    log("could not copy sale title: %s" % exc)
+                if not to_clipboard(app, title):
+                    log("could not copy sale title")
                 browser = app.open_webpages(
                     sale_followup_urls(title, sale_channel, app.settings),
                     new_window=True)
@@ -7402,14 +7424,7 @@ def build_stock(parent, app, site_id="cs"):
     def copy_plan(plan):
         lines = ["%s -> %s %d" % (item["card"], state["label"], item["to"])
                  for item in plan]
-        try:
-            app.clipboard_clear()
-            app.clipboard_append("\n".join(lines))
-            app.update_idletasks()
-            return True
-        except Exception as exc:
-            log("could not copy the stock plan: %s" % exc)
-            return False
+        return to_clipboard(app, "\n".join(lines))
 
     def set_arrived(rc, plan, out, action):
         answer = {}
@@ -9576,13 +9591,12 @@ def build_stock(parent, app, site_id="cs"):
             return
         lines = [stock_compare.label_action(row, state["label"], state["mode"])
                  for row in rows]
-        try:
-            app.clipboard_clear()
-            app.clipboard_append("\n".join(lines))
-        except Exception as exc:                 # no clipboard on this desktop
+        if not to_clipboard(app, "\n".join(lines)):
             messagebox.showwarning(
                 "Could not copy",
-                "The list could not be put on the clipboard: %s" % exc,
+                "The list could not be put on the clipboard. The reason is in "
+                "the log - the button at the bottom of the window opens it - "
+                "and the rows are still in the list, so nothing was lost.",
                 parent=box.winfo_toplevel())
             return
         app.console_line(
@@ -10687,11 +10701,7 @@ def build_csledit(parent, app):
         app.open_webpages([store or CS_HOME])
         wanted = "%s  (listing %s)" % (str(item.get("name") or "").strip(),
                                        item.get("id") or "?")
-        try:
-            app.clipboard_clear()
-            app.clipboard_append(wanted)
-        except Exception:
-            pass
+        to_clipboard(app, wanted)
         say("That listing's own address was not in the list the plugin sent, "
             "so %s was opened instead - %s is on the clipboard to search "
             "for. A plugin that reports each listing's url opens it directly."
@@ -12767,12 +12777,7 @@ def build_ordertext(parent, app):
 
     def copy_to_clipboard(lines):
         """Leave the list on the clipboard for pasting into the dashboard."""
-        try:
-            app.clipboard_clear()
-            app.clipboard_append("\n".join(lines))
-            return True
-        except Exception:
-            return False
+        return to_clipboard(app, "\n".join(lines))
 
     def search_products(term, site, key, secret):
         """One product search, trimmed to what an order needs."""
@@ -14301,12 +14306,7 @@ def build_quote(parent, app):
             "ok" if copied else "err")
 
     def copy_quote_text(current):
-        try:
-            app.clipboard_clear()
-            app.clipboard_append(quote_model.as_text(current))
-            return True
-        except Exception:
-            return False
+        return to_clipboard(app, quote_model.as_text(current))
 
     def order_failed(exc):
         messagebox.showerror("The order was not written",

@@ -77,7 +77,7 @@ and `cd` to the clone being reviewed. `test-gui.py` now says so above its first
 check when it is run from such a folder.
 
 `test-gui.py` then prints the version and the folder it is testing on its first
-line — for example `== 0. Alex Collect 3.44, from
+line — for example `== 0. Alex Collect 3.45, from
 C:\...\alex-collect-public\app ==`. Check that against the PR before reading
 any failure: a clone left on an older commit has an older `gui.py` beside an
 older test file, and its failures look exactly like the current work's.
@@ -101,7 +101,16 @@ which went wrong only because the first did. Two rounds of a Windows crash were
 read as a locked file for exactly that reason. A later traceback is counted
 rather than shown. Every script's whole output is written to
 `check-failures/<name>.txt` - so a crash is diagnosed from a file rather than
-from a summary. That folder is generated output, like
+from a summary.
+
+Each script is also told where its **own** GUI log goes
+(`ALEX_COLLECT_GUI_LOG`, a temporary file that is emptied when the run starts),
+so a passing run never writes into `gui-log.txt` beside the app. Three suites
+drive panels through a fake Tk, and their false alarms - a copy that took a
+missing flush for a failure, a deliberately broken progress event - used to be
+appended to the seller's own log, where they read exactly like faults the
+checks had found. A red run prints that file's path, so its lines are still one
+open away. That folder is generated output, like
 `app/pipeline/`, so the version check reads neither of them: every script here
 opens with a banner naming the app and the version, and read as a declaration a
 saved failure made the *next* run's version check fail - blaming a log for a

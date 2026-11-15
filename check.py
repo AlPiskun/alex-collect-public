@@ -26,6 +26,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 #: The order from docs/TESTING.md - the version check first, because it is the
@@ -152,6 +153,21 @@ def final_line(text):
 #: only record of what happened.
 FAILURE_DIR = "check-failures"
 
+#: Where the scripts' own GUI log goes. The app writes ``gui-log.txt`` beside
+#: ``gui.py``; a check run must not. Three suites drive panels through a fake
+#: Tk, and their false alarms - "could not copy...", a deliberately broken
+#: progress event - used to be appended to the seller's own log, where they
+#: read exactly like faults the checks had found. Every script is given this
+#: path instead, so a green run leaves the log untouched, and a red one has
+#: the log lines of the run kept in one file.
+#  Named for the process running the checks, because a suite in this list runs
+#  `check.py` again against a throwaway checkout (that is how the runner itself
+#  is tested) - and a shared name would have the inner run empty the log the
+#  outer one was filling. Children are handed this path explicitly, so every
+#  script of one run writes to one file.
+CHECK_LOG = Path(tempfile.gettempdir()) / (
+    "alex-collect-check-gui-log-%d.txt" % os.getpid())
+
 
 def save_failure(root, name, stdout, stderr):
     """Write one script's whole output to ``check-failures/<name>.txt``.
@@ -268,6 +284,12 @@ def run(root, only=None, say=print):
         entries = [entry for entry in entries
                    if any(token.lower() in str(entry[1]).lower()
                           for token in only)]
+    #  Started empty, so a line in it always belongs to this run.
+    try:
+        CHECK_LOG.write_text("$ checks started at %s\n" % " ".join(
+            [sys.executable, "--root", str(root)]), encoding="utf-8")
+    except OSError:
+        pass
     say("== Alex Collect %s, from %s ==" % (version_of(root) or "?",
                                              Path(root).resolve()))
     say("")
@@ -284,7 +306,7 @@ def run(root, only=None, say=print):
         #  child's output as cp1252 and failing on a character it cannot hold.
         command = [sys.executable, "-u", str(path), *args]
         environment = dict(os.environ, PYTHONIOENCODING="utf-8",
-                           PYTHONUTF8="1")
+                           PYTHONUTF8="1", ALEX_COLLECT_GUI_LOG=str(CHECK_LOG))
         result = subprocess.run(command, cwd=str(path.parent),
                                 capture_output=True, text=True,
                                 errors="replace", env=environment)
@@ -315,6 +337,8 @@ def run(root, only=None, say=print):
     if failures:
         say("FAILED %d of %d: %s" % (len(failures), len(entries),
                                      ", ".join(failures)))
+        if CHECK_LOG.is_file():
+            say("The app's own log lines from this run are in %s" % CHECK_LOG)
         say("Run one on its own to read it in full, for example:")
         say("  cd %s" % app)
         say("  python %s" % failures[0])

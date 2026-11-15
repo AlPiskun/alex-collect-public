@@ -12,6 +12,7 @@ list), and that it reads a script's verdict the way the script reports it.
 """
 import contextlib
 import io
+import os
 import re
 import subprocess
 import sys
@@ -316,6 +317,55 @@ def test_a_real_run():
                "python test-broken.py" in said, said[-300:])
 
 
+def test_the_checks_stay_out_of_the_apps_log():
+    """A green run must not leave error lines in the seller's own log.
+
+    Three suites drive panels through a fake Tk, and their false alarms - a
+    copy that took a missing flush for a failure, a deliberately broken
+    progress event - used to be appended to `gui-log.txt` beside the app. A
+    person reading that log after a passing run finds "could not copy..."
+    and has no way to know it was not about them.
+    """
+    print()
+    print("== 2e. the checks do not write into the app's own log ==")
+    root = fake_checkout(Path(tempfile.mkdtemp()) / "clone",
+                         tests=("test-version.py",))
+    (root / "app" / "test-says-where.py").write_text(
+        "import os\n"
+        "print(os.environ.get('ALEX_COLLECT_GUI_LOG') or '(unset)')\n",
+        encoding="utf-8")
+    run = subprocess.run(
+        [sys.executable, str(ROOT / "check.py"), "--root", str(root),
+         "--only", "says-where"],
+        capture_output=True, text=True, errors="replace")
+    said = run.stdout + run.stderr
+    check_that("every script is told where its own log goes", run.returncode == 0,
+          said[-400:])
+    #  Exactly one path, and it is not the app's own `gui-log.txt` beside the
+    #  checkout. The whole line is kept because a path is only right if it is
+    #  right all the way: a name that merely ends the same way would pass a
+    #  test that only looked for "gui-log.txt" anywhere in the output.
+    printed = sorted({line.strip().rsplit(None, 1)[-1]
+                      for line in said.splitlines()
+                      if "alex-collect-check-gui-log" in line})
+    check_that("and it is the runner's check log, by full path",
+               len(printed) == 1 and printed[0] != str(
+                   Path(root) / "app" / "gui-log.txt"),
+               printed)
+    check_that("the check log is a temporary file, not in the checkout",
+               printed and not printed[0].startswith(str(root)), printed)
+    kept = printed[0] if printed else ""
+    check_that("it is emptied when a run starts, so a line always belongs to "
+               "that run", bool(kept) and Path(kept).is_file() and
+               "checks started at" in Path(kept).read_text(encoding="utf-8"),
+               kept)
+    #  Two runs at once - the outer one and the suite that runs this file -
+    #  must not empty each other's log.
+    check_that("and two runs at once each keep their own",
+               str(os.getpid()) in check.CHECK_LOG.name,
+               check.CHECK_LOG.name)
+
+
 def test_a_crash_after_a_crash_is_still_one_cause():
     print()
     print("== 2d. a run that dies, and then fails again on the way out ==")
@@ -357,6 +407,7 @@ def main():
     test_the_failure_record()
     test_a_crash_is_shown()
     test_a_crash_after_a_crash_is_still_one_cause()
+    test_the_checks_stay_out_of_the_apps_log()
     test_reading_a_verdict()
     test_it_says_so_out_loud()
     test_a_real_run()
