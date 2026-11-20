@@ -82,7 +82,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.47"
+VERSION = "3.48"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1450,10 +1450,11 @@ brand**, **...no keyword**, **...no category**, **...no SKU** and **...no tags**
 Each reads the catalogue once, lists the products that have nothing in that
 field, and shows - product by product - the words that would fill it, worked
 out from the card's own SEO title with the same rules the batch uses: the maker
-the title names, the title without the grade at its end for the focus keyword,
-the sport its own words name for the category, the batch's own SKU from the
-year, number, player and grade, and the year, maker, player and number the
-title already states for the tags.
+the title names, the year, the maker and the player for the focus keyword - the
+phrase a buyer searches for, which is what the batch's own Primary SEO Keyword
+line says, and never the whole title - the sport its own words name for the
+category, the batch's own SKU from the year, number, player and grade, and the
+year, maker, player and number the title already states for the tags.
 
 Nothing is written until the list has been shown and agreed to, and then only
 that one field on each product: a title, a price, a stock count, a photo, a
@@ -2219,7 +2220,7 @@ TOOLTIPS = {
     "Find": "Filter the products already read - the card's name, a SKU, or a product id; nothing is sent to the website by searching",
     "Check the website's SKUs": "Read every product on the website and name the ones whose SKU does not say which printing the title is - the products that keep a card of the same name from being created; a bar says which page it is reading and which product it is fixing; nothing is changed until the fixes are shown and agreed to",
     "Find products with no brand": "Read every product on the website and name the ones with nothing in the shop's Brands list, with the brand each one's own title names; a brand the shop does not have yet is created there, and nothing is written until the list is shown and agreed to",
-    "Find products with no keyword": "Read every product on the website and name the ones with no Rank Math focus keyword, with the words each one's own title gives (the grade at the end taken off); nothing is written until the list is shown and agreed to, and a keyword a product already has is never replaced",
+    "Find products with no keyword": "Read every product on the website and name the ones with no Rank Math focus keyword, with the search phrase each one's own title states - the year, the maker and the player, never the whole title; nothing is written until the list is shown and agreed to, and a keyword a product already has is never replaced",
     "Find products with no category": "Read every product on the website and name the ones in no category of their own, with the category the sport in their own words picks - the same rule the batch uses; a category the shop does not have is created under the same parent, and nothing is written until the list is shown and agreed to",
     "Find products with no SKU": "Read every product on the website and name the ones with no SKU, with the SKU the batch would give them from the card's own title; a SKU another product already holds is left out of the list, and nothing is written until it is shown and agreed to",
     "Find products with no tags": "Read every product on the website and name the ones with no tags at all, with the words their own title already states - the year, the maker, the player and the number; nothing is written until the list is shown and agreed to, and a tag anybody typed is never replaced",

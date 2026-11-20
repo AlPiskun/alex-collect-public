@@ -2442,6 +2442,10 @@ def main():
         shutil.copyfile(HERE / "plugin_manager.py", d / "plugin_manager.py")
         shutil.copyfile(HERE / "browser_utils.py", d / "browser_utils.py")
         shutil.copyfile(HERE / "user_settings.py", d / "user_settings.py")
+        #  The rules that read a card's title live in one module that the
+        #  pipeline imports, so a batch folder has to carry it - exactly like
+        #  the three above, which the pipeline has borrowed for years.
+        shutil.copyfile(HERE / "card_words.py", d / "card_words.py")
         (d / "gui-settings.json").write_text(json.dumps({
             "browser_name": "test-browser",
             "woo_site_url": "https://shop.example"}), encoding="utf-8")
