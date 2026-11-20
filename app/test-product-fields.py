@@ -166,8 +166,8 @@ def test_the_title_says_it():
     told = card_words.facts(title)
     check("the maker comes out of the title", told["brand"] == "O-Pee-Chee",
           told["brand"])
-    check("the focus keyword is the title without the grade at the end",
-          told["keyword"] == "1991 O-Pee-Chee Dallas Smith #12",
+    check("the focus keyword is the year, the maker and the player - not the "
+          "whole title", told["keyword"] == "1991 O-Pee-Chee Dallas Smith",
           told["keyword"])
     check("the year, the number and the player come out too",
           (told["year"], told["card_num"], told["player"]) ==
@@ -180,6 +180,26 @@ def test_the_title_says_it():
     check("and a printing in the title is part of it, as the batch writes it",
           card_words.facts(title + " Dark Back")["sku"].endswith("-DB"),
           card_words.facts(title + " Dark Back")["sku"])
+
+    #  The keyword is a search phrase, so what a buyer does not type into a
+    #  search box is not in it: no card number, no grade, no team.
+    full = card_words.facts(
+        "1991 O-Pee-Chee Dallas Smith #12 EX-MT 6 Chicago Black Hawks")
+    check("the card number is not part of the search phrase",
+          "#12" not in full["keyword"], full["keyword"])
+    check("and neither is the grade or the team",
+          "EX-MT" not in full["keyword"] and "Black Hawks" not in
+          full["keyword"], full["keyword"])
+    check("a title that states no player gives the year and the maker",
+          card_words.facts("1989 Topps #7")["keyword"] == "1989 Topps",
+          card_words.facts("1989 Topps #7")["keyword"])
+    check("and a title stating none of the three has no keyword at all",
+          card_words.facts("A mystery card")["keyword"] == "",
+          card_words.facts("A mystery card")["keyword"])
+    check("the same phrase is what the batch's own keyword column says: the "
+          "year, the maker and the player, in that order",
+          full["keyword"].split() == ["1991", "O-Pee-Chee", "Dallas", "Smith"],
+          full["keyword"])
 
     #  A grade at the end is a grade; the same word in a player's name is not.
     check("a player called Good is not a grade at the end of the title",
@@ -369,7 +389,7 @@ def test_the_writes():
     sent = puts[0]["body"]["meta_data"]
     check("the keyword is sent with its own row's id",
           sent == [{"id": 77, "key": "rank_math_focus_keyword",
-                    "value": "1991 O-Pee-Chee Dallas Smith #12"}], str(sent))
+                    "value": "1991 O-Pee-Chee Dallas Smith"}], str(sent))
     check("so the product holds one focus keyword, not two",
           len([row for row in answer["answer"]["meta_data"]
                if row["key"] == "rank_math_focus_keyword"]) == 1,

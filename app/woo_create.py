@@ -46,7 +46,7 @@ CATEGORIES_PATH = "/wp-json/wc/v3/products/categories"
 #  apart from a shop that refused the call, because it is the difference
 #  between "there is nowhere to put a brand" and "the keys are wrong".
 BRANDS_PATH = "/wp-json/wc/v3/products/brands"
-USER_AGENT = "AlexCollect/3.47"
+USER_AGENT = "AlexCollect/3.48"
 
 #  A read is safe to repeat, so a site answering with its own error page gets
 #  asked again before a card is called missing: two of the three failures in

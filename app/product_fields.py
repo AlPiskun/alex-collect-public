@@ -232,10 +232,10 @@ def value_for(product, field, taken=None):
     if field == "keyword":
         keyword = told["keyword"]
         if keyword:
-            note = ("its title, with the grade at the end taken off"
-                    if keyword != title.strip() else "its title, as it stands")
-            return keyword, note
-        return "", "its title holds nothing but a grade"
+            return keyword, ("the year, the maker and the player its title "
+                             "states - the phrase a buyer searches for")
+        return "", ("its title states no year, maker or player to make a "
+                    "search phrase from")
 
     if field == "categories":
         names = card_words.category_names(words_of(product))

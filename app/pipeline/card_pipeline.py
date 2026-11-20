@@ -87,13 +87,22 @@ from user_settings import (load_user_settings, read_woo_credentials,
 #  category its sport words pick. They are imported rather than defined here
 #  so a product whose missing brand is filled in from its title cannot
 #  disagree with the batch that would have written it.
-from card_words import (KNOWN_BRANDS, GRADE_RE, SPORT_KEYWORDS,
-                        NON_SPORTS_KEYWORDS, VARIETY_TOKENS, card_sku,
-                        category_label, detect_sport_category, brand_code,
-                        extract_brand, extract_card_number,
-                        extract_player_name, extract_year, grade_slug,
-                        sanitize_filename_component, sku_component,
-                        variety_tokens)
+try:
+    from card_words import (KNOWN_BRANDS, GRADE_RE, SPORT_KEYWORDS,
+                            NON_SPORTS_KEYWORDS, VARIETY_TOKENS, card_sku,
+                            category_label, detect_sport_category, brand_code,
+                            extract_brand, extract_card_number,
+                            extract_player_name, extract_year, grade_slug,
+                            sanitize_filename_component, sku_component,
+                            variety_tokens)
+except ImportError:                    # a bare batch folder with no app
+    sys.exit(
+        "card_words.py is missing.\n"
+        "It holds the rules that read a card's title - the maker, the year,\n"
+        "the card number, the player, the grade, the SKU and the category -\n"
+        "and it ships beside card_pipeline.py's app folder (in app\\, next to\n"
+        "card_pipeline.py's own folder). Copy card_words.py into this batch\n"
+        "folder, or run the pipeline from the app's own pipeline folder.")
 try:
     import woo_create
 except ImportError:                      # a bare batch folder with no app

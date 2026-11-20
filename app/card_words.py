@@ -234,18 +234,39 @@ def grade_from_title(title):
 
 
 def keyword_from_title(title):
-    """The title with the grade at its end taken off - a focus keyword.
+    """The search phrase a title states: the year, the maker and the player.
 
-    "1991 O-Pee-Chee Dallas Smith #12 EX-MT 6" is a product name; the words a
-    person would search for are the same words without the condition, so the
-    grade is the one thing dropped. A title that is nothing but a grade has no
-    keyword in it and comes back empty.
+    "1991 O-Pee-Chee Dallas Smith #12 EX-MT 6 Chicago Black Hawks" is a product
+    name - a buyer does not type a condition, a card number or a team into a
+    search box, and a keyword that does is the whole title again. The phrase is
+    the three words that identify the card in a search: ``1991 O-Pee-Chee
+    Dallas Smith``.
+
+    This is the same thing the batch's own focus keyword says: the AI is asked
+    for the "best high-volume search phrase, matching the title exactly", and
+    for a card that is the year, the maker and the player. A product already on
+    a website has no AI document, so the same phrase is read out of its title.
+
+    A part the title does not state is left out rather than guessed, and a
+    title that states none of the three has no keyword in it at all.
     """
-    text = str(title or "").strip()
-    match = _grade_at_end(text)
-    if match:
-        text = text[:match.start()]
-    return text.strip().rstrip(".,;:-–— ").strip()
+    told = {"brand": extract_brand(title, ""), "year": extract_year(title),
+            "player": ""}
+    told["player"] = extract_player_name(title, told["brand"])
+    return _keyword_words(told)
+
+
+def _keyword_words(told):
+    """The year, the maker and the player, each once, in that order."""
+    words, seen = [], set()
+    for word in ((told or {}).get("year"), (told or {}).get("brand"),
+                 (told or {}).get("player")):
+        word = " ".join(str(word or "").split())
+        if not word or word.lower() in seen:
+            continue
+        seen.add(word.lower())
+        words.append(word)
+    return " ".join(words)
 
 
 # ---------------------------------------------------- category / sub-category
@@ -383,7 +404,7 @@ def facts(title):
 
     ``brand`` and ``grade`` are empty when the title names neither, ``sku`` is
     empty when the title does not say enough to build one, and ``keyword`` is
-    the title without the grade at its end.
+    the search phrase the title states - the year, the maker and the player.
     """
     title = str(title or "").strip()
     brand = extract_brand(title, "")
@@ -399,11 +420,12 @@ def facts(title):
         "player": player,
         "last": player.split()[-1] if player else "",
         "grade": grade,
-        "keyword": keyword_from_title(title),
+        "keyword": "",
         "categories": category_names(title),
         "tags": [],
         "sku": "",
     }
+    told["keyword"] = _keyword_words(told)
     told["tags"] = _tag_words(told)
     if told["year"] and told["card_num"] and told["last"]:
         #  The same function the batch's CSV uses, given the facts the title
