@@ -1507,9 +1507,58 @@ def uneditable_note(failures=0):
     return said
 
 
+def skipped_lookups_note(plugin="", needed=PRODUCT_ID_VERSION, recorded=True):
+    """The sentence for a list that is the comparison's own read.
+
+    The comparison asks the reader to skip its per-listing product lookups -
+    one request per listing, which is where half an hour of a 2,600-listing
+    shop goes - so a list like this carrying no product id is *the flag
+    working*, not the reader failing. Judging it as a reader defect is what
+    sent a seller to report a plugin that had done exactly as it was asked,
+    while the one thing that would have made their listing editable was the
+    read the edit panel itself makes.
+
+    ``recorded=False`` is for the list nothing vouches for: the comparison's
+    read used to be written without a record of itself, so a list with no
+    product ids and no record beside it is still not evidence against the
+    reader - and the read this panel makes is what settles it.
+    """
+    if recorded:
+        said = ("This list is the comparison's read: it asks the plugin to "
+                "skip its per-listing product lookups (%s), so no row carries "
+                "a product id - that is the flag working, not the reader "
+                "failing, and there is no defect here to report."
+                % stock_compare.SKIP_LOOKUPS_FLAG)
+    else:
+        #  Nothing beside the list says which read wrote it - and the
+        #  comparison's own read is written without ids by design, so a list
+        #  like this cannot be called a reader's defect either way.
+        said = ("Nothing beside this list records which read wrote it, and no "
+                "row carries a product id - so nothing here is a report about "
+                "the plugin: the comparison's own read is written without "
+                "product ids on purpose (%s), and one made before that was "
+                "recorded leaves no trace of it."
+                % stock_compare.SKIP_LOOKUPS_FLAG)
+    needed = str(needed or "").strip()
+    plugin = str(plugin or "").strip()
+    if needed and plugin and not version_at_least(plugin, needed):
+        said += (" Reading them again from this panel is half of it: plugin "
+                 "%s or newer also has to be installed, and %s is what is "
+                 "here." % (needed, plugin))
+    elif needed:
+        said += (" Reading the listings from this panel is what fills them "
+                 "in: that read does not skip the lookups, and plugin %s or "
+                 "newer reports each listing's real product id when they run."
+                 % needed)
+    else:
+        said += (" Reading the listings from this panel is what fills them "
+                 "in: that read does not skip the lookups.")
+    return said
+
+
 def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True,
                    reader_text="", stages=None, price_proven=False,
-                   writable=None):
+                   writable=None, skipped=False):
     """The whole sentence for a read nothing can be written from, or "".
 
     Said once, where it can be read, instead of three paragraphs in three
@@ -1517,10 +1566,37 @@ def product_id_gap(items, plugin="", needed=PRODUCT_ID_VERSION, works=True,
     own count line says when it printed one, which plugin version fixes it,
     and - for the console - what still works from here. A read that can be
     written returns "" and says nothing.
+
+    ``skipped`` is which read wrote the list: ``True`` for one that asked the
+    reader to skip its product lookups (a comparison; no ids by design),
+    ``None`` for one nothing records the write of, and ``False`` - the default,
+    and what a read this panel made is - for a read that did look them up.
+    Only ``False`` can be a statement about the reader at all.
     """
     rows = list(items or [])
     if not rows or not nothing_editable(rows):
         return ""
+    if skipped is not False:
+        #  Nothing here is a report about the reader: either the list was asked
+        #  to come back without product ids, or nothing says which read wrote
+        #  it. Neither the reader's count line nor the "reading again returns
+        #  the same nothing" verdict applies, so they are not printed at all.
+        parts = [skipped_lookups_note(plugin, needed,
+                                      recorded=bool(skipped)),
+                 identity_note(rows)]
+        given = [str(label) for label in (writable or []) if str(label).strip()]
+        if not given and price_proven:
+            given = ["Price"]
+        if given:
+            open_words = field_words(given)
+            parts.append(
+                "The listing's own fields still work: %s %s written to the "
+                "listing's own record, which a proof settled, with no product "
+                "id involved." % (open_words,
+                                  "is" if given == ["Price"] else "are"))
+        if works:
+            parts.append("Searching and opening a listing still work.")
+        return " ".join(part for part in parts if part)
     zeros, total = zero_product_id_counts(rows)
     if zeros:
         said = zero_product_id_note(zeros, total)

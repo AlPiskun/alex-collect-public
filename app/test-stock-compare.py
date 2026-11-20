@@ -481,6 +481,11 @@ def test_panel():
         out.write_text(json.dumps({"items": CS_ITEMS}), encoding="utf-8")
         rc = app2.runs[0]["on_done"](0)
     check("a successful read finishes", rc is True, str(rc))
+    record = stock_compare.read_read_meta(folder2 / stock_compare.READ_META_FILE)
+    check("the comparison's read is recorded as one that skips the lookups",
+          record.get("skipped_lookups") is True and
+          record.get("count") == len(CS_ITEMS),
+          str(record))
     listing = next((w for w in parent2.walk()
                     if isinstance(w, gui.tk.Listbox)), None)
     check("only the disagreement is listed",
@@ -967,6 +972,121 @@ def test_read_failure():
           "2 hours old" in stale, stale)
     check("and the note says what a stale list cannot know",
           "listed or delisted since is not in it" in stale, stale)
+
+
+def test_the_read_record_says_which_read_it_was():
+    """A list is not enough: which read it was has to travel with it.
+
+    The two panels share one list file and ask the reader for different things.
+    A comparison asks it to skip the per-listing product lookups, so its list
+    has no product ids *by design* - and an edit panel that reads those zeroes
+    as a plugin defect has accused a reader that did as it was asked.
+    """
+    print()
+    print("== the record beside the list, and the flag in it ==")
+    check("the flag is recognised in a command line",
+          stock_compare.skipped_lookups(
+              "pythonw.exe -u cs-stock.py --stock-out cs-stock.json "
+              "--no-product-lookups --cookie-file cookie.txt"),
+          "")
+    check("and as the flag itself",
+          stock_compare.skipped_lookups("", ["--no-product-lookups"]), "")
+    check("a command without it does not",
+          not stock_compare.skipped_lookups(
+              "pythonw.exe -u cs-stock.py --stock-out cs-stock.json"), "")
+    check("and neither does an empty command",
+          not stock_compare.skipped_lookups("", ()), "")
+
+    folder = Path(tempfile.mkdtemp())
+    path = folder / stock_compare.READ_META_FILE
+    check("the record is written beside the list it describes",
+          stock_compare.write_read_meta(
+              path, plugin="1.0.40", count=2632,
+              command="cs-stock.py --no-product-lookups",
+              stages=["counting"], output="Stock read: 2632 listings") == path
+          and path.is_file(), str(path))
+    record = stock_compare.read_read_meta(path)
+    check("it says which read it was", record.get("skipped_lookups") is True,
+          str(record))
+    check("and keeps the command it ran", "--no-product-lookups"
+          in record.get("command", ""), str(record))
+    check("with the plugin and the count",
+          record.get("plugin") == "1.0.40" and record.get("count") == 2632,
+          str(record))
+    check("and when it happened",
+          len(str(record.get("at") or "")) >= 19, str(record.get("at")))
+
+    other = folder / "other.json"
+    stock_compare.write_read_meta(other, plugin="1.0.40", count=3,
+                                  command="cs-stock.py --stock-out other.json")
+    check("a read that did look the ids up says so",
+          stock_compare.read_read_meta(other).get("skipped_lookups") is False,
+          str(stock_compare.read_read_meta(other)))
+
+    #  A record written before the key existed still answers: the command it
+    #  kept is the evidence, and it is in the file either way.
+    older = folder / "older.json"
+    older.write_text(json.dumps(
+        {"plugin": "1.0.38", "count": 7,
+         "command": "cs-stock.py --stock-out cs-stock.json "
+                    "--no-product-lookups"}), encoding="utf-8")
+    check("an older record is read from its command",
+          stock_compare.read_read_meta(older).get("skipped_lookups") is True,
+          str(stock_compare.read_read_meta(older)))
+
+    check("no record at all is not an error",
+          stock_compare.read_read_meta(folder / "missing.json") == {}, "")
+    broken = folder / "broken.json"
+    broken.write_text("{not json", encoding="utf-8")
+    check("nor is a record that cannot be read",
+          stock_compare.read_read_meta(broken) == {}, "")
+    alist = folder / "list.json"
+    alist.write_text("[1, 2, 3]", encoding="utf-8")
+    check("nor is a record that is not a record",
+          stock_compare.read_read_meta(alist) == {}, "")
+
+    #  It is evidence a person may paste, not a log file.
+    big = folder / "big.json"
+    stock_compare.write_read_meta(
+        big, count=1, stages=["s%d" % index for index in range(200)],
+        output="x" * 300000)
+    kept = stock_compare.read_read_meta(big)
+    check("the stages are capped", len(kept.get("stages") or []) == 40,
+          str(len(kept.get("stages") or [])))
+    check("and the output keeps its end, where a summary is",
+          len(kept.get("output") or "") == 200000, str(len(kept.get("output") or "")))
+    #  ---- a record only judges the list it describes
+    folder2 = Path(tempfile.mkdtemp())
+    listing = folder2 / "cs-stock.json"
+    listing.write_text(json.dumps({"items": CS_ITEMS}), encoding="utf-8")
+    good = stock_compare.read_read_meta(
+        stock_compare.write_read_meta(folder2 / "meta.json", plugin="1.0.40",
+                                      count=len(CS_ITEMS),
+                                      command="cs-stock.py --stock-out x"))
+    check("a record written with the list describes it",
+          stock_compare.record_matches(listing, good, len(CS_ITEMS)), "")
+    check("and a count that disagrees means it is another read",
+          not stock_compare.record_matches(listing, good, len(CS_ITEMS) + 1), "")
+    older = dict(good, at="2000-01-01T00:00:00")
+    check("a record older than the list is another read",
+          not stock_compare.record_matches(listing, older, len(CS_ITEMS)),
+          str(older.get("at")))
+    check("a record with no time is judged by its count alone",
+          stock_compare.record_matches(listing, {"count": len(CS_ITEMS)},
+                                       len(CS_ITEMS)), "")
+    check("a record with no count cannot vouch for a list",
+          not stock_compare.record_matches(listing, {"at": good["at"]},
+                                           len(CS_ITEMS)), "")
+    check("no record vouches for nothing",
+          not stock_compare.record_matches(listing, {}, len(CS_ITEMS)), "")
+    check("and neither does a record with no list to describe",
+          not stock_compare.record_matches(folder2 / "gone.json", good,
+                                          len(CS_ITEMS)), "")
+
+    #  A record is a bonus: it must never turn a good read into a failure.
+    check("a record that cannot be written is not an exception",
+          stock_compare.write_read_meta(alist / "inside.json", count=1) is None
+          and stock_compare.read_read_meta(alist / "inside.json") == {}, "")
 
 
 #  What plugin 1.0.36 says on a read it finished after losing some lookups,
@@ -4644,6 +4764,7 @@ def main():
     test_a_duplicate_on_the_website()
     test_what_the_reader_claimed()
     test_read_failure()
+    test_the_read_record_says_which_read_it_was()
     test_the_reader_survives()
     test_a_stopped_read_is_not_a_failure()
     test_the_fast_read_from_plugin_1038()
