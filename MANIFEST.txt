@@ -1,4 +1,4 @@
-Alex Collect 3.46 — public core package
+Alex Collect 3.47 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -157,6 +157,18 @@ app/:
                                    routine make-square.py, the bulk stage and
                                    the picture button all share, so a card is
                                    never squared two different ways
+  card_words.py                    what a card's title says, in one place: the
+                                   maker, the year, the number, the player, the
+                                   grade and the SKU that come of them, read by
+                                   the pipeline when it writes a batch and by
+                                   the shop tools when a product on the website
+                                   is missing one of them
+  product_fields.py                the fields a website's products are missing
+                                   - brand, focus keyword, category, SKU, tags
+                                   - and the words that fill them, read from
+                                   each product's own title with the batch's
+                                   rules; only the missing field is written,
+                                   and only after the list has been agreed to
   make-square.py                   photo utility
   pipeline/card_pipeline.py        card listing pipeline
   pipeline/output_history.py       safe CSV/eBay history consolidation

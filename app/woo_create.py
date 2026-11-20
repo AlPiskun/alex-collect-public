@@ -35,11 +35,18 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+import card_words
 import woo_media
 
 PRODUCTS_PATH = "/wp-json/wc/v3/products"
 CATEGORIES_PATH = "/wp-json/wc/v3/products/categories"
-USER_AGENT = "AlexCollect/3.46"
+#  WooCommerce 9.6 (January 2025) made Brands a core taxonomy, at the same
+#  REST shape as categories; the Brands plugin answers at the same address. A
+#  shop older than 9.6 has no list, and says so with a 404 - which is told
+#  apart from a shop that refused the call, because it is the difference
+#  between "there is nowhere to put a brand" and "the keys are wrong".
+BRANDS_PATH = "/wp-json/wc/v3/products/brands"
+USER_AGENT = "AlexCollect/3.47"
 
 #  A read is safe to repeat, so a site answering with its own error page gets
 #  asked again before a card is called missing: two of the three failures in
@@ -186,7 +193,40 @@ def normalise(row):
         value = _text(row, column)
         if value:
             item["meta"][column] = value
+    item["brand"] = brand_of(item)
     return item
+
+
+#: The attribute names a maker is written under on a product.
+BRAND_ATTRIBUTES = ("brand", "manufacturer")
+
+
+def brand_of(item):
+    """The maker this card is created with: the row's own, or its title's.
+
+    A batch CSV names the maker twice - as ``Attribute 1 name`` / ``Attribute 1
+    value(s)``, and inside the title it was built from. The attribute is the
+    seller's own word, so it wins; when a row has no Brand attribute at all the
+    title is read with the batch's own rule (``card_words``), which names a
+    maker only when the title names one - never a default.
+    """
+    for attr in (item or {}).get("attributes") or []:
+        if str(attr.get("name") or "").strip().lower() not in BRAND_ATTRIBUTES:
+            continue
+        for option in attr.get("options") or []:
+            word = str(option or "").strip()
+            if word:
+                return word
+    #  Both titles are read: the SEO title and the product's name are usually
+    #  the same words, and when a row carries two different ones a maker named
+    #  in either is still this card's maker. A row naming neither gets "".
+    for text in (str((item or {}).get("meta", {}).get("rank_math_title") or ""),
+                 str((item or {}).get("name") or "")):
+        if text.strip():
+            found = card_words.facts(text)["brand"]
+            if found:
+                return found
+    return ""
 
 
 def image_folder(folders):
@@ -919,7 +959,65 @@ def category_ids(site, key, secret, names, timeout=60, opener=None):
     return ids
 
 
-def build_payload(item, image_ids=(), category_ids_=()):
+def brand_id(site, key, secret, name, timeout=60, opener=None, cache=None):
+    """The Brands-list id for a name, created when the shop does not have it.
+
+    ``cache`` carries the names already resolved through one run, so thirty
+    cards of one maker are one lookup and one term rather than thirty.
+
+    A shop with no Brands list at all (WooCommerce before 9.6, or a host that
+    turned the taxonomy off) answers 404. That is raised as its own state
+    rather than as a refusal, because there is nothing on that site a brand
+    could be written into and a batch must still be able to create its cards.
+    """
+    name = str(name or "").strip()
+    if not name:
+        raise ProductError("There is no brand name to give it.")
+    wanted = name.lower()
+    if cache is not None and wanted in cache:
+        return cache[wanted]
+    url = api_url(site, BRANDS_PATH, key, secret,
+                  {"search": name, "per_page": 100})
+    if not url:
+        raise ProductError("No website address or keys are available.")
+    status, payload = _send(url, "GET", None, timeout, opener)
+    if status == 404:
+        raise ProductError(
+            "This shop's API has no Brands list, so a brand cannot be set "
+            "through it.",
+            hint="WooCommerce 9.6 or newer has the Brands list; anything "
+                 "older has nowhere to put one.",
+            status=status, state="no-brands")
+    if status in (401, 403) or status != 200:
+        raise _explain(status, payload, "read the website's brands")
+    for row in payload if isinstance(payload, list) else []:
+        if str(row.get("name") or "").strip().lower() == wanted:
+            found = int(row.get("id") or 0)
+            if cache is not None:
+                cache[wanted] = found
+            return found
+    url = api_url(site, BRANDS_PATH, key, secret)
+    status, payload = _send(url, "POST", {"name": name}, timeout, opener)
+    if status == 404:
+        raise ProductError(
+            "This shop's API has no Brands list, so a brand cannot be set "
+            "through it.",
+            hint="WooCommerce 9.6 or newer has the Brands list; anything "
+                 "older has nowhere to put one.",
+            status=status, state="no-brands")
+    if status not in (200, 201):
+        raise _explain(status, payload, "create the brand %r" % name)
+    made = int((payload or {}).get("id") or 0)
+    if not made:
+        raise ProductError(
+            "The website answered but did not name the brand it made, so the "
+            "brand on this card cannot be confirmed.", state="unknown")
+    if cache is not None:
+        cache[wanted] = made
+    return made
+
+
+def build_payload(item, image_ids=(), category_ids_=(), brand_ids_=()):
     """The product body for one item, with only the fields we know."""
     payload = {
         "name": item["name"],
@@ -942,6 +1040,11 @@ def build_payload(item, image_ids=(), category_ids_=()):
         payload["tags"] = [{"name": tag} for tag in item["tags"]]
     if category_ids_:
         payload["categories"] = [{"id": int(value)} for value in category_ids_]
+    if brand_ids_:
+        #  The Brands list, not the Brand attribute: the attribute was what a
+        #  batch used to write, and a product with only that has no brand where
+        #  the shop's own brand column, its filters and its feeds look.
+        payload["brands"] = [{"id": int(value)} for value in brand_ids_]
     if image_ids:
         payload["images"] = [{"id": int(value)} for value in image_ids]
     if item.get("meta"):
@@ -1172,6 +1275,12 @@ def run(plan_result, site, key, secret, username="", app_password="",
     items = (plan_result or {}).get("items") or []
     folder = (plan_result or {}).get("folder")
     created, skipped, failed, published = [], [], [], []
+    #  The Brands list is resolved once per maker for the whole batch, and a
+    #  shop that has no list at all is told apart from a shop that refused the
+    #  call: the first is worth one sentence, the second is worth stopping for.
+    brand_terms = {}
+    notes = []
+    no_brands = [False]
     #  A site that answers error page after error page is not going to start
     #  working halfway through the batch, and every further request is another
     #  chance of half-written products. Three in a row and the run stops,
@@ -1340,9 +1449,39 @@ def run(plan_result, site, key, secret, username="", app_password="",
                                           on_retry=told(index, item))
             elif item["images"]:
                 entry["no_photos"] = True
+            brand_ids_ = []
+            #  ``normalise`` puts the brand on a CSV row, but a card built the
+            #  other way round - from a CanadianShopper listing - arrives in
+            #  this same shape without it, so the row's own Brand detail and
+            #  its title are read here as well. One rule, both roads.
+            wanted_brand = str(item.get("brand") or brand_of(item) or "").strip()
+            if wanted_brand and not no_brands[0]:
+                try:
+                    brand_ids_ = [brand_id(site, key, secret, wanted_brand,
+                                           timeout=timeout, opener=opener,
+                                           cache=brand_terms)]
+                except ProductError as exc:
+                    #  A product without its brand is the defect this whole
+                    #  road exists to close, so it is never silent: the entry
+                    #  carries why, and the report says it once for the batch.
+                    if exc.state == "no-brands":
+                        no_brands[0] = True
+                        entry["no_brand"] = exc.message
+                        notes.append(
+                            "The brands were not set: this shop's API has no "
+                            "Brands list. WooCommerce 9.6 (January 2025) and "
+                            "newer have one; this one has nowhere to put a "
+                            "brand, so the products were created without "
+                            "theirs.")
+                    else:
+                        entry["no_brand"] = exc.message
+                        notes.append("A brand could not be set: %s"
+                                     % exc.message)
+            if brand_ids_:
+                entry["brand"] = wanted_brand
             category_ids_ = category_ids(site, key, secret, item["categories"],
                                          timeout=timeout, opener=opener)
-            payload = build_payload(item, image_ids, category_ids_)
+            payload = build_payload(item, image_ids, category_ids_, brand_ids_)
             tell(index, "create", item)
             answer = create_product(site, key, secret, payload,
                                     timeout=timeout, opener=opener,
@@ -1427,7 +1566,7 @@ def run(plan_result, site, key, secret, username="", app_password="",
             else:
                 streak[0] = 0
     return {"created": created, "skipped": skipped, "failed": failed,
-            "published": published,
+            "published": published, "notes": notes,
             "unpublished": [entry for entry in created
                             if entry.get("status") != "publish"]}
 
@@ -1491,6 +1630,14 @@ def report_text(report, site=""):
             "The photos on %d of them are in the media library but are still "
             "marked unattached there - the products show them anyway.%s"
             % (len(loose), " " + why if why else ""))
+    branded = [entry for entry in created if entry.get("brand")]
+    if branded:
+        lines.append("%d of them %s the brand from the card's own title in "
+                     "the shop's Brands list." %
+                     (len(branded), "carries" if len(branded) == 1 else
+                      "carry"))
+    for note in (report or {}).get("notes") or []:
+        lines.append(note)
     for entry in skipped:
         #  The state is the point: an existing product that is still a draft
         #  is a card nobody can buy, and it must never be listed as though it

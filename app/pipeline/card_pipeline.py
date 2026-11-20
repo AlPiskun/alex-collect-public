@@ -81,6 +81,19 @@ from output_history import (consolidate_csv_history,
 from user_settings import (load_user_settings, read_woo_credentials,
                            read_wordpress_credentials, save_user_settings,
                            site_admin_url, site_url, feed_urls)
+#  A title's facts live in one module, because the website's own products are
+#  read back with the same rules: the brand a title names, the year, the card
+#  number, the player, the grade at its end, the printing in its SKU and the
+#  category its sport words pick. They are imported rather than defined here
+#  so a product whose missing brand is filled in from its title cannot
+#  disagree with the batch that would have written it.
+from card_words import (KNOWN_BRANDS, GRADE_RE, SPORT_KEYWORDS,
+                        NON_SPORTS_KEYWORDS, VARIETY_TOKENS, card_sku,
+                        category_label, detect_sport_category, brand_code,
+                        extract_brand, extract_card_number,
+                        extract_player_name, extract_year, grade_slug,
+                        sanitize_filename_component, sku_component,
+                        variety_tokens)
 try:
     import woo_create
 except ImportError:                      # a bare batch folder with no app
@@ -408,30 +421,6 @@ MARKER_PATTERNS = [
     for key, label in MARKER_SPECS
 ]
 
-KNOWN_BRANDS = [
-    ("O-Pee-Chee",  r"O-?Pee-?Chee"),
-    ("O-Pee-Chee",  r"\bOPC\b"),
-    ("Topps",       r"\bTopps\b"),
-    ("Parkhurst",   r"\bParkhurst\b"),
-    ("Upper Deck",  r"\bUpper\s+Deck\b"),
-    ("Bowman",      r"\bBowman\b"),
-    ("Fleer",       r"\bFleer\b"),
-    ("Score",       r"\bScore\b"),
-    ("Pro Set",     r"\bPro\s*Set\b"),
-    ("Panini",      r"\bPanini\b"),
-]
-
-GRADE_RE = re.compile(
-    r"\b("
-    r"GEM[\s\-]?MT|GEM|"
-    r"NM[\s\-]?MT|"
-    r"EX[\s\-]?MT|"
-    r"VG[\s\-]?EX|"
-    r"NM|MINT|EX|VG|GOOD|FAIR|POOR|PR|FR"
-    r")\b\s*(\d+(?:\.\d+)?)?",
-    re.IGNORECASE,
-)
-
 CONDITION_KEYWORDS_RE = re.compile(
     r"corner|centering|edge|surface|crease|wrinkl|stain|gloss|wear",
     re.IGNORECASE,
@@ -582,85 +571,6 @@ CATEGORY_CHOICES = [
     ("Sports Card",     "Football Card"),
     ("Sports Card",     "Hockey Card"),
 ]
-
-SPORT_KEYWORDS = {
-    "Hockey Card": [
-        r"\bhockey\b", r"\bnhl\b", r"\bstanley cup\b", r"\bgoalie\b",
-        r"\bgoaltender\b", r"\bcenterman\b", r"\bleft wing\b", r"\bright wing\b",
-        r"\bdefenseman\b", r"\bmaple leafs\b", r"\bcanadiens\b", r"\bbruins\b",
-        r"\bblackhawks\b", r"\bred wings\b", r"\boilers\b", r"\bflames\b",
-        r"\bcanucks\b", r"\bsenators\b", r"\bpredators\b", r"\bavalanche\b",
-        r"\bsharks\b", r"\bducks\b", r"\bpenguins\b", r"\bflyers\b",
-        r"\bcapitals\b", r"\bislanders\b", r"\bdevils\b", r"\bsabres\b",
-        r"\blightning\b", r"\bhurricanes\b", r"\bcoyotes\b", r"\bblue jackets\b",
-        r"\bnordiques\b", r"\bwhalers\b", r"\bnorth stars\b", r"\bwild\b",
-    ],
-    "Baseball Card": [
-        r"\bbaseball\b", r"\bmlb\b", r"\bpitcher\b", r"\boutfielder\b",
-        r"\bshortstop\b", r"\bworld series\b", r"\byankees\b", r"\bred sox\b",
-        r"\bdodgers\b", r"\bgiants\b", r"\bcubs\b", r"\bmets\b", r"\bbraves\b",
-        r"\bastros\b", r"\bcardinals\b", r"\bphillies\b", r"\btigers\b",
-        r"\bguardians\b", r"\bathletics\b", r"\bpirates\b", r"\bbrewers\b",
-        r"\bmariners\b", r"\bpadres\b", r"\breds\b", r"\btwins\b", r"\bangels\b",
-        r"\bblue jays\b", r"\brockies\b", r"\bmarlins\b", r"\bnationals\b",
-        r"\brays\b", r"\bwhite sox\b", r"\broyals\b", r"\borioles\b",
-    ],
-    "Basketball Card": [
-        r"\bbasketball\b", r"\bnba\b", r"\bpoint guard\b", r"\bshooting guard\b",
-        r"\bsmall forward\b", r"\bpower forward\b", r"\bdunk\b", r"\brebound\b",
-        r"\blakers\b", r"\bceltics\b", r"\bbulls\b", r"\bwarriors\b", r"\bnets\b",
-        r"\bknicks\b", r"\bheat\b", r"\bspurs\b", r"\brockets\b",
-        r"\bmavericks\b", r"\bsuns\b", r"\bclippers\b", r"\bnuggets\b",
-        r"\btrail blazers\b", r"\bjazz\b", r"\bgrizzlies\b", r"\bpelicans\b",
-        r"\btimberwolves\b", r"\bthunder\b", r"\bmagic\b", r"\bhawks\b",
-        r"\bhornets\b", r"\bpistons\b", r"\bpacers\b", r"\bbucks\b",
-        r"\bcavaliers\b", r"\b76ers\b", r"\bsixers\b", r"\braptors\b",
-    ],
-    "Football Card": [
-        r"\bfootball\b", r"\bnfl\b", r"\bcfl\b", r"\bquarterback\b",
-        r"\brunning back\b", r"\bwide receiver\b", r"\btouchdown\b",
-        r"\btight end\b", r"\blinebacker\b", r"\bcowboys\b", r"\bpatriots\b",
-        r"\bpackers\b", r"\bsteelers\b", r"\b49ers\b", r"\bniners\b",
-        r"\beagles\b", r"\bbears\b", r"\bbroncos\b", r"\braiders\b",
-        r"\bchargers\b", r"\bchiefs\b", r"\bbills\b", r"\bdolphins\b",
-        r"\bbengals\b", r"\bbrowns\b", r"\bravens\b", r"\btitans\b",
-        r"\bcolts\b", r"\bjaguars\b", r"\btexans\b", r"\bcommanders\b",
-        r"\bredskins\b", r"\bvikings\b", r"\blions\b", r"\bfalcons\b",
-        r"\bsaints\b", r"\bbuccaneers\b", r"\brams\b", r"\bseahawks\b",
-    ],
-}
-
-NON_SPORTS_KEYWORDS = [
-    r"\bnon-?sports?\b", r"\bstar wars\b", r"\bmarvel\b", r"\bdc comics\b",
-    r"\bgarbage pail kids\b", r"\bpok[eé]mon\b", r"\bmagic:? the gathering\b",
-    r"\byu-?gi-?oh\b", r"\bdisney\b", r"\btrading card game\b", r"\btcg\b",
-    r"\bwacky packages\b", r"\bmars attacks\b", r"\bbatman\b", r"\bsuperman\b",
-    r"\bspider-?man\b", r"\bx-?men\b",
-]
-
-
-def detect_sport_category(text):
-    lower = text.lower()
-
-    for pattern in NON_SPORTS_KEYWORDS:
-        if re.search(pattern, lower, re.IGNORECASE):
-            return "Non Sports Card", ""
-
-    scores = {}
-    for sub, patterns in SPORT_KEYWORDS.items():
-        count = sum(1 for p in patterns if re.search(p, lower, re.IGNORECASE))
-        if count:
-            scores[sub] = count
-
-    if not scores:
-        return "Sports Card", "Hockey Card"
-
-    best_sub = max(scores, key=scores.get)
-    return "Sports Card", best_sub
-
-
-def category_label(category, subcategory):
-    return category if not subcategory else f"{category} > {subcategory}"
 
 
 def print_category_menu():
@@ -883,78 +793,6 @@ def first_line(text):
     return ""
 
 
-# Windows forbids these characters in filenames: \ / : * ? " < > |
-# Also strip trailing dots/spaces (Windows disallows them at the end of a name)
-_WIN_ILLEGAL_RE = re.compile(r'[\\/:*?"<>|]')
-
-
-def sanitize_filename_component(text):
-    """Strip characters that are illegal in Windows filenames (e.g. the
-    '?' in a title like 'Baseball or Music?'), so downstream renames
-    never hit WinError 123."""
-    if not text:
-        return ""
-    text = _WIN_ILLEGAL_RE.sub("", text)
-    text = text.rstrip(" .")
-    return text
-
-
-#  Some vintage sets printed one card more than one way, and a title that
-#  names the printing - "Dark Back", "Light Back", "Corrected Bio" - is a
-#  different card: a different printing, a different price, a different
-#  product. The SKU is what the website, the CSV and the comparison use to
-#  tell two products apart, so the printing goes into the SKU. Two cards that
-#  are otherwise identical (same year, number, player and grade) then no
-#  longer share one SKU - which is how the light back of a card came to be
-#  skipped as "already on the website" the moment the dark back existed.
-#
-#  The order matters twice over: the phrases are matched as whole words, so
-#  "uncorrected" never matches "corrected", and the tokens come out in this
-#  order, so one title always produces one SKU. ``woo_create`` keeps the same
-#  list of phrases to decide whether a product found by SKU is really the card
-#  it is looking for - a check in the suite keeps the two from drifting.
-VARIETY_TOKENS = (
-    ("dark back", "DB"),
-    ("light back", "LB"),
-    ("white back", "WB"),
-    ("grey back", "GB"),
-    ("gray back", "GB"),
-    ("uncorrected", "UNCORR"),
-    ("corrected", "CORR"),
-)
-
-
-def variety_tokens(title):
-    """The SKU tokens a title's printing earns, in a stable order.
-
-    Only the words decide, so "Dark Back", "Dark-Back" and "dark back" are one
-    printing, and a title that names two ("Corrected Bio Light Back") gets both
-    tokens. A title naming no printing returns an empty list and keeps the SKU
-    a card has always had.
-    """
-    words = re.sub(r"[^a-z0-9]+", " ", str(title or "").lower())
-    words = " %s " % re.sub(r"\s+", " ", words).strip()
-    found = []
-    for phrase, token in VARIETY_TOKENS:
-        if " %s " % phrase in words and token not in found:
-            found.append(token)
-    return found
-
-
-def sku_component(text):
-    """One piece of a SKU: letters, digits and single dashes, nothing else.
-
-    A SKU travels through a CSV, an Excel sheet, a URL and a shop's own
-    search box, so an accent, a space, a slash or a full stop in one is a way
-    for the same card to be written two different ways - or for an import to
-    refuse the row. Accents are folded to their plain letters ("Jérôme" is
-    "Jerome") rather than dropped, so two cards do not become one.
-    """
-    text = unicodedata.normalize("NFKD", str(text or ""))
-    text = text.encode("ascii", "ignore").decode("ascii")
-    text = re.sub(r"[^A-Za-z0-9]+", "-", text).strip("-")
-    return text
-
 
 def duplicate_skus(rows):
     """SKUs more than one row claims, with the names that claim them.
@@ -974,16 +812,6 @@ def duplicate_skus(rows):
         if len(names) > 1:
             repeated.append((sku, names))
     return repeated
-
-
-def grade_slug(grade):
-    """Convert a cleaned grade string (e.g. 'EX 5' or 'VG-EX') into a
-    filename-safe suffix (e.g. 'EX-5' or 'VG-EX'). Returns '' when no
-    grade is available."""
-    if not grade:
-        return ""
-    grade = sanitize_filename_component(grade.strip())
-    return re.sub(r"\s+", "-", grade)
 
 
 #  The side marker, case-sensitive: the real one is always lowercase
@@ -1116,51 +944,6 @@ def parse_images(images_text):
     return front, back
 
 
-def extract_card_number(seo_title):
-    m = re.search(r"#(\w+)", seo_title)
-    return m.group(1) if m else ""
-
-
-def extract_year(seo_title):
-    m = re.search(r"(\d{4}-\d{2}|\d{4})", seo_title)
-    return m.group(1) if m else ""
-
-
-def extract_brand(seo_title, default_brand):
-    for canonical, pattern in KNOWN_BRANDS:
-        if re.search(pattern, seo_title, re.IGNORECASE):
-            return canonical
-    return default_brand
-
-
-def extract_player_name(seo_title, brand):
-    m = re.match(r"^\s*(?:\d{4}-\d{2}|\d{4})\s+(.+?)#", seo_title.strip())
-    if not m:
-        return ""
-    middle = m.group(1).strip()
-    for _, pattern in KNOWN_BRANDS:
-        stripped = re.sub(
-            r"^\s*" + pattern + r"\s*", "", middle, flags=re.IGNORECASE
-        )
-        if stripped != middle:
-            middle = stripped.strip()
-            break
-    if brand:
-        middle = re.sub(
-            r"^\s*" + re.escape(brand) + r"\s*", "", middle,
-            flags=re.IGNORECASE
-        ).strip()
-    return middle
-
-
-def brand_code(brand):
-    parts = re.split(r"[\s\-]+", brand.strip())
-    parts = [p for p in parts if p]
-    if len(parts) == 1:
-        return parts[0].upper()
-    letters = "".join(p[0].upper() for p in parts)
-    return letters or brand.upper()
-
 
 def extract_price(price_text):
     m = re.search(r"([\d]+(?:\.\d+)?)", price_text)
@@ -1243,24 +1026,6 @@ FIELDNAMES = [
     "rank_math_description", "rank_math_focus_keyword",
 ]
 
-
-def card_sku(c):
-    """The SKU this card is given when the batch writes its CSV.
-
-    One definition, used twice: by :func:`build_rows`, where it becomes the
-    product's SKU, and by the eBay Quick List, where it is what a card marked
-    to skip is recognized by on every later batch. Two spellings of the same
-    SKU would mean a skip that stops working the moment the card is listed.
-    """
-    code = brand_code(c["brand"])
-    grade_component = grade_slug(c["grade"])  # e.g. "EX-5", "VG-3"
-    #  The printing is part of the SKU (see VARIETY_TOKENS): a dark back
-    #  and a light back of one card are two products, and one SKU for both
-    #  meant the second was skipped as already there.
-    sku_bits = ([code + c["year"], c["card_num"], c["last"],
-                 grade_component] + variety_tokens(c["seo_title"]))
-    return "-".join(bit for bit in (sku_component(piece)
-                                    for piece in sku_bits) if bit)
 
 
 def build_rows(cards_parsed, default_quantity=1):

@@ -68,6 +68,7 @@ import ebay_skip
 import order_pdf
 import quote as quote_model
 import quote_pdf
+import product_fields
 import woo_create
 import woo_edit
 import woo_media
@@ -81,7 +82,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.46"
+VERSION = "3.47"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1442,8 +1443,36 @@ wait until the list has been shown and agreed to. Only the field that was asked
 for is changed - title, price, photos and state are untouched, and nothing is
 added or removed.
 
-Keywords and tags are the next shop tools here, edited the same way: find the
-product, change one field, read it back.
+What a product is missing is filled in from its own title, one field at a time.
+A product created before a field was part of the batch sits on the website
+without it, and five buttons find those products: **Find products with no
+brand**, **...no keyword**, **...no category**, **...no SKU** and **...no tags**.
+Each reads the catalogue once, lists the products that have nothing in that
+field, and shows - product by product - the words that would fill it, worked
+out from the card's own SEO title with the same rules the batch uses: the maker
+the title names, the title without the grade at its end for the focus keyword,
+the sport its own words name for the category, the batch's own SKU from the
+year, number, player and grade, and the year, maker, player and number the
+title already states for the tags.
+
+Nothing is written until the list has been shown and agreed to, and then only
+that one field on each product: a title, a price, a stock count, a photo, a
+state and the other four fields are untouched. A product that already has the
+field is never on the list, so nothing anybody typed by hand is replaced. A
+brand or a category the shop does not have yet is created there first, and a
+SKU another product already holds is left out rather than fought over. A title
+that does not state the fact gets no value at all - those products are counted
+and named, with the reason, instead of being given a guess. The whole list is
+also written to a CSV beside the app.
+
+A shop with no Brands list at all - WooCommerce before 9.6, which made Brands
+part of the shop - is told apart from a shop full of brandless products, and
+says so rather than listing every product as missing one.
+
+New products get their brand at creation: the brand the batch CSV states, or
+the maker the card's own title names, resolved in the shop's Brands list and
+created there when it is not. A shop with no Brands list still gets its cards,
+and the run says why the brand is not there.
 """
 DOCS["stock"] = """\
 Where the numbers disagree, and where they get put right. One card can sit on
@@ -2189,6 +2218,11 @@ TOOLTIPS = {
     "Set this count on the website": "Change this one product's stock count, then read it back from the website and report the number it kept; nothing else on the product is touched",
     "Find": "Filter the products already read - the card's name, a SKU, or a product id; nothing is sent to the website by searching",
     "Check the website's SKUs": "Read every product on the website and name the ones whose SKU does not say which printing the title is - the products that keep a card of the same name from being created; a bar says which page it is reading and which product it is fixing; nothing is changed until the fixes are shown and agreed to",
+    "Find products with no brand": "Read every product on the website and name the ones with nothing in the shop's Brands list, with the brand each one's own title names; a brand the shop does not have yet is created there, and nothing is written until the list is shown and agreed to",
+    "Find products with no keyword": "Read every product on the website and name the ones with no Rank Math focus keyword, with the words each one's own title gives (the grade at the end taken off); nothing is written until the list is shown and agreed to, and a keyword a product already has is never replaced",
+    "Find products with no category": "Read every product on the website and name the ones in no category of their own, with the category the sport in their own words picks - the same rule the batch uses; a category the shop does not have is created under the same parent, and nothing is written until the list is shown and agreed to",
+    "Find products with no SKU": "Read every product on the website and name the ones with no SKU, with the SKU the batch would give them from the card's own title; a SKU another product already holds is left out of the list, and nothing is written until it is shown and agreed to",
+    "Find products with no tags": "Read every product on the website and name the ones with no tags at all, with the words their own title already states - the year, the maker, the player and the number; nothing is written until the list is shown and agreed to, and a tag anybody typed is never replaced",
     "Compare the last read instead (no new read)": "Compare now against the CanadianShopper list already on disk from an earlier read - it is named with its age wherever its counts appear, so nothing is mistaken for a fresh count, and no read is started",
     "Save the limit": "Remember this number in User Settings, where the same value is used by Fill your eBay store every time it chooses",
     "Open the last list": "Open the page written by the last selection (or the newest one on disk); nothing is read again",
@@ -3746,8 +3780,9 @@ BLURBS = {
     "editeb": "Compare stock with eBay and mark what needs changing there, "
               "without changing anything on either site.",
     "woostock": "The website's own products: check the SKUs that hold a "
-                "printing back, and (soon) fill in the keywords and tags a "
-                "product is missing.",
+                "printing back, and fill in the brand, keyword, category, SKU "
+                "and tags a product is missing - from its own title, one "
+                "field at a time, shown before it is written.",
     "stock": "Find the cards whose counts disagree between your website "
              "and CanadianShopper, sort the list, and fix what needs it.",
     "csedit": "Search CanadianShopper by card name, then rename, reprice, "
@@ -5310,15 +5345,11 @@ def build_woostock(parent, app):
 
     build_sku_check(box, app)
 
-    #  Where the next shop tool goes. Named rather than left to be guessed at,
-    #  because this place is meant to grow: missing keywords, tags and the rest
-    #  are the same kind of work on the same products.
-    ttk.Label(box, text="Keywords and tags are the next shop tools here - a "
-              "product's words are edited the same way its count is, by "
-              "finding the product and changing one field - so a card's "
-              "stock, its SKU and its words are all fixed in one place.",
-              style="Dim.TLabel", wraplength=680,
-              justify="left").pack(anchor="w", pady=(8, 0))
+    #  The shop's other half: the fields a product created before that field
+    #  was part of the batch is missing. It sits under the SKU check because
+    #  it is the same kind of work on the same products, and one button per
+    #  field because a person fixes one field at a time.
+    build_missing_fields(box, app)
 
 
 def build_sku_check(parent, app):
@@ -5559,6 +5590,331 @@ def build_sku_check(parent, app):
             sku_text.configure(text="")
         except Exception:
             pass
+
+
+#: The five fields a website product can be missing, and the button that finds
+#: them, in the order the shop's place offers them. One button per field rather
+#: than one button for all five: each is a separate decision about a live shop,
+#: and a person fills in the one they came for.
+MISSING_FIELDS = (("brand", "Find products with no brand"),
+                  ("keyword", "Find products with no keyword"),
+                  ("categories", "Find products with no category"),
+                  ("sku", "Find products with no SKU"),
+                  ("tags", "Find products with no tags"))
+
+#: The plural of each field's word, for the sentences that count products.
+MISSING_PLURALS = {"brand": "brands", "keyword": "focus keywords",
+                   "categories": "categories", "sku": "SKUs", "tags": "tags"}
+
+#: What each check asks before it writes, and what it promises to leave alone.
+MISSING_QUESTIONS = {
+    "brand": "Give these products the brand their own title names?",
+    "keyword": "Give these products the focus keyword their own title gives?",
+    "categories": "Put these products in the category their own words name?",
+    "sku": "Give these products the SKU the batch would give them?",
+    "tags": "Give these products the tags their own title states?",
+}
+
+MISSING_PROMISES = {
+    "brand": "A brand the shop does not have is created in its Brands list. "
+             "Only the brand is written: title, price, stock, photos, "
+             "category and state are untouched.",
+    "keyword": "Only the Rank Math focus keyword is written, and a keyword "
+               "the product already had is never replaced - a product with "
+               "no keyword is the only one on the list.",
+    "categories": "A category the shop does not have is created under the "
+                  "same parent the batch uses. Only the category is written: "
+                  "a product with none gets one, and nothing else moves.",
+    "sku": "Only the SKU is written, and only on a product that has none. The "
+           "website holds one product per SKU, so a SKU another product "
+           "already has is left out of the list rather than fought over.",
+    "tags": "Only products with no tags at all are on the list, so no tag "
+            "anybody typed is replaced.",
+}
+
+
+def build_missing_fields(parent, app):
+    """The five checks that fill in what a website's products are missing.
+
+    A product created before a field was part of the batch sits on the site
+    without it - no brand in the shop's Brands list, no focus keyword, no
+    category, no SKU, no tags. Each button reads the catalogue once, lists the
+    products that have nothing in that field, and shows, product by product,
+    the words that would fill it: the card's own title, read with the batch's
+    rules (``product_fields``/``card_words``), so a value filled in here and a
+    value a batch writes are the same value.
+
+    Nothing is written until the list has been shown and agreed to, a product
+    that already has the field is never on the list, and a title that does not
+    state the fact gets no value at all - those are counted and named rather
+    than given a guess.
+    """
+    state = {"running": False}
+
+    ttk.Label(parent, text="What a product is missing, filled in from its own "
+              "title - one field at a time, shown before it is written:",
+              style="Dim.TLabel", wraplength=680,
+              justify="left").pack(anchor="w", pady=(0, 1))
+
+    #  Two rows of buttons, so five of them fit a narrow window. Each opens the
+    #  same check with its own field, which is what keeps the five from turning
+    #  into five copies of the same code.
+    rows = [ttk.Frame(parent), ttk.Frame(parent)]
+    for row in rows:
+        row.pack(anchor="w", pady=(2, 0))
+
+    #  -- what the check is doing -------------------------------------------
+    #  Reading a catalogue is a minute or two, and the writes are one call each
+    #  on top of it, so the bar says which of the two it is doing. Always in
+    #  the layout and empty until a check starts, so nothing below it moves.
+    bar_row = ttk.Frame(parent)
+    bar_row.pack(anchor="w", pady=(3, 0))
+    bar = ttk.Progressbar(bar_row, length=240, maximum=100)
+    text_label = ttk.Label(bar_row, text="", style="Dim.TLabel",
+                           wraplength=420, justify="left")
+    drawn = {"shown": False, "sweeping": False}
+
+    def show_progress(text, done=None, total=None):
+        """Show how far a check has got; never raise."""
+        try:
+            if not drawn["shown"]:
+                bar.pack(side="left", padx=(0, 8))
+                text_label.pack(side="left")
+                drawn["shown"] = True
+            if total:
+                if drawn["sweeping"]:
+                    bar.stop()
+                    drawn["sweeping"] = False
+                bar.configure(mode="determinate",
+                              maximum=max(1, int(total)),
+                              value=min(int(done or 0), int(total)))
+            else:
+                bar.configure(mode="indeterminate", value=0)
+                if not drawn["sweeping"]:
+                    bar.start(12)
+                    drawn["sweeping"] = True
+            text_label.configure(text=text)
+        except Exception:
+            pass
+
+    def hide_progress():
+        """Take the bar down; whatever it said, the console says next."""
+        try:
+            if drawn["sweeping"]:
+                bar.stop()
+            drawn["sweeping"] = False
+            if drawn["shown"]:
+                bar.pack_forget()
+                text_label.pack_forget()
+                drawn["shown"] = False
+            text_label.configure(text="")
+        except Exception:
+            pass
+
+    def report_file(field, entries):
+        """Write the list beside the app, the way the SKU audit does."""
+        path = BASE / ("%s-missing-%s.csv" % (
+            field, datetime.now().strftime("%Y%m%d-%H%M")))
+        lines = ["id,title,%s" % product_fields.FIELD_WORDS.get(field, field)]
+        for entry in entries:
+            lines.append('%s,"%s","%s"' % (
+                entry.get("id"),
+                str(entry.get("name") or "").replace('"', "'"),
+                product_fields.describe(entry).replace('"', "'")))
+        try:
+            path.write_text("\n".join(lines), encoding="utf-8")
+        except OSError as exc:
+            app.console_line("Could not write the list: %s" % exc, "dim")
+            return None
+        app.console_line("Written: %s" % path, "dim")
+        return path
+
+    def check_field(field):
+        """Read the catalogue and fill in one field, if the person agrees."""
+        word = product_fields.FIELD_WORDS.get(field, field)
+        plural = MISSING_PLURALS.get(field, word + "s")
+        if state["running"]:
+            app.console_line("A check is already running; letting that one "
+                             "finish.", "dim")
+            return
+        site, key, secret = read_woo_credentials(BASE / "woo-keys.txt")
+        if not (site and key and secret):
+            messagebox.showinfo(
+                dict(MISSING_FIELDS).get(field,
+                                         "Check the website's " + word),
+                "This reads your website's products, so it needs the "
+                "WooCommerce keys in woo-keys.txt (lines 1-3).")
+            app.console_line("No WooCommerce keys saved, so the website's "
+                             "%s cannot be read." % word, "dim")
+            return
+        state["running"] = True
+        app.console_line("Reading every product on %s to check its %s..."
+                         % (site, word), "cmd")
+        show_progress("Reading every product on %s..." % site)
+
+        def page_read(page_done, total_pages, products):
+            if total_pages:
+                text = ("Reading the website: page %d of %d, %d products "
+                        "read..." % (page_done, total_pages, products))
+            else:
+                text = ("Reading the website: page %d, %d products read so "
+                        "far..." % (page_done, products))
+            try:
+                app.after(0, lambda: show_progress(text, page_done,
+                                                   total_pages))
+            except Exception:
+                pass      # the window went away; the read still finishes
+
+        def reading():
+            return woo_create.read_all_products(site, key, secret,
+                                                progress=page_read)
+
+        def read(products, error):
+            hide_progress()
+            if error is not None:
+                state["running"] = False
+                message = getattr(error, "message", str(error))
+                app.console_line("Could not read the website's products: %s"
+                                 % message, "err")
+                return
+            found = product_fields.audit(products, field)
+            if not found["supported"]:
+                state["running"] = False
+                app.console_line(
+                    "The website's products report no Brands list at all, so "
+                    "there is no brand field on it to fill in. WooCommerce 9.6 "
+                    "(January 2025) and newer have one; this shop does not.",
+                    "err")
+                messagebox.showinfo(
+                    "The website has no Brands list",
+                    "Its products come back without a Brands list, so there is "
+                    "nowhere on this shop to put a brand.\n\nWooCommerce 9.6 "
+                    "(January 2025) made Brands part of the shop; anything "
+                    "older has no such field. Nothing was written.")
+                return
+            if not found["missing"]:
+                state["running"] = False
+                app.console_line(
+                    "Every one of the %d products on the website has a %s."
+                    % (found["products"], word), "ok")
+                return
+
+            app.console_line(product_fields.summary(found), "warn")
+            for entry in found["ready"][:20]:
+                app.console_line("  %s  ->  %s" % (
+                    str(entry.get("name") or "")[:70],
+                    product_fields.describe(entry)), "dim")
+            if len(found["ready"]) > 20:
+                app.console_line("  ... and %d more." %
+                                 (len(found["ready"]) - 20), "dim")
+            for entry in found["unsure"][:10]:
+                app.console_line("  left alone: %s - %s"
+                                 % (str(entry.get("name") or "")[:60],
+                                    entry.get("note") or "its title does not "
+                                    "say"), "dim")
+            if len(found["unsure"]) > 10:
+                app.console_line("  ... and %d more left alone."
+                                 % (len(found["unsure"]) - 10), "dim")
+            report_file(field, found["missing"])
+
+            if not found["ready"]:
+                state["running"] = False
+                app.console_line(
+                    "None of their titles says enough to fill a %s in, so "
+                    "nothing is offered to write." % word, "dim")
+                return
+
+            body = "\n".join("%s\n      ->  %s" % (
+                str(entry.get("name") or "")[:70],
+                product_fields.describe(entry))
+                for entry in found["ready"][:10])
+            if len(found["ready"]) > 10:
+                body += "\n... and %d more (see the console)." % (
+                    len(found["ready"]) - 10)
+            asked = ("%d product%s on your website have no %s. Their own "
+                     "titles give these words:\n\n%s\n\n" % (
+                         len(found["ready"]),
+                         "" if len(found["ready"]) == 1 else "s", word, body))
+            if found["unsure"]:
+                asked += ("%d more have no %s either, and their titles do "
+                          "not say what to fill in - they are left alone.\n\n"
+                          % (len(found["unsure"]), word))
+            asked += MISSING_PROMISES.get(field, "")
+            if not messagebox.askyesno(MISSING_QUESTIONS.get(
+                    field, "Fill in the missing %s?" % word), asked,
+                    parent=parent.winfo_toplevel()):
+                state["running"] = False
+                app.console_line("The %s were left as they are." % plural,
+                                 "dim")
+                return
+
+            total = len(found["ready"])
+            show_progress("Writing the %s of %d product%s..."
+                          % (plural, total, "" if total == 1 else "s"),
+                          0, total)
+            terms = {}
+
+            def writing():
+                changed, refused = [], []
+                for index, entry in enumerate(found["ready"], start=1):
+                    text = ("Writing %s %d of %d: %s" % (
+                        word, index, total,
+                        str(entry.get("name") or "")[:60]))
+                    try:
+                        app.after(0, lambda t=text, i=index:
+                                  show_progress(t, i - 1, total))
+                    except Exception:
+                        pass       # the window went away; the write carries on
+                    try:
+                        answer = product_fields.write(site, key, secret, field,
+                                                      entry, cache=terms)
+                    except Exception as exc:
+                        refused.append((entry,
+                                        getattr(exc, "message", str(exc))))
+                    else:
+                        if answer.get("kept"):
+                            changed.append(entry)
+                        else:
+                            refused.append((entry,
+                                            "the website answered but still "
+                                            "shows %r"
+                                            % (answer.get("kept_text") or
+                                               "nothing")))
+                return changed, refused
+
+            def written(result, error):
+                hide_progress()
+                state["running"] = False
+                if error is not None:
+                    app.console_line("The %s write stopped: %s"
+                                     % (word, error), "err")
+                    return
+                changed, refused = result
+                app.console_line(
+                    "%d %s written; the website's answer was read back for "
+                    "each." % (len(changed),
+                               word if len(changed) == 1 else plural), "ok")
+                for entry, why in refused:
+                    app.console_line("  %s was not written: %s"
+                                     % (str(entry.get("name") or "")[:60], why),
+                                     "err")
+                if found["unsure"]:
+                    app.console_line(
+                        "%d product%s still have no %s, because their own "
+                        "titles do not say what to put there."
+                        % (len(found["unsure"]),
+                           "" if len(found["unsure"]) == 1 else "s", word),
+                        "dim")
+
+            in_background(app, writing, written)
+
+        in_background(app, reading, read)
+
+    for index, (field, label) in enumerate(MISSING_FIELDS):
+        button = ttk.Button(rows[index // 3], text=label,
+                            command=lambda f=field: check_field(f))
+        button.pack(side="left", padx=(0, 6))
+        add_tooltip(button, tip_for(label))
 
 
 def build_pipeline(parent, app):
