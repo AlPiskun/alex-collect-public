@@ -248,6 +248,50 @@ def test_the_pair():
           (written["front"].name, written["back"].name))
     check("the back file is the squared picture that was confirmed",
           written["back"].read_bytes() == squared["path"].read_bytes(), "")
+    #  Both photos replaced in one go: the window lets a seller click a front
+    #  and a back and send them as one pair, so the two files the plugin is
+    #  given must already be a pair before it ever runs.
+    second = picture(work / "new-back.png", (600, 640))
+    squared_front = cs_picture.square_file(new, work, "both-sides", "front",
+                                           like=FRONT)
+    squared_back = cs_picture.square_file(second, work, "both-sides", "back",
+                                          like=FRONT)
+    both = cs_picture.prepare_pair(work, "both-sides",
+                                   front_picture=squared_front["path"],
+                                   back_picture=squared_back["path"])
+    check("both photos are written as one pair",
+          both["front"] is not None and both["back"] is not None, both)
+    check("the pair shares one extension and differs only by -front/-back",
+          both["front"].suffix == both["back"].suffix and
+          photo_replace.pair_stem(both["front"].name) ==
+          photo_replace.pair_stem(both["back"].name) and
+          photo_replace.side_of(both["front"].name) == "front" and
+          photo_replace.side_of(both["back"].name) == "back",
+          (both["front"].name, both["back"].name))
+    check("the front file is the front picture that was confirmed",
+          both["front"].read_bytes() == squared_front["path"].read_bytes(), "")
+    check("and the back file is the back picture, not the front's copy",
+          both["back"].read_bytes() == squared_back["path"].read_bytes(), "")
+    back_alone = cs_picture.prepare_pair(work, "both-sides",
+                                        back_picture=squared_back["path"],
+                                        current_front=front)
+    check("a back on its own is still paired with the front the listing shows",
+          back_alone["front"] is not None and
+          photo_replace.side_of(back_alone["front"].name) == "front", back_alone)
+    try:
+        cs_picture.prepare_pair(work, "both-sides",
+                               back_picture=squared_back["path"])
+        check("a back with no front at all is refused", False, "no raise")
+    except cs_picture.PictureError as exc:
+        check("a back with no front at all is refused",
+              "nothing was written" in str(exc).lower(), exc)
+    try:
+        cs_picture.prepare_pair(work, "both-sides")
+        check("no picture at all is refused, not written as an empty pair",
+              False, "no raise")
+    except cs_picture.PictureError as exc:
+        check("no picture at all is refused, not written as an empty pair",
+              "no picture" in str(exc).lower(), exc)
     front_only = cs_picture.prepare(work, "dallas-smith", "front",
                                     squared["path"])
     check("a front on its own is still named as the front",
@@ -370,6 +414,28 @@ def test_the_words():
           "second photo",
           "added as the second photo" in "\n".join(
               cs_picture.review_lines(TITLE, "back", [], "")), "")
+    both_lines = "\n".join(cs_picture.review_lines(TITLE, "both", rows, FRONT))
+    check("both photos: the window says both are replaced, at 1 and 2",
+          "Both pictures" in both_lines and "position 1" in both_lines and
+          "position 2" in both_lines, both_lines)
+    check("and that it is one run of the plugin",
+          "one run" in both_lines, both_lines)
+    check("and that the old back is replaced, not doubled",
+          "replaced, not doubled" in both_lines, both_lines)
+    check("both photos are named together, for a console line",
+          cs_picture.slots_words(("front", "back")) ==
+          "the front and the back" and
+          cs_picture.slots_words(("back",)) == "the back" and
+          cs_picture.slots_words(()) == "no photo",
+          cs_picture.slots_words(("front", "back")))
+    check("and \"both\" is a slot the module understands",
+          cs_picture.slot_of("both") == "both" and
+          "front and the back" in cs_picture.slot_words("both"),
+          cs_picture.slot_words("both"))
+    both_done = cs_picture.done_words(0, "both", TITLE)
+    check("the console reports both photos done, at their two positions",
+          "both photos" in both_done and "position 1" in both_done and
+          "back at 2" in both_done, both_done)
     check("the console says what the plugin reported when it worked",
           "reported the replacement done" in
           cs_picture.done_words(0, "back", TITLE), cs_picture.done_words(0, "back", TITLE))
@@ -425,22 +491,29 @@ def test_the_panel():
     #  check and says so - it proves the button is on the panel and reaches
     #  this module, not that a window opened.
     source = (APP / "gui.py").read_text(encoding="utf-8")
-    caption = 'text="Use a picture from this computer..."'
+    caption = 'text="Replace this listing\'s pictures..."'
     check("the panel has a button for it",
           caption in source, "no button with that caption")
     check("in both places a listing's photos are edited - the panel row and "
           "the listing's own form",
           source.count(caption) == 2, source.count(caption))
     check("and the caption has its hover explanation",
-          '"Use a picture from this computer...":' in source, "no TOOLTIPS entry")
+          '"Replace this listing\'s pictures...":' in source,
+          "no TOOLTIPS entry")
     check("the review window's button is explained too",
-          '"Use this picture":' in source, "")
+          '"Use this picture":' in source and
+          '"Use these pictures":' in source, "")
     check("the button opens the flow",
           "command=replace_with_picture" in source and
           "def replace_with_picture(on_done=None):" in source, "")
+    check("the pictures are asked for and clicked, never typed",
+          "photo_pick.pictures_in(" in source and
+          "photo_pick.Picks(" in source and
+          '"This is one picture"' in source and
+          '"This is a sheet of nine cards"' in source, "")
     for piece in ("photo_replace_available()", "photo_back_replaceable()",
                   "cs_picture.pair_name(", "cs_picture.square_file(",
-                  "cs_picture.prepare(", "cs_picture.args(",
+                  "cs_picture.prepare_pair(", "cs_picture.args(",
                   "TOOL_ACTION(CS_PHOTO_REPLACE)"):
         check("it uses %s" % piece, piece in source, "not found in gui.py")
     flow = source.split("def replace_with_picture")[1].split(

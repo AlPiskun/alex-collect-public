@@ -46,6 +46,7 @@ from plugin_manager import (PluginError, PluginManager,
 from process_utils import no_window_kwargs
 import image_store
 import photo_assign
+import photo_pick
 import photo_pool
 import photo_queue
 import photo_replace
@@ -82,7 +83,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.48"
+VERSION = "3.49"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1562,8 +1563,13 @@ work through: everything archived, everything on sale, every draft.
 Every row is numbered, and reads card, state, stock, price and SKU. Select one
 and **Edit the selected listing...** opens all of its details in one form -
 title, price, quantity in stock and state, each filled with what it is now - so
-repricing a card and archiving it is a single visit; the two state buttons do
-only the state, which is the quick way through a restock.
+repricing a card and archiving it is a single visit. The two state buttons,
+**Put on sale** and **Archive**, do only the state, which is the quick way
+through a restock - and the list is multi-select, so Ctrl-clicking (or
+Shift-clicking) several rows moves every one of them behind one confirmation
+that names each listing, in one plan and one run of the plugin. A listing
+already in that state is left out and counted rather than sent again, and a row
+that cannot be addressed stops the whole change instead of half-doing it.
 
 The listing's photos are in that form too. A gallery is rows of its own
 (``productImage``) keyed by the listing's id, not a field on the record, so the
@@ -1572,14 +1578,22 @@ full address - the main photo above is only one of them - and **Add a photo to
 the gallery...** and **Remove a photo from the gallery...** change them from
 there.
 
-**Use a picture from this computer...** is the third way in, and the one for a
-picture that is not on the site, in the batch or in a paste box at all: the
-front or the back is chosen, a file is picked, and the *squared* picture - the
-card centred on white, the same padding ``SquareImages.bat`` does - is shown in
-one window with one button before anything is written. Then the plugin hosts it
-and puts it at position 1 or 2. A back is replaced as one half of the card's
-pair, so the front the listing shows now goes with it unchanged: the old back
-is replaced rather than doubled, and it does not have to be removed first.
+**Replace this listing's pictures...** is the third way in, and the one for
+pictures that are not on the site, in the batch or in a paste box at all. It is
+the way a scanned replacement arrives: the front sheet and the back sheet are
+chosen once, each is cut into the same nine slots the batch tools use (or, if
+the file is one card photographed on its own, it is the single picture on it -
+the window says which reading it used, and one button changes it), and every
+slot is *shown* as a picture and clicked. The back in the slot of the clicked
+front is offered first, because the two scans are usually one sitting. Both
+pictures are then padded onto a white square - the same padding
+``SquareImages.bat`` does - and shown side by side in one window with one
+button before anything is written. Then the plugin hosts them in one run and
+puts the front at position 1 and the back at 2. A back replaced on its own is
+sent with the front the listing shows now, unchanged: the old back is replaced
+rather than doubled, and it does not have to be removed first. The two files
+are remembered for the next card, so a sheet of nine is nine clicks, not nine
+file pickers.
 
 Every change is named field by field before it is sent - "Stock: 2 -> 5",
 "State: archived -> on sale" - and only the fields that changed are sent (with
@@ -2240,7 +2254,12 @@ TOOLTIPS = {
     "Prove every field...": "Prove every field this app can write on the selected listing in one job: each field is written, read back and put back before the next is touched, an already-settled field is skipped, and a field that does not settle is reported with what to do about it; one confirmed click, and nothing unattended",
     "Add a photo to the gallery...": "Put one photo you choose into the selected listing's gallery - the second picture a card listing should have. The gallery is its own collection of rows (productImage), keyed by the listing's record id, not a field on that record, so the photo is added as a row of its own and the gallery is read back: if the site does not show it, nothing changed and the answer says so. The photo stays, because a gallery photo is what you asked for - the proof is the one that adds a row and removes that same row again",
     "Use this picture": "Host the squared picture on CanadianShopper and put it in the photo's place - the front as the main photo, the back as the second one, with the old back replaced rather than doubled",
-    "Use a picture from this computer...": "Take a picture off this computer and put it on the selected listing - the front (its main photo) or the back (the second photo). The picture is padded onto a white square first, the way SquareImages.bat does it, so the storefront's square box has nothing left to crop; then the CanadianShopper plugin hosts it and places it at position 1 or 2. A back is only replaced as one half of a card's pair, so the front the listing shows now is sent with it unchanged. Nothing is written until you have seen the squared picture and confirmed it, and the old back is replaced rather than doubled - you do not have to take it off first",
+    "Use these pictures": "Host both squared pictures on CanadianShopper in one run: the front becomes position 1 and the back position 2, the back is replaced rather than doubled, and nothing else on the listing is touched",
+    "Replace this listing's pictures...": "Choose where the replacement pictures are, then pick them by looking at them. The file you choose can be a scan of nine cards - cut into the same nine slots the batch tools use - or one card photographed on its own; either way every picture is shown and clicked rather than typed. Click the card's new front and its new back, see both padded onto a white square in one window with one button, and the CanadianShopper plugin hosts them and puts them at position 1 and 2. A back on its own is sent with the front the listing shows now, unchanged, because a back is only replaced as one half of a pair; the old back is replaced, never doubled, and nothing is written until you have confirmed it",
+    "Choose the front sheet or picture...": "Where the new front pictures are: a scan of nine cards, which is cut into nine pictures to click, or one card photographed on its own, which is shown as the single picture on it. Nothing is written from here",
+    "Choose the back sheet or picture...": "Where the new back pictures are: the same sort of scan or single picture as the front. The back in the slot of the clicked front is offered first, because the two sheets are usually one sitting, and clicking another back replaces that offer",
+    "This is one picture": "Read this file again as one card photographed on its own: the whole file is the picture to click, not nine slots cut out of it",
+    "This is a sheet of nine cards": "Read this file again as a scan of nine cards: it is cut into nine pictures to click, the same slots the batch tools use - the empty ones are left out",
     "Remove a photo from the gallery...": "Take one photo off the selected listing's gallery. The gallery is read first so you choose from the photos it really holds, and the photo comes off by the id of its own row - then the gallery is read back again to show it gone. Nothing else on the listing is touched, and no proof is needed: the removal is shown by that second read.",
     "Edit the record's fields...": "Edit this listing's own record - price, title, description, stock count and main photo, each one open only when a saved proof shows the site keeps it, and only the fields you change are sent, then read back; the gallery's photos are listed below them with their own addresses, and are added or removed from there; no product id is used and your website is never touched",
     "Set the selected listing's price...": "Set the price on the selected listing's own record - one field, at the record's own id, with the new price read back afterwards; offered only for a field a proof has settled, so it works on listings that carry no product id, and your website is never touched",
@@ -2275,8 +2294,8 @@ TOOLTIPS = {
                                     "have to be the exact title",
     "Read CanadianShopper's listings": "Read every listing on CanadianShopper, with its state and stock, so it can be searched here; nothing is changed",
     "Edit the selected listing...": "Open the selected listing's own details - title, price, quantity in stock, whether it is on sale or archived, and the photos in its gallery, each with its own address - in one form filled with what they are now; only the fields you change are sent, and your website is not touched",
-    "Put the selected listing on sale": "Move the selected listing from archived (or draft) back to on sale on CanadianShopper; its title, price and stock stay as they are",
-    "Archive the selected listing": "Put the selected listing away on CanadianShopper - it is not deleted and can be put back on sale; your website is not changed",
+    "Put on sale": "Move the clicked listings from archived (or draft) back to on sale on CanadianShopper - one row, or every row you have Ctrl-clicked, named in one confirmation and sent in one run; their titles, prices and stock stay as they are",
+    "Archive": "Put the clicked listings away on CanadianShopper - one row, or every row you have Ctrl-clicked, named in one confirmation and sent in one run. Nothing is deleted, everything can be put back on sale, and your website is not changed",
     "Open the selected listing on CanadianShopper": "Open the selected listing's own page on CanadianShopper for the details this panel does not edit - its description and photos; if the plugin sent no address for it, your store is opened and the card goes on the clipboard to search for; nothing is changed",
     "Save the change": "Send the fields that changed to CanadianShopper, after showing exactly what changes; the listing is not deleted and your website is not touched",
     "Open the eBay cookie file": "Open ebay-cookie.txt so the eBay session cookie can be pasted; the file stays on this computer",
@@ -10200,7 +10219,7 @@ def build_csledit(parent, app):
     box.pack(fill="both", expand=True)
 
     state = {"items": [], "rows": [], "state": "any", "then": None,
-             "read": "cache"}
+             "read": "cache", "pictures": {}}
 
     def say(text, tag="cmd"):
         app.console_line(text, tag)
@@ -10413,6 +10432,21 @@ def build_csledit(parent, app):
                      on_done=lambda rc: arrived(rc, out))
 
     # --------------------------------------------------------------- the list
+    def chosen_rows():
+        """Every row clicked in the list, in the order the list shows them.
+
+        The list is multi-select because archiving a stack of cards one
+        confirmation at a time is the slowest way to do the one job this panel
+        is for. A plain click still replaces the selection, so everything that
+        works on one listing behaves exactly as it did.
+        """
+        try:
+            picked = sorted({int(index) for index in listing.curselection()})
+        except Exception:               # noqa: BLE001 - an empty list raises
+            picked = []
+        rows = state["rows"]
+        return [rows[index] for index in picked if 0 <= index < len(rows)]
+
     def selected_raw():
         """The clicked listing, quietly: ``None`` when nothing is clicked.
 
@@ -10426,16 +10460,25 @@ def build_csledit(parent, app):
         return state["rows"][index] if index < len(state["rows"]) else None
 
     def selected():
-        picked = listing.curselection()
-        if not picked or not state["rows"]:
+        """The one clicked listing, or None with the reason said out loud."""
+        rows = chosen_rows()
+        if not rows or not state["rows"]:
             messagebox.showinfo("Which listing?",
                                 "Search, then click a listing in the list "
                                 "above.", parent=box.winfo_toplevel())
             return None
-        index = picked[0]
-        if index >= len(state["rows"]):
+        if len(rows) > 1:
+            #  Editing, opening and naming a photo are one listing's business.
+            #  Silently taking the first clicked row would edit a listing the
+            #  person is not looking at.
+            messagebox.showinfo(
+                "One listing at a time",
+                "%d listings are clicked. This button works on one at a "
+                "time - click the one you mean; a plain click replaces the "
+                "other rows. The two state buttons do every clicked row at "
+                "once." % len(rows), parent=box.winfo_toplevel())
             return None
-        return state["rows"][index]
+        return rows[0]
 
     def run_search(_event=None):
         state["state"] = cs_edit.state_key(str(state_var.get() or ""))
@@ -10507,6 +10550,116 @@ def build_csledit(parent, app):
         app.run_tool(action, args, "Edit CanadianShopper listing",
                      cwd=app.settings.get("pipeline_dir", str(WORK)),
                      on_done=lambda rc: written(rc, item, entry, out))
+
+    def apply_changes(pairs):
+        """Send one or many confirmed changes to the plugin in one run.
+
+        One plan file and one run, not a run per listing: the plugin's answer
+        then accounts for every listing at once, and a stack of nine cards is
+        one upload rather than nine.
+        """
+        action = TOOL_ACTION(CS_LISTING_UPDATE_ACTION)
+        if not action:
+            messagebox.showinfo(
+                "This plugin cannot edit a listing yet",
+                "The installed CanadianShopper plugin can list its catalogue "
+                "and set stock, but not change a listing's own details.\n\n"
+                "Nothing was changed. Update the plugin to %s or newer and "
+                "this panel will make the edit for you."
+                % CS_LISTING_UPDATE_VERSION)
+            say("marketplace.listing_update is not declared by the installed "
+                "plugin (%s)." % CS_LISTING_UPDATE_ACTION, "dim")
+            return False
+        entries = [entry for _item, entry in pairs]
+        plan_path = BASE / "cs-listing-update.json"
+        out = BASE / "cs-listing-update-result.json"
+        try:
+            out.unlink()
+        except FileNotFoundError:
+            pass
+        plan_path.write_text(
+            json.dumps({"items": entries}, indent=1, ensure_ascii=False),
+            encoding="utf-8")
+        args = ["--set-file", str(plan_path), "--set-out", str(out)]
+        if CS_COOKIE_FILE.is_file():
+            args += ["--cookie-file", str(CS_COOKIE_FILE)]
+        say("Changing %s on CanadianShopper..."
+            % ("one listing" if len(entries) == 1
+               else "%d listings" % len(entries)), "cmd")
+        summary.configure(text="Changing %s on CanadianShopper..."
+                          % ("the listing" if len(entries) == 1
+                             else "%d listings" % len(entries)))
+        app.run_tool(action, args, "Edit CanadianShopper listing",
+                     cwd=app.settings.get("pipeline_dir", str(WORK)),
+                     on_done=lambda rc: written_many(rc, pairs, out))
+
+    def written_many(rc, pairs, out):
+        """Read the plugin's account of a run that changed one or many."""
+        entries = [entry for _item, entry in pairs]
+        report = cs_edit.report(entries, cs_edit.read_result(out))
+        for failure in report["failed"]:
+            say("Not changed: %s - %s" % (failure["card"] or "that listing",
+                                          failure["why"]), "err")
+        if rc != 0 or report["failed"]:
+            #  A write that failed is a question about which listing was
+            #  addressed, and the answer is only useful if the console says
+            #  what the plan actually named the listing by.
+            if len(entries) == 1:
+                say("The plan named it: %s." % cs_edit.identified_by(entries[0]),
+                    "dim")
+            if cs_edit.wants_product_id(report):
+                say("That list was read before the plugin reported product "
+                    "ids, so the rows on screen have none to send. Reading "
+                    "CanadianShopper's listings again is what fixes it; "
+                    "nothing on the site was changed.", "err")
+            reasons = " ".join(str(failure.get("why") or "")
+                               for failure in report["failed"]).lower()
+            if "404" in reasons or "not found" in reasons:
+                say("CanadianShopper's API does not know a listing by that id: "
+                    "the plugin's reader and the endpoint it writes to are "
+                    "naming the listing differently. Nothing was changed on "
+                    "the site - the listing is exactly as it was.", "err")
+        if rc != 0:
+            say("The change did not finish (exit %s). Nothing was changed."
+                % rc, "err")
+            summary.configure(text="The change did not finish (exit %s); "
+                                   "nothing was changed." % rc)
+            return False
+        changed = [entry for entry in entries if entry in report["changed"]]
+        for item, entry in pairs:
+            if entry not in report["changed"]:
+                continue
+            updated = cs_edit.apply_to_item(item, entry)
+            state["items"] = [
+                updated if (row is item or (
+                    item.get("id") is not None and
+                    str(row.get("id")) == str(item.get("id")))) else row
+                for row in state["items"]]
+        if changed:
+            run_search()
+            if len(changed) == 1:
+                summary.configure(text="CanadianShopper shows the change now; "
+                                       "your website was not touched.")
+                say("%s: the listing was changed on CanadianShopper (your "
+                    "website was not touched)."
+                    % (changed[0].get("title") or "That listing"), "ok")
+            else:
+                summary.configure(
+                    text="CanadianShopper shows the change for %d listings "
+                         "now; your website was not touched." % len(changed))
+                say("%d listings were changed on CanadianShopper (your website "
+                    "was not touched)." % len(changed), "ok")
+            return True
+        if report["unknown"]:
+            say("The plugin did not report on %d of the %d listings sent, so "
+                "this panel cannot say they were changed; read the listings "
+                "again to see where they stand."
+                % (len(report["unknown"]), len(entries)), "err")
+            summary.configure(text="The plugin did not confirm the change.")
+        elif not report["failed"]:
+            say("The plugin finished but reported no change.", "err")
+            summary.configure(text="The plugin reported no change.")
+        return False
 
     def written(rc, item, entry, out):
         report = cs_edit.report([entry], cs_edit.read_result(out))
@@ -11015,35 +11168,75 @@ def build_csledit(parent, app):
         apply_change(item, entry)
 
     def set_state(kind):
-        item = selected()
-        if item is None:
+        """Put one listing, or every clicked one, on sale or away.
+
+        The list is multi-select, so a stack of cards coming back out of
+        storage - or going into it - is one confirmed go instead of one dialog
+        per card. Every listing is named in the confirmation before anything
+        is sent, one plan carries all of them and the plugin makes one run, and
+        a row that cannot be addressed stops the whole change rather than
+        half-doing it.
+        """
+        rows = chosen_rows()
+        if not rows:
+            selected()                    # the question a person expects
             return
-        entry = cs_edit.plan(item, status=kind)
-        if entry is not None and not addressable(item, entry):
-            return
-        if entry is None:
+        pairs, already = [], []
+        for item in rows:
+            entry = cs_edit.plan(item, status=kind)
+            if entry is None:
+                already.append(item)
+                continue
+            if not addressable(item, entry):
+                return
+            pairs.append((item, entry))
+        if not pairs:
             messagebox.showinfo(
                 "Nothing to change",
-                "That listing is already %s." %
-                ("on sale" if kind == "active" else "archived"),
+                "%s already %s." % (
+                    "That listing is" if len(rows) == 1
+                    else "Every one of those %d listings is" % len(rows),
+                    "on sale" if kind == "active" else "archived"),
                 parent=box.winfo_toplevel())
             return
+        names = [str(item.get("name") or "that listing")
+                 for item, _entry in pairs]
+        listed = "\n".join("  %d. %s" % (number, name)
+                           for number, name in enumerate(names, 1))
+        if already:
+            more = len(already) > 1
+            listed += ("\n\n%d other listing%s clicked %s already %s, so %s "
+                       "not sent." % (
+                           len(already), "s" if more else "",
+                           "are" if more else "is",
+                           "on sale" if kind == "active" else "archived",
+                           "they are" if more else "it is"))
+        one = len(pairs) == 1
+        heading = names[0] if one else "%d listings" % len(names)
         if kind == "active":
-            question = ("Put %s on sale on CanadianShopper?\n\n"
-                        "Its state changes; its title, price and stock stay "
-                        "exactly as they are, and your website is not "
-                        "touched." % (item.get("name") or "this listing"))
-            title = "Put this listing on sale?"
+            question = (
+                "Put %s on sale on CanadianShopper?\n\n%s\n\n"
+                "The state changes; %s exactly as they are, and your website "
+                "is not touched."
+                % (heading, listed,
+                   "its title, price and stock stay" if one
+                   else "their titles, prices and stock stay"))
+            title = ("Put this listing on sale?" if one
+                     else "Put %d listings on sale?" % len(pairs))
         else:
-            question = ("Archive %s on CanadianShopper?\n\n"
-                        "The listing is put away, not deleted - it can be put "
-                        "back on sale later. Your website is not touched." %
-                        (item.get("name") or "this listing"))
-            title = "Archive this listing?"
+            question = (
+                "Archive %s on CanadianShopper?\n\n%s\n\n"
+                "%s put away, not deleted - %s be put back on sale later. Your "
+                "website is not touched."
+                % (heading, listed,
+                   "The listing is" if one else "The listings are",
+                   "it can" if one else "they can"))
+            title = ("Archive this listing?" if one
+                     else "Archive %d listings?" % len(pairs))
         if not ask_yes(title, question):
             say("The change was not confirmed; nothing was written.", "dim")
             return
-        apply_change(item, entry)
+        apply_changes(pairs)
 
     def open_page(item):
         """Open a listing's own page, or the store with what to search for."""
@@ -11597,11 +11790,11 @@ def build_csledit(parent, app):
         #  lists the photos: a person looking at a wrong back is already in
         #  this form, and should not have to close it to fix it.
         picture_btn = ttk.Button(
-            photo_row, text="Use a picture from this computer...",
+            photo_row, text="Replace this listing's pictures...",
             command=lambda: replace_with_picture(after_photo_change))
         picture_btn.pack(side="left", padx=6)
         add_tooltip(picture_btn,
-                    TOOLTIPS["Use a picture from this computer..."])
+                    TOOLTIPS["Replace this listing's pictures..."])
         read_photos()
 
         buttons = ttk.Frame(top)
@@ -12242,7 +12435,6 @@ def build_csledit(parent, app):
 
         in_background(app, look_at(item, listing_id), found)
 
-
     def remove_gallery(on_done=None):
         """Take one photo off the listing's gallery, by its row's own id.
 
@@ -12373,25 +12565,25 @@ def build_csledit(parent, app):
         in_background(app, look_at(item, listing_id), found)
 
     def replace_with_picture(on_done=None):
-        """A picture on this computer becomes one of this listing's photos.
+        """Which pictures, where they are, and which one is which.
 
-        The listing's photos could be chosen only from what was already
-        *somewhere*: the batch's staged uploads, the rows the gallery holds, or
-        an address pasted by hand. A card whose back was photographed on its
-        own - or a picture that is simply new - had no way in at all, so the
-        seller squared it in another program, uploaded it in the vendor
-        dashboard and pointed the listing at it by hand.
+        A picture that is not on the site, in the batch or in a paste box at
+        all had no way in: the seller squared it in another program, uploaded
+        it in the vendor dashboard and pointed the listing at it by hand.
 
-        The same job here, in four steps that are each visible: which photo,
-        which file, the *squared* picture in one window with one button, and
-        then the plugin - which hosts it and puts it at position 1 or 2. The
-        core never uploads to the site itself.
+        The seller has usually *scanned* the replacements - a sheet of fronts
+        and a sheet of backs, nine cards each - so this asks for the two files,
+        cuts each into the same nine slots the batch tools use, and shows them
+        as pictures: click the front, click the back, see both squared in one
+        window with one button, and the plugin hosts them and puts them at
+        position 1 and 2. The core never uploads to the site itself.
 
-        A back is one half of a card's pair, and the plugin replaces the pair:
-        so a back swap sends the front the listing shows now with it, unchanged,
-        which is why the seller no longer has to remove the old back first.
+        A back is one half of a card's pair, so a back replaced on its own
+        sends the front the listing shows now with it, unchanged - which is why
+        the old back does not have to be removed first. Both at once is one
+        pair and one run of the plugin.
         """
-        item = proof_guard("Replacing a photo with a picture")
+        item = proof_guard("Replacing this listing's pictures")
         if item is None:
             return
         title = str(item.get("name") or "").strip()
@@ -12410,6 +12602,16 @@ def build_csledit(parent, app):
         #  instead of adding a second back beside it, so the front is offered
         #  on its own until then - and the window says which it is.
         can_back = photo_back_replaceable()
+        folder = (Path(app.settings.get("pipeline_dir") or WORK)
+                  / "replacements")
+        #  Where the two scans were last time. Replacing nine cards from one
+        #  sitting means pointing at the same two sheets nine times, which is
+        #  the confusion this whole window exists to remove.
+        remembered = state.setdefault("pictures", {})
+        CHOOSE_WORDS = {
+            "front": "Choose the front sheet or picture...",
+            "back": "Choose the back sheet or picture...",
+        }
 
         def draw_picture(parent, path, keep):
             """The squared picture at a size a window can show."""
@@ -12428,97 +12630,333 @@ def build_csledit(parent, app):
             keep.append(photo)
             ttk.Label(parent, image=photo).pack(anchor="w")
 
-        def ask_slot(current, back_now):
-            """Which of the card's two photos the picture is for, or None."""
+        def choose_pictures(current, back_now):
+            """Ask where the pictures are, then let them be clicked."""
             top = tk.Toplevel(app)
-            top.title("Which photo is the new picture for?")
+            top.title("Replace this listing's pictures")
             top.transient(app)
-            top.geometry("660x430")
+            width = min(1120, max(720, app.winfo_screenwidth() - 80))
+            top.geometry("%dx%d" % (width, 620))
             top.grab_set()
-            body = ttk.Frame(top)
-            body.pack(fill="both", expand=True, padx=12, pady=(12, 4))
-            ttk.Label(body, text=title, font=("", 10, "bold"), wraplength=620,
-                      justify="left").pack(anchor="w")
-            ttk.Label(body, text="The listing shows this as its front now:",
-                      font=("", 9, "bold")).pack(anchor="w", pady=(10, 0))
-            ttk.Label(body, text=current or "(the record names no front photo)",
-                      wraplength=620, justify="left").pack(anchor="w")
-            ttk.Label(body, text="and this as its back:",
-                      font=("", 9, "bold")).pack(anchor="w", pady=(10, 0))
-            ttk.Label(body, text=back_now or "(no back photo in the gallery)",
-                      wraplength=620, justify="left").pack(anchor="w")
-            if can_back:
-                note = ("A back is only replaced as one half of the card's "
-                        "pair, so the front shown now is sent with it, "
-                        "unchanged: the card's front picture stays the same. "
-                        "The old back is replaced, not doubled.")
-            else:
-                note = ("This plugin (%s) cannot replace a back without adding "
-                        "a second one beside it, so only the front is offered. "
-                        "CanadianShopper 1.0.16 or newer can do both."
-                        % (plugin_version() or "of an unknown version"))
-            ttk.Label(body, text=note, wraplength=620, justify="left",
-                      style="Dim.TLabel").pack(anchor="w", pady=(12, 0))
-            chosen = {"slot": None}
+            #  Nine slots in one row where there is room for them, three where
+            #  there is not: a strip that runs off the window is nine cards the
+            #  seller cannot choose from.
+            columns = max(3, min(photo_pick.GRID_COLUMNS_MAX, (width - 90) // 106))
 
-            def pick(slot):
-                chosen["slot"] = slot
+            #  Decoding nine tiles is quick, but it used to happen before the
+            #  window existed - so a slow first decode showed nothing at all
+            #  and the program looked hung. One cache per sitting also means
+            #  the second card reuses these pictures instead of reading them.
+            #  Its own cache, not the Photos panel's: these pictures are drawn
+            #  smaller, and one cache is one size.
+            thumbs = getattr(app, "_pick_thumbs", None)
+            if thumbs is None:
+                thumbs = photo_thumbs.Thumbnails((92, 122))
+                app._pick_thumbs = thumbs
+            keep = {}                     # PhotoImage objects Tk must not free
+            picks = photo_pick.Picks(can_back=can_back)
+            answer = {"slots": (), "paths": {}, "sources": {}}
+            strips = {}
+
+            body = ttk.Frame(top)
+            body.pack(fill="both", expand=True, padx=12, pady=(10, 2))
+            ttk.Label(body, text=title, font=("", 10, "bold"),
+                      wraplength=width - 60, justify="left").pack(anchor="w")
+            ttk.Label(body, text="On the listing now: front %s%s. The "
+                      "replacement is chosen here by looking at it - nothing "
+                      "is written until the squared pictures have been shown "
+                      "in one window and confirmed."
+                      % (cs_picture.filename(current)
+                         or "(the record names no photo)",
+                         " and back %s" % cs_picture.filename(back_now)
+                         if back_now else ""),
+                      style="Dim.TLabel", wraplength=width - 60,
+                      justify="left").pack(anchor="w", pady=(2, 6))
+
+            def section(side):
+                """One strip: where its pictures are, and the pictures."""
+                caption = ("The new front" if side == "front"
+                           else "The new back")
+                holder = ttk.LabelFrame(body, text=caption, padding=6)
+                holder.pack(fill="x", pady=(0, 6))
+                bar = ttk.Frame(holder)
+                bar.pack(fill="x")
+                choose_btn = ttk.Button(
+                    bar, text=CHOOSE_WORDS[side],
+                    command=lambda: choose_source(side))
+                choose_btn.pack(side="left")
+                add_tooltip(choose_btn, TOOLTIPS[CHOOSE_WORDS[side]])
+                cut_btn = ttk.Button(bar, text="This is one picture",
+                                     command=lambda: recut(side))
+                cut_btn.pack(side="left", padx=(6, 0))
+                cut_btn.configure(state="disabled")
+                add_tooltip(cut_btn, TOOLTIPS["This is one picture"])
+                words = ttk.Label(bar, text="", style="Dim.TLabel",
+                                  wraplength=max(220, width - 560),
+                                  justify="left")
+                words.pack(side="left", padx=(8, 0))
+                strip = ttk.Frame(holder)
+                strip.pack(anchor="w", pady=(4, 0))
+                strips[side] = {"holder": holder, "choose": choose_btn,
+                                "cut": cut_btn, "words": words,
+                                "strip": strip, "cells": {}}
+                if side == "back" and not can_back:
+                    holder.configure(
+                        text="The new back (this plugin cannot replace one)")
+                    choose_btn.configure(state="disabled")
+                    cut_btn.configure(state="disabled")
+                    words.configure(text=cs_picture.missing_plugin(
+                        "back", plugin_version()))
+
+            def load(side, source, as_sheet=None):
+                """Show one source: its nine slots, or the one picture on it."""
+                try:
+                    found = photo_pick.pictures_in(
+                        source, folder / "picked" / side, as_sheet=as_sheet)
+                except photo_pick.PhotoPickError as exc:
+                    hint.configure(text=str(exc))
+                    say(str(exc), "err")
+                    return
+                picks.load(side, found["source"], found["kind"],
+                           found["tiles"])
+                strips[side]["words"].configure(text=found["words"])
+                strips[side]["cut"].configure(
+                    state="normal",
+                    text=("This is one picture" if found["kind"] == "sheet"
+                          else "This is a sheet of nine cards"))
+                paint("front")
+                paint("back")
+                refresh()
+
+            def recut(side):
+                """The same file, read the other way: nine slots, or one card."""
+                source = picks.source(side)
+                if not source:
+                    return
+                load(side, source, as_sheet=picks.kind(side) != "sheet")
+
+            def choose_source(side):
+                """Where the replacement pictures are, asked once per side."""
+                picked = filedialog.askopenfilename(
+                    title="Where are the new %s pictures?" % side,
+                    initialdir=app.settings.get("scan_dir", str(BASE)),
+                    filetypes=[("Scans and pictures",
+                                "*.jpg *.jpeg *.png *.webp *.bmp *.tif "
+                                "*.tiff"),
+                               ("All files", "*.*")])
+                if not picked:
+                    hint.configure(text="No file was chosen; the pictures "
+                                        "already clicked are kept.")
+                    return
+                app.settings["scan_dir"] = str(Path(str(picked)).parent)
+                load(side, str(picked))
+
+            def paint(side):
+                """The strip: every picture on it, drawn and clickable."""
+                strip = strips[side]
+                for child in strip["strip"].winfo_children():
+                    child.destroy()
+                strip["cells"].clear()
+                if not picks.tiles(side):
+                    ttk.Label(strip["strip"], text="Nothing chosen yet - press "
+                              "\"%s\"." % CHOOSE_WORDS[side],
+                              style="Dim.TLabel").pack(anchor="w")
+                    return
+                for line in photo_thumbs.rows(picks.tiles(side), columns):
+                    row = ttk.Frame(strip["strip"])
+                    row.pack(anchor="w", pady=2)
+                    for tile in line:
+                        key = str(tile.get("path"))
+                        cell = tk.Frame(row, highlightthickness=1,
+                                        highlightbackground="#d8dce2")
+                        cell.pack(side="left", padx=4)
+                        picture = keep.get(key)
+                        if picture is None:
+                            try:
+                                picture = photo_thumbs.as_photo(
+                                    thumbs.get(key))
+                            except Exception:   # noqa: BLE001 - a bonus
+                                picture = None
+                            if picture is not None:
+                                keep[key] = picture
+                        if picture is not None:
+                            picture_label = ttk.Label(cell, image=picture)
+                        else:
+                            #  No image support (or an unreadable tile): the
+                            #  same choices as words, never an empty grid.
+                            picture_label = ttk.Label(
+                                cell, text=photo_thumbs.describe(tile),
+                                wraplength=92, justify="left")
+                        picture_label.pack(padx=2, pady=(2, 0))
+                        note = ttk.Label(cell,
+                                         text=photo_thumbs.caption(tile),
+                                         style="Dim.TLabel", wraplength=92)
+                        note.pack(padx=2, pady=(0, 2))
+                        for widget in (cell, picture_label, note):
+                            widget.bind(
+                                "<Button-1>",
+                                lambda _event, s=side, k=key:
+                                clicked(s, k))
+                        strip["cells"][key] = (cell, note)
+                mark(side)
+
+            def mark(side):
+                """Show which picture on this strip is the chosen one."""
+                strip = strips[side]
+                chosen_key = picks.chosen(side)
+                tiles = {str(tile.get("path")): tile
+                         for tile in picks.tiles(side)}
+                for key, (cell, note) in strip["cells"].items():
+                    picked = key == chosen_key
+                    cell.configure(
+                        highlightbackground="#2f6fd0" if picked else "#d8dce2",
+                        highlightthickness=3 if picked else 1)
+                    words = photo_thumbs.caption(tiles.get(key) or {})
+                    if picked:
+                        badge = ("FRONT" if side == "front" else "BACK")
+                        if picks.offered(side):
+                            badge += " (offered)"
+                        words = ("%s - %s" % (badge, words) if words
+                                 else badge)
+                    note.configure(text=words)
+
+            def clicked(side, key):
+                """One click on one picture: pick it, unpick it, or refuse it."""
+                before = picks.chosen(side)
+                picks.pick(side, key)
+                if side == "back" and key == picks.front:
+                    hint.configure(
+                        text="That is the front picture. A card's two photos "
+                             "cannot be the same file, so choose another "
+                             "picture for the back.")
+                elif picks.chosen(side) or before == key:
+                    hint.configure(text="")
+                paint(side)
+                if side == "front":
+                    paint("back")
+                refresh()
+
+            def refresh():
+                """The two lines and the button that decide the whole thing."""
+                chosen_line.configure(
+                    text=picks.summary() or "No picture clicked yet.")
+                replace_btn.configure(
+                    text=picks.button_words(),
+                    state="normal" if picks.ready() else "disabled")
+                missing_line.configure(text=picks.missing())
+
+            def use_them():
+                if not picks.ready():
+                    return
+                answer["slots"] = picks.slots()
+                answer["paths"] = picks.paths()
+                answer["sources"] = {side: picks.source(side)
+                                     for side in photo_pick.SIDES}
                 top.destroy()
 
+            def preload():
+                """The same two sheets as last time - else ask where they are.
+
+                Replacing nine cards from one sitting means the same two scans
+                nine times, so they are offered without a question. The first
+                card of a sitting is the other way round: the window asks,
+                which is what "where are the replacement pictures" means.
+                """
+                loaded = False
+                for side in photo_pick.SIDES:
+                    if side == "back" and not can_back:
+                        continue
+                    source = str(remembered.get(side) or "")
+                    if source and Path(source).is_file():
+                        load(side, source)
+                        loaded = True
+                if not loaded:
+                    choose_source("front")
+
+            section("front")
+            section("back")
+            hint = ttk.Label(body, text="", style="Dim.TLabel",
+                             wraplength=width - 60, justify="left")
+            hint.pack(anchor="w", pady=(2, 0))
+            missing_line = ttk.Label(body, text="", style="Dim.TLabel",
+                                     wraplength=width - 60, justify="left")
+            missing_line.pack(anchor="w")
+
             buttons = ttk.Frame(top)
-            buttons.pack(fill="x", padx=12, pady=(4, 12))
-            front_btn = ttk.Button(
-                buttons, text="The front (the card's main photo)",
-                command=lambda: pick("front"))
-            front_btn.pack(side="left")
-            add_tooltip(front_btn,
-                        "The picture becomes the listing's main photo; its "
-                        "back is left exactly as it is")
-            back_btn = ttk.Button(
-                buttons, text="The back (the second photo)",
-                command=lambda: pick("back"),
-                state=("normal" if can_back else "disabled"))
-            back_btn.pack(side="left", padx=8)
-            add_tooltip(back_btn,
-                        "The picture replaces the second photo; the front "
-                        "shown now is sent with it, unchanged, because the "
-                        "plugin replaces a card's photos as a pair")
+            buttons.pack(fill="x", padx=12, pady=(2, 10))
+            replace_btn = ttk.Button(buttons, text=picks.button_words(),
+                                     style="Task.TButton", command=use_them,
+                                     state="disabled")
+            replace_btn.pack(side="right")
+            add_tooltip(replace_btn,
+                        "Square the clicked pictures and show them in one "
+                        "window with one button - the front at position 1 of "
+                        "the listing's photos, the back at 2, and nothing else "
+                        "on the listing touched")
             ttk.Button(buttons, text="Cancel", command=top.destroy).pack(
-                side="right")
-            top.protocol("WM_DELETE_WINDOW", top.destroy)
+                side="right", padx=8)
+            chosen_line = ttk.Label(buttons, text="No picture clicked yet.",
+                                    style="Dim.TLabel",
+                                    wraplength=max(240, width - 300),
+                                    justify="left")
+            chosen_line.pack(side="left")
+
+            paint("front")
+            paint("back")
+            refresh()
             attach_tooltips(top)
+            top.protocol("WM_DELETE_WINDOW", top.destroy)
+            #  The window paints before the sheets are read: two scans are a
+            #  second of work on a slow laptop, and a window that shows nothing
+            #  until it is done reads as a hung program.
+            try:
+                top.after(60, preload)
+            except Exception:             # noqa: BLE001 - a window is a bonus
+                pass
             app.wait_window(top)
-            return chosen["slot"]
+            if not answer["slots"]:
+                return None
+            return answer
 
         def review(prepared):
-            """The pictured window: what is about to be written, once."""
+            """The pictured window: the squared pictures, one button."""
+            slots = prepared["slots"]
+            both = len(slots) == len(cs_picture.SLOTS)
             top = tk.Toplevel(app)
-            top.title("Use this picture?")
+            top.title("Use these pictures?" if both else "Use this picture?")
             top.transient(app)
-            top.geometry("740x640")
+            top.geometry("780x720")
             top.grab_set()
             body = ttk.Frame(top)
             body.pack(fill="both", expand=True, padx=12, pady=(12, 4))
+            ttk.Label(body, text=title, font=("", 10, "bold"),
+                      wraplength=730, justify="left").pack(anchor="w")
             keep = []
-            cell = ttk.Frame(body)
-            cell.pack(anchor="w", pady=(0, 8))
-            draw_picture(cell, prepared["squared"]["path"], keep)
-            squared = prepared["squared"]
-            if squared.get("padded"):
-                size = "%dx%d padded to %dx%d on white" % (
-                    tuple(squared["before"]) + tuple(squared["after"]))
-            else:
-                size = "already square at %dx%d, so nothing was added" % tuple(
-                    squared["after"])
-            ttk.Label(body, text="%s - %s"
-                      % (Path(str(squared["path"])).name, size),
-                      style="Dim.TLabel", wraplength=700,
-                      justify="left").pack(anchor="w")
+            gallery = ttk.Frame(body)
+            gallery.pack(anchor="w", pady=(6, 2))
+            for side in slots:
+                squared = prepared["squared"][side]
+                cell = ttk.Frame(gallery)
+                cell.pack(side="left", padx=(0, 16))
+                ttk.Label(cell, text="FRONT" if side == "front" else "BACK",
+                          font=("", 9, "bold")).pack(anchor="w")
+                draw_picture(cell, squared["path"], keep)
+                if squared.get("padded"):
+                    size = "%dx%d padded to %dx%d on white" % (
+                        tuple(squared["before"]) + tuple(squared["after"]))
+                else:
+                    size = "already square at %dx%d, so nothing was added" % tuple(
+                        squared["after"])
+                ttk.Label(cell, text="%s - %s"
+                          % (Path(str(squared["path"])).name, size),
+                          style="Dim.TLabel", wraplength=310,
+                          justify="left").pack(anchor="w")
             for line in cs_picture.review_lines(
-                    title, prepared["slot"], prepared["rows"],
-                    prepared["current"]):
-                ttk.Label(body, text=line, wraplength=700, justify="left"
-                          ).pack(anchor="w", pady=(6, 0))
+                    title,
+                    cs_picture.BOTH if both else slots[0],
+                    prepared["rows"], prepared["current"]):
+                ttk.Label(body, text=line, wraplength=730, justify="left"
+                          ).pack(anchor="w", pady=(5, 0))
             answer = {"use": False}
 
             def use_it():
@@ -12529,55 +12967,66 @@ def build_csledit(parent, app):
             buttons.pack(fill="x", padx=12, pady=(4, 12))
             ttk.Button(buttons, text="Cancel", command=top.destroy).pack(
                 side="right")
-            use_btn = ttk.Button(buttons, text="Use this picture",
-                                 command=use_it)
+            use_btn = ttk.Button(
+                buttons, text="Use these pictures" if both else
+                "Use this picture", command=use_it)
             use_btn.pack(side="right", padx=8)
             add_tooltip(use_btn,
-                        "Square was already done; this hosts the picture on "
-                        "CanadianShopper and puts it in the photo's place")
+                        "Squaring was already done; this hands the files to "
+                        "the plugin, which hosts them on CanadianShopper and "
+                        "puts them at position 1 (front) and 2 (back)")
             top.protocol("WM_DELETE_WINDOW", top.destroy)
             attach_tooltips(top)
             app.wait_window(top)
             if answer["use"]:
                 write(prepared)
             else:
-                say("The picture was not confirmed, so nothing was written.",
+                say("The pictures were not confirmed, so nothing was written.",
                     "dim")
 
         def write(prepared):
-            """Square done, confirmed: pair it, then let the plugin place it."""
-            slot = prepared["slot"]
-            summary.configure(text="Preparing the picture for the plugin...")
+            """Squared and confirmed: pair the files, then let the plugin place them."""
+            slots = tuple(prepared["slots"])
+            summary.configure(text="Preparing the pictures for the plugin...")
 
             def work():
-                #  A back is paired with the front this listing shows now, and
-                #  fetching that is a network call - so it is off the window
-                #  thread like every other slow call.
+                #  A back on its own is paired with the front this listing
+                #  shows now, and fetching that is a network call - so it is
+                #  off the window thread like every other slow call.
                 front_copy = None
-                if slot == "back":
+                if "back" in slots and "front" not in slots:
                     cookie = load_cookie_text() or ""
                     front_copy = cs_picture.download(
                         prepared["current"], prepared["folder"],
                         prepared["pair"],
                         fetch=lambda url: cs_products.fetch_bytes(
                             url, cookie=cookie))
-                return cs_picture.prepare(prepared["folder"], prepared["pair"],
-                                          slot, prepared["squared"]["path"],
-                                          front_copy)
+                return cs_picture.prepare_pair(
+                    prepared["folder"], prepared["pair"],
+                    front_picture=(prepared["squared"]["front"]["path"]
+                                   if "front" in slots else None),
+                    back_picture=(prepared["squared"]["back"]["path"]
+                                  if "back" in slots else None),
+                    current_front=front_copy)
 
             def ready(written, failure):
                 if failure is not None:
                     say(cs_picture.words_or_nothing(failure), "err")
-                    summary.configure(text="The picture could not be prepared.")
+                    summary.configure(text="The pictures could not be "
+                                           "prepared.")
                     return
-                say("Handing the picture to the plugin, which hosts it on "
-                    "CanadianShopper and puts it at position %d..."
-                    % cs_picture.position(slot), "cmd")
+                say("Handing %s to the plugin, which hosts them on "
+                    "CanadianShopper and puts the front at position 1%s..."
+                    % (cs_picture.slots_words(slots),
+                       " and the back at 2" if "back" in slots else ""),
+                    "cmd")
                 summary.configure(text="Replacing %s..."
-                                  % cs_picture.slot_words(slot))
+                                  % cs_picture.slots_words(slots))
 
                 def after(rc):
-                    words = cs_picture.done_words(rc, slot, title)
+                    words = cs_picture.done_words(
+                        rc, cs_picture.BOTH if len(slots) == 2 else slots[0],
+                        title)
                     say(words, "ok" if rc == 0 else "err")
                     summary.configure(text=words)
                     #  A gallery list on screen is stale the moment a photo is
@@ -12590,14 +13039,14 @@ def build_csledit(parent, app):
                     TOOL_ACTION(CS_PHOTO_REPLACE) or "cs-image-sync.py",
                     cs_picture.args(title, written["front"],
                                     written.get("back"), CS_COOKIE_FILE),
-                    "Use a picture on this listing",
+                    "Replace this listing's pictures",
                     cwd=app.settings.get("pipeline_dir", str(WORK)),
                     on_done=after)
 
             in_background(app, work, ready)
 
         def found(answer, error):
-            """What the listing shows now, then the four visible steps."""
+            """What the listing shows now, then the pictures that replace it."""
             answer = answer or {}
             if error is not None:
                 say("The listing could not be read: %s. Nothing was written."
@@ -12616,50 +13065,48 @@ def build_csledit(parent, app):
                                             "read."), "dim")
                 rows = ()
             back_now = cs_picture.back_url(rows, current)
-            slot = ask_slot(current, back_now)
-            if slot is None:
-                say("No photo was chosen, so nothing was written.", "dim")
-                return
-            if slot == "back" and not can_back:
-                words = cs_picture.missing_plugin("back", plugin_version())
-                messagebox.showinfo("The plugin cannot replace a back yet",
-                                    words, parent=box.winfo_toplevel())
-                say(words, "err")
-                return
-            picked = filedialog.askopenfilename(
-                title="Which picture is the new %s?" % slot,
-                initialdir=app.settings.get("scan_dir", str(BASE)),
-                filetypes=[("Pictures", "*.jpg *.jpeg *.png *.webp *.bmp "
-                                        "*.tif *.tiff"),
-                           ("All files", "*.*")])
-            if not picked:
+            picked = choose_pictures(current, back_now)
+            if picked is None:
                 say("No picture was chosen, so nothing was written.", "dim")
                 return
-            folder = (Path(app.settings.get("pipeline_dir") or WORK)
-                      / "replacements")
+            slots = tuple(picked["slots"])
             pair = cs_picture.pair_name(current, title)
             if not pair:
                 say("This listing has no front photo and no title to name one "
                     "from, so the plugin could not be told which card the "
-                    "picture belongs to. Nothing was written.", "err")
+                    "pictures belong to. Nothing was written.", "err")
                 return
-            say("Squaring the picture...", "dim")
-            summary.configure(text="Squaring the picture...")
+            #  The pair's format is decided by the front the listing shows now,
+            #  so two pictures from two different scans still come out as one
+            #  pair with one extension.
+            say("Squaring %s..." % cs_picture.slots_words(slots), "dim")
+            summary.configure(text="Squaring %s..."
+                              % cs_picture.slots_words(slots))
 
             def work():
-                #  Squaring reads and re-encodes a file, which is slow enough
-                #  on a big photo to freeze the window, so it is off the
-                #  window thread like every other slow call.
-                squared = cs_picture.square_file(picked, folder, pair, slot,
-                                                 like=current)
+                #  Squaring reads and re-encodes files, which is slow enough on
+                #  a big scan to freeze the window, so it is off the window
+                #  thread like every other slow call.
+                squared = {}
+                for side in slots:
+                    squared[side] = cs_picture.square_file(
+                        picked["paths"][side], folder, pair, side,
+                        like=current)
                 return {"squared": squared, "folder": folder, "pair": pair,
-                        "slot": slot, "current": current, "rows": rows}
+                        "slots": slots, "current": current, "rows": rows,
+                        "sources": picked["sources"]}
 
             def squared(prepared, failure):
                 if failure is not None:
                     say(cs_picture.words_or_nothing(failure), "err")
-                    summary.configure(text="The picture could not be squared.")
+                    summary.configure(text="The pictures could not be "
+                                           "squared.")
                     return
+                #  The next card in the same sitting is usually on the same
+                #  two sheets, so they are offered again rather than asked for.
+                for side, source in (prepared.get("sources") or {}).items():
+                    if source:
+                        remembered[side] = source
                 review(prepared)
 
             in_background(app, work, squared)
@@ -12707,13 +13154,17 @@ def build_csledit(parent, app):
     #  paste box at all. It is squared here and hosted by the plugin, so the
     #  seller never has to square a file by hand and upload it in a dashboard.
     picture_btn = ttk.Button(proof_row,
-                             text="Use a picture from this computer...",
+                             text="Replace this listing's pictures...",
                              command=replace_with_picture)
     picture_btn.pack(side="left", padx=(8, 0))
-    add_tooltip(picture_btn, TOOLTIPS["Use a picture from this computer..."])
+    add_tooltip(picture_btn,
+                TOOLTIPS["Replace this listing's pictures..."])
 
     list_frame = ttk.Frame(box)
-    listing = tk.Listbox(list_frame, height=9, exportselection=False)
+    #  Multi-select: every state change works on every row clicked, and a plain
+    #  click still replaces the selection the way it always did.
+    listing = tk.Listbox(list_frame, height=9, exportselection=False,
+                         selectmode="extended")
     scroll = ttk.Scrollbar(list_frame, orient="vertical",
                            command=listing.yview)
     listing.configure(yscrollcommand=scroll.set)
@@ -12730,20 +13181,14 @@ def build_csledit(parent, app):
                 "Change the selected listing's title, price or stock on "
                 "CanadianShopper; only the fields you change are sent, and "
                 "your website is not touched")
-    on_sale_btn = ttk.Button(first_row, text="Put the selected listing on sale",
+    on_sale_btn = ttk.Button(first_row, text="Put on sale",
                              command=lambda: set_state("active"))
     on_sale_btn.pack(side="left", padx=6)
-    add_tooltip(on_sale_btn,
-                "Move the selected listing from archived (or draft) back to "
-                "on sale on CanadianShopper; its title, price and stock stay "
-                "as they are")
-    archive_btn = ttk.Button(first_row, text="Archive the selected listing",
+    add_tooltip(on_sale_btn, TOOLTIPS["Put on sale"])
+    archive_btn = ttk.Button(first_row, text="Archive",
                              command=lambda: set_state("archived"))
     archive_btn.pack(side="left")
-    add_tooltip(archive_btn,
-                "Put the selected listing away on CanadianShopper - it is not "
-                "deleted and can be put back on sale; your website is not "
-                "changed")
+    add_tooltip(archive_btn, TOOLTIPS["Archive"])
     second_row = ttk.Frame(actions)
     second_row.pack(anchor="w", pady=(3, 0))
     open_btn = ttk.Button(second_row,
@@ -12763,15 +13208,18 @@ def build_csledit(parent, app):
         "Search the whole CanadianShopper catalogue by card name - the words "
         "you remember, not the exact title - or leave the box empty and pick a "
         "state to work through the archived listings one by one. Every row is "
-        "numbered and reads card, state, stock, price and SKU. Select one and "
-        "Edit the selected listing... opens all of its details at once - "
+        "numbered and reads card, state, stock, price and SKU. Click one row "
+        "and Edit the selected listing... opens all of its details at once - "
         "title, price, quantity in stock and state - filled with what they are "
-        "now, so a card can be repriced and archived in the same visit; the "
-        "two state buttons do just the state. The confirmation names every "
-        "field that changes, only the changed fields are sent, and nothing on "
-        "your website is touched. Editing a listing needs plugin %s or newer; "
-        "reading needs the stock reader (1.0.25+ reports the archived ones "
-        "too)." % CS_LISTING_UPDATE_VERSION))
+        "now, so a card can be repriced and archived in the same visit. Ctrl-"
+        "click (or Shift-click) several rows and the two state buttons - Put "
+        "on sale and Archive - move every one of them in a single confirmed "
+        "run: every listing is named before anything is sent, and one that "
+        "cannot be sent stops the change rather than half-doing it. The "
+        "confirmation names every field that changes, only the changed fields "
+        "are sent, and nothing on your website is touched. Editing a listing "
+        "needs plugin %s or newer; reading needs the stock reader (1.0.25+ "
+        "reports the archived ones too)." % CS_LISTING_UPDATE_VERSION))
 
     #  The last read is already on disk, so opening the panel is not an empty
     #  box: a search works before anything is read again.

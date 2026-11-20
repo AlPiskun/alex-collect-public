@@ -47,6 +47,7 @@ import cs_edit                                        # noqa: E402
 import cs_gallery                                     # noqa: E402
 import cs_proof                                       # noqa: E402
 import cs_record                                      # noqa: E402
+import photo_replace                                  # noqa: E402
 
 
 def read_gallery(*photos):
@@ -844,7 +845,7 @@ def test_a_list_read_before_product_ids():
     runs_before = len(app.runs)
     with patch.object(gui, "TOOL_ACTION", tools):
         find(parent, gui.ttk.Button,
-             "Put the selected listing on sale").invoke()
+             "Put on sale").invoke()
     check("a row with no product id sends no write at all",
           all("--set-file" not in run["args"] for run in app.runs[runs_before:]),
           str(app.runs[runs_before:]))
@@ -888,7 +889,7 @@ def test_a_list_read_before_product_ids():
     runs_before = len(app.runs)
     with patch.object(gui, "TOOL_ACTION", tools):
         find(parent, gui.ttk.Button,
-             "Put the selected listing on sale").invoke()
+             "Put on sale").invoke()
     read_run = app.runs[-1]
     #  The fresh list still has no product id for this listing.
     Path(read_run["args"][1]).write_text(json.dumps({"items": [
@@ -988,7 +989,7 @@ def test_a_read_with_no_product_ids_at_all():
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/edit.py"):
         find(parent, gui.ttk.Button,
-             "Put the selected listing on sale").invoke()
+             "Put on sale").invoke()
     check("nothing is sent", len(app.runs) == runs_before, str(app.runs[-1:]))
     check("the panel does not offer to read the same nothing again",
           answers == ["That listing has to be changed on the site"],
@@ -1085,7 +1086,7 @@ def test_a_reader_that_says_zero():
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/edit.py"):
         find(parent, gui.ttk.Button,
-             "Put the selected listing on sale").invoke()
+             "Put on sale").invoke()
     check("an edit is never sent to /api/products/0/",
           len(app.runs) == runs_before, str(app.runs[-1:]))
     check("the panel does not offer to read the same zeros again",
@@ -1451,7 +1452,7 @@ def test_the_diagnosis_file():
                                   stages=["read", "ids"], plugin="1.0.38",
                                   command="cs-stock.py --stock-out cs-stock.json",
                                   detail=detail, total=2596, editable=0,
-                                  app_version="3.48")
+                                  app_version="3.49")
     check("the file carries the reader's own count line",
           "2596 listings, 0 with a real product id" in text, "")
     check("the app's own count is beside it, so the two can be compared",
@@ -1906,7 +1907,7 @@ def test_the_real_diagnosis_from_the_shop():
                 "--cookie-file cookie.txt",
         detail={"url": cs_edit.detail_url(row["id"]), "status": 200,
                 "content_type": "application/json", "body": json.dumps(record)},
-        total=2596, editable=0, app_version="3.48",
+        total=2596, editable=0, app_version="3.49",
         source="the read this window made at 2026-11-02 13:03:59")
 
     check("the file no longer carries the progress markers",
@@ -4108,7 +4109,7 @@ def test_the_edit_form():
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/edit.py"):
         find(parent, gui.ttk.Button,
-             "Put the selected listing on sale").invoke()
+             "Put on sale").invoke()
     plan = json.loads((folder / "cs-listing-update.json").read_text(
         encoding="utf-8"))["items"][0]
     check("the state button sends the state and nothing else",
@@ -4133,7 +4134,7 @@ def test_the_edit_form():
     runs_before = len(app.runs)
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/edit.py"):
-        find(parent, gui.ttk.Button, "Archive the selected listing").invoke()
+        find(parent, gui.ttk.Button, "Archive").invoke()
     plan = json.loads((folder / "cs-listing-update.json").read_text(
         encoding="utf-8"))["items"][0]
     check("archiving sends the archived state and nothing else",
@@ -4160,7 +4161,7 @@ def test_the_panel_refuses_what_it_cannot_do():
     runs_before = len(app.runs)
     with patch.object(gui, "TOOL_ACTION", lambda action: ""):
         find(parent, gui.ttk.Button,
-             "Put the selected listing on sale").invoke()
+             "Put on sale").invoke()
     check("a plugin that cannot edit is named, with the version that can",
           harness._BOX.shown and "1.0.28" in str(harness._BOX.shown[-1]),
           str(harness._BOX.shown))
@@ -4176,7 +4177,7 @@ def test_the_panel_refuses_what_it_cannot_do():
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/edit.py"):
         find(parent, gui.ttk.Button,
-             "Put the selected listing on sale").invoke()
+             "Put on sale").invoke()
     check("a listing already on sale is not written again",
           any("already on sale" in str(payload)
               for _kind, payload in harness._BOX.shown),
@@ -4190,7 +4191,7 @@ def test_the_panel_refuses_what_it_cannot_do():
             break
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/edit.py"):
-        find(parent, gui.ttk.Button, "Archive the selected listing").invoke()
+        find(parent, gui.ttk.Button, "Archive").invoke()
     run = app.runs[-1]
     Path(run["args"][3]).write_text(json.dumps({"updated": []}),
                                     encoding="utf-8")
@@ -4206,7 +4207,7 @@ def test_the_panel_refuses_what_it_cannot_do():
     #  A failure keeps the plugin's own words.
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/edit.py"):
-        find(parent, gui.ttk.Button, "Archive the selected listing").invoke()
+        find(parent, gui.ttk.Button, "Archive").invoke()
     run = app.runs[-1]
     Path(run["args"][3]).write_text(json.dumps(
         {"updated": [], "failed": [{"id": 104,
@@ -4223,7 +4224,7 @@ def test_the_panel_refuses_what_it_cannot_do():
     select(parent, "Beliveau")
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/edit.py"):
-        find(parent, gui.ttk.Button, "Archive the selected listing").invoke()
+        find(parent, gui.ttk.Button, "Archive").invoke()
     run = app.runs[-1]
     Path(run["args"][3]).write_text(json.dumps(
         {"updated": [], "failed": [{
@@ -4250,7 +4251,7 @@ def test_the_panel_refuses_what_it_cannot_do():
     harness._BOX.shown.clear()
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/edit.py"):
-        find(parent, gui.ttk.Button, "Archive the selected listing").invoke()
+        find(parent, gui.ttk.Button, "Archive").invoke()
     check("with nothing selected it asks which listing",
           any("Which listing" in str(payload)
               for _kind, payload in harness._BOX.shown), str(harness._BOX.shown))
@@ -4349,6 +4350,370 @@ def test_opening_a_listing_and_the_last_read():
                if isinstance(w, gui.ttk.Label)][-2:]))
 
 
+def test_several_listings_move_in_one_go():
+    """Archive or reactivate every clicked row, behind one confirmation.
+
+    The list is multi-select for the job this panel is asked for at a
+    standstill - a stack of cards going away, or coming back out of storage.
+    One plan, one run of the plugin, and every listing named before anything is
+    sent; a button that works on one listing refuses politely when several are
+    clicked rather than editing the first one silently.
+    """
+    print()
+    print("== several listings move in one confirmed go ==")
+    folder, app, parent = build_panel()
+    #  Every state change in this test asks the plugin to write, and the
+    #  panel resolves that action when the button is pressed.
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/edit.py"), \
+            patch.object(gui, "BASE", folder):
+        read_into(app, folder, parent)
+        find(parent, gui.ttk.Button, "Search").invoke()
+        listing = listing_box(parent)
+
+        def click(*words):
+            """Ctrl-click the rows that name these cards, as Tk leaves them."""
+            wanted = tuple(index for index, text in enumerate(listing.items)
+                           if any(word in text for word in words))
+            listing.selection = wanted
+            return wanted
+
+        asked = []
+
+        def yes(*args, **kwargs):
+            asked.append(args)
+            return True
+
+        harness._BOX.shown.clear()
+        harness._BOX.askyesno = yes
+        click("Tkaczuk", "Shack", "Beliveau")
+        runs_before = len(app.runs)
+        find(parent, gui.ttk.Button, "Archive").invoke()
+        plan = json.loads((folder / "cs-listing-update.json").read_text(
+            encoding="utf-8"))["items"]
+        check("one plan carries every clicked listing", len(plan) == 3, str(plan))
+        check("each listing is sent its own state and nothing else",
+              all(entry["status"] == "archived" and
+                  set(entry) - {"url"} == {"id", "sku", "title", "card",
+                                           "product_id", "status"}
+                  for entry in plan), str(plan))
+        check("and one run of the plugin does all three, not one run each",
+              len(app.runs) == runs_before + 1, str(len(app.runs)))
+        body = str(asked[-1][1]) if asked else ""
+        check("the confirmation names every listing before anything is sent",
+              all(word in body for word in ("Tkaczuk", "Shack", "Beliveau")), body)
+        check("and says the website is not touched",
+              "your website is not touched" in body.lower(), body)
+        check("the question is asked about three listings, not about one",
+              "3 listings" in str(asked[-1][0]), str(asked[-1]))
+        run = app.runs[-1]
+        Path(run["args"][3]).write_text(json.dumps(
+            {"updated": [{"id": 101}, {"id": 104}, {"id": 105}], "failed": []}),
+            encoding="utf-8")
+        run["on_done"](0)
+        check("every row on the list now says archived",
+              all("archived" in text.lower() for text in listing.items
+                  if any(word in text for word in
+                         ("Tkaczuk", "Shack", "Beliveau"))), str(listing.items))
+        check("and the console says the website was not touched",
+              any("your website was not touched" in text.lower()
+                  for _tag, text in app.lines), str(app.lines[-3:]))
+        check("the console counts what was changed",
+              any("3 listings were changed" in text for _tag, text in app.lines),
+              str(app.lines[-3:]))
+
+        # ---- and back out of the archive, the same way
+        harness._BOX.askyesno = yes
+        click("Tkaczuk", "Shack", "Beliveau")
+        runs_before = len(app.runs)
+        find(parent, gui.ttk.Button, "Put on sale").invoke()
+        plan = json.loads((folder / "cs-listing-update.json").read_text(
+            encoding="utf-8"))["items"]
+        check("the other button sends the same three back to on sale",
+              len(plan) == 3 and all(entry["status"] == "active" for entry in plan),
+              str(plan))
+        run = app.runs[-1]
+        Path(run["args"][3]).write_text(json.dumps(
+            {"updated": [{"id": 101}, {"id": 104}, {"id": 105}], "failed": []}),
+            encoding="utf-8")
+        run["on_done"](0)
+        check("and every row is on sale again",
+              all("on sale" in text for text in listing.items
+                  if any(word in text for word in
+                         ("Tkaczuk", "Shack", "Beliveau"))), str(listing.items))
+
+        # ---- one already in that state is left out, not sent
+        harness._BOX.askyesno = yes
+        click("Tkaczuk", "Watson")        # Watson is archived
+        runs_before = len(app.runs)
+        find(parent, gui.ttk.Button, "Archive").invoke()
+        plan = json.loads((folder / "cs-listing-update.json").read_text(
+            encoding="utf-8"))["items"]
+        check("a listing already archived is not sent again",
+              [entry["id"] for entry in plan] == [101], str(plan))
+        check("and the confirmation says the other one is already archived",
+              "already archived" in str(asked[-1][1]), str(asked[-1][1]))
+
+        # ---- the buttons that work on one listing say so
+        click("Tkaczuk", "Shack")
+        harness._BOX.shown.clear()
+        runs_before = len(app.runs)
+        find(parent, gui.ttk.Button, "Edit the selected listing...").invoke()
+        check("editing two clicked rows asks which one instead of guessing",
+              harness._BOX.shown and
+              "One listing at a time" in str(harness._BOX.shown[-1]),
+              str(harness._BOX.shown[-1:]))
+        check("and nothing was written", len(app.runs) == runs_before,
+              str(len(app.runs)))
+        check("the list is the multi-select one",
+              "extended" in str(getattr(listing, "_kw", {}).get("selectmode", "")),
+              str(getattr(listing, "_kw", {})))
+
+
+def test_the_pictures_are_chosen_by_clicking():
+    """Where the replacement pictures are, then the front and back clicked.
+
+    The complaint this replaces: the old flow asked which photo first, opened
+    a file picker, and only then showed a picture. What a seller has is two
+    scans of nine cards - so the window asks for the two files, shows every
+    slot as a picture, and lets the front and the back be *clicked*, with the
+    same slot's back offered so one click usually does the pair.
+    """
+    print()
+    print("== replacing the pictures: where they are, then two clicks ==")
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+    fronts = harness.make_sheet(folder / "fronts.jpg", blanks=(2, 9))
+    backs = harness.make_sheet(folder / "backs.jpg", blanks=(2, 9))
+    listing_id = "94b93f6040f5401daabaa9c936efa5a7"
+    photo = "https://cs.example/api/file/tkaczuk-front.webp"
+    back_photo = "https://cs.example/api/file/tkaczuk-back.webp"
+    rows = [{"id": listing_id, "product_id": 4321, "sku": "OPC73-25",
+             "title": "1973-74 O-Pee-Chee Walt Tkaczuk #25 EX-MT",
+             "status": "active", "inventory": 3, "price": "8.50"}]
+    record = json.dumps({"id": listing_id,
+                         "title": rows[0]["title"],
+                         "primaryImageUrl": photo})
+    gallery = [{"id": "r1", "sortOrder": 1, "imageUrl": photo},
+               {"id": "r2", "sortOrder": 2, "imageUrl": back_photo}]
+
+    def sync_background(app_, work, done):
+        try:
+            result, error = work(), None
+        except Exception as exc:          # noqa: BLE001 - the panel draws it
+            result, error = None, exc
+        return done(result, error)
+
+    def read_record(url, cookie_text="", **kwargs):
+        return (200, record)
+
+    def read_gallery(url, cookie_text="", **kwargs):
+        return {"status": 200, "rows": [dict(row) for row in gallery],
+                "why": ""}
+
+    asked_files = []
+
+    def pick_file(**kwargs):
+        #  Both questions come from the same window, front first.
+        wanted = fronts if not asked_files else backs
+        asked_files.append(str(wanted))
+        return str(wanted)
+
+    def section_of(window, caption):
+        return next((widget for widget in window.walk()
+                     if isinstance(widget, gui.ttk.LabelFrame) and
+                     str(widget.cget("text")) == caption), None)
+
+    def cells_in(window, caption, note=None):
+        """The clickable pictures on one strip, optionally the one captioned."""
+        holder = section_of(window, caption)
+        found = []
+        for widget in holder.walk() if holder is not None else ():
+            if not isinstance(widget, gui.tk.Frame) or widget is holder:
+                continue
+            notes = [str(child.cget("text")) for child in widget.children
+                     if isinstance(child, gui.ttk.Label)]
+            if not notes:
+                continue
+            if note is None or note in notes:
+                found.append(widget)
+        return found
+
+    def cell(window, caption, note):
+        found = cells_in(window, caption, note)
+        return found[0] if found else None
+
+    pressed = []
+
+    def press(window):
+        title = str(window.title() or "")
+        pressed.append(title)
+        if title == "Replace this listing's pictures":
+            #  The two sheets, chosen once, through the window's own buttons.
+            find(window, gui.ttk.Button,
+                 "Choose the front sheet or picture...").invoke()
+            find(window, gui.ttk.Button,
+                 "Choose the back sheet or picture...").invoke()
+            check("every card on the front sheet is shown as a picture to click",
+                  len(cells_in(window, "The new front")) == 7,
+                  str(len(cells_in(window, "The new front"))))
+            check("and every card on the back sheet too",
+                  len(cells_in(window, "The new back")) == 7,
+                  str(len(cells_in(window, "The new back"))))
+            check("nothing is picked before a picture is clicked",
+                  cell(window, "The new front", "FRONT") is None, "")
+            cell(window, "The new front", "Slot 4").event_generate("<Button-1>")
+            check("a click marks that picture as the front",
+                  cell(window, "The new front", "FRONT - Slot 4") is not None,
+                  "")
+            check("and the back in the same slot is marked as offered",
+                  cell(window, "The new back",
+                       "BACK (offered) - Slot 4") is not None, "")
+            offered = find(window, gui.ttk.Button, "Replace both photos")
+            check("so one click already offers the pair, and the button says "
+                  "both", offered is not None, "")
+            cell(window, "The new back", "Slot 5").event_generate("<Button-1>")
+            check("a click on another back replaces the offer",
+                  cell(window, "The new back", "BACK - Slot 5") is not None,
+                  "")
+            offered = find(window, gui.ttk.Button, "Replace both photos")
+            check("and the button still says both pictures",
+                  offered is not None and
+                  offered.cget("state") == "normal", str(offered))
+            offered.invoke()
+        elif title == "Use these pictures?":
+            check("the review window shows the front and the back",
+                  find(window, gui.ttk.Label, "FRONT") is not None and
+                  find(window, gui.ttk.Label, "BACK") is not None, "")
+            use = find(window, gui.ttk.Button, "Use these pictures")
+            check("with one button that sends them", use is not None, "")
+            use.invoke()
+        else:
+            raise AssertionError("unexpected window: %r" % title)
+
+    harness._DIALOG.askopenfilename = pick_file
+    harness.PICKER["press"] = press
+    harness._BOX.askyesno = lambda *a, **k: True
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/sync.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "BASE", folder), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(cs_proof, "read_record", read_record), \
+            patch.object(cs_proof, "photo_alive", lambda url, **k: (False, "")), \
+            patch.object(cs_gallery, "read", read_gallery):
+        read_into(app, folder, parent, payload=rows)
+        select(parent, "Tkaczuk")
+        runs_before = len(app.runs)
+        find(parent, gui.ttk.Button,
+             "Replace this listing's pictures...").invoke()
+
+    plan = []
+    check("the two questions asked where the pictures are, front first",
+          asked_files == [str(fronts), str(backs)], str(asked_files))
+    check("the picker was asked by looking, not by typing a path",
+          pressed[:1] == ["Replace this listing's pictures"], str(pressed))
+    check("and one confirmation window follows", len(pressed) == 2, str(pressed))
+    check("one run of the plugin, with both pictures",
+          len(app.runs) == runs_before + 1, str(len(app.runs)))
+    run = app.runs[-1]
+    args = run["args"]
+    check("the plugin's replace mode is asked for, by title",
+          args[:2] == ["--mode", "replace"] and
+          args[args.index("--title") + 1] == rows[0]["title"], str(args))
+    front_file = args[args.index("--front") + 1]
+    back_file = args[args.index("--back") + 1]
+    check("the two names differ only by -front/-back, as the plugin checks",
+          photo_replace.pair_stem(Path(front_file).name) ==
+          photo_replace.pair_stem(Path(back_file).name) and
+          photo_replace.side_of(Path(front_file).name) == "front" and
+          photo_replace.side_of(Path(back_file).name) == "back",
+          (front_file, back_file))
+    check("both files exist, squared, in the replacements folder",
+          Path(front_file).is_file() and Path(back_file).is_file() and
+          Path(front_file).parent.name == "replacements",
+          (front_file, back_file))
+    check("and they share one format, so the pair can be matched",
+          Path(front_file).suffix == Path(back_file).suffix == ".webp",
+          (Path(front_file).suffix, Path(back_file).suffix))
+    check("the front is the slot that was clicked, not the other sheet's",
+          "fronts_" in Path(front_file).name or
+          photo_replace.side_of(Path(front_file).name) == "front", front_file)
+    run["on_done"](0)
+    check("the console reports it done", any(
+        "reported the replacement done" in text for _tag, text in app.lines),
+        str(app.lines[-3:]))
+
+    # ---- the two sheets are remembered, so the next card is clicks only
+    asked_files.clear()
+    pressed.clear()
+
+    def press_second(window):
+        title = str(window.title() or "")
+        pressed.append(title)
+        if title == "Replace this listing's pictures":
+            #  The window paints, then fills the strips it remembers.
+            window.run_after()
+            check("the same two sheets are offered for the next card",
+                  len(cells_in(window, "The new front")) == 7 and
+                  len(cells_in(window, "The new back")) == 7,
+                  str((len(cells_in(window, "The new front")),
+                       len(cells_in(window, "The new back")))))
+            cell(window, "The new front", "Slot 6").event_generate("<Button-1>")
+            find(window, gui.ttk.Button, "Replace both photos").invoke()
+        elif title == "Use these pictures?":
+            find(window, gui.ttk.Button, "Use these pictures").invoke()
+        else:
+            raise AssertionError("unexpected window: %r" % title)
+
+    harness.PICKER["press"] = press_second
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/sync.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "BASE", folder), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(cs_proof, "read_record", read_record), \
+            patch.object(cs_proof, "photo_alive", lambda url, **k: (False, "")), \
+            patch.object(cs_gallery, "read", read_gallery):
+        select(parent, "Tkaczuk")
+        runs_before = len(app.runs)
+        find(parent, gui.ttk.Button,
+             "Replace this listing's pictures...").invoke()
+    check("no file question is asked the second time", asked_files == [],
+          str(asked_files))
+    check("and the next pair is still one run of the plugin",
+          len(app.runs) == runs_before + 1, str(len(app.runs)))
+
+    # ---- Cancel sends nothing, and says so
+    pressed.clear()
+
+    def press_cancel(window):
+        pressed.append(str(window.title() or ""))
+        ttk_cancel = find(window, gui.ttk.Button, "Cancel")
+        ttk_cancel.invoke()
+
+    harness.PICKER["press"] = press_cancel
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/sync.py"), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui, "BASE", folder), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(cs_proof, "read_record", read_record), \
+            patch.object(cs_proof, "photo_alive", lambda url, **k: (False, "")), \
+            patch.object(cs_gallery, "read", read_gallery):
+        select(parent, "Tkaczuk")
+        runs_before = len(app.runs)
+        app.lines[:] = []
+        find(parent, gui.ttk.Button,
+             "Replace this listing's pictures...").invoke()
+    check("cancelling the window writes nothing",
+          len(app.runs) == runs_before, str(len(app.runs)))
+    check("and the console says nothing was written", any(
+        "nothing was written" in text.lower() for _tag, text in app.lines),
+        str(app.lines[-2:]))
+
+
 def main():
     test_finding_a_listing()
     test_what_a_row_says()
@@ -4386,6 +4751,8 @@ def main():
     test_the_evidence_outlives_the_window()
     test_the_panel_reads_and_lists()
     test_the_edit_form()
+    test_several_listings_move_in_one_go()
+    test_the_pictures_are_chosen_by_clicking()
     test_the_panel_refuses_what_it_cannot_do()
     test_opening_a_listing_and_the_last_read()
     print()
