@@ -20,6 +20,7 @@ nothing). A card that cannot be matched is reported as not compared, never as
 a disagreement.
 """
 
+import json
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -1238,6 +1239,117 @@ def previous_read(path, started=None, now=None):
     return {"items": items, "when": when, "seconds": seconds,
             "age": describe_age(seconds),
             "stamp": when.strftime("%Y-%m-%d %H:%M")}
+
+
+#: Beside the stock list, the account of how it was read.
+#:
+#: The two panels that read CanadianShopper share one list file, and they ask
+#: the reader for different things: a comparison asks it to skip the per-listing
+#: product lookups (``--no-product-lookups``, the step that costs one request
+#: per listing), while an edit needs the product ids those lookups resolve. So
+#: the file on disk is not enough on its own - a list written by a comparison is
+#: a list nothing can be edited from, by design - and which read it was has to
+#: travel with it. Without this the edit panel judged the comparison's read as
+#: *the reader is not reporting product ids*, which is a defect report about a
+#: plugin that was only doing as it was asked.
+READ_META_FILE = "cs-stock-meta.json"
+
+#: The reader's flag that means "do not resolve product ids".
+SKIP_LOOKUPS_FLAG = "--no-product-lookups"
+
+
+def skipped_lookups(command="", flags=()):
+    """Whether a read asked the reader to skip its product lookups.
+
+    Both the command line and the flags it was given are searched: the runner's
+    command is what actually ran, while the flags are what this app asked for
+    before a reader that does not know one was re-run without it.
+    """
+    parts = [str(command or "")]
+    parts += [str(flag) for flag in flags or ()]
+    return SKIP_LOOKUPS_FLAG in " ".join(parts)
+
+
+def write_read_meta(path, plugin="", count=0, command="", stages=(),
+                    output="", skipped=None, now=None):
+    """Record which read the list beside this file is, and what it printed.
+
+    ``skipped`` is derived from the command when a caller does not say, so a
+    record can never disagree with the run it describes. Everything is capped:
+    this is evidence a person may paste into a message, not a log file.
+    """
+    path = Path(path)
+    if skipped is None:
+        skipped = skipped_lookups(command)
+    when = now or datetime.now()
+    if not isinstance(when, datetime):
+        when = datetime.fromtimestamp(float(when))
+    record = {"plugin": str(plugin or ""), "count": int(count or 0),
+              "at": when.isoformat(timespec="seconds"),
+              "command": str(command or ""),
+              "skipped_lookups": bool(skipped),
+              "stages": list(stages or [])[:40],
+              "output": str(output or "")[-200000:]}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record), encoding="utf-8")
+    except Exception:                  # noqa: BLE001 - evidence is a bonus
+        return None
+    return path
+
+
+def read_read_meta(path):
+    """The read record beside a list, or ``{}`` when there is none.
+
+    An older record has no ``skipped_lookups`` key - the command it kept is
+    asked instead, so a file written before that key existed still answers.
+    """
+    try:
+        record = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:                  # noqa: BLE001 - no record is not an error
+        return {}
+    if not isinstance(record, dict):
+        return {}
+    if "skipped_lookups" not in record:
+        record["skipped_lookups"] = skipped_lookups(record.get("command"))
+    return record
+
+
+def record_matches(path, record, count=None, slack=600, now=None):
+    """Whether the read record really describes the list at this path.
+
+    A record and a list can drift apart: the comparison panel used to write the
+    list without writing one of these, so a record left by an earlier edit read
+    can sit beside a newer list - and a record that describes a different read
+    must never be used to judge this one. Two things decide it: the count it
+    kept, and its timestamp against the file's own write time. ``slack`` is in
+    seconds and generous, because the two are written moments apart, not at the
+    same instant.
+    """
+    if not isinstance(record, dict) or not record:
+        return False
+    if count is not None:
+        try:
+            if int(record.get("count")) != int(count):
+                return False
+        except (TypeError, ValueError):
+            return False
+    when = record.get("at")
+    if not when:
+        return True                    # nothing to weigh it against
+    try:
+        stamp = datetime.fromisoformat(str(when))
+    except (TypeError, ValueError):
+        return True                    # a record in another shape is still a record
+    try:
+        wrote = Path(path).stat().st_mtime
+    except OSError:
+        return False                   # no list to judge
+    if stamp.tzinfo is not None:
+        wrote_stamp = datetime.fromtimestamp(wrote, stamp.tzinfo)
+    else:
+        wrote_stamp = datetime.fromtimestamp(wrote)
+    return abs((wrote_stamp - stamp).total_seconds()) <= float(slack)
 
 
 def stale_note(previous, label="CanadianShopper"):

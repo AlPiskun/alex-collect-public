@@ -1452,7 +1452,7 @@ def test_the_diagnosis_file():
                                   stages=["read", "ids"], plugin="1.0.38",
                                   command="cs-stock.py --stock-out cs-stock.json",
                                   detail=detail, total=2596, editable=0,
-                                  app_version="3.50")
+                                  app_version="3.51")
     check("the file carries the reader's own count line",
           "2596 listings, 0 with a real product id" in text, "")
     check("the app's own count is beside it, so the two can be compared",
@@ -1907,7 +1907,7 @@ def test_the_real_diagnosis_from_the_shop():
                 "--cookie-file cookie.txt",
         detail={"url": cs_edit.detail_url(row["id"]), "status": 200,
                 "content_type": "application/json", "body": json.dumps(record)},
-        total=2596, editable=0, app_version="3.50",
+        total=2596, editable=0, app_version="3.51",
         source="the read this window made at 2026-11-02 13:03:59")
 
     check("the file no longer carries the progress markers",
@@ -2097,6 +2097,192 @@ def test_the_list_says_which_plugin_read_it():
               if isinstance(w, gui.ttk.Label)]
     check("a list read by the installed plugin is not",
           not any("read by plugin" in note for note in notes2), str(notes2[-3:]))
+
+
+def test_a_comparison_read_is_not_a_reader_defect():
+    """The report: a listing could not be archived, and the panel blamed the plugin.
+
+    The list on screen was the *comparison's* read: the compare panel asks the
+    reader for ``--no-product-lookups`` - one lookup per listing is where half
+    an hour of a 2,600-listing shop goes - so zero product ids are that flag
+    working. The edit panel shares the file and used to read those zeroes as a
+    defect in plugin 1.0.40, which does report real product ids. What the person
+    needed was the other read, offered where the change was asked for.
+    """
+    print()
+    print("== 5e. a list read to compare is not a reader that failed ==")
+    rows = [{key: value for key, value in row.items() if key != "product_id"}
+            for row in LISTINGS]
+    command = ("pythonw.exe -u cs-stock.py --stock-out cs-stock.json "
+               "--no-product-lookups --cookie-file cookie.txt")
+    folder = Path(tempfile.mkdtemp())
+    harness.install_plugin("1.0.40", folder / "plugin")
+    gui.BASE = folder
+    (folder / "cs-stock.json").write_text(json.dumps({"items": rows}),
+                                          encoding="utf-8")
+    (folder / "cs-stock-meta.json").write_text(json.dumps(
+        {"plugin": "1.0.40", "count": len(rows), "command": command}),
+        encoding="utf-8")
+    app = harness.FakeApp(folder)
+    parent = harness.FakeWidget()
+    gui.build_csledit(parent, app)
+    notes = [str(w.cget("text") or "") for w in parent.walk()
+             if isinstance(w, gui.ttk.Label)]
+    texts = [text for _tag, text in app.lines]
+    check("the list is described as the comparison's read",
+          any("comparison's last read" in note for note in notes),
+          str(notes[-3:]))
+    check("and the line says no row here has a product id",
+          any("no row here has a product id" in note for note in notes),
+          str(notes[-3:]))
+    check("it says the flag is working, not the plugin failing",
+          any("the flag working, not the plugin failing" in text
+              for text in texts), str(texts[-3:]))
+    check("and calls nothing a defect in the reader",
+          not any("defect in the reader" in text for text in texts),
+          str(texts[-3:]))
+
+    #  ---- the change the person asked for: archive it
+    box = listing_box(parent)
+    for index, text in enumerate(box.items):
+        if "Gretzky" in text:
+            box.selection_set(index)
+            break
+    asked = []
+
+    def answer(title, question="", **kw):
+        asked.append("%s | %s" % (title, question))
+        return "Read the listings before this change?" in str(title) or \
+            "Archive" in str(title)
+
+    harness._BOX.askyesno = answer
+    runs_before = len(app.runs)
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        find(parent, gui.ttk.Button, "Archive").invoke()
+    check("archiving asks to read the listings, not to report the plugin",
+          asked and "Read the listings before this change?" in asked[0],
+          str(asked[:2]))
+    said = [text for _tag, text in app.lines]
+    check("and says why the list cannot be sent",
+          any("comparison's read" in text and "product lookups" in text
+              for text in said), str(said[-3:]))
+    check("it starts the panel's own read - with no skip flag",
+          len(app.runs) == runs_before + 1 and
+          "--no-product-lookups" not in " ".join(app.runs[-1]["args"]),
+          str(app.runs[-1]["args"]) if app.runs else "")
+
+    #  That read comes back with product ids; the picked row is picked again
+    #  and the archive goes ahead by itself.
+    run = app.runs[-1]
+    Path(run["args"][1]).write_text(json.dumps({"items": LISTINGS}),
+                                    encoding="utf-8")
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/edit.py"):
+        run["on_done"](0)
+    check("after the read the same listing is picked again, by itself",
+          any("Archive" in said and "Gretzky" in said for said in asked[1:]),
+          str(asked))
+    check("and the archive is confirmed without asking for the row again",
+          len(asked) == 2, str(asked))
+    plan = folder / "cs-listing-update.json"
+    check("the plan it sent is the archived state of that listing",
+          plan.is_file() and
+          json.loads(plan.read_text(encoding="utf-8"))["items"][0]["id"] == 103
+          and json.loads(plan.read_text(encoding="utf-8"))["items"][0]["status"]
+          == "archived", plan.read_text(encoding="utf-8") if plan.is_file() else "")
+
+    #  ---- the same list, and the question answered No: nothing is sent
+    folder2 = Path(tempfile.mkdtemp())
+    harness.install_plugin("1.0.40", folder2 / "plugin")
+    gui.BASE = folder2
+    (folder2 / "cs-stock.json").write_text(json.dumps({"items": rows}),
+                                           encoding="utf-8")
+    (folder2 / "cs-stock-meta.json").write_text(json.dumps(
+        {"plugin": "1.0.40", "count": len(rows), "command": command}),
+        encoding="utf-8")
+    app2 = harness.FakeApp(folder2)
+    parent2 = harness.FakeWidget()
+    gui.build_csledit(parent2, app2)
+    box2 = listing_box(parent2)
+    for index, text in enumerate(box2.items):
+        if "Gretzky" in text:
+            box2.selection_set(index)
+            break
+    harness._BOX.askyesno = lambda *a, **k: False
+    runs_before = len(app2.runs)
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        find(parent2, gui.ttk.Button, "Archive").invoke()
+    check("answered No, no read is started and nothing is written",
+          len(app2.runs) == runs_before and
+          not (folder2 / "cs-listing-update.json").is_file(),
+          str(len(app2.runs) - runs_before))
+    check("and the console says nothing was written",
+          any("nothing was written" in text for _tag, text in app2.lines),
+          str(app2.lines[-2:]))
+
+    #  ---- a record beside the list that describes a DIFFERENT read judges
+    #  nothing: a stale record from an earlier edit read, sitting beside the
+    #  comparison's newer list, is exactly how a list with no ids gets blamed
+    #  on the plugin.
+    folder4 = Path(tempfile.mkdtemp())
+    harness.install_plugin("1.0.40", folder4 / "plugin")
+    gui.BASE = folder4
+    (folder4 / "cs-stock.json").write_text(json.dumps({"items": rows}),
+                                           encoding="utf-8")
+    (folder4 / "cs-stock-meta.json").write_text(json.dumps(
+        {"plugin": "1.0.40", "count": len(rows) + 5,
+         "at": "2020-01-01T00:00:00",
+         "command": "pythonw.exe -u cs-stock.py --stock-out cs-stock.json"}),
+        encoding="utf-8")
+    app4 = harness.FakeApp(folder4)
+    parent4 = harness.FakeWidget()
+    gui.build_csledit(parent4, app4)
+    notes4 = [str(w.cget("text") or "") for w in parent4.walk()
+              if isinstance(w, gui.ttk.Label)]
+    texts4 = [text for _tag, text in app4.lines]
+    check("a record of another read does not describe this list",
+          any("not recorded beside" in note for note in notes4),
+          str(notes4[-3:]))
+    check("and the panel does not blame the plugin for it",
+          not any("defect in the reader" in text for text in texts4),
+          str(texts4[-3:]))
+    box4 = listing_box(parent4)
+    for index, text in enumerate(box4.items):
+        if "Gretzky" in text:
+            box4.selection_set(index)
+            break
+    asked4 = []
+    harness._BOX.askyesno = lambda title, question="", **kw: (
+        asked4.append("%s | %s" % (title, question)), True)[1]
+    runs_before = len(app4.runs)
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        find(parent4, gui.ttk.Button, "Archive").invoke()
+    check("and archiving still offers the read that fills the ids in",
+          asked4 and "Read the listings before this change?" in asked4[0] and
+          len(app4.runs) == runs_before + 1, str(asked4[:1]))
+    check("the question says plainly that nothing recorded the read",
+          asked4 and "nothing beside it records which read" in asked4[0],
+          str(asked4[:1]))
+
+    #  ---- a read that DID look the ids up and found none is still a reader
+    #  gap: the honest sentence stays for the case it describes.
+    folder3 = Path(tempfile.mkdtemp())
+    harness.install_plugin("1.0.40", folder3 / "plugin")
+    gui.BASE = folder3
+    (folder3 / "cs-stock.json").write_text(json.dumps({"items": rows}),
+                                           encoding="utf-8")
+    app3 = harness.FakeApp(folder3)
+    parent3 = harness.FakeWidget()
+    gui.build_csledit(parent3, app3)
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"):
+        read_into(app3, folder3, parent3, rows)
+    check("a read that looked them up and found none still says so",
+          any("defect in the reader" in text for _tag, text in app3.lines),
+          str([text for _tag, text in app3.lines][-3:]))
 
 
 def test_the_editing_panel_says_what_stopped_a_read():
@@ -4736,6 +4922,7 @@ def main():
     test_the_real_diagnosis_from_the_shop()
     test_plugin_1_0_35()
     test_the_list_says_which_plugin_read_it()
+    test_a_comparison_read_is_not_a_reader_defect()
     test_the_editing_panel_says_what_stopped_a_read()
     test_the_panel_writes_a_diagnosis()
     test_the_panel_writes_a_proof()

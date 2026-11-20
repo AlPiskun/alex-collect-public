@@ -83,7 +83,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.50"
+VERSION = "3.51"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -208,6 +208,16 @@ def last_tool_output(app):
     that cannot find it gets "" rather than a guess.
     """
     return str(getattr(getattr(app, "runner", None), "output", "") or "")
+
+
+def runner_command(app):
+    """The command line the runner is running, as its own window shows it.
+
+    Kept beside :func:`last_tool_output` because both answer a question about
+    the run that just finished - and which flags that run carried is what says
+    whether a list with no product ids was read that way on purpose.
+    """
+    return str(getattr(getattr(app, "runner", None), "cmd", "") or "")
 
 
 def plugin_version(plugin_id=CS_PLUGIN_ID):
@@ -9570,6 +9580,19 @@ def build_stock(parent, app, site_id="cs"):
                     parent=box.winfo_toplevel())
                 return False
             return offer_previous_read({"line": why}, out, creds)
+        #  The list this run wrote is the comparison's read, and the edit panel
+        #  shares the file: record which read it was beside it, or a list that
+        #  was asked to skip product lookups looks exactly like a reader that
+        #  forgot them (and the edit panel would report the plugin for it).
+        stock_compare.write_read_meta(
+            out.parent / stock_compare.READ_META_FILE,
+            plugin=plugin_version(), count=len(items),
+            command=runner_command(app),
+            stages=(app.stages_seen() if hasattr(app, "stages_seen") else []),
+            output=last_tool_output(app),
+            skipped=stock_compare.skipped_lookups(
+                runner_command(app),
+                [flag for group in (groups or []) for flag in group]))
         state["label"], state["mode"] = "CanadianShopper", "count"
         state["stale"] = None            # this list is this run's own answer
         #  The states the reader claims, in its own words: if a listing was
@@ -10420,8 +10443,14 @@ def build_csledit(parent, app):
     box = ttk.Frame(parent)
     box.pack(fill="both", expand=True)
 
+    #  "skipped" is which read wrote the list on screen: True for a read that
+    #  asked the reader to skip its product lookups (a comparison does, by
+    #  design), False for one that looked them up, and None when nothing says.
+    #  The two panels share one list file, so a row with no product id is the
+    #  flag working, a reader's gap or an unknown read - and those three must
+    #  never be answered with one sentence.
     state = {"items": [], "rows": [], "state": "any", "then": None,
-             "read": "cache", "pictures": {}}
+             "read": "cache", "skipped": False, "pictures": {}}
 
     def say(text, tag="cmd"):
         app.console_line(text, tag)
@@ -10430,7 +10459,7 @@ def build_csledit(parent, app):
     #  started reporting product ids cannot be edited by a plugin that insists
     #  on one, and "press Read again" is the whole fix - so the read is
     #  described by the plugin that made it, not by when this panel opened.
-    meta_file = BASE / "cs-stock-meta.json"
+    meta_file = BASE / stock_compare.READ_META_FILE
 
     def write_meta(count):
         """Remember which read this list is - and the run's own account of it.
@@ -10441,23 +10470,19 @@ def build_csledit(parent, app):
         two things a window cannot supply once it has closed. Kept here, beside
         the list, and capped - this is evidence, not a log file.
         """
-        try:
-            meta_file.write_text(json.dumps(
-                {"plugin": plugin_version(), "count": count,
-                 "at": datetime.now().isoformat(timespec="seconds"),
-                 "command": str(state.get("command") or ""),
-                 "stages": list(state.get("stages") or [])[:40],
-                 "output": str(state.get("output") or "")[-200000:]}),
-                encoding="utf-8")
-        except OSError:
-            pass
+        stock_compare.write_read_meta(
+            meta_file, plugin=plugin_version(), count=count,
+            command=str(state.get("command") or ""),
+            stages=state.get("stages") or [],
+            output=str(state.get("output") or ""),
+            #  This panel never skips the lookups - a write is addressed by the
+            #  product id they resolve - and saying so in the record is what
+            #  lets the next read be told apart from the comparison's.
+            skipped=stock_compare.skipped_lookups(
+                str(state.get("command") or "")))
 
     def read_meta():
-        try:
-            data = json.loads(meta_file.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-        return data if isinstance(data, dict) else {}
+        return stock_compare.read_read_meta(meta_file)
 
     # --------------------------------------------------------------- reading
     def load(items, note):
@@ -10522,6 +10547,7 @@ def build_csledit(parent, app):
                 why + "\n\nNothing was changed.", parent=box.winfo_toplevel())
             return False
         state["read"] = "live"
+        state["skipped"] = False          # this panel's read never skips them
         #  The read's own words, kept for the sentence a no-id list gets: the
         #  reader's count line is quoted from here rather than from whatever
         #  run happens to be in the runner when a button is pressed. Its
@@ -10582,7 +10608,8 @@ def build_csledit(parent, app):
             said = cs_edit.product_id_gap(
                 items, plugin=plugin_version(), needed=CS_PRODUCT_ID_VERSION,
                 reader_text=last_tool_output(app),
-                stages=state.get("stages") or [])
+                stages=state.get("stages") or [],
+                skipped=bool(state.get("skipped")))
             if said:
                 say(said[:1].upper() + said[1:], "err")
                 #  The next thing anyone does with a read like this is report
@@ -10648,6 +10675,87 @@ def build_csledit(parent, app):
             picked = []
         rows = state["rows"]
         return [rows[index] for index in picked if 0 <= index < len(rows)]
+
+    def select_ids(wanted):
+        """Pick the rows carrying these listing ids again, after a read.
+
+        A read rebuilds the list, and a person who picked six listings to
+        archive is not going to pick them again because the app needed a
+        better list first. Matching is by the listing's own id, which a read
+        does not change.
+        """
+        wanted = {str(value) for value in wanted or () if str(value)}
+        picked = [index for index, row in enumerate(state["rows"])
+                  if str(row.get("id")) in wanted]
+        try:
+            listing.selection_clear(0, "end")
+            for index in picked:
+                listing.selection_set(index)
+        except Exception:            # noqa: BLE001 - nothing on screen to pick
+            return 0
+        return len(picked)
+
+    def unjudgeable():
+        """Whether the list cannot be judged against the reader at all.
+
+        True for the comparison's own read and for one nothing records the
+        write of - neither is evidence about the plugin, and both are fixed by
+        the read this panel makes.
+        """
+        return state.get("skipped") is not False
+
+    def why_unjudgeable():
+        """How the list came to have no product ids, in the words that fit it."""
+        if state.get("skipped"):
+            return ("it is the comparison's read, which asks the plugin to skip "
+                    "its per-listing product lookups")
+        return ("nothing beside it records which read wrote it, and the "
+                "comparison's own read has no product ids by design")
+
+    def read_for_change(rows, again, what):
+        """Read the list an edit needs, then make the same change on those rows.
+
+        The list on screen can be the comparison's read: it asks the plugin to
+        skip the per-listing product lookups, so no row carries a product id
+        and nothing can be sent. Reading from this panel is the one thing that
+        fills them in - so it is offered where the change was asked for, and
+        the rows the person picked are picked again afterwards instead of
+        being lost to the rebuilt list.
+        """
+        wanted = [row.get("id") for row in rows
+                  if isinstance(row, dict) and row.get("id") is not None]
+        one = len(rows) == 1
+        named = ((str(rows[0].get("name") or rows[0].get("title") or
+                      "that listing")) if one else "%d listings" % len(rows))
+        if not wanted:
+            say("%s: nothing in this list says which listing it is, so it "
+                "cannot be read again either. Nothing was sent." % named,
+                "err")
+            summary.configure(text="That listing cannot be read again.")
+            return False
+        if not messagebox.askyesno(
+                "Read the listings before this change?",
+                "%s cannot be %s from this list: %s - so no row carries a "
+                "product id, and that is not the plugin failing.\n\n"
+                "Reading the listings here does look them up. %s you picked "
+                "%s still picked when the list comes back, and the change goes "
+                "ahead once the read is done.\n\nNothing has been sent. Read "
+                "them now?"
+                % (named, what, why_unjudgeable(),
+                   "The listing" if one else "The %d listings" % len(rows),
+                   "is" if one else "are"),
+                parent=box.winfo_toplevel()):
+            say("The change was not confirmed; nothing was written.", "dim")
+            return False
+        say("Reading CanadianShopper's listings so %s can be %s..."
+            % (named, what), "dim")
+
+        def then(_items):
+            select_ids(wanted)
+            again()
+
+        read_listings(then)
+        return True
 
     def selected_raw():
         """The clicked listing, quietly: ``None`` when nothing is clicked.
@@ -10946,6 +11054,29 @@ def build_csledit(parent, app):
         if cs_edit.product_id(entry) or item.get("id") is None:
             return True
         named = str(item.get("name") or "That listing")
+        if unjudgeable():
+            #  The list was asked to come back without product ids, or nothing
+            #  says which read wrote it. This is not a reader to report and not
+            #  a shop to give up on - the read this panel makes fills the ids
+            #  in, so that is what is offered, and the change the person
+            #  already asked for follows it.
+            said = cs_edit.product_id_gap(
+                state["items"], plugin=plugin_version(),
+                needed=CS_PRODUCT_ID_VERSION, works=False,
+                skipped=state.get("skipped"),
+                writable=open_field_labels())
+            say("%s: a title, stock count or state cannot be sent through the "
+                "plugin from this list: %s Nothing was sent."
+                % (named, said), "warn")
+            summary.configure(text="This list has no product ids because of "
+                                   "the read that wrote it; reading the "
+                                   "listings here gets a list an edit can "
+                                   "use.")
+            read_for_change([item],
+                            lambda: retry_after_read(entry, item,
+                                                     state["items"]),
+                            "changed")
+            return False
         if cs_edit.nothing_editable(state["items"]):
             #  Not one listing's problem: nothing in the whole read carries a
             #  usable product id, so another 2,541-listing read would return
@@ -11382,6 +11513,16 @@ def build_csledit(parent, app):
         rows = chosen_rows()
         if not rows:
             selected()                    # the question a person expects
+            return
+        if unjudgeable() and any(not cs_edit.product_id(row) for row in rows):
+            #  Nothing on the list on screen can be sent: it is the comparison's
+            #  read, which asks the reader to skip the product lookups. Doing it
+            #  once here, before a plan is built, is what keeps the whole
+            #  selection - the read is followed by the same change on the same
+            #  rows.
+            read_for_change(rows,
+                            lambda: set_state(kind),
+                            "put on sale" if kind == "active" else "archived")
             return
         pairs, already = [], []
         for item in rows:
@@ -13438,12 +13579,41 @@ def build_csledit(parent, app):
     if (BASE / "cs-stock.json").is_file():
         cached = stock_compare.read_stock_file(BASE / "cs-stock.json")
         if cached:
+            #  Which read wrote this list, if anything beside it still says.
+            #  A record that describes a different read - the count or the
+            #  write time disagrees - is not used to judge this one: the
+            #  comparison used to write the list without a record, so a stale
+            #  one can sit beside it and would otherwise be read as an edit
+            #  read that came back without ids.
+            meta = read_meta()
+            known = stock_compare.record_matches(
+                BASE / "cs-stock.json", meta, len(cached))
+            state["skipped"] = (bool(meta.get("skipped_lookups")) if known
+                                else None)
+            read_by = str(meta.get("plugin") or "") if known else ""
+            installed = plugin_version()
             note = ("%d listings from the last read. Press \"Read "
                     "CanadianShopper's listings\" to refresh them."
                     % len(cached))
-            read_by = str(read_meta().get("plugin") or "")
-            installed = plugin_version()
-            if read_by and installed and read_by != installed:
+            if state["skipped"]:
+                #  The comparison's own read: it was asked to skip the product
+                #  lookups, so nothing on this list can be archived or edited
+                #  from here until this panel reads it. Saying that on the line
+                #  is the difference between "press Read" and a label that has
+                #  to be explained by a defect report.
+                note = ("%d listings from the comparison's last read, which "
+                        "skips the product lookups - so no row here has a "
+                        "product id and Archive, Put on sale and Edit will "
+                        "read the listings first. Press \"Read "
+                        "CanadianShopper's listings\" for a list an edit can "
+                        "use." % len(cached))
+                say("The list on screen is the comparison's read: it was "
+                    "asked to skip the per-listing product lookups, so no row "
+                    "carries a product id. That is the flag working, not the "
+                    "plugin failing - and nothing here is a defect to report. "
+                    "Reading the listings from this panel fills them in.",
+                    "dim")
+            elif read_by and installed and read_by != installed:
                 #  A list read by an older plugin is not wrong, it is old -
                 #  and an older one may not know each listing's product id,
                 #  which is what an edit needs.
@@ -13451,6 +13621,21 @@ def build_csledit(parent, app):
                         "%s is installed. Press \"Read CanadianShopper's "
                         "listings\" so the list is the current one."
                         % (len(cached), read_by, installed))
+            elif state["skipped"] is None:
+                #  No record - or one that describes another read. A list with
+                #  no product id on any row is still not a reader to report:
+                #  the comparison's own read has none by design, and it used to
+                #  leave no record behind. The read from this panel settles it.
+                note = ("%d listings from a read that is not recorded beside "
+                        "them, so which read wrote them cannot be told. Press "
+                        "\"Read CanadianShopper's listings\" for a list an "
+                        "edit can use." % len(cached))
+                if cs_edit.nothing_editable(cached):
+                    say("No record beside this list says which read wrote it, "
+                        "and no row carries a product id - so nothing here is "
+                        "a report about the plugin either: the comparison's "
+                        "own read is written without ids on purpose. Reading "
+                        "the listings from this panel settles it.", "dim")
             load(cached, note)
 
 

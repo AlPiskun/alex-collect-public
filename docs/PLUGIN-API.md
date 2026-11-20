@@ -574,6 +574,32 @@ declares.
 The edit panel never passes it: a listing without a product id cannot be
 written from there.
 
+Both panels read into the same file, `cs-stock.json`, so the core records which
+read that file is beside it, in `cs-stock-meta.json`:
+
+```json
+{"plugin": "1.0.40", "count": 2632, "command": "cs-stock.py --stock-out cs-stock.json --no-product-lookups", "skipped_lookups": true, "at": "2026-10-24T09:12:03", "stages": [], "output": "..."}
+```
+
+`skipped_lookups` is read from `command` (and derived from it in a record
+written before the key existed), so a record cannot contradict the run it
+describes. **This is the difference between a reader that failed and a read
+that was asked not to look**: a list with no `product_id` on any row, opened in
+the edit panel, is the flag working when the record says `skipped_lookups`, and
+the panel says so - it offers to read the listings (that read does not skip
+them) and carries out the change that was asked for once it is done. Only a
+read that *did* look the ids up and came back without them is described as a
+gap in the reader. A record that a reader was asked to skip them is not
+evidence about the plugin and must never be turned into a defect report.
+
+A record only judges the list it describes: the count it kept and its `at`
+against the file's own write time must both agree
+(`stock_compare.record_matches`), because a record left by an earlier edit read
+can sit beside a newer list the comparison wrote without one. A record that
+disagrees judges nothing, and the panel treats such a list the same way - no
+ids, no accusation, and the same offer to read it here - since nothing in the
+file can say which read it was.
+
 #### Progress while reading
 
 A read may take minutes, and a console that shows one line and then nothing is
@@ -688,8 +714,12 @@ Two consequences the core handles, and a reader should know about:
   one line naming the product and the listings, rather than letting a
   single-row confirmation stand for both.
 
-The core names the version. A read with no usable product id is told apart by
-which plugin produced it: from anything older than **1.0.34** the console says
+The core names the version - and, first, which read it was judging: a list read
+with `--no-product-lookups` has no ids by design, and `cs-stock-meta.json` says
+whether that is what the file is (see "Reading to compare, and reading to edit"),
+so the edit panel offers the read that fills them in instead of judging the
+plugin at all. A read that did look the ids up is told apart by which plugin
+produced it: from anything older than **1.0.34** the console says
 updating the plugin is the fix, and from **1.0.34 or newer** it says the read is
 a defect in the reader worth reporting, because by then it is one. Nothing about
 a listing is changed either way.
@@ -727,8 +757,11 @@ confirmed and deliberately narrow:
   with its error, no resolution happened, and no line is printed;
 - a `--no-product-lookups` read is the comparison's own read: it performs no
   detail lookup, its rows are expected to carry no ids, and the core never
-  prints the gap sentence for it. Whether that read also prints the resolution
-  line is the reader's business - the core only uses one when it is there.
+  prints the gap sentence for it - the edit panel sees `skipped_lookups` in
+  `cs-stock-meta.json` and offers to read the listings, carrying out the change
+  that was asked for once the ids are there. Whether that read also prints the
+  resolution line is the reader's business - the core only uses one when it is
+  there.
 
 The core reads all five numbers, quotes the line verbatim in the console and in
 a diagnosis file, and - this is the part that matters - lets them decide who is
