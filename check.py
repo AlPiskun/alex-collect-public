@@ -75,6 +75,7 @@ ORDER = [
     "test-stock-write.py",
     "test-woo-edit.py",
     "test-woo-create.py",
+    "test-product-fields.py",
     "test-order-panel.py",
     "test-order-pdf.py",
     "test-order-sheet.py",

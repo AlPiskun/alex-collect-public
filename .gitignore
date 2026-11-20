@@ -25,6 +25,7 @@ app/cs-stock.json
 app/cs-stock-meta.json
 app/cs-read-diagnosis-*.txt
 app/sku-audit-*.csv
+app/*-missing-*.csv
 app/ebay_fill/
 app/ebay-skips.json
 

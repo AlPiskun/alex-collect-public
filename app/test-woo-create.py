@@ -107,7 +107,7 @@ class FakeSite:
     def __init__(self, exist=(), categories=None, refuse=None,
                  publish_status="publish", existing=None, fail_once=(),
                  save_then_fail=(), slow_create=0, upload_fail=0,
-                 upload_lost=0, media=()):
+                 upload_lost=0, media=(), brands=None, no_brands=False):
         self.calls = []
         self.products = {}
         self.by_sku = {sku: pid for sku, pid in exist}
@@ -123,6 +123,14 @@ class FakeSite:
             self.products[pid].update(detail)
         self.categories = dict(categories or {})     # name -> id
         self.next_category = 40
+        #  The Brands list, the way WooCommerce 9.6 answers it: a search that
+        #  finds a term by name, and a POST that makes one. A shop older than
+        #  that has no list at all and answers 404, which is the case the app
+        #  has to tell apart from a refusal.
+        self.brands = {str(name).lower(): ident
+                       for name, ident in (brands or {}).items()}
+        self.next_brand = 60
+        self.no_brands = bool(no_brands)
         self.refuse = dict(refuse or {})             # (method, keyword) -> code
         self.publish_status = publish_status
         self.uploads = []
@@ -189,6 +197,20 @@ class FakeSite:
                 if code >= 500:
                     return code, CRITICAL_ERROR_PAGE
                 return code, json.dumps({"message": "refused by test"}).encode()
+
+        if "/products/brands" in url:
+            if self.no_brands:
+                return 404, json.dumps(
+                    {"code": "rest_no_route"}).encode("utf-8")
+            if method == "GET":
+                name = url.split("search=")[1].split("&")[0].replace("+", " ")
+                found = self.brands.get(name.lower())
+                rows = ([{"id": found, "name": name}] if found else [])
+                return 200, json.dumps(rows).encode("utf-8")
+            self.next_brand += 1
+            self.brands[body["name"].lower()] = self.next_brand
+            return 201, json.dumps({"id": self.next_brand,
+                                    "name": body["name"]}).encode("utf-8")
 
         if "/products/categories" in url:
             if method == "GET":
@@ -263,6 +285,11 @@ class FakeSite:
                 self.by_sku.pop(product.get("sku"), None)
                 product["sku"] = body["sku"]
                 self.by_sku[body["sku"]] = pid
+            if "brands" in (body or {}):
+                names = {ident: name for name, ident in self.brands.items()}
+                product["brands"] = [{"id": row["id"],
+                                      "name": names.get(row["id"], "")}
+                                     for row in body["brands"]]
             if "status" in (body or {}):
                 product["status"] = self.publish_status
             self.products[pid] = product
@@ -518,7 +545,8 @@ def test_creation():
           len(site.uploads) == 2, str(site.uploads))
     created_calls = [call for call in site.calls
                      if call["method"] == "POST" and "/products" in call["url"]
-                     and "categories" not in call["url"]]
+                     and "categories" not in call["url"]
+                     and "brands" not in call["url"]]
     check("the product body carried the uploaded photo ids",
           created_calls and created_calls[0]["body"]["images"],
           str(created_calls[:1]))
@@ -566,6 +594,129 @@ def test_creation():
     check("the report says it was already there",
           any("Already there" in line for line in
               woo_create.report_text(report)), str(report))
+
+
+def test_the_brand_is_set_at_creation():
+    """The brand a batch knows must reach the shop's Brands list.
+
+    It used to be written as a Brand *attribute* and nowhere else, which is not
+    where the shop's own brand column, its brand filters and its feeds look - so
+    every product a batch made was brandless there. The brand is resolved to a
+    term id before the product is created, and only a title that names no maker
+    is left without one.
+    """
+    print()
+    print("== 3x. a new product carries its brand in the shop's Brands list ==")
+    categories = {"Sports Card": 11, "Hockey Card": 12}
+
+    def bodies_from(site):
+        return [call["body"] for call in site.calls
+                if call["method"] == "POST" and "/products?" in call["url"]
+                and "brands" not in call["url"]]
+
+    def brand_posts(site):
+        return [call for call in site.calls
+                if "/products/brands" in call["url"] and call["method"] == "POST"]
+
+    #  A brand the shop already has is looked up and used, not made again.
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1)])
+    site = FakeSite(categories=categories, brands={"O-Pee-Chee": 31})
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    bodies = bodies_from(site)
+    check("the product is created with its brand's id in the body",
+          bodies and bodies[0].get("brands") == [{"id": 31}],
+          str(bodies[:1]))
+    check("and a brand the shop already has is not made again",
+          brand_posts(site) == [], str(brand_posts(site)))
+    check("the run says the brand went on",
+          any("Brands list" in line for line in
+              woo_create.report_text(report, "https://shop.example")),
+          str(woo_create.report_text(report, "https://shop.example")[:4]))
+
+    #  A brand the shop does not have is made once for the whole batch of that
+    #  maker, not once per card.
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(1), row(2)])
+    site = FakeSite(categories=categories)
+    woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                   username="owner", app_password="pw", opener=site)
+    made = brand_posts(site)
+    check("a brand the shop does not have is created once for two cards",
+          len(made) == 1 and made[0]["body"] == {"name": "O-Pee-Chee"},
+          str([call["body"] for call in made]))
+    sent = [body.get("brands") for body in bodies_from(site)]
+    check("and both products carry the same term id",
+          len(sent) == 2 and sent[0] and sent[0] == sent[1], str(sent))
+
+    #  A row with no Brand attribute at all is read from its own title - the
+    #  brand is written there, and the batch's own rule reads it.
+    tmp = tempfile.mkdtemp()
+    no_attribute = row(3)
+    no_attribute.pop("Attribute 1 name")
+    no_attribute.pop("Attribute 1 value(s)")
+    read, planned = build(tmp, [no_attribute])
+    check("a row with no Brand attribute still knows its maker",
+          planned["items"][0]["brand"] == "O-Pee-Chee",
+          str(planned["items"][0].get("brand")))
+    site = FakeSite(categories=categories, brands={"O-Pee-Chee": 31})
+    woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                   username="owner", app_password="pw", opener=site)
+    check("and that brand is what the product is created with",
+          bodies_from(site) and bodies_from(site)[0].get("brands") ==
+          [{"id": 31}], str(bodies_from(site)[:1]))
+
+    #  A card built the other way round - from a CanadianShopper listing, in
+    #  the same shape but with no brand on it - is read the same way, because
+    #  the rule lives in one place rather than in the CSV reader.
+    from_listing = {"items": [{"name": "1991 O-Pee-Chee Dallas Smith #12 "
+                                       "EX-MT 6", "sku": "X-1", "published":
+                               False, "short": "", "description": "",
+                               "price": "9", "stock": 1, "in_stock": True,
+                               "categories": [], "tags": [], "images": [],
+                               "attributes": [], "meta": {}, "row": {}}],
+                    "folder": None}
+    site = FakeSite(categories=categories, brands={"O-Pee-Chee": 31})
+    woo_create.run(from_listing, "https://shop.example", "ck_a", "cs_b",
+                   opener=site)
+    check("a card built from a listing gets its brand the same way",
+          bodies_from(site) and bodies_from(site)[0].get("brands") ==
+          [{"id": 31}], str(bodies_from(site)[:1]))
+
+    #  A title that names no maker gets no brand: nothing is invented onto a
+    #  live product, and no empty term is made on the shop.
+    tmp = tempfile.mkdtemp()
+    unknown = row(4, Name="Mystery Card #9", **{"Attribute 1 name": "",
+                                                "Attribute 1 value(s)": ""})
+    unknown["rank_math_title"] = "Mystery Card #9"
+    read, planned = build(tmp, [unknown])
+    site = FakeSite(categories=categories)
+    woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                   username="owner", app_password="pw", opener=site)
+    check("a title naming no maker is given no brand at all",
+          planned["items"][0]["brand"] == "" and
+          "brands" not in (bodies_from(site) or [{}])[0],
+          str(bodies_from(site)[:1]))
+    check("and no brand is created on the shop for it",
+          brand_posts(site) == [], str(brand_posts(site)))
+
+    #  A shop with no Brands list (WooCommerce before 9.6) has nowhere to put
+    #  one: the card is still created, and the run says why the brand is not
+    #  there rather than letting a brandless product look finished.
+    tmp = tempfile.mkdtemp()
+    read, planned = build(tmp, [row(5)])
+    site = FakeSite(categories=categories, no_brands=True)
+    report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
+                            username="owner", app_password="pw", opener=site)
+    text = "\n".join(woo_create.report_text(report, "https://shop.example"))
+    check("a shop with no Brands list still creates the card",
+          len(report["created"]) == 1 and report["failed"] == [], str(report))
+    check("and the run says the shop has no Brands list to put one in",
+          "no Brands list" in text and "9.6" in text, text)
+    check("and no brand is sent to a shop that has nowhere to keep it",
+          "brands" not in (bodies_from(site) or [{}])[0],
+          str(bodies_from(site)[:1]))
 
 
 def test_progress_stages():
@@ -921,7 +1072,8 @@ def test_error_pages():
     report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
                             username="owner", app_password="pw", opener=site)
     posts = [call for call in site.calls if call["method"] == "POST"
-             and "wp/v2/media" not in call["url"]]
+             and "wp/v2/media" not in call["url"]
+             and "/products/brands" not in call["url"]]
     text = "\n".join(woo_create.report_text(report, "https://shop.example"))
     check("a product written before the error page is not sent twice",
           len(posts) == 1, str(len(posts)))
@@ -1298,7 +1450,8 @@ def test_a_slow_website():
         woo_create.wait = original_wait
         woo_create.CREATE_RETRY_PAUSE = saved_pause
     posts = [call for call in site.calls if call["method"] == "POST"
-             and "wp/v2/media" not in call["url"]]
+             and "wp/v2/media" not in call["url"]
+             and "/products/brands" not in call["url"]]
     check("a card the site could not take is sent again", len(posts) == 3,
           str(len(posts)))
     check("and it is created on the third try", len(report["created"]) == 1,
@@ -1343,7 +1496,8 @@ def test_a_slow_website():
     report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
                             username="owner", app_password="pw", opener=site)
     posts = [call for call in site.calls if call["method"] == "POST"
-             and "wp/v2/media" not in call["url"]]
+             and "wp/v2/media" not in call["url"]
+             and "/products/brands" not in call["url"]]
     check("a refusal about the card is tried once, not four times",
           len(posts) == 1, str(len(posts)))
     check("and the card is named as not created",
@@ -1357,7 +1511,8 @@ def test_a_slow_website():
     report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
                             username="owner", app_password="pw", opener=site)
     posts = [call for call in site.calls if call["method"] == "POST"
-             and "wp/v2/media" not in call["url"]]
+             and "wp/v2/media" not in call["url"]
+             and "/products/brands" not in call["url"]]
     text = "\n".join(woo_create.report_text(report, "https://shop.example"))
     check("the first card really was tried four times",
           len(posts) >= woo_create.CREATE_ATTEMPTS,
@@ -1377,6 +1532,7 @@ def test_a_slow_website():
 
     def once_429(request, timeout=None):
         if request.get_method() == "POST" and "wp/v2/media" not in \
+                request.full_url and "/products/brands" not in \
                 request.full_url and site.refuse:
             del site.refuse[("POST", "products?")]
             site.calls.append({"method": "POST", "url": request.full_url,
@@ -1387,7 +1543,8 @@ def test_a_slow_website():
     report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
                             username="owner", app_password="pw", opener=once_429)
     posts = [call for call in site.calls if call["method"] == "POST"
-             and "wp/v2/media" not in call["url"]]
+             and "wp/v2/media" not in call["url"]
+             and "/products/brands" not in call["url"]]
     check("a 429 is waited out and the card sent again", len(posts) == 2,
           str(len(posts)))
     check("and the card is created", len(report["created"]) == 1,
@@ -1400,6 +1557,7 @@ def test_a_slow_website():
 
     def dies_once(request, timeout=None):
         if request.get_method() == "POST" and "wp/v2/media" not in \
+                request.full_url and "/products/brands" not in \
                 request.full_url and not getattr(dies_once, "done", False):
             dies_once.done = True
             site.calls.append({"method": "POST", "url": request.full_url,
@@ -1411,7 +1569,8 @@ def test_a_slow_website():
                             username="owner", app_password="pw",
                             opener=dies_once)
     posts = [call for call in site.calls if call["method"] == "POST"
-             and "wp/v2/media" not in call["url"]]
+             and "wp/v2/media" not in call["url"]
+             and "/products/brands" not in call["url"]]
     check("a connection that drops is tried again", len(posts) == 2,
           str(len(posts)))
     check("and the card is created on the second try",
@@ -1425,7 +1584,8 @@ def test_a_slow_website():
     report = woo_create.run(planned, "https://shop.example", "ck_a", "cs_b",
                             username="owner", app_password="pw", opener=site)
     posts = [call for call in site.calls if call["method"] == "POST"
-             and "wp/v2/media" not in call["url"]]
+             and "wp/v2/media" not in call["url"]
+             and "/products/brands" not in call["url"]]
     check("a twin is never made by retrying a write that landed",
           len(posts) == 1 and len(report["created"]) == 1,
           "%s %s" % (len(posts), report))
@@ -1718,6 +1878,7 @@ def main():
     test_reading()
     test_payload()
     test_creation()
+    test_the_brand_is_set_at_creation()
     test_progress_stages()
     test_attaching()
     test_publishing()

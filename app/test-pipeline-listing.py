@@ -400,7 +400,8 @@ def test_shipped_script_runs_end_to_end(root):
     #  Deliberately NOT cs_listing.py: this is the layout a batch folder has,
     #  and the shipped script has to run there. 2.66 made that a hard import
     #  and every pipeline run outside the app died with ModuleNotFoundError.
-    for name in ("browser_utils.py", "user_settings.py", "plugin_manager.py"):
+    for name in ("browser_utils.py", "user_settings.py", "plugin_manager.py",
+                 "card_words.py"):
         shutil.copyfile(APP / name, d / name)
     (d / "gui-settings.json").write_text(
         json.dumps({"browser_name": "system"}), encoding="utf-8")
@@ -445,7 +446,8 @@ def test_runs_without_the_other_features(tmp_path):
                     d / "pipeline" / "card_pipeline.py")
     shutil.copyfile(PIPELINE / "output_history.py",
                     d / "pipeline" / "output_history.py")
-    for name in ("browser_utils.py", "user_settings.py", "plugin_manager.py"):
+    for name in ("browser_utils.py", "user_settings.py", "plugin_manager.py",
+                 "card_words.py"):
         shutil.copyfile(APP / name, d / name)
     (d / "gui-settings.json").write_text(json.dumps({"browser_name": "system"}),
                                          encoding="utf-8")
