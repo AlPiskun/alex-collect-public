@@ -273,8 +273,19 @@ stdout:
 ### `pick_back` - which gallery row is the card's old back?
 
 Sent when a listing's existing photos cannot be identified automatically. The
-app shows the row filenames with their positions and a picture of what is being
-replaced, so this is decided by looking rather than by guessing.
+app draws every row the request names as a picture with its filename and
+position underneath, and names the pictures being sent above them, so this is
+decided by looking rather than by guessing. A row whose photo cannot be
+downloaded keeps its filename and stays clickable, so no candidate can go
+missing from the window.
+
+The app also answers this request without asking when its own read of the
+listing, taken before the run, proved there is no old back - a gallery holding
+nothing but the listing's main photo. The answer is then `{"row": null}` (or
+`{"cancel": true}` when `allow_add` is `false`), because no row can be the old
+back and offering the front as a candidate is a question with no right answer.
+A read that failed, a different listing, a row that could be a back, or a row
+the app never read all fall back to the window.
 
 ```json
 {"type": "pick_back",

@@ -160,6 +160,10 @@ def pair_name(front_url="", title=""):
     return _slug(title)
 
 
+PICTURE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp",
+                    ".tif", ".tiff")
+
+
 def _folder(folder):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -233,8 +237,7 @@ def download(url, folder, pair="", fetch=None):
             "The front photo came back empty from %s, so the back has nothing "
             "to be paired with. Nothing was written." % url)
     suffix = _suffix(_filename(url))
-    if suffix not in (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp",
-                      ".tif", ".tiff"):
+    if suffix not in PICTURE_SUFFIXES:
         suffix = ".jpg"
     stem = _slug(pair) or "front"
     target = _folder(folder) / ("%s-front%s" % (stem, suffix))
@@ -243,6 +246,51 @@ def download(url, folder, pair="", fetch=None):
     except OSError as exc:
         raise PictureError("The front photo could not be saved beside the "
                            "back: %s" % exc) from exc
+    return target
+
+
+def row_picture(url, folder, name="", fetch=None):
+    """One photo the listing already shows, saved so the window can draw it.
+
+    A gallery row is named by the shop, not by us: ``IMG_2231.jpg`` says
+    nothing about whether it is the card's back, so "which of these is the old
+    back?" is a question answered by looking. Asking it as a list of filenames
+    is what the report that opened this was - a text version of a file, with
+    the back not offered at all.
+
+    The bytes are copied as they are: nothing is squared, renamed for a card,
+    or treated as a replacement. This file is only what the window draws.
+
+    Returns the file it was saved as. Raises :class:`PictureError` when the
+    address is not one to read or nothing came back - the caller then shows the
+    row's name instead, which is still a choice.
+    """
+    url = str(url or "").strip()
+    if not url.lower().startswith(("http://", "https://")):
+        raise PictureError("This photo has no address to read it from.")
+    try:
+        data = (fetch or _fetch)(url)
+    except Exception as exc:                       # noqa: BLE001 - any failure
+        raise PictureError("The photo could not be read: %s" % exc) from exc
+    if not data:
+        raise PictureError("The photo came back empty from %s." % url)
+    suffix = _suffix(_filename(url))
+    if suffix not in PICTURE_SUFFIXES:
+        suffix = ".jpg"
+    stem = _slug(name or _filename(url)) or "photo"
+    folder = _folder(folder)
+    target = folder / ("%s%s" % (stem, suffix))
+    step = 2
+    while target.exists():
+        #  Two rows of one listing can share a name; neither may overwrite the
+        #  other, because both are on screen at once.
+        target = folder / ("%s-%d%s" % (stem, step, suffix))
+        step += 1
+    try:
+        target.write_bytes(bytes(data))
+    except OSError as exc:
+        raise PictureError("The photo could not be saved for showing: %s"
+                           % exc) from exc
     return target
 
 
