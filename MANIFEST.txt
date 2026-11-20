@@ -1,4 +1,4 @@
-Alex Collect 3.48 — public core package
+Alex Collect 3.49 — public core package
 
 Root:
   LICENSE                         MIT license for the core
@@ -31,6 +31,12 @@ app/:
   browser_utils.py                installed-browser detection and page launching
   process_utils.py                hides child console windows on Windows
   photo_replace.py                sheet split, blank-slot and replacement naming
+  photo_pick.py                   the replacement pictures a seller picked:
+                                   what a chosen file is - a scan of nine
+                                   cards cut into nine slots, or one card
+                                   photographed on its own - and which
+                                   picture has been clicked for the front
+                                   and which for the back
   woo_media.py                    upload a photo, set it on the product,
                                    and file it under that product in the
                                    media library; and find a photo that
@@ -135,15 +141,16 @@ app/:
                                    reading again - so a settled gallery is one
                                    the site demonstrably keeps, and the listing
                                    is left as it was
-  cs_picture.py                    a picture on this computer becomes one of a
-                                   listing's photos: pad it onto a white square
-                                   with the same routine SquareImages.bat uses,
-                                   name it as the half of a card's pair the
-                                   plugin recognises (-front/-back, one format
-                                   and one extension), and hand both files to
-                                   the plugin, which hosts them and puts the
-                                   front on the main photo and the back on the
-                                   second
+  cs_picture.py                    pictures on this computer become a
+                                   listing's photos: pad each onto a white
+                                   square with the same routine
+                                   SquareImages.bat uses, name them as the two
+                                   halves of a card's pair the plugin
+                                   recognises (-front/-back, one format and one
+                                   extension), and hand the pair to the plugin
+                                   in one run - the front on the main photo and
+                                   the back on the second, whether one of them
+                                   is replaced or both
   cs_stage.py                      read the plugin's photo staging answer - every
                                    row's status, the staged front URL, the CSVs
                                    it wrote and the reason each failed row gave -

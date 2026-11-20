@@ -45,6 +45,9 @@ import square_images
 #: The two photos a card has, in the order the shop shows them.
 SLOTS = ("front", "back")
 
+#: Both of them in one replacement - the plugin takes the two files in one run.
+BOTH = "both"
+
 #: Where each one sits in the listing's gallery.
 POSITION = {"front": 1, "back": 2}
 
@@ -52,7 +55,11 @@ POSITION = {"front": 1, "back": 2}
 SLOT_WORDS = {
     "front": "the front (the card's main photo)",
     "back": "the back (the second photo)",
+    BOTH: "both photos (the front and the back)",
 }
+
+#: Short names, for a sentence that already says what is happening.
+SIDE_WORDS = {"front": "the front", "back": "the back"}
 
 #: Long enough for a card's title, short enough to stay a filename.
 NAME_LIMIT = 60
@@ -73,11 +80,23 @@ def position(slot):
 
 
 def slot_of(value):
-    """``"front"``/``"back"`` from anything that says so, else ``""``."""
+    """``"front"``/``"back"``/``"both"`` from what says so, else ``""``."""
     text = str(value or "").strip().lower()
+    if text in (BOTH, "both photos", "front and back", "front+back"):
+        return BOTH
     if text in SLOTS:
         return text
     return photo_replace.side_of(text)
+
+
+def slots_words(slots):
+    """``"the front"``, ``"the back"``, ``"the front and the back"``."""
+    wanted = [side for side in SLOTS if str(side) in tuple(slots or ())]
+    if len(wanted) == len(SLOTS):
+        return "the front and the back"
+    if wanted:
+        return SIDE_WORDS[wanted[0]]
+    return "no photo"
 
 
 def _slug(text):
@@ -107,6 +126,11 @@ def _filename(url):
     """
     path = urllib.parse.urlparse(str(url or "")).path
     return urllib.parse.unquote(path).rstrip("/").rsplit("/", 1)[-1]
+
+
+def filename(url):
+    """The last piece of a photo's address, for saying which photo it is."""
+    return _filename(url)
 
 
 def _suffix(name):
@@ -222,6 +246,66 @@ def download(url, folder, pair="", fetch=None):
     return target
 
 
+def _pair_format_error(back, front):
+    """The refusal for a pair whose two files are not one format."""
+    return PictureError(
+        "The new back is a %s file and the front it pairs with is a %s file, "
+        "so the two names the plugin matches would not share one format. "
+        "Nothing was written - choose the picture again."
+        % (Path(str(back or "")).suffix or "(nameless)",
+           Path(str(front or "")).suffix or "(nameless)"))
+
+
+def prepare_pair(folder, pair, front_picture=None, back_picture=None,
+                 current_front=None):
+    """The files the plugin is given when one or both photos are replaced.
+
+    ``front_picture`` and ``back_picture`` are the *squared* pictures just
+    made, either of them may be missing, and at least one is required.
+    ``current_front`` is the front the listing shows now, and it is only
+    needed when the back is replaced on its own: the plugin replaces a pair,
+    so that front is sent with the new back, unchanged.
+
+    Returns ``{"front": Path, "back": Path or None, "pair": pair}``. Both
+    sources are checked before either target is written, so a failure leaves
+    no half pair behind.
+    """
+    pair = str(pair or "").strip()
+    if not pair:
+        raise PictureError(
+            "There is no name to file this picture under, and a photo the "
+            "plugin cannot name is a photo it cannot place. Nothing was "
+            "written.")
+    front = Path(str(front_picture)) if front_picture else None
+    back = Path(str(back_picture)) if back_picture else None
+    if front is None and back is None:
+        raise PictureError("No picture was chosen, so nothing was written.")
+    if back is None:
+        #  The front alone still has to *be* the front: the plugin reads the
+        #  side off the name, and an unsided name is a photo it will not place
+        #  at the main photo of a card it is replacing as a pair.
+        try:
+            written = photo_replace.save_pair(folder, pair + "-front", front)
+        except photo_replace.PhotoReplaceError as exc:
+            raise PictureError(str(exc)) from exc
+        return {"front": written.get("front"), "back": written.get("back"),
+                "pair": pair}
+    pairing = front or (Path(str(current_front)) if current_front else None)
+    if pairing is None:
+        raise PictureError(
+            "The back is one half of the card's pair, and the front it is "
+            "paired with was not given, so the plugin could not replace "
+            "anything. Nothing was written.")
+    if pairing.suffix.lower() != back.suffix.lower():
+        raise _pair_format_error(back, pairing)
+    try:
+        written = photo_replace.save_pair(folder, pair, pairing, back)
+    except photo_replace.PhotoReplaceError as exc:
+        raise PictureError(str(exc)) from exc
+    return {"front": written.get("front"), "back": written.get("back"),
+            "pair": pair}
+
+
 def prepare(folder, pair, slot, picture, front_picture=None):
     """Write the files the plugin is given, and say which is which.
 
@@ -231,49 +315,15 @@ def prepare(folder, pair, slot, picture, front_picture=None):
     only by ``-front``/``-back`` and refuses a pair that does not, so a back
     with no front beside it can never be replaced.
 
-    Returns ``{"front": Path, "back": Path or None, "pair": pair}``. Both
-    sources are checked before either target is written, so a failure leaves
-    no half pair behind.
+    Returns ``{"front": Path, "back": Path or None, "pair": pair}``.
     """
     slot = slot_of(slot)
     if slot not in SLOTS:
         raise PictureError("That is not one of a card's two photos: %r" % slot)
-    pair = str(pair or "").strip()
-    if not pair:
-        raise PictureError(
-            "There is no name to file this picture under, and a photo the "
-            "plugin cannot name is a photo it cannot place. Nothing was "
-            "written.")
-    picture = Path(str(picture or ""))
     if slot == "back":
-        if front_picture is None:
-            raise PictureError(
-                "The back is one half of the card's pair, and the front it is "
-                "paired with was not given, so the plugin could not replace "
-                "anything. Nothing was written.")
-        front_picture = Path(str(front_picture))
-        if front_picture.suffix.lower() != picture.suffix.lower():
-            raise PictureError(
-                "The new back is a %s file and the front it pairs with is a "
-                "%s file, so the two names the plugin matches would not share "
-                "one format. Nothing was written - choose the picture again."
-                % (picture.suffix or "(nameless)", front_picture.suffix
-                   or "(nameless)"))
-    else:
-        front_picture = None
-    try:
-        if slot == "back":
-            written = photo_replace.save_pair(folder, pair, front_picture,
-                                              picture)
-        else:
-            #  The front alone still has to *be* the front: the plugin reads
-            #  the side off the name, and an unsided name is a photo it will
-            #  not place at the main photo of a card it is replacing as a pair.
-            written = photo_replace.save_pair(folder, pair + "-front", picture)
-    except photo_replace.PhotoReplaceError as exc:
-        raise PictureError(str(exc)) from exc
-    return {"front": written.get("front"), "back": written.get("back"),
-            "pair": pair}
+        return prepare_pair(folder, pair, back_picture=picture,
+                            current_front=front_picture)
+    return prepare_pair(folder, pair, front_picture=picture)
 
 
 def args(title, front, back=None, cookie_file=""):
@@ -313,6 +363,29 @@ def review_lines(title, slot, rows=(), current=""):
     slot = slot_of(slot)
     named = str(title or "this listing")
     now = back_url(rows, current)
+    if slot == BOTH:
+        lines = [
+            "Both pictures of this listing are replaced: the front at "
+            'position 1 and the back at position 2 of "%s".' % named,
+            "",
+            "Each picture is padded onto a white square first, so the "
+            "storefront's square box has nothing left to crop. Then the "
+            "CanadianShopper plugin uploads both of them - one run, one "
+            "pair - and puts them where they belong.",
+            "",
+        ]
+        if now:
+            lines.append("The back shown now is replaced, not doubled - you do "
+                         "not have to take it off first.")
+        else:
+            lines.append("The listing shows no back yet, so the new one is "
+                         "added as the second photo.")
+        lines.append("The two pictures are one card's pair: the front is "
+                     "position 1 and the back position 2, so the listing ends "
+                     "with the two photos you clicked and nothing else.")
+        lines += ["", "Nothing else on the listing is touched - not its title, "
+                      "price, stock or state."]
+        return lines
     lines = [
         "The picture replaces %s of: %s" % (slot_words(slot), named),
         "",
@@ -345,12 +418,18 @@ def done_words(returncode, slot, title):
     slot = slot_of(slot)
     named = str(title or "the listing")
     if returncode == 0:
+        if slot == BOTH:
+            return ("The plugin reported the replacement done: both photos "
+                    "of \"%s\" are now the pictures you chose - the front "
+                    "at position 1 and the back at 2. Its own account of "
+                    "the upload is above." % named)
         return ("The plugin reported the replacement done: %s of \"%s\" is now "
                 "the picture you chose. Its own account of the upload is above."
                 % (slot_words(slot), named))
     return ("The plugin did not finish (exit code %s), so the listing is "
             "unchanged unless its own report above says otherwise. Nothing "
             "else was written." % returncode)
+
 
 
 def words_or_nothing(failure):

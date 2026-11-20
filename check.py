@@ -56,6 +56,7 @@ ORDER = [
     "test-photo-queue.py",
     "test-photo-assign.py",
     "test-photo-sheets.py",
+    "test-photo-pictures.py",
     "test-photo-panel.py",
     "test-tool-dialog.py",
     "test-linux-packaging.py",
