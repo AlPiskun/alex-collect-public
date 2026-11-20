@@ -83,7 +83,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.49"
+VERSION = "3.50"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -1595,6 +1595,14 @@ rather than doubled, and it does not have to be removed first. The two files
 are remembered for the next card, so a sheet of nine is nine clicks, not nine
 file pickers.
 
+If the listing's own gallery holds a photo whose name does not say whether it
+is the front or the back, the plugin asks which one it is - and here too the
+answer is a picture: every row is drawn with its name underneath, and the one
+that is the old back is clicked. The question is only asked when the photos
+really have to be looked at, because when the read taken on the way in already
+shows the gallery holds nothing but the front, the new back is simply added
+beside it.
+
 Every change is named field by field before it is sent - "Stock: 2 -> 5",
 "State: archived -> on sale" - and only the fields that changed are sent (with
 the title, which is how the plugin finds the listing), so an edit can never put
@@ -1776,7 +1784,11 @@ do, and has one button:
   the front alone and the window says so, because its back would be added
   beside the old one. A listing's main photo is kept apart from its gallery, so
   when the old back cannot be identified from its filename the panel asks
-  which row it is rather than guessing.
+  rather than guessing - by showing every photo the gallery holds, each as the
+  picture itself with the shop's name for it underneath, so the row to replace
+  is clicked rather than read about. When the read taken on the way in already
+  proves there is no old back (a gallery holding nothing but the front), it
+  does not ask at all: the new back is added beside it.
 * Facebook - by hand, always: its selling page opens with the two pictures in
   the replacements folder beside it, ready to drag on. Nothing is uploaded
   there and nothing is submitted anywhere.
@@ -2341,7 +2353,7 @@ TOOLTIPS = {
     "Use this card": "Take the selected card as the one being replaced",
     "Use this product": "Take the selected product as the one whose photos change",
     "Use selected listing": "Use the listing selected above",
-    "Replace the selected row": "Replace that gallery row with the new photo",
+    "Replace the selected photo": "Replace that photo, already on the listing, with the new back",
     "Remove this photo from the product": "Take that row off the product; the image file stays in the media library",
     "Keep every existing photo": "Add the new photo beside the old ones instead of replacing any",
     "No old back - keep every row and add the new back": "Leave the gallery as it is and add the new back beside it",
@@ -3058,6 +3070,9 @@ class App(tk.Tk):
             matches = self._pick_cs_matches(request)
             return {"matches": matches}
         if kind == "pick_back":
+            known = self._known_old_back(request)
+            if known is not None:
+                return known
             return self._pick_cs_back(request)
         return {}
 
@@ -3183,8 +3198,50 @@ class App(tk.Tk):
         self.wait_window(top)
         return chosen
 
+    def _known_old_back(self, request):
+        """The answer the listing read already gave, when it proved there is none.
+
+        The plugin asks which row is the old back when it cannot tell, and that
+        is the right question for a gallery of rows nothing identifies. But the
+        read this app takes on the way in sometimes settles it: when every
+        photo in the gallery is the listing's own main photo, no row can be an
+        old back. The answer is then "keep them and add the new one", and
+        asking anyway offers the front as though it were a back - the pop-up
+        in the report, a text list holding only the front, with the back
+        impossible to choose.
+
+        Returns the answer, or ``None`` when the app does not know and the
+        seller really has to look at the photos.
+        """
+        read = getattr(self, "_photo_read", None) or {}
+        held = read.get("rows")
+        if held is None:                       # nobody read the gallery
+            return None
+        if str(read.get("title") or "") != str(request.get("title") or ""):
+            return None                        # a different listing
+        current = str(read.get("current") or "")
+        if [row for row in held
+                if str(row.get("imageUrl") or "") != current]:
+            return None                        # a row that could be a back
+        #  And the plugin is asking about the same photos, not a gallery this
+        #  app never saw: an answer about rows it did not read would be a guess.
+        known = {str(row.get("id")) for row in held if row.get("id") is not None}
+        asked = [row for row in (request.get("rows") or [])
+                 if isinstance(row, dict)]
+        if (not asked and held) or {str(row.get("id")) for row in asked
+                                    if row.get("id") is not None} - known:
+            return None
+        if request.get("allow_add") is False:
+            return {"cancel": True}
+        self.console_line(
+            "CanadianShopper asked which photo is the old back. The listing "
+            "was read on the way in and every photo in its gallery is its main "
+            "photo, so there is no old back to replace: the new back is added "
+            "beside it.", "dim")
+        return {"row": None}
+
     def _pick_cs_back(self, request):
-        """Ask which existing gallery row is the card's old back photo.
+        """Ask which photo already on the listing is the card's old back.
 
         CanadianShopper keeps a listing's main front apart from its gallery, so
         a listing with one gallery row is not a one-photo listing: that row can
@@ -3193,8 +3250,15 @@ class App(tk.Tk):
         the app would answer {} and the plugin would fall back to numbered
         console choices.
 
-        Answers ``{"row": <id>}`` (replace that row), ``{"row": null}`` (keep
-        every row and add the new back), or ``{"cancel": true}``.
+        The rows are **shown**, not listed. Their names come from the shop -
+        ``IMG_2231.jpg`` - so a name says nothing about whether it is a back,
+        and answering by filename is how a seller ended up with a text list in
+        which the back could not be chosen at all. Every row is a picture to
+        click; a row whose picture cannot be fetched is still a cell carrying
+        its name, so the choice is never missing.
+
+        Answers ``{"row": <id>}`` (replace that row), ``{"row": None}`` (keep
+        every row and add the new back), or ``{"cancel": True}``.
         """
         rows = [row for row in (request.get("rows") or [])
                 if isinstance(row, dict)]
@@ -3203,49 +3267,134 @@ class App(tk.Tk):
         #  "Untouched" must not look like "add a back": a window that was never
         #  answered cancels, so no listing is changed by a stray click.
         answer = {"choice": "cancel", "row": None}
+        chosen = {"index": None}
+        width = min(1000, max(700, self.winfo_screenwidth() - 80))
         top = tk.Toplevel(self)
-        top.title("Which row is the old back?")
+        top.title("Which photo is the old back?")
         top.transient(self)
-        top.geometry("720x430")
+        top.geometry("%dx%d" % (width, 640))
         top.grab_set()
-        ttk.Label(top, text="%s" % title, wraplength=690,
-                  font=("TkDefaultFont", 10, "bold")).pack(
+        ttk.Label(top, text=title, font=("TkDefaultFont", 10, "bold"),
+                  wraplength=width - 50, justify="left").pack(
                       anchor="w", padx=10, pady=(10, 2))
         sent = " / ".join(str(request.get(key)) for key in ("front", "back")
                           if request.get(key))
         if sent:
-            ttk.Label(top, text="Replacing with: %s" % sent,
-                      style="Dim.TLabel", wraplength=690).pack(
-                          anchor="w", padx=10)
-        ttk.Label(top, text="CanadianShopper cannot tell which of these rows "
-                  "is the card's old back photo, and it will not guess. Pick "
-                  "the row to replace with the new back, or keep every row and "
-                  "add the new back beside them.", wraplength=690,
-                  justify="left").pack(anchor="w", padx=10, pady=(6, 6))
-        listing = tk.Listbox(top, height=9, exportselection=False)
-        listing.pack(fill="both", expand=True, padx=10)
+            ttk.Label(top, text="Replacing them with: %s" % sent,
+                      style="Dim.TLabel", wraplength=width - 50,
+                      justify="left").pack(anchor="w", padx=10)
+        ttk.Label(top, text="These photos are already on the listing. "
+                  "CanadianShopper cannot tell which of them is the card's old "
+                  "back, and it will not guess. Click the photo that is the "
+                  "old back and the new back replaces it. If none of them is a "
+                  "back - the front copied in, a certificate, packaging - keep "
+                  "every photo and the new back is added beside them.",
+                  wraplength=width - 50, justify="left").pack(
+                      anchor="w", padx=10, pady=(6, 6))
+        buttons = ttk.Frame(top)
+        buttons.pack(side="bottom", fill="x", padx=10, pady=8)
+        hint = ttk.Label(top, text="Click the photo that is the old back.",
+                         style="Dim.TLabel", wraplength=width - 50,
+                         justify="left")
+        hint.pack(side="bottom", anchor="w", padx=10)
+        body = ttk.Frame(top)
+        body.pack(fill="both", expand=True, padx=10, pady=2)
+
+        def words(row):
+            """One row in a few words: the shop's name, then where it sits."""
+            name = str(row.get("filename") or row.get("name") or "").strip()
+            sort = str(row.get("sortOrder") or "").strip()
+            where = "position %s" % sort if sort else ""
+            return name or "(no filename)", where
+
+        items = []
         for row in rows:
-            sort = row.get("sortOrder")
-            name = str(row.get("filename") or "(no filename)")
-            suffix = "" if sort in (None, "") else "   [position %s]" % sort
-            listing.insert("end", "%s%s" % (name, suffix))
-        if rows:
-            listing.selection_set(0)
+            name, position = words(row)
+            items.append({"caption": name, "note": position})
+        if not rows:
+            ttk.Label(body, text="CanadianShopper sent no gallery photos for "
+                      "this listing, so there is no old back to replace.",
+                      wraplength=width - 50, justify="left").pack(anchor="w")
+        keep = []
+        cells = {}
+
+        def note_for(index, picked):
+            """The line under a photo: what it is called, and whether it is it.
+
+            The name is written under the picture rather than on it: a label
+            given an image says nothing else, and the shop's name for a photo
+            is what the seller recognises it by in the site's own media list.
+            """
+            name, position = words(rows[index])
+            parts = ["OLD BACK" if picked else "", position, name]
+            return " \u00b7 ".join(part for part in parts if part)
+
+        def mark():
+            """Show on every cell which photo is the chosen one."""
+            for index, (cell, _label, note) in cells.items():
+                picked = index == chosen["index"]
+                cell.configure(
+                    highlightthickness=3 if picked else 1,
+                    highlightbackground="#2f6fd0" if picked else "#d8dce2")
+                note.configure(text=note_for(index, picked))
+
+        def clicked(index):
+            """One click on one photo: choose it, or say why it cannot be."""
+            row = rows[index]
+            name, _position = words(row)
+            if row.get("id") in (None, ""):
+                chosen["index"] = None
+                mark()
+                hint.configure(
+                    text="CanadianShopper did not send an ID for %s, so it "
+                         "cannot be replaced safely. Keep every photo instead "
+                         "and the new back is added beside them." % name)
+                return
+            chosen["index"] = index
+            mark()
+            hint.configure(
+                text="The old back is %s. Press \"Replace the selected photo\" "
+                     "and the new back takes its place." % name)
+
+        cells.update(picture_cells(
+            body, items, max(3, min(6, (width - 90) // 150)), clicked))
+        mark()
+
+        def load():
+            """Every row's photo, downloaded so it can be looked at."""
+            folder = (Path(self.settings.get("pipeline_dir") or WORK)
+                      / "replacements" / "old-photos")
+            cookie = load_cookie_text() or ""
+            drawn = {}
+            for index, row in enumerate(rows):
+                url = str(row.get("url") or row.get("imageUrl") or "").strip()
+                if not url:
+                    continue
+                try:
+                    drawn[index] = cs_picture.row_picture(
+                        url, folder, row.get("filename") or "",
+                        fetch=lambda address: cs_products.fetch_bytes(
+                            address, cookie=cookie))
+                except Exception:   # noqa: BLE001 - a name is still a choice
+                    continue
+            return drawn
+
+        def painted(pictures, error):        # noqa: ARG001 - the error is words
+            """Put each photo in its cell; a failed one keeps its name."""
+            try:
+                for index, path in sorted((pictures or {}).items()):
+                    if index in cells:
+                        show_in_cell(cells, index, path, keep)
+                mark()
+            except Exception:      # noqa: BLE001 - the window closed meanwhile
+                return
 
         def take_row(*_event):
-            picked = listing.curselection()
-            if not picked or not rows:
-                messagebox.showinfo(
-                    "Choose a row",
-                    "Select the row that is the old back photo.", parent=top)
+            if chosen["index"] is None:
+                hint.configure(text="Click the photo that is the old back "
+                               "first - nothing has been chosen yet.")
                 return
-            row = rows[picked[0]]
-            if row.get("id") in (None, ""):
-                messagebox.showwarning(
-                    "That row has no ID",
-                    "CanadianShopper did not send an ID for this row, so it "
-                    "cannot be replaced safely.", parent=top)
-                return
+            row = rows[chosen["index"]]
             answer["choice"] = "row"
             answer["row"] = str(row["id"])
             top.destroy()
@@ -3260,9 +3409,7 @@ class App(tk.Tk):
             answer["row"] = None
             top.destroy()
 
-        buttons = ttk.Frame(top)
-        buttons.pack(fill="x", padx=10, pady=8)
-        ttk.Button(buttons, text="Replace the selected row",
+        ttk.Button(buttons, text="Replace the selected photo",
                    command=take_row).pack(side="left")
         if allow_add:
             ttk.Button(buttons, text="No old back - keep every row and add "
@@ -3270,9 +3417,9 @@ class App(tk.Tk):
                        command=add_new).pack(side="left", padx=8)
         ttk.Button(buttons, text="Cancel this card",
                    command=cancel).pack(side="right")
-        listing.bind("<Double-Button-1>", take_row)
         top.protocol("WM_DELETE_WINDOW", cancel)
         attach_tooltips(top)
+        in_background(self, load, painted)
         self.wait_window(top)
         if answer["choice"] == "row" and answer["row"] is not None:
             return {"row": answer["row"]}
@@ -4816,6 +4963,61 @@ def in_background(app, work, done):
             pass
 
     threading.Thread(target=runner, daemon=True).start()
+
+
+def picture_cells(parent, items, columns, on_click, size=(112, 150)):
+    """A grid of photos a seller clicks, with a line of words under each.
+
+    ``items`` is one dict per photo: ``caption`` is the shop's own name for it
+    and ``note`` the few words underneath that say where it sits. A photo that
+    cannot be drawn is still a cell carrying its name - a list of filenames
+    where a picture was expected is the defect this replaces, so a choice is
+    never missing, only unpictured.
+
+    Returns ``{index: (cell, label, note)}`` so the caller can mark the chosen
+    one and put its picture in when it arrives.
+    """
+    cells = {}
+    columns = max(1, int(columns))
+    for start in range(0, len(items), columns):
+        line = ttk.Frame(parent)
+        line.pack(anchor="w", pady=2)
+        for index in range(start, min(start + columns, len(items))):
+            item = items[index]
+            cell = tk.Frame(line, highlightthickness=1,
+                            highlightbackground="#d8dce2")
+            cell.pack(side="left", padx=4)
+            label = ttk.Label(cell, text=item.get("caption") or "(no name)",
+                              wraplength=size[0], justify="left")
+            label.pack(padx=2, pady=(2, 0))
+            note = ttk.Label(cell, text=item.get("note") or "",
+                             style="Dim.TLabel", wraplength=size[0])
+            note.pack(padx=2, pady=(0, 2))
+            for widget in (cell, label, note):
+                widget.bind("<Button-1>", lambda _event, i=index: on_click(i))
+            cells[index] = (cell, label, note)
+    return cells
+
+
+def show_in_cell(cells, index, path, keep, size=(112, 150)):
+    """Draw one cell's photo, if this build can. True when it did.
+
+    ``keep`` holds the ``PhotoImage`` objects: one nothing references is
+    collected and leaves an empty box where the picture should be.
+    """
+    try:
+        picture = photo_thumbs.as_photo(photo_thumbs.thumbnail(str(path), size))
+    except Exception:                  # noqa: BLE001 - a picture is a bonus
+        return False
+    if picture is None:
+        return False
+    keep.append(picture)
+    _cell, label, _note = cells[index]
+    try:
+        label.configure(image=picture, text="")
+    except Exception:                  # noqa: BLE001 - the window closed
+        return False
+    return True
 
 
 def open_market_cookie(app, site_id):
@@ -13024,6 +13226,9 @@ def build_csledit(parent, app):
                                   % cs_picture.slots_words(slots))
 
                 def after(rc):
+                    #  The run has read and written the gallery, so what the
+                    #  read before it proved is spent.
+                    app._photo_read = None
                     words = cs_picture.done_words(
                         rc, cs_picture.BOTH if len(slots) == 2 else slots[0],
                         title)
@@ -13054,6 +13259,13 @@ def build_csledit(parent, app):
                 return
             current = str(answer.get("current") or "")
             rows = answer.get("gallery")
+            #  What this read proved is kept for the run, so that if the plugin
+            #  asks which photo is the old back and the read found none, the
+            #  app answers instead of asking a question with no right answer in
+            #  it (see _known_old_back). A gallery nobody could read keeps None:
+            #  "unknown" and "empty" must never be the same answer.
+            app._photo_read = {"title": title, "current": current,
+                               "rows": rows}
             if rows is None:
                 #  The gallery could not be read: the front is still knowable
                 #  from the record and the plugin reads the gallery itself, so
@@ -15703,6 +15915,14 @@ def build_newphotos(parent, app):
             unread = [row for row in unread
                       if row["id"] not in set(remove_ids)]
             if unread:
+                #  The question is answered by looking, so each candidate
+                #  carries its own address: the gallery rows themselves are
+                #  names only, and a name cannot be looked at.
+                addresses = {str(image.get("id")): str(image.get("src") or "")
+                             for image in (product.get("images") or [])
+                             if isinstance(image, dict)}
+                unread = [dict(row, src=addresses.get(
+                    str(row.get("id")), "")) for row in unread]
                 choice = choose_old_back(unread, product.get("name") or "")
                 if choice.get("cancel"):
                     return None
@@ -16120,47 +16340,115 @@ def build_newphotos(parent, app):
         return by_picture() if pictures else by_list()
 
     def choose_old_back(rows, product_name):
-        """Ask which gallery row is the old back, when the name does not say.
+        """Ask which gallery photo is the old back, when the name does not say.
 
         A product gallery that predates the ``-front``/``-back`` convention
         cannot be read by filename. Choosing the first row as the front and
         ignoring the rest leaves the old back sitting beside the new one,
         which is how a listing ends up with two backs - so the user is asked.
 
+        Asked by looking: ``IMG_2231.jpg`` says nothing about which side of a
+        card it is, so the photos themselves are shown and clicked. A row whose
+        picture cannot be fetched is still a cell carrying its name, so the
+        choice is never missing.
+
         Returns ``{"remove": [ids]}``, or ``{"cancel": True}``.
         """
-        top = tk.Toplevel(app)
-        top.title("Remove the old back from the product?")
-        top.transient(app)
-        top.geometry("700x420")
-        top.grab_set()
+        rows = [row for row in rows or () if isinstance(row, dict)]
         answer = {"cancel": True, "remove": []}
+        chosen = {"index": None}
+        top = tk.Toplevel(app)
+        top.title("Which photo is the old back?")
+        top.transient(app)
+        top.geometry("760x640")
+        top.grab_set()
         ttk.Label(top, text=product_name or "This product",
                   font=("TkDefaultFont", 10, "bold"),
-                  wraplength=660).pack(anchor="w", padx=10, pady=(10, 2))
-        ttk.Label(top, text="None of these photos says whether it is the "
-                  "front or the back, so Alex Collect will not guess. Pick "
-                  "the one that is the old BACK photo: it is taken off this "
-                  "product before the new one goes on.\n\nThe image file is "
-                  "not deleted - it stays in your media library.",
-                  wraplength=660, justify="left").pack(anchor="w", padx=10,
-                                                      pady=(0, 6))
-        listing = tk.Listbox(top, height=8, exportselection=False)
-        listing.pack(fill="both", expand=True, padx=10)
-        for row in rows:
-            listing.insert("end", str(row.get("name") or "(no filename)"))
-        if rows:
-            listing.selection_set(0)
+                  wraplength=720, justify="left").pack(
+                      anchor="w", padx=10, pady=(10, 2))
+        ttk.Label(top, text="None of these photos says whether it is the front "
+                  "or the back, so Alex Collect will not guess. Click the photo "
+                  "that is the old BACK: it is taken off this product before "
+                  "the new one goes on. The image file is not deleted - it "
+                  "stays in your media library.",
+                  wraplength=720, justify="left").pack(
+                      anchor="w", padx=10, pady=(0, 6))
+        buttons = ttk.Frame(top)
+        buttons.pack(side="bottom", fill="x", padx=10, pady=8)
+        hint = ttk.Label(top, text="Click the photo that is the old back.",
+                         style="Dim.TLabel", wraplength=720, justify="left")
+        hint.pack(side="bottom", anchor="w", padx=10)
+        body = ttk.Frame(top)
+        body.pack(fill="both", expand=True, padx=10, pady=2)
+
+        def name_of(row):
+            return str(row.get("name") or "(no filename)")
+
+        items = [{"caption": name_of(row), "note": "position %d" % (index + 1)}
+                 for index, row in enumerate(rows)]
+        keep = []
+        cells = {}
+
+        def note_for(index, picked):
+            """The line under a photo: its name, and whether it is the back."""
+            parts = ["OLD BACK" if picked else "",
+                     "position %d" % (index + 1), name_of(rows[index])]
+            return " \u00b7 ".join(part for part in parts if part)
+
+        def mark():
+            """Show on every cell which photo is the chosen one."""
+            for index, (cell, _label, note) in cells.items():
+                picked = index == chosen["index"]
+                cell.configure(
+                    highlightthickness=3 if picked else 1,
+                    highlightbackground="#2f6fd0" if picked else "#d8dce2")
+                note.configure(text=note_for(index, picked))
+
+        def clicked(index):
+            chosen["index"] = index
+            mark()
+            hint.configure(text="The old back is %s. It comes off this "
+                           "product when the photos are put on."
+                           % name_of(rows[index]))
+
+        cells.update(picture_cells(body, items, 4, clicked, size=(132, 176)))
+        mark()
+
+        def load():
+            """Every row's picture, downloaded so it can be looked at."""
+            folder = (Path(app.settings.get("pipeline_dir") or WORK)
+                      / "replacements" / "old-photos")
+            drawn = {}
+            for index, row in enumerate(rows):
+                url = str(row.get("src") or "").strip()
+                if not url:
+                    continue
+                try:
+                    drawn[index] = cs_picture.row_picture(
+                        url, folder, row.get("name") or "",
+                        fetch=lambda address: cs_products.fetch_bytes(address))
+                except Exception:   # noqa: BLE001 - a name is still a choice
+                    continue
+            return drawn
+
+        def painted(pictures, error):        # noqa: ARG001 - the error is words
+            """Put each photo in its cell; a failed one keeps its name."""
+            try:
+                for index, path in sorted((pictures or {}).items()):
+                    if index in cells:
+                        show_in_cell(cells, index, path, keep,
+                                     size=(132, 176))
+                mark()
+            except Exception:      # noqa: BLE001 - the window closed meanwhile
+                return
 
         def take_row(*_event):
-            picked = listing.curselection()
-            if not picked or not rows:
-                messagebox.showinfo("Choose a photo",
-                                    "Select the photo that is the old back.",
-                                    parent=top)
+            if chosen["index"] is None:
+                hint.configure(text="Click the photo that is the old back "
+                               "first - nothing has been chosen yet.")
                 return
             answer["cancel"] = False
-            answer["remove"] = [rows[picked[0]]["id"]]
+            answer["remove"] = [rows[chosen["index"]]["id"]]
             top.destroy()
 
         def keep_all(*_event):
@@ -16172,17 +16460,15 @@ def build_newphotos(parent, app):
             answer["cancel"] = True
             top.destroy()
 
-        buttons = ttk.Frame(top)
-        buttons.pack(fill="x", padx=10, pady=8)
         ttk.Button(buttons, text="Remove this photo from the product",
                    command=take_row).pack(side="left")
         ttk.Button(buttons, text="Keep every existing photo",
                    command=keep_all).pack(side="left", padx=8)
         ttk.Button(buttons, text="Cancel this card", command=cancel).pack(
             side="right")
-        listing.bind("<Double-Button-1>", take_row)
         top.protocol("WM_DELETE_WINDOW", cancel)
         attach_tooltips(top)
+        in_background(app, load, painted)
         app.wait_window(top)
         return answer
 

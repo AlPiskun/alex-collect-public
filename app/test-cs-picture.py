@@ -379,7 +379,66 @@ def test_the_front_photo():
               "came back empty" in str(exc), exc)
 
 
-# ---------------------------------------------------------------- 5. words
+# ------------------------------------------------------- 5. photos shown
+def test_the_photos_that_are_already_there():
+    print()
+    print("== 5. a photo already on the listing is saved so it can be looked at ==")
+    work = folder()
+    seen = []
+
+    def fetch(url):
+        seen.append(url)
+        return b"gallery-bytes"
+
+    #  The question "which of these is the old back?" is answered by looking:
+    #  the shop's own names say nothing, so every row has to become a picture.
+    saved = cs_picture.row_picture(
+        "https://store.example/u/IMG_2231.JPG", work, "IMG_2231.jpg",
+        fetch=fetch)
+    check("the row's own photo is written where the window can draw it",
+          saved.is_file() and saved.read_bytes() == b"gallery-bytes", saved.name)
+    check("it keeps the site's own extension", saved.suffix == ".jpg",
+          saved.suffix)
+    check("its name is the row's name, made safe for a disk",
+          saved.name.startswith("img-2231"), saved.name)
+    check("the address asked for is the row's own", seen == [
+        "https://store.example/u/IMG_2231.JPG"], seen)
+    check("it is not named as part of a card's pair, because it is not",
+          not photo_replace.side_of(saved.name), saved.name)
+
+    again = cs_picture.row_picture(
+        "https://store.example/u/IMG_2231.JPG", work, "IMG_2231.jpg",
+        fetch=fetch)
+    check("two rows of one name do not overwrite each other",
+          again != saved and again.is_file(), "%s / %s" % (saved, again))
+
+    def boom(url):
+        raise OSError("the shop refused the connection")
+
+    try:
+        cs_picture.row_picture("https://store.example/u/x.jpg", work,
+                               "x.jpg", fetch=boom)
+        check("a photo that cannot be read says so", False, "no raise")
+    except cs_picture.PictureError as exc:
+        check("a photo that cannot be read says so, and the name is still "
+              "there to choose", "could not be read" in str(exc), exc)
+    try:
+        cs_picture.row_picture("", work, "x.jpg", fetch=fetch)
+        check("a row with no address is refused rather than invented",
+              False, "no raise")
+    except cs_picture.PictureError as exc:
+        check("a row with no address is refused rather than invented",
+              "no address" in str(exc), exc)
+    try:
+        cs_picture.row_picture("https://store.example/u/x.jpg", work,
+                               "x.jpg", fetch=lambda url: b"")
+        check("an empty answer is not drawn as a picture", False, "no raise")
+    except cs_picture.PictureError as exc:
+        check("an empty answer is not drawn as a picture",
+              "came back empty" in str(exc), exc)
+
+
+# ---------------------------------------------------------------- 6. words
 def test_the_words():
     print()
     print("== 5. what the windows and the console say ==")
@@ -521,6 +580,19 @@ def test_the_panel():
     check("and the flow itself uploads nothing - the plugin does the hosting",
           "woo_media" not in flow and "upload_media" not in flow,
           "the flow reaches for an uploader")
+    #  The plugin asks which photo already on the listing is the old back. That
+    #  question used to be answered from a list of filenames, which is the
+    #  report that opened this: a text version of a file, with the back not
+    #  available to choose at all.
+    check("the question about an old back is answered with pictures",
+          "cs_picture.row_picture(" in source and
+          "picture_cells(" in source, "no picture drawn for a gallery row")
+    check("and every row's own address is used, not just its name",
+          'row.get("url") or row.get("imageUrl")' in source and
+          'row.get("src")' in source, "")
+    check("a read that proved there is no old back answers without a window",
+          "def _known_old_back(self, request):" in source and
+          "app._photo_read = {" in flow, "the read is not kept")
 
 
 def main():
@@ -531,6 +603,7 @@ def main():
     test_names()
     test_the_pair()
     test_the_front_photo()
+    test_the_photos_that_are_already_there()
     test_the_words()
     test_the_arguments()
     test_the_panel()

@@ -4,9 +4,12 @@
 
 A tool writes a marker to stdout, the app shows a real dialog and writes the
 answer back to the tool's stdin. That channel is how the CanadianShopper plugin
-asks "which gallery row is the old back?" - and if the app answers the wrong
-shape, a live listing gets the wrong row replaced. tkinter is stubbed, so this
-runs without a display.
+asks "which photo already on this listing is the old back?" - and if the app
+answers the wrong shape, a live listing gets the wrong row replaced. The
+question is put as pictures, so what is checked here is that a photo can be
+clicked, that one that cannot be downloaded is still a choice, and that the
+question is not asked at all when the read already proved there is no old back.
+tkinter is stubbed, so this runs without a display.
 """
 
 import json
@@ -46,7 +49,18 @@ class FakeWidget:
     def pack(self, *a, **k): return self
     def grid(self, *a, **k): return self
     def place(self, *a, **k): return self
-    def bind(self, *a, **k): return self
+    def bind(self, sequence, handler=None, *a, **k):
+        if handler is not None:
+            #  A photo is chosen by clicking it, so the fake records what the
+            #  dialog bound and can play it back as a click.
+            self._bound = getattr(self, "_bound", {})
+            self._bound[sequence] = handler
+        return self
+
+    def event_generate(self, sequence, *a, **k):
+        handler = getattr(self, "_bound", {}).get(sequence)
+        if handler is not None:
+            handler(None)
     def configure(self, **k): self._kw.update(k)
     def config(self, **k): self._kw.update(k)
     def cget(self, key):
@@ -150,14 +164,24 @@ CLS = gui.App
 
 
 class FakeApp:
-    """Just enough app for the dialog handlers: they only need wait_window."""
+    """Just enough app for the dialog handlers: wait_window and pictures."""
 
     def __init__(self):
-        self.settings = {}
+        #  A real folder, because the dialog saves each gallery photo before
+        #  it draws it - never the app's own folder, so a test writes nothing
+        #  into the checkout.
+        self.settings = {"pipeline_dir": tempfile.mkdtemp()}
         self.lines = []
+        self._photo_read = None
 
     def wait_window(self, window):
         window.wait_window()
+
+    def after(self, _delay, callback):
+        callback()
+
+    def winfo_screenwidth(self):
+        return 1920
 
     def console_line(self, text, tag=""):
         self.lines.append((tag, str(text)))
@@ -166,9 +190,51 @@ class FakeApp:
 def make_app():
     """A fake app carrying the real handler methods, unbound from Tk."""
     app = FakeApp()
-    for name in ("handle_tool_dialog", "_pick_cs_back"):
+    for name in ("handle_tool_dialog", "_pick_cs_back", "_known_old_back"):
         setattr(app, name, types.MethodType(getattr(CLS, name), app))
     return app
+
+
+FAILS = set()
+
+
+def fake_fetch(url, **_kwargs):
+    """Every photo downloads at once, unless a check says this one cannot."""
+    if url in FAILS:
+        raise OSError("the photo could not be read")
+    return b"picture"
+
+
+def run_now(_app, work, done):
+    """Do the downloads on this thread: a check must not race the window."""
+    try:
+        result, error = work(), None
+    except Exception as exc:            # noqa: BLE001 - the dialog draws it
+        result, error = None, exc
+    done(result, error)
+
+
+def answer_for(request, press_fn=None, fetch=fake_fetch, app=None):
+    """Answer one dialog, with its pictures loaded before it is drawn."""
+    app = app or make_app()
+    if press_fn is not None:
+        PRESS["fn"] = press_fn
+    with patch.object(gui, "in_background", run_now), \
+            patch.object(gui.cs_products, "fetch_bytes", fetch), \
+            patch.object(gui.photo_thumbs, "thumbnail",
+                         lambda path, size=None: ("thumb", str(path))), \
+            patch.object(gui.photo_thumbs, "as_photo",
+                         lambda image: ("photo", str(image[1]))):
+        return app, app.handle_tool_dialog(dict(request))
+
+
+def drawn_in(window):
+    """Every photo the window actually drew."""
+    return [w.cget("image") for w in window.walk() if w.cget("image")]
+
+
+def labels_in(window):
+    return [str(w.cget("text")) for w in window.walk()]
 
 
 def press(label):
@@ -182,14 +248,28 @@ def press(label):
     PRESS["fn"] = go
 
 
-def press_row(index):
-    """Make the next dialog select row ``index`` then press the replace button."""
+def click_photo(window, name):
+    """Click the cell carrying this photo's name, drawn or not.
+
+    The name is on the picture's own label until the photo arrives and in the
+    line under it afterwards, so both are looked at - and nothing else is, so
+    a name in the window's prose cannot be mistaken for the photo.
+    """
+    for widget in window.walk():
+        text = str(widget.cget("text"))
+        if text == name or (text.startswith(("position", "OLD BACK")) and
+                            name in text):
+            widget.event_generate("<Button-1>")
+            return True
+    return False
+
+
+def press_row(name):
+    """Make the next dialog click the photo with this name, then replace it."""
     def go(window):
+        click_photo(window, name)
         for widget in window.walk():
-            if widget._kw.get("height") == 9:
-                widget.selection_set(index)
-        for widget in window.walk():
-            if widget.cget("text") == "Replace the selected row":
+            if widget.cget("text") == "Replace the selected photo":
                 widget.invoke()
                 return
         window.destroy()
@@ -213,13 +293,35 @@ REQUEST = {
 
 def test_pick_a_row():
     print()
-    print("== 1. the plugin asks which row is the old back ==")
-    app = make_app()
-    press_row(1)
-    answer = app.handle_tool_dialog(dict(REQUEST))
+    print("== 1. the plugin asks which photo is the old back ==")
+    seen = {"drawn": [], "labels": [], "marked": []}
+
+    def look(window):
+        seen["drawn"] = drawn_in(window)
+        seen["labels"] = labels_in(window)
+        click_photo(window, "burrows-133-coa.jpg")
+        seen["marked"] = labels_in(window)
+        for widget in window.walk():
+            if widget.cget("text") == "Replace the selected photo":
+                widget.invoke()
+                return
+        window.destroy()
+
+    app, answer = answer_for(REQUEST, look)
+    check("every photo already on the listing is drawn, not listed",
+          len(seen["drawn"]) == 2, str(seen["drawn"]))
+    check("a photo is drawn for each row", all(
+        item[0] == "photo" for item in seen["drawn"]), str(seen["drawn"]))
+    check("each row's name is written under its picture",
+          any("burrows-133-old.jpg" in line for line in seen["labels"]) and
+          any("burrows-133-coa.jpg" in line for line in seen["labels"]),
+          str(seen["labels"]))
+    check("a click marks that photo as the old back",
+          any(line.startswith("OLD BACK") and "burrows-133-coa.jpg" in line
+              for line in seen["marked"]), str(seen["marked"]))
     check("the answer names the chosen row", answer == {"row": "row-b"},
           str(answer))
-    check("it is the row's ID, not its position", answer.get("row") != "1",
+    check("it is the row's ID, not its position", answer.get("row") != "2",
           str(answer))
     check("the answer is one JSON-able shape", json.loads(
         json.dumps(answer)) == answer)
@@ -239,11 +341,15 @@ def test_add_instead():
 def test_cancel():
     print()
     print("== 3. cancelling changes nothing ==")
-    app = make_app()
-    press("Cancel this card")
-    answer = app.handle_tool_dialog(dict(REQUEST))
+    app, answer = _cancel_answer()
     check("the answer cancels", answer == {"cancel": True}, str(answer))
     check("it does not also name a row", "row" not in answer, str(answer))
+
+
+def _cancel_answer():
+    app = make_app()
+    press("Cancel this card")
+    return app, app.handle_tool_dialog(dict(REQUEST))
 
 
 def test_untouched_window():
@@ -281,49 +387,182 @@ def test_add_disallowed():
 
 def test_one_row():
     print()
-    print("== 6. the card that failed: one gallery row ==")
-    app = make_app()
-    press_row(0)
+    print("== 6. the card that failed: one gallery row, and it is the front ==")
     request = dict(REQUEST, rows=[{"id": "13820", "filename":
                                    "burrows-133.webp", "sortOrder": 1}])
-    answer = app.handle_tool_dialog(request)
+    press_row("burrows-133.webp")
+    app, answer = answer_for(request)
     check("one row can still be chosen", answer == {"row": "13820"},
           str(answer))
     check("the answer is a string ID", isinstance(answer.get("row"), str),
           str(answer))
 
 
-def test_row_without_id():
+def test_one_row_is_shown():
     print()
-    print("== 7. a row with no ID is refused, not guessed ==")
-    app = make_app()
-    _BOX.shown.clear()
+    print("== 7. ...and that one photo is drawn, not described ==")
+    request = dict(REQUEST, rows=[{"id": "13820",
+                                   "filename": "burrows-133.webp",
+                                   "sortOrder": 1,
+                                   "url": "https://store.example/u/one.webp"}])
+    seen = {}
 
-    def press_anyway(window):
-        for w in window.walk():
-            if w._kw.get("height") == 9:
-                w.selection_set(0)
-        for w in window.walk():
-            if w.cget("text") == "Replace the selected row":
-                w.invoke()
-                break
-        for w in window.walk():
-            if w.cget("text") == "Cancel this card":
-                w.invoke()
+    def look(window):
+        seen["drawn"] = drawn_in(window)
+        seen["labels"] = labels_in(window)
+        click_photo(window, "burrows-133.webp")
+        seen["marked"] = labels_in(window)
+        for widget in window.walk():
+            if widget.cget("text") == "Replace the selected photo":
+                widget.invoke()
                 return
         window.destroy()
 
-    PRESS["fn"] = press_anyway
-    answer = app.handle_tool_dialog(dict(REQUEST, rows=[{"filename": "x.jpg"}]))
-    check("the user is told the row has no ID",
-          any("no ID" in str(payload) for _kind, payload in _BOX.shown),
-          str(_BOX.shown))
-    check("nothing is replaced", answer == {"cancel": True}, str(answer))
+    app, answer = answer_for(request, look)
+    check("the only photo is drawn", len(seen["drawn"]) == 1, str(seen["drawn"]))
+    check("its name sits under it",
+          any("burrows-133.webp" in line for line in seen["labels"]),
+          str(seen["labels"]))
+    check("clicking it makes it the old back",
+          any(line.startswith("OLD BACK") and "burrows-133.webp" in line
+              for line in seen["marked"]), str(seen["marked"]))
+    check("and it is the row that gets replaced", answer == {"row": "13820"},
+          str(answer))
+
+
+def test_photo_that_cannot_be_downloaded():
+    print()
+    print("== 8. a photo that cannot be downloaded is still a choice ==")
+    FAILS.clear()
+    FAILS.add("https://store.example/u/burrows-133-old.jpg")
+    seen = {}
+
+    def look(window):
+        seen["drawn"] = drawn_in(window)
+        seen["labels"] = labels_in(window)
+        click_photo(window, "burrows-133-old.jpg")
+        for widget in window.walk():
+            if widget.cget("text") == "Replace the selected photo":
+                widget.invoke()
+                return
+        window.destroy()
+
+    try:
+        app, answer = answer_for(REQUEST, look)
+    finally:
+        FAILS.clear()
+    check("the row that could be read is drawn",
+          len(seen["drawn"]) == 1, str(seen["drawn"]))
+    check("the one that could not keeps its name, so it is not missing",
+          any("burrows-133-old.jpg" in line for line in seen["labels"]),
+          str(seen["labels"]))
+    check("and it can still be chosen", answer == {"row": "row-a"},
+          str(answer))
+
+
+def test_nothing_clicked_yet():
+    print()
+    print("== 9. nothing is replaced before a photo is clicked ==")
+    seen = {}
+
+    def look(window):
+        for widget in window.walk():
+            if widget.cget("text") == "Replace the selected photo":
+                widget.invoke()
+        seen["labels"] = labels_in(window)
+        seen["still_open"] = any(w.cget("text") == "Cancel this card"
+                                 for w in window.walk())
+        for widget in window.walk():
+            if widget.cget("text") == "Cancel this card":
+                widget.invoke()
+                return
+        window.destroy()
+
+    app, answer = answer_for(REQUEST, look)
+    check("the window says a photo has to be clicked first",
+          any("Click the photo" in line for line in seen["labels"]),
+          str(seen["labels"]))
+    check("the window stays open rather than answering",
+          seen["still_open"], "")
+    check("and closing it changes nothing", answer == {"cancel": True},
+          str(answer))
+
+
+def test_no_old_back_read():
+    print()
+    print("== 10. the read already proved there is no old back ==")
+    #  The report: a gallery holding only the listing's own front. Asking
+    #  "which of these is the old back?" offers the front as a candidate and
+    #  there is no right answer - so the app answers it from the read it took.
+    front = "https://store.example/u/burrows-133.webp"
+    seen = {"opened": False}
+
+    def look(window):
+        seen["opened"] = True
+        window.destroy()
+
+    app = make_app()
+    app._photo_read = {"title": REQUEST["title"], "current": front,
+                       "rows": [{"id": "row-a", "imageUrl": front,
+                                 "sortOrder": 1}]}
+    request = dict(REQUEST, rows=[{"id": "row-a",
+                                   "filename": "burrows-133.webp",
+                                   "sortOrder": 1, "url": front}])
+    answer = answer_for(request, look, app=app)[1]
+    check("no window opens", not seen["opened"], "")
+    check("the new back is added beside the front", answer == {"row": None},
+          str(answer))
+    check("and the console says why the question was not asked",
+          any("no old back to replace" in line for _tag, line in app.lines),
+          str(app.lines))
+
+    seen["opened"] = False
+    app = make_app()
+    app._photo_read = {"title": REQUEST["title"], "current": front,
+                       "rows": []}
+    answer = answer_for(dict(REQUEST, rows=[]), look, app=app)[1]
+    check("an empty gallery is the same answer", answer == {"row": None},
+          str(answer))
+    check("and it is answered without a window", not seen["opened"], "")
+
+    #  Anything the read could not prove falls back to the question.
+    for label, read in (
+            ("a second row that could be a back",
+             {"title": REQUEST["title"], "current": front,
+              "rows": [{"id": "row-a", "imageUrl": front, "sortOrder": 1},
+                       {"id": "row-b", "imageUrl": "https://x/other.jpg",
+                        "sortOrder": 2}]}),
+            ("a different listing",
+             {"title": "Some other card", "current": front,
+              "rows": [{"id": "row-a", "imageUrl": front, "sortOrder": 1}]}),
+            ("a gallery nobody could read",
+             {"title": REQUEST["title"], "current": front, "rows": None}),
+            ("a photo the app never read",
+             {"title": REQUEST["title"], "current": front,
+              "rows": [{"id": "row-a", "imageUrl": front, "sortOrder": 1}]})):
+        asked = {"opened": False}
+
+        def look_more(window):
+            asked["opened"] = True
+            window.destroy()
+
+        app = make_app()
+        app._photo_read = read
+        request = dict(REQUEST, rows=[{"id": "row-z", "filename": "z.jpg",
+                                       "sortOrder": 1}])
+        if label == "a photo the app never read":
+            request = dict(REQUEST, rows=[{"id": "row-z", "filename": "z.jpg",
+                                           "sortOrder": 1}])
+        else:
+            request = dict(REQUEST)
+        answer = answer_for(request, look_more, app=app)[1]
+        check("with %s the seller is still asked" % label, asked["opened"] and
+              answer == {"cancel": True}, str((asked, answer)))
 
 
 def test_unknown_type():
     print()
-    print("== 8. an unknown request still answers safely ==")
+    print("== 11. an unknown request still answers safely ==")
     app = make_app()
     answer = app.handle_tool_dialog({"type": "something_new"})
     check("an unknown type answers an empty object", answer == {}, str(answer))
@@ -385,7 +624,7 @@ def make_progress_app(running=True):
 
 def test_progress_markers():
     print()
-    print("== 9. a long step moves a bar instead of printing gibberish ==")
+    print("== 12. a long step moves a bar instead of printing gibberish ==")
     app = make_progress_app()
     runner = gui.Runner(app)
     runner.send = lambda text: None
@@ -461,7 +700,7 @@ def test_progress_ends_with_the_step():
     plainly still going, which reads as a bar that is stuck.
     """
     print()
-    print("== 10. the bar ends with the step that owns it ==")
+    print("== 13. the bar ends with the step that owns it ==")
     app = make_progress_app()
     runner = gui.Runner(app)
     runner.send = lambda text: None
@@ -526,7 +765,7 @@ def test_windows_only_suite_calls_real_methods():
     that class of mistake here, in a second.
     """
     print()
-    print("== 11. the Windows-only suite only calls things that exist ==")
+    print("== 14. the Windows-only suite only calls things that exist ==")
     import ast
     app_dir = Path(__file__).resolve().parent
     gui_tree = ast.parse((app_dir / "gui.py").read_text(encoding="utf-8"))
@@ -587,7 +826,10 @@ def main():
     test_untouched_window()
     test_add_disallowed()
     test_one_row()
-    test_row_without_id()
+    test_one_row_is_shown()
+    test_photo_that_cannot_be_downloaded()
+    test_nothing_clicked_yet()
+    test_no_old_back_read()
     test_unknown_type()
     test_progress_markers()
     test_progress_ends_with_the_step()

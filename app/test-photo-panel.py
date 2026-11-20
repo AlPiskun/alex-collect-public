@@ -476,6 +476,25 @@ SHEET_CALLS = []
 QUESTIONS = []
 
 
+def run_synchronously(_app, work, done):
+    """Do a slow call on this thread; a test cannot wait for a thread.
+
+    The panels hand every network answer back through in_background(), which
+    starts a thread and returns through app.after(). Firing that callback from
+    the thread would race the window that is waiting for its pictures.
+    """
+    try:
+        result, error = work(), None
+    except Exception as exc:          # noqa: BLE001 - the panel draws it
+        result, error = None, exc
+    done(result, error)
+
+
+def fake_photo(url, **_kwargs):
+    """A gallery photo in a test: the shop is not on this machine."""
+    return b"picture"
+
+
 def drive(app, sheet, yes_for=(), nocancel=None, wordpress=("owner", "pw"),
           site="https://shop.example", product=None, press=None,
           scancount=1, found=True, cards=1):
@@ -878,14 +897,16 @@ def test_unreadable_old_back():
     seen = {"rows": [], "asked": ""}
 
     def press(window):
-        labels = [w.cget("text") for w in window.walk()]
+        labels = [str(w.cget("text")) for w in window.walk()]
         if "Remove this photo from the product" in labels:
-            listing = next(w for w in window.walk()
-                           if w._kw.get("height") == 8)
-            seen["rows"] = list(listing.items)
-            wanted = [i for i, text in enumerate(seen["rows"])
-                      if "IMG_2232" in text]
-            listing.selection_set(wanted[0] if wanted else 0)
+            #  Every photo the gallery holds that says nothing is offered as a
+            #  picture; the one being replaced as the front is not.
+            seen["rows"] = [line for line in labels
+                            if line.startswith("position")]
+            for w in window.walk():
+                if "IMG_2232" in str(w.cget("text")):
+                    w.event_generate("<Button-1>")
+                    break
             for w in window.walk():
                 if w.cget("text") == "Remove this photo from the product":
                     w.invoke()
@@ -896,9 +917,19 @@ def test_unreadable_old_back():
                 return
         window.destroy()
 
+    drawn = []
+
+    def draw(cells, index, path, keep, size=(112, 150)):
+        """The picture that would be drawn in that cell; no image support here."""
+        drawn.append(str(path))
+        return True
+
     UPLOADED.clear()
     QUESTIONS.clear()
-    with patch.object(gui.woo_media, "replace_product_photos", capture_upload):
+    with patch.object(gui.woo_media, "replace_product_photos", capture_upload), \
+            patch.object(gui, "in_background", run_synchronously), \
+            patch.object(gui.cs_products, "fetch_bytes", fake_photo), \
+            patch.object(gui, "show_in_cell", draw):
         drive(app, sheet, scancount=1, press=press, nocancel=True,
               product=unreadable)
     for title, message in QUESTIONS:
@@ -906,6 +937,15 @@ def test_unreadable_old_back():
             seen["asked"] = message
 
     check("the old back is asked about, not guessed", seen["rows"] != [],
+          str(seen["rows"]))
+    names = " ".join(Path(path).name for path in drawn)
+    check("each candidate is a picture to click, not a name to read",
+          "img-2232" in names and "certificate" in names, str(drawn))
+    check("and no candidate is left out, so one picture is not the choice",
+          len(drawn) >= 2, str(drawn))
+    check("and its name is written underneath it",
+          any("IMG_2232.jpg" in row for row in seen["rows"]) and
+          any("certificate.jpg" in row for row in seen["rows"]),
           str(seen["rows"]))
     check("the photo already treated as the front is not offered again",
           all("IMG_2231" not in row for row in seen["rows"]),
@@ -951,7 +991,9 @@ def test_old_back_kept_when_asked_to():
         window.destroy()
 
     UPLOADED.clear()
-    with patch.object(gui.woo_media, "replace_product_photos", capture_upload):
+    with patch.object(gui.woo_media, "replace_product_photos", capture_upload), \
+            patch.object(gui, "in_background", run_synchronously), \
+            patch.object(gui.cs_products, "fetch_bytes", fake_photo):
         drive(app, sheet, scancount=1, press=press, nocancel=False,
               product=unreadable)
     check("answering No keeps every existing photo",
