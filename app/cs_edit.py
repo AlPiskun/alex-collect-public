@@ -1492,10 +1492,12 @@ def uneditable_note(failures=0):
     said = ("Editing one of these is not something reading again can fix: the "
             "plugin's update action finds the listing but refuses to write "
             "without an explicit product reference, and these records carry "
-            "none. Title, price and state have to be changed in the vendor "
-            "dashboard. Stock counts are the one exception in address: the "
-            "comparison panel's stock.set names the listing itself, so a "
-            "missing product id does not stand in its way.")
+            "none. Title and price have to be changed in the vendor dashboard. "
+            "Two things do have a road of their own, because both name the "
+            "listing itself rather than its product: a stock count goes through "
+            "the comparison panel's stock.set, and a listing's state is changed "
+            "at its own record - the address its proven fields are written to - "
+            "and read back afterwards.")
     failures = int(failures or 0)
     if failures:
         said += (" %d %s not covered by that: %s lookup did not answer at "
