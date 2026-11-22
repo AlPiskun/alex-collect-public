@@ -84,7 +84,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.53"
+VERSION = "3.54"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -2296,6 +2296,9 @@ TOOLTIPS = {
     "Compare stock with Facebook": "Read your Facebook selling page with your session cookie and list only the cards whose numbers disagree",
     "Set CanadianShopper to the website's prices...": "For every compared card whose price differs, set CanadianShopper's price to the website's - always shown and confirmed first, written to each listing's own record, and only for a field a proof has settled; your website is never touched",
     "Reprice the selected cards...": "Set CanadianShopper's price to the website's for just the rows selected, after a confirmation listing them",
+    "Put the archived cards back on sale...": "For every card this comparison found archived on CanadianShopper with stock on your website, write that one field at each listing's own record - shown and confirmed first, read back afterwards, and nothing else about the listing is touched; a draft is published instead, and your website is never changed",
+    "Put the selected cards back on sale...": "The same write for just the archived cards selected in the list, after a confirmation listing them",
+    "Archive the selected cards...": "Put the selected cards away on CanadianShopper by writing that one field at each listing's own record, read back afterwards - your website is not changed, so the card stays on sale there",
     "Set CanadianShopper to the website's counts...": "The usual fix: for every card whose two counts differ, set CanadianShopper's count to the website's count - always shown and confirmed first, write permission only",
     "Fix the selected cards...": "Set CanadianShopper to the website's count for just the rows selected in the list, after a confirmation listing them",
     "Set the website to the selected cards' counts...": "The reverse fix: set the website's stock count to the count the other site reports, for the selected cards - always shown and confirmed first; needs WooCommerce keys with Read/Write access",
@@ -8140,6 +8143,156 @@ def build_stock(parent, app, site_id="cs"):
                      cwd=app.settings.get("pipeline_dir", str(WORK)),
                      on_done=lambda rc: set_arrived(rc, plan, out, action))
 
+    # ---------------------------------------------------------- the state
+    def change_state(rows_wanted, to):
+        """Put cards back on sale, or archive them, at their own records.
+
+        The comparison is where a card archived on the shop and still stocked
+        on the website shows up - and until this button existed the only road
+        to it was the listing panel, one card at a time. A listing's state is
+        on the record ``/api/data/product/<listing-id>``, the address its
+        proven fields are written to, keyed by the id the comparison already
+        holds - so no product id is needed, and each write is one field, read
+        back afterwards (``cs_state``).
+
+        ``rows_wanted`` is the selection, or ``None`` for the whole list.
+        """
+        label = state["label"]
+        put_back = str(to or "").lower() == "active"
+        rows = state["rows"] if rows_wanted is None else rows_wanted
+        if rows_wanted is None and not rows:
+            messagebox.showinfo(
+                "Nothing compared yet",
+                "Press Compare first: the list is what names the cards, and "
+                "it is empty.", parent=box.winfo_toplevel())
+            return
+        plan = stock_compare.state_plan(rows, to)
+        if not plan:
+            if rows_wanted is None:
+                messagebox.showinfo(
+                    "Nothing to %s" % ("put back on sale" if put_back
+                                       else "archive"),
+                    "No card on this list is %s on %s.\n\n"
+                    "A card that is a draft is activated with \"Publish the "
+                    "ready drafts...\"; a card that only exists on your "
+                    "website is listed with \"List the selected cards on %s"
+                    "...\"; and a card archived there with nothing left on "
+                    "your website has nothing to put back on sale."
+                    % ("archived" if put_back else "on sale", label, label),
+                    parent=box.winfo_toplevel())
+                return
+            messagebox.showinfo(
+                "Which cards?",
+                "None of the selected cards is %s on %s. Select %s in the "
+                "list first - the row says which state that listing is in."
+                % ("archived" if put_back else "on sale", label,
+                   "an archived one" if put_back else "one that is on sale"),
+                parent=box.winfo_toplevel())
+            return
+        if not cs_plugin_installed(app):
+            messagebox.showinfo(
+                "The CanadianShopper plugin is not installed",
+                cs_plugin_note("Putting cards back on sale on CanadianShopper"),
+                parent=box.winfo_toplevel())
+            app.console_line(
+                "No state was changed: the CanadianShopper plugin is not "
+                "installed, and it is the piece that talks to the shop.", "err")
+            return
+        body = "\n".join(stock_compare.state_lines(plan, limit=12))
+        question = (
+            "Direction: %s  ->  %s.\n\n%s\n\n%s\n\n"
+            "Only that one field changes: each listing's own record - the "
+            "address its stock count and price are written to - is written "
+            "and read back afterwards. Your website is not changed%s. No "
+            "price, count, title or photo is touched. Write %s now?"
+            % (label, "on sale" if put_back else "archived",
+               stock_compare.state_summary(plan, label), body,
+               "" if put_back else (", so the card is still on sale there"
+                                    if len(plan) == 1 else
+                                    ", so the cards are still on sale there"),
+               "it" if len(plan) == 1 else "them"))
+        asked = ("Put %d card%s back on sale on %s?") if put_back else \
+                ("Archive %d card%s on %s?")
+        if not messagebox.askyesno(
+                asked % (len(plan), "" if len(plan) == 1 else "s", label),
+                question, parent=box.winfo_toplevel()):
+            app.console_line("The state change was not confirmed; nothing was "
+                             "written.", "dim")
+            return
+        cookie = load_cookie_text() or ""
+        summary.configure(
+            text="%s %d card%s on %s, then reading %s back..."
+            % ("Putting" if put_back else "Archiving", len(plan),
+               "" if len(plan) == 1 else "s", label,
+               "it" if len(plan) == 1 else "each"))
+        app.console_line(
+            "%s %d card%s at %s own record on %s, then reading %s back..."
+            % ("Putting" if put_back else "Archiving", len(plan),
+               "" if len(plan) == 1 else "s",
+               "that listing's" if len(plan) == 1 else "each listing's",
+               label, "it" if len(plan) == 1 else "each"), "cmd")
+
+        def work():
+            answers = []
+            for item in plan:
+                listing_id = str(item["id"])
+                answers.append((item, cs_state.change(
+                    cs_record.url_for(listing_id, CS_HOME), cookie,
+                    item["to"], expect=item["expect"], listing_id=listing_id,
+                    listing={"name": item["card"]})))
+            return answers
+
+        def arrived(answers, error):
+            if error is not None:
+                app.console_line(
+                    "The state could not be changed: %s. Nothing was changed "
+                    "by this attempt." % error, "err")
+                summary.configure(text="The state could not be changed: %s"
+                                       % error)
+                return
+            moved = 0
+            for item, result in answers:
+                app.console_line(
+                    cs_state.sentence(result, item.get("card") or ""),
+                    "ok" if cs_state.changed(result) else "err")
+                if not cs_state.changed(result):
+                    continue
+                moved += 1
+                #  The comparison's own picture of the card moves with the
+                #  site, so the list stops offering a change that is done.
+                for pair in state.get("pairs") or []:
+                    if str((pair.get("other") or {}).get("id")) == item["id"]:
+                        pair["other"]["status"] = result["to"]
+                for listing_item in state.get("only_other") or []:
+                    if str(listing_item.get("id")) == item["id"]:
+                        listing_item["status"] = result["to"]
+            if moved:
+                done = ("%s %d card%s on %s, read back after the write (your "
+                        "website was not changed)" %
+                        ("put back on sale" if put_back else "archived",
+                         moved, "" if moved == 1 else "s", label))
+                if moved < len(answers):
+                    done += "; %d could not be changed" % (len(answers) - moved)
+                app.console_line(done + ". Compare again to confirm.", "ok")
+                summary.configure(text=done + ". Compare again to confirm.")
+                redraw()
+            else:
+                summary.configure(text="The state was not changed.")
+                app.console_line(
+                    "The site did not accept the state change, so the list is "
+                    "unchanged.", "err")
+
+        in_background(app, work, arrived)
+
+    def put_back_all():
+        change_state(None, "active")
+
+    def put_back_selected():
+        change_state(selected_rows(), "active")
+
+    def archive_selected():
+        change_state(selected_rows(), "archived")
+
     # ------------------------------------------------------------- repricing
     def reprice(rows_wanted):
         """Set CanadianShopper's prices to the website's - on the proven field.
@@ -10251,6 +10404,21 @@ def build_stock(parent, app, site_id="cs"):
                    command=reprice_all).pack(side="left")
         ttk.Button(third, text="Reprice the selected cards...",
                    command=reprice_selected).pack(side="left", padx=6)
+        #  The state of a listing, in the one place a card archived on the
+        #  shop and still stocked on the website is already named: the same
+        #  single-field write the listing panel makes, at the listing's own
+        #  record, offered for the whole list and for a selection.
+        state_row = ttk.Frame(cs_rows)
+        state_row.pack(anchor="w", pady=(3, 0))
+        ttk.Button(state_row, text="Put the archived cards back on sale...",
+                   style="Task.TButton",
+                   command=put_back_all).pack(side="left")
+        ttk.Button(state_row, text="Put the selected cards back on sale...",
+                   command=put_back_selected).pack(side="left", padx=6)
+        state_row2 = ttk.Frame(cs_rows)
+        state_row2.pack(anchor="w", pady=(3, 0))
+        ttk.Button(state_row2, text="Archive the selected cards...",
+                   command=archive_selected).pack(side="left")
         third_l = ttk.Frame(cs_rows)
         third_l.pack(anchor="w", pady=(3, 0))
         ttk.Button(third_l, text="List the selected cards on CanadianShopper...",

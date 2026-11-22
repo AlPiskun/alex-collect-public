@@ -1083,8 +1083,10 @@ listings themselves:
   reports no product ids can still have its stock corrected.
 - **A listing's state is not blocked by it either.** The record at
   `/api/data/product/<listing-id>` is keyed by the id the reader reports and
-  carries the listing's `status`, so **Archive** and **Put on sale** write that
-  one field there - one request per listing, the record read before it (its own
+  carries the listing's `status`, so **Archive** and **Put on sale** - on the
+  listing panel, and in the comparison panel as **Put the archived cards back
+  on sale...**, **Put the selected cards back on sale...** and **Archive the
+  selected cards...** - write that one field there - one request per listing, the record read before it (its own
   id must be the listing that was chosen, and its state must be the one the
   person confirmed) and read again afterwards (see `cs_state`). A site that
   answers 200 and keeps the old state is reported as having kept it, in those
