@@ -4950,6 +4950,129 @@ def test_the_panel_offers_the_state_change():
           str(said[:1]) + str(sent))
 
 
+def test_the_comparison_deletes_a_card_from_the_shop():
+    """Deleting from the comparison: a selected card, a record, one word.
+
+    The list is the place a duplicate or a dead listing is seen, so the button
+    belongs here - but deleting is one card's business, never the list's, and
+    it is the one action in this panel that cannot be undone from it. What the
+    checks hold it to: nothing selected deletes nothing, a card that is only on
+    the website has nothing there to delete, and the card that is deleted is
+    sent as one DELETE to its own record, after the word was typed.
+    """
+    print()
+    print("== 40. the comparison deletes a card from the shop, at its record ==")
+    folder, app, parent = build_panel()
+    products = [
+        {"id": 11, "name": "1989 O-Pee-Chee Wayne Gretzky #1", "sku": "GR-1",
+         "manage_stock": True, "stock_quantity": 2, "type": "simple"},
+        {"id": 12, "name": "1966-67 Topps Bobby Orr #35", "sku": "BO-35",
+         "manage_stock": True, "stock_quantity": 1, "type": "simple"},
+    ]
+    listings = [{"id": "cs-a", "title": "1989 O-Pee-Chee Wayne Gretzky #1",
+                 "sku": "GR-1", "inventory": 1, "status": "Archived"}]
+
+    def fetch_ok(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    harness._BOX.shown[:] = []
+    shown = harness._BOX.shown
+    harness._BOX.showinfo = (lambda kind: lambda *a, **k:
+                             harness._BOX.shown.append((kind, a)))("showinfo")
+    deleted, typed = [], []
+
+    def fake_remove(url, cookie_text, listing_id="", listing=None, **kwargs):
+        deleted.append({"url": url, "id": listing_id,
+                        "name": (listing or {}).get("name") or ""})
+        return {"verdict": "deleted", "deleted": True,
+                "card": (listing or {}).get("name") or "",
+                "why": "The record is gone, read back after the delete."}
+
+    cookie = folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+
+    def press(button, answer="DELETE"):
+        with patch.object(gui, "simpledialog") as prompt, \
+                patch.object(gui.cs_state, "remove", fake_remove), \
+                patch.object(gui, "in_background", sync_background), \
+                patch.object(gui, "CS_COOKIE_FILE", cookie):
+            prompt.askstring = lambda title, message="", **k: (
+                typed.append((title, message)), answer)[1]
+            button.invoke()
+
+    button = find(parent, gui.ttk.Button, "Delete the selected cards...")
+    check("the comparison offers to delete a selected card",
+          button is not None,
+          str([w.cget("text") for w in parent.walk()
+               if isinstance(w, gui.ttk.Button)]))
+    app.lines[:] = []
+    press(button)
+    check("with nothing compared it asks which card, and deletes nothing",
+          shown and "Which cards?" in shown[-1][1][0] and not deleted,
+          str(shown[-1:]) + str(deleted))
+
+    compare = find(parent, gui.ttk.Button, "Compare stock", exact=False)
+    out = folder / "cs-stock.json"
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_ok), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        compare.invoke()
+        out.write_text(json.dumps({"items": listings}), encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+    listing = next(w for w in parent.walk() if isinstance(w, gui.tk.Listbox))
+    rows = list(listing.items)
+    archived = next(index for index, text in enumerate(rows)
+                    if "Archived" in text)
+    website_only = next(index for index, text in enumerate(rows)
+                        if "only" in text and "not on CanadianShopper" in text)
+
+    #  A card that exists on the website and nowhere else: there is no listing
+    #  on the shop to delete, and saying that is the whole answer.
+    shown[:] = []
+    app.lines[:] = []
+    listing.selection_set(website_only)
+    press(button)
+    check("a website-only card has no listing to delete, and says so",
+          shown and "Nothing to delete" in shown[-1][1][0] and not deleted and
+          not typed, str(shown[-1:]) + str(deleted))
+
+    shown[:] = []
+    app.lines[:] = []
+    listing.selection_set(archived)
+    press(button, None)
+    check("closing the question deletes nothing", not deleted, str(deleted))
+
+    press(button, "yes")
+    check("another word is not the word", not deleted, str(deleted))
+
+    app.lines[:] = []
+    press(button, " DELETE ")
+    check("the word deletes that one card, at its own record",
+          len(deleted) == 1 and deleted[0]["id"] == "cs-a" and
+          deleted[0]["url"].endswith("/api/data/product/cs-a"),
+          str(deleted))
+    check("the question named the card, its id and the word to type",
+          typed and "Gretzky" in typed[-1][1] and "cs-a" in typed[-1][1] and
+          "Type DELETE" in typed[-1][1], str(typed[-1:]))
+    check("and said the website and the photos are left alone",
+          typed and "Your website is not changed" in typed[-1][1] and
+          "photos" in typed[-1][1], str(typed[-1:]))
+    check("the console says the record is gone, read back after it",
+          any("record is gone" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("the card leaves the list, because it is not there any more",
+          all("Gretzky" not in text for text in listing.items),
+          str(listing.items))
+
+    harness._BOX.showinfo = (lambda kind: lambda *a, **k:
+                             harness._BOX.shown.append((kind, a)))("showinfo")
+
+
 def main():
     test_woo_items()
     test_plugin_items()
@@ -5003,6 +5126,7 @@ def main():
     test_a_listing_that_reports_everything()
     test_the_state_road_from_the_comparison()
     test_the_panel_offers_the_state_change()
+    test_the_comparison_deletes_a_card_from_the_shop()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))

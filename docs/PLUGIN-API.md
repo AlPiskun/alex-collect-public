@@ -539,6 +539,47 @@ what it is: the reader and the endpoint the plugin writes to are naming the
 listing by different keys, nothing on the site was changed, and the fix is in
 the plugin, not in the app.
 
+### Deleting a listing at its own record - `DELETE /api/data/product/<id>`
+
+The plugin has no delete action, and `marketplace.listing_update` never removes
+anything: its own contract says so. A listing that should not exist any more -
+a duplicate, a scrap card listed by mistake - is therefore deleted by the core
+at the address every other record write already uses:
+
+```
+DELETE /api/data/product/<listing-id>
+```
+
+with the person's session cookie and no body. `cs_state.remove` is what makes
+that safe, and it is the same three steps as a state change:
+
+1. **the record is read first**, and its own id has to be the listing that was
+   chosen - a record naming anything else sends nothing, because deleting the
+   wrong listing is the one mistake this must never make;
+2. **the delete is sent**, one listing at a time, never as a list;
+3. **the record is read again**, because *gone*, *in the site's bin* and *still
+   there* are three different answers and only one of them is a deletion -
+   `deleted` (the record answers 404/410), `trashed` (the site kept the record
+   and marked it with a bin word, so it is out of the shop and restorable from
+   the dashboard), `left` (the site accepted the request and the record is
+   unchanged, so nothing was deleted here), `refused` (with the site's own
+   status - a 403/405/501 is said to mean this address does not take a delete,
+   and the dashboard is named), `unreadable` (nothing was sent) or `unknown`
+   (accepted, and the read-back could not be made - check it by hand).
+
+The word **DELETE** has to be typed beside the listings it will delete, once,
+in the same dialog that names them with their ids - the same standard the
+publisher holds the person to, and the only click in this app that cannot be
+undone from it. It is offered in two places, both on a selection and never on a
+whole list: the comparison panel's **Delete the selected cards...** and the
+listing panel's **Delete the selected listing...**.
+
+Two limits are stated rather than hidden. The app does not touch the listing's
+gallery rows (`productImage`) - that is the gallery's own road - and it does
+not touch the website, so a card deleted on the shop is still on sale there;
+the confirmation says both. Nothing about a delete is inferred from the status
+code alone, and no listing is ever deleted because a list said it was missing.
+
 ### Reading to compare, and reading to edit
 
 `stock.list` is called for two different jobs, and they do not need the same

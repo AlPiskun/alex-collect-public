@@ -31,6 +31,10 @@ So the rules here are short and hard:
   field is reported as written, ignored (the record still shows the old value),
   or unknown (the read-back said nothing) - never guessed.
 
+A listing can also be *deleted* here (``delete_record``), which is not a field
+and not a state: it removes the record itself, and ``cs_state.remove`` is what
+decides whether that may happen and what the site did.
+
 ``status`` is not a field here at all: it is not one a proof can settle (see
 ``cs_proof.UNPROVABLE``), so it is never part of a form's worth of fields and
 never rides along with one. A state change is a person's explicit change rather
@@ -376,6 +380,39 @@ def send_fields(url, cookie, payload, opener=None, timeout=25):
 
 #: The old name of the sender, kept because a caller (and a test) may name it.
 send_price = send_fields
+
+
+def delete_record(url, cookie, opener=None, timeout=25):
+    """``DELETE`` one record - the listing itself; ``(status, body)``.
+
+    The same address a field is written to, with the method that removes the
+    record rather than changing it, and the person's own session cookie. No
+    body: there is nothing to say about a row that is going away, and a body is
+    how a request that meant one thing becomes another.
+
+    Nothing here decides whether the listing *should* go: ``cs_state.remove``
+    reads the record first, checks that it names the listing, sends this, and
+    reads the record again to say what the site actually did.
+    """
+    if opener is not None:
+        return opener(url, cookie)
+    request = urllib.request.Request(
+        url, method="DELETE",
+        headers={"User-Agent": "Mozilla/5.0 (AlexCollect-GUI)",
+                 "Accept": "application/json",
+                 "Cookie": str(cookie or "")})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return (getattr(response, "status", 200),
+                    response.read(200000).decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read(200000).decode("utf-8", "replace")
+        except Exception:
+            body = ""
+        return exc.code, body
+    except Exception as exc:
+        return 0, str(exc)
 
 
 def update(url, cookie, changes, expect_id="", listing=None, proofs=None,
