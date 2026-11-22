@@ -8,9 +8,11 @@ dashboards and reading very similar titles, which is exactly the kind of job
 that gets skipped.
 
 This module is the read-only half: two lists of (card, quantity) go in, the
-cards are matched up, and only the pairs whose numbers disagree come out. No
-Tk, no network (the GET and the plugin's file are both injected), and nothing
-is written anywhere.
+cards are matched up, and only the pairs whose numbers disagree come out - and,
+beside them, the cards whose *state* differs, as a plan of one-field changes
+that the panel confirms and ``cs_state`` writes. No Tk, no network (the GET and
+the plugin's file are both injected), and nothing is written anywhere here:
+``state_plan`` names what a state change would do, it does not do it.
 
 Matching is deliberately conservative. A wrong pair would report stock trouble
 on a card that is fine, and a missed pair only means it was not compared - so
@@ -293,6 +295,100 @@ def status_words(item):
     if kind == "draft":
         return "a %s" % (raw or "draft")
     return raw or kind
+
+
+#: The two states a listing can be moved to from this panel, and the words a
+#: person reads for them.
+STATE_WORDS = {"active": "on sale", "archived": "archived"}
+
+
+def state_word(kind):
+    """The words a person reads for a state."""
+    return STATE_WORDS.get(str(kind or "").strip().lower(),
+                           str(kind or "").strip() or "not on sale")
+
+
+def next_state(row):
+    """The state a row's other-site listing is in now, as this panel names it.
+
+    A row carries its state twice: ``status`` is the folded kind the list is
+    sorted and counted by - every off-sale word becomes one word, which is
+    right for a tally - and ``state`` is the vendor's own word ("Archived",
+    "Hidden"). Which one is archived has to be read from the vendor's word,
+    because the folded kind has already lost the difference.
+    """
+    row = row or {}
+    if is_archived({"status": row.get("state") or row.get("status")}):
+        return "archived"
+    kind = str(row.get("status") or "").strip().lower()
+    if kind in ("", "active"):
+        return "active"
+    return kind
+
+
+def state_rows(rows, to):
+    """The rows a state change can act on, in the order they are shown.
+
+    ``to`` is ``active`` or ``archived``. A card can be put back on sale when
+    the other site archived it - archived is the one off-sale state the vendor
+    says is over, while a draft is one publish away and a hidden card has a
+    reason this app does not know. A card can be archived when the other site
+    still has it on sale. Either way the row has to name its listing: a card
+    the other site does not have has no state here to change.
+    """
+    wanted = str(to or "").strip().lower()
+    if wanted not in STATE_WORDS:
+        return []
+    held = "archived" if wanted == "active" else "active"
+    found = []
+    for row in rows or []:
+        if row.get("other_id") in (None, ""):
+            continue
+        if next_state(row) != held:
+            continue
+        found.append(row)
+    return found
+
+
+def state_plan(rows, to):
+    """What a state change would do, one row at a time.
+
+    The same shape the other plans here have: only the rows that need the
+    change, each one carrying what it is now and what it would become, so a
+    confirmation can name them and a writer needs nothing else.
+    """
+    wanted = str(to or "").strip().lower()
+    plan = []
+    for row in state_rows(rows, to):
+        plan.append({"card": row.get("card") or "",
+                     "id": str(row.get("other_id")),
+                     "state": next_state(row),
+                     "expect": str(row.get("state") or ""),
+                     "to": wanted,
+                     "woo": row.get("woo"),
+                     "other": row.get("other")})
+    return plan
+
+
+def state_lines(plan, other_label="CanadianShopper", limit=None):
+    """The confirmation's lines: one card per line, the change it gets."""
+    lines = ["  %s - %s -> %s" % (item.get("card") or "",
+                                  state_word(item.get("state")),
+                                  state_word(item.get("to")))
+             for item in plan or []]
+    if limit is not None and len(lines) > limit:
+        lines = lines[:limit] + ["  ... and %d more" % (len(lines) - limit)]
+    return lines
+
+
+def state_summary(plan, other_label="CanadianShopper"):
+    """One line saying which way the change goes and what is not touched."""
+    if not plan:
+        return ""
+    to = plan[0].get("to")
+    return ("%d card%s on %s: %s." %
+            (len(plan), "" if len(plan) == 1 else "s", other_label,
+             "put back on sale" if to == "active" else "archived"))
 
 
 #: Names a reader may use for the id its *write* endpoint takes, beside the

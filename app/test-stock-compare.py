@@ -4723,6 +4723,233 @@ def test_a_listing_that_reports_everything():
           item.get("gallery") == item["images"][1:], str(item.get("images")))
 
 
+def test_the_state_road_from_the_comparison():
+    print()
+    print("== 38. the state a card is in, and the one change that puts it back ==")
+    archived = {"card": "#319 Val Fonteyne 1972-73 O-Pee-Chee", "woo": 1,
+                "other": None, "gap": 0, "by": "title", "kind": "off-sale",
+                "status": "off-sale", "state": "Archived", "woo_id": 9,
+                "woo_sku": "OPC73-91", "other_id": "a2304e72dbca",
+                "other_name": "", "other_sku": ""}
+    draft = dict(archived, status="draft", state="a draft", other_id="d2",
+                 card="A draft card")
+    on_sale = {"card": "1966-67 Topps Bobby Orr #35", "woo": 1, "other": 0,
+               "gap": 1, "by": "title", "kind": "fix", "woo_id": 12,
+               "woo_sku": "BO-35", "other_id": "cs-b", "other_name": "",
+               "other_sku": ""}
+    elsewhere = dict(archived, other_id=None, card="Only on the website")
+    rows = [archived, draft, on_sale, elsewhere]
+
+    check("archived is read from the vendor's own word, not the folded kind",
+          stock_compare.next_state(archived) == "archived",
+          stock_compare.next_state(archived))
+    check("a row with no word for its state is on sale",
+          stock_compare.next_state(on_sale) == "active",
+          stock_compare.next_state(on_sale))
+    check("a draft is not archived, so it is not put back on sale this way",
+          stock_compare.next_state(draft) == "draft",
+          stock_compare.next_state(draft))
+
+    putting_back = stock_compare.state_rows(rows, "active")
+    check("only the archived card is put back on sale",
+          [row["card"] for row in putting_back] ==
+          ["#319 Val Fonteyne 1972-73 O-Pee-Chee"], str(putting_back))
+    check("a card the shop does not list has no state to change",
+          all(row.get("other_id") for row in putting_back), str(putting_back))
+    archiving = stock_compare.state_rows(rows, "archived")
+    check("a card that is on sale can be archived from the same list",
+          [row["other_id"] for row in archiving] == ["cs-b"], str(archiving))
+    check("a state this panel does not write asks for nothing",
+          stock_compare.state_rows(rows, "draft") == [] and
+          stock_compare.state_rows(rows, "") == [], "")
+
+    plan = stock_compare.state_plan(rows, "active")
+    check("the plan names the listing it is addressed by",
+          len(plan) == 1 and plan[0]["id"] == "a2304e72dbca", str(plan))
+    check("and the state the list showed, to check before writing",
+          plan and plan[0]["expect"] == "Archived" and plan[0]["to"] == "active",
+          str(plan))
+    check("the confirmation line reads old state, then new",
+          stock_compare.state_lines(plan) ==
+          ["  #319 Val Fonteyne 1972-73 O-Pee-Chee - archived -> on sale"],
+          str(stock_compare.state_lines(plan)))
+    check("the summary says which way the change goes",
+          "put back on sale" in stock_compare.state_summary(plan) and
+          "archived" in stock_compare.state_summary(
+              stock_compare.state_plan(rows, "archived")),
+          stock_compare.state_summary(plan))
+    check("a long plan is cut with a count",
+          stock_compare.state_lines(plan * 20, limit=5)[-1] ==
+          "  ... and 15 more", str(stock_compare.state_lines(plan * 20,
+                                                             limit=5)[-5:]))
+
+    #  The subtle part: the row that reaches the button comes out of the
+    #  comparison, where the vendor's word travels beside the folded kind.
+    other = stock_compare.plugin_items(
+        [{"id": "cs-a", "title": "1989 O-Pee-Chee Wayne Gretzky #1",
+          "sku": "GR-1", "inventory": 1, "status": "Archived"}])
+    woo = [{"name": "1989 O-Pee-Chee Wayne Gretzky #1", "sku": "GR-1",
+            "qty": 2, "id": 1}]
+    pairs, only_woo, only_other = stock_compare.pair(woo, other)
+    listed = stock_compare.action_list(pairs, only_woo, only_other, [],
+                                      "CanadianShopper")
+    plan = stock_compare.state_plan(listed, "active")
+    check("a card archived on the shop arrives as a row that can be put back",
+          len(plan) == 1 and plan[0]["id"] == "cs-a", str(plan))
+    check("with the vendor's word as the state to check, not the folded one",
+          plan and plan[0]["expect"] == "Archived", str(plan))
+
+
+def test_the_panel_offers_the_state_change():
+    print()
+    print("== 39. the comparison offers the state change, and writes one field ==")
+    folder, app, parent = build_panel()
+    products = [{"id": 11, "name": "1989 O-Pee-Chee Wayne Gretzky #1",
+                 "sku": "GR-1", "manage_stock": True, "stock_quantity": 2,
+                 "type": "simple"}]
+    listings = [{"id": "cs-a", "title": "1989 O-Pee-Chee Wayne Gretzky #1",
+                 "sku": "GR-1", "inventory": 1, "status": "Archived"}]
+
+    def fetch_ok(base, path, params, key, secret):
+        return (200, products) if params["page"] == 1 else (200, [])
+
+    compare = find(parent, gui.ttk.Button, "Compare stock", exact=False)
+    out = folder / "cs-stock.json"
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "read_woo_credentials",
+                         lambda path=None: ("https://shop.example", "ck_a",
+                                            "cs_b")), \
+            patch.object(gui, "woo_get", fetch_ok), \
+            patch.object(gui, "in_background", sync_background), \
+            patch.object(gui, "BASE", folder):
+        compare.invoke()
+        out.write_text(json.dumps({"items": listings}), encoding="utf-8")
+        app.runs[-1]["on_done"](0)
+    listing = next(w for w in parent.walk() if isinstance(w, gui.tk.Listbox))
+    check("the archived card is on the list, named as archived",
+          listing.items and "Archived" in listing.items[0],
+          str(listing.items))
+    button = find(parent, gui.ttk.Button,
+                  "Put the archived cards back on sale...")
+    check("the panel offers to put it back on sale", button is not None,
+          str([w.cget("text") for w in parent.walk()
+               if isinstance(w, gui.ttk.Button)]))
+    check("and offers the selection and the other direction too",
+          find(parent, gui.ttk.Button,
+               "Put the selected cards back on sale...") is not None and
+          find(parent, gui.ttk.Button,
+               "Archive the selected cards...") is not None, "")
+    check("every one of those buttons says what it does on hover",
+          all(gui.tip_for(text) for text in
+              ("Put the archived cards back on sale...",
+               "Put the selected cards back on sale...",
+               "Archive the selected cards...")), "")
+
+    said, asked, sent = [], [], []
+
+    def fake_change(url, cookie_text, to, **kwargs):
+        sent.append(dict(kwargs, url=url, to=to, cookie=cookie_text))
+        return {"verdict": "written", "written": True, "to": to,
+                "was": "archived", "now": to, "why": "", "status": 200,
+                "card": (kwargs.get("listing") or {}).get("name") or ""}
+
+    harness._BOX.showinfo = lambda *a, **k: said.append(a)
+    harness._BOX.askyesno = lambda title, question="", **kw: (
+        asked.append((title, question)), True)[1]
+    cookie = folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+    runs_before = len(app.runs)
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui.cs_state, "change", fake_change), \
+            patch.object(gui, "in_background", sync_background):
+        button.invoke()
+    check("the confirmation names the card and the change",
+          asked and "Gretzky" in asked[0][1] and "- archived -> on sale" in
+          asked[0][1], str(asked[:1]))
+    check("it says which way the change goes",
+          asked and "CanadianShopper  ->  on sale" in asked[0][1],
+          str(asked[:1]))
+    check("and that the website is not changed",
+          asked and "Your website is not changed" in asked[0][1],
+          str(asked[:1]))
+    check("it says the record is written and read back",
+          asked and "read back afterwards" in asked[0][1], str(asked[:1]))
+    check("one request, one field, at the listing's own record",
+          len(sent) == 1 and sent[0]["url"].endswith(
+              "/api/data/product/cs-a") and sent[0]["to"] == "active" and
+          sent[0]["listing_id"] == "cs-a", str(sent))
+    check("the state the list showed is the one expected there",
+          sent and sent[0].get("expect") == "Archived", str(sent))
+    check("the site's own answer is what is reported",
+          any("read back after the write" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("the chatty tool is not run for a state change",
+          len(app.runs) == runs_before, str(app.runs[runs_before:]))
+
+    #  The put-back worked, so the card is on sale - and the counts now
+    #  disagree. The list says so rather than dropping the card.
+    check("the list moves on to the count, which is now the difference",
+          listing.items and "website 2" in listing.items[0] and
+          "CanadianShopper 1" in listing.items[0], str(listing.items))
+
+    #  Nothing archived: the button says which road each other case has.
+    said[:] = []
+    sent[:] = []
+    harness._BOX.showinfo = lambda *a, **k: said.append(a)
+    with patch.object(gui.cs_state, "change", fake_change):
+        find(parent, gui.ttk.Button,
+             "Put the archived cards back on sale...").invoke()
+    check("with nothing archived it says so, and starts nothing",
+          said and not sent and "Nothing to put back on sale" in said[0][0],
+          str(said[:1]) + str(sent))
+    check("and names where a draft or a website-only card is dealt with",
+          said and "Publish the ready drafts" in said[0][1] and
+          "List the selected cards" in said[0][1], str(said[:1]))
+
+    #  The other direction: a card on sale there, archived from here.
+    said[:] = []
+    asked[:] = []
+    sent[:] = []
+    harness._BOX.askyesno = lambda title, question="", **kw: (
+        asked.append((title, question)), True)[1]
+    listing.selection_set(0)
+    with patch.object(gui, "BASE", folder), \
+            patch.object(gui, "CS_COOKIE_FILE", cookie), \
+            patch.object(gui.cs_state, "change", fake_change), \
+            patch.object(gui, "in_background", sync_background):
+        find(parent, gui.ttk.Button, "Archive the selected cards...").invoke()
+    check("a card that is on sale is archived at its own record",
+          len(sent) == 1 and sent[0]["to"] == "archived" and
+          sent[0]["url"].endswith("/api/data/product/cs-a"), str(sent))
+    check("and the question says the card stays on sale on the website",
+          asked and "so the card is still on sale there" in asked[0][1],
+          str(asked[:1]))
+    check("with nothing selected it asks which card, and sends nothing",
+          not sent[1:], str(sent))
+    said[:] = []
+    listing.selection = ()
+    harness._BOX.showinfo = lambda *a, **k: said.append(a)
+    with patch.object(gui.cs_state, "change", fake_change):
+        find(parent, gui.ttk.Button, "Archive the selected cards...").invoke()
+    check("selecting nothing is answered, not acted on",
+          said and "Which cards?" in said[0][0] and len(sent) == 1,
+          str(said[:1]) + str(sent))
+
+    #  A panel that has not compared anything yet: no list, so no cards to name.
+    said[:] = []
+    sent[:] = []
+    harness._BOX.showinfo = lambda *a, **k: said.append(a)
+    empty_folder, empty_app, empty_parent = build_panel()
+    with patch.object(gui.cs_state, "change", fake_change):
+        find(empty_parent, gui.ttk.Button,
+             "Put the archived cards back on sale...").invoke()
+    check("with nothing compared at all it asks for a comparison first",
+          said and "Nothing compared yet" in said[0][0] and not sent,
+          str(said[:1]) + str(sent))
+
+
 def main():
     test_woo_items()
     test_plugin_items()
@@ -4774,6 +5001,8 @@ def main():
     test_held_under_another_product()
     test_a_reader_that_cannot_ask_for_a_fresh_page()
     test_a_listing_that_reports_everything()
+    test_the_state_road_from_the_comparison()
+    test_the_panel_offers_the_state_change()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))
