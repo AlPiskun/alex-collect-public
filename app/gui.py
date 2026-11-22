@@ -57,6 +57,7 @@ import cs_edit
 import cs_gallery
 import cs_proof
 import cs_record
+import cs_state
 import cs_stage
 import cs_listing
 import cs_picture
@@ -83,7 +84,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.52"
+VERSION = "3.53"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -10831,6 +10832,9 @@ def build_csledit(parent, app):
     # -------------------------------------------------------------- writing
     def apply_change(item, entry):
         """Send one edit to the plugin, after it has been confirmed."""
+        if (not cs_edit.product_id(entry)
+                and cs_state.changes_only_state(entry)):
+            return apply_record_states([(item, entry)])
         action = TOOL_ACTION(CS_LISTING_UPDATE_ACTION)
         if not action:
             messagebox.showinfo(
@@ -10867,7 +10871,24 @@ def build_csledit(parent, app):
         One plan file and one run, not a run per listing: the plugin's answer
         then accounts for every listing at once, and a stack of nine cards is
         one upload rather than nine.
+
+        A row with no product id whose change is the state alone does not go
+        through the plugin at all: its state is written at the listing's own
+        record, which is keyed by the id the reader reports. The record writes
+        happen first, one request each and read back, and the plugin's run
+        follows for whatever rows it can address.
         """
+        by_record = [(item, entry) for item, entry in pairs
+                     if not cs_edit.product_id(entry)
+                     and cs_state.changes_only_state(entry)
+                     and cs_edit.listing_id(item)]
+        if by_record:
+            rest = [(item, entry) for item, entry in pairs
+                    if not any(item is other for other, _entry in by_record)]
+            apply_record_states(
+                by_record,
+                then=(lambda: apply_changes(rest)) if rest else None)
+            return True
         action = TOOL_ACTION(CS_LISTING_UPDATE_ACTION)
         if not action:
             messagebox.showinfo(
@@ -11042,6 +11063,80 @@ def build_csledit(parent, app):
             summary.configure(text="The plugin reported no change.")
         return False
 
+    def apply_record_states(pairs, then=None):
+        """Change each listing's state at the listing's own record.
+
+        The road for a shop whose read names no product id: the plugin's
+        ``marketplace.listing_update`` patches ``/api/products/<product_id>/``
+        and refuses without one, while the record at
+        ``/api/data/product/<listing-id>`` is keyed by the id the listing is
+        read under and carries its state. One request per listing, read back,
+        and each answer reported in its own words - a site that accepts the
+        write and keeps the old state is said to have done exactly that.
+        """
+        pairs = [(item, entry) for item, entry in pairs
+                 if cs_edit.listing_id(item)]
+        if not pairs:
+            if then:
+                then()
+            return False
+        cookie = load_cookie_text() or ""
+        one = len(pairs) == 1
+        say("Changing the state at %s own record on CanadianShopper, then "
+            "reading it back..."
+            % ("that listing's" if one else "each listing's"), "cmd")
+        summary.configure(text="Changing the state at the listing's own "
+                               "record...")
+
+        def work():
+            answers = []
+            for item, entry in pairs:
+                listing_id = cs_edit.listing_id(item)
+                answers.append((item, entry, cs_state.change(
+                    cs_record.url_for(listing_id, CS_HOME), cookie,
+                    entry.get("status"), expect=item.get("status"),
+                    listing_id=listing_id, listing=item)))
+            return answers
+
+        def done(answers, error):
+            if error is not None:
+                say("The state could not be changed: %s. Nothing was changed."
+                    % error, "err")
+                summary.configure(text="The state could not be changed: %s"
+                                       % error)
+                if then:
+                    then()
+                return
+            moved = 0
+            for item, _entry, result in answers:
+                say(cs_state.sentence(result, item.get("name") or ""),
+                    "ok" if cs_state.changed(result) else "err")
+                if not cs_state.changed(result):
+                    continue
+                moved += 1
+                updated = cs_edit.apply_to_item(item, {"status": result["to"]})
+                state["items"] = [
+                    updated if (row is item or (
+                        item.get("id") is not None and
+                        str(row.get("id")) == str(item.get("id")))) else row
+                    for row in state["items"]]
+            if moved:
+                run_search()
+                summary.configure(
+                    text=("CanadianShopper shows it as %s now; your website "
+                          "was not touched."
+                          % cs_state.label_for(answers[0][1].get("status")))
+                    if moved == 1 else
+                    ("CanadianShopper shows %d listings changed; your website "
+                     "was not touched." % moved))
+            else:
+                summary.configure(text="The state was not changed.")
+            if then:
+                then()
+
+        in_background(app, work, done)
+        return True
+
     def addressable(item, entry):
         """Whether this row can be written at all - asked before confirming.
 
@@ -11052,6 +11147,12 @@ def build_csledit(parent, app):
         look identical until the catalogue is read again.
         """
         if cs_edit.product_id(entry) or item.get("id") is None:
+            return True
+        if cs_state.changes_only_state(entry) and cs_edit.listing_id(item):
+            #  A state change is written at the listing's own record, which is
+            #  keyed by the id the reader reports - so the plugin's refusal is
+            #  not in its way, and sending the person to the dashboard for it
+            #  was the answer this replaced.
             return True
         named = str(item.get("name") or "That listing")
         if unjudgeable():
@@ -11514,16 +11615,10 @@ def build_csledit(parent, app):
         if not rows:
             selected()                    # the question a person expects
             return
-        if unjudgeable() and any(not cs_edit.product_id(row) for row in rows):
-            #  Nothing on the list on screen can be sent: it is the comparison's
-            #  read, which asks the reader to skip the product lookups. Doing it
-            #  once here, before a plan is built, is what keeps the whole
-            #  selection - the read is followed by the same change on the same
-            #  rows.
-            read_for_change(rows,
-                            lambda: set_state(kind),
-                            "put on sale" if kind == "active" else "archived")
-            return
+        #  A state change needs no product id at all: a listing's own record
+        #  carries its state and is keyed by the id the reader reports, so a
+        #  shop whose records name no product can still have its cards put back
+        #  on sale. The read the other edits need is not asked for here.
         pairs, already = [], []
         for item in rows:
             entry = cs_edit.plan(item, status=kind)
@@ -11554,6 +11649,17 @@ def build_csledit(parent, app):
                            "are" if more else "is",
                            "on sale" if kind == "active" else "archived",
                            "they are" if more else "it is"))
+        by_record = [item for item, entry in pairs
+                     if not cs_edit.product_id(entry)
+                     and cs_state.changes_only_state(entry)]
+        if by_record:
+            more = len(by_record) > 1
+            listed += ("\n\n%s no product id, so %s state is changed at the "
+                       "listing's own record - the address its stock and price "
+                       "are written to - and read back afterwards."
+                       % ("%d of these listings have" % len(by_record) if more
+                          else "This listing has",
+                          "their" if more else "its"))
         one = len(pairs) == 1
         heading = names[0] if one else "%d listings" % len(names)
         if kind == "active":

@@ -32,7 +32,10 @@ So the rules here are short and hard:
   or unknown (the read-back said nothing) - never guessed.
 
 ``status`` is not a field here at all: it is not one a proof can settle (see
-``cs_proof.UNPROVABLE``), so there is nothing to send and no button for it.
+``cs_proof.UNPROVABLE``), so it is never part of a form's worth of fields and
+never rides along with one. A state change is a person's explicit change rather
+than a trial, and it has its own module and its own single request - see
+``cs_state``, which reads the record, writes the one field, and reads it back.
 
 Nothing here touches the website, the plugin, or ``/api/products/...``.
 """

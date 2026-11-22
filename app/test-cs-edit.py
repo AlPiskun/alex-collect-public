@@ -815,11 +815,13 @@ def test_a_list_read_before_product_ids():
           cs_edit.replan(cs_edit.plan(items()[0], inventory=9), same) is None,
           str(cs_edit.replan(cs_edit.plan(items()[0], inventory=9), same)))
 
-    # ---- the panel asks before spending a write that could only fail
+    # ---- a state change needs no product id: it is written at the record
     #
-    #  One row without a product id among rows that have one: a list read
-    #  before this listing had one, or a listing the plugin has just started
-    #  reporting. Either way one read settles it.
+    #  The read this was written for named no product id for 2,704 of 2,704
+    #  listings, and "put this card back on sale" was answered with a paragraph
+    #  about the vendor's data and a trip to the dashboard. The listing's own
+    #  record carries its state and is keyed by the id the reader reports, so
+    #  the state is changed there, read back, and nothing else is touched.
     mixed = [dict(row) for row in LISTINGS]
     mixed[1].pop("product_id")            # Watson: no product id
     folder, app, parent = build_panel()
@@ -831,30 +833,58 @@ def test_a_list_read_before_product_ids():
               for _tag, text in app.lines), str(app.lines[-4:]))
     find(parent, gui.ttk.Button, "Search").invoke()
     select(parent, "Watson")
-    answers = []
-    harness._BOX.askyesno = lambda title, *a, **k: (answers.append(title),
+    asked = []
+    harness._BOX.askyesno = lambda title, *a, **k: (asked.append(title),
                                                    True)[1]
+    sent = []
+
+    def fake_state(url, cookie, to, expect=None, listing_id="", listing=None,
+                   **kwargs):
+        sent.append({"url": url, "to": to, "expect": expect, "id": listing_id})
+        return {"verdict": "written", "to": to, "was": "archived",
+                "now": "active", "written": True, "why": "",
+                "card": (listing or {}).get("name") or ""}
+
+    def sync_background(app_, work, done):
+        return done(work(), None)
 
     def tools(action):
         #  Both actions stay resolvable for the whole sequence: the retry is a
-        #  read followed by another write, and a test that only patched the
-        #  write would be testing a read that never starts.
+        #  read followed by a write, and a test that only patched the write
+        #  would be testing a read that never starts.
         return ("/plugins/cs/edit.py" if action == gui.CS_LISTING_UPDATE_ACTION
                 else "/plugins/cs/stock.py")
 
     runs_before = len(app.runs)
-    with patch.object(gui, "TOOL_ACTION", tools):
-        find(parent, gui.ttk.Button,
-             "Put on sale").invoke()
-    check("a row with no product id sends no write at all",
+    with patch.object(gui, "TOOL_ACTION", tools), \
+            patch.object(gui.cs_state, "change", fake_state), \
+            patch.object(gui, "in_background", sync_background):
+        find(parent, gui.ttk.Button, "Put on sale").invoke()
+    check("the state is changed at the listing's own record",
+          len(sent) == 1 and sent[0]["id"] == "102" and
+          sent[0]["to"] == "active", str(sent))
+    check("at the address the listing id names, not a product's",
+          "api/data/product/102" in str(sent[0]["url"]), str(sent))
+    check("and the row now reads as on sale",
+          any("Watson" in text and "on sale" in text
+              for text in listing_box(parent).items),
+          str(listing_box(parent).items))
+    check("no read is spent on it and no plugin write is started",
+          len(app.runs) == runs_before, str(app.runs[runs_before:]))
+
+    # ---- a title or a price still needs the product id, and still asks for
+    #      the read that would give it one
+    select(parent, "Watson")
+    asked[:] = []
+    opened = open_edit_form(parent, (None, "6.00", None, None))
+    check("a price change on that row asks to read the listings",
+          any("Read the listings again?" in str(title)
+              for title in opened["asked"]), str(opened["asked"]))
+    check("and no plugin write is started before the read",
           all("--set-file" not in run["args"] for run in app.runs[runs_before:]),
           str(app.runs[runs_before:]))
-    check("the panel says why, before anything is spent",
-          any("has no product id in the list on screen" in text
-              for _tag, text in app.lines), str(app.lines[-3:]))
-    check("and offers the read that would give it one",
-          answers == ["Read the listings again?"], str(answers))
-    check("which starts the read", len(app.runs) == runs_before + 1 and
+    check("the read that gives it a product id is started",
+          len(app.runs) == runs_before + 1 and
           "--stock-out" in app.runs[-1]["args"], str(app.runs[-1:]))
 
     refreshed = [{"id": 102, "product_id": 4321,
@@ -873,40 +903,11 @@ def test_a_list_read_before_product_ids():
     plan = json.loads((folder / "cs-listing-update.json").read_text(
         encoding="utf-8"))["items"][0]
     check("and it carries the product id this time",
-          plan["product_id"] == 4321 and plan["status"] == "active" and
-          plan["id"] == 102, str(plan))
+          plan.get("product_id") == 4321 and plan.get("price") == "6.00" and
+          plan.get("id") == 102, str(plan))
     check("the change is named again before it is written",
-          answers.count("Change this listing?") == 1, str(answers))
-
-    # ---- and when the site gives no product id for one listing at all
-    folder, app, parent = build_panel()
-    with patch.object(gui, "TOOL_ACTION",
-                      lambda action: "/plugins/cs/stock.py"):
-        read_into(app, folder, parent, mixed)
-    find(parent, gui.ttk.Button, "Search").invoke()
-    select(parent, "Watson")
-    answers.clear()
-    runs_before = len(app.runs)
-    with patch.object(gui, "TOOL_ACTION", tools):
-        find(parent, gui.ttk.Button,
-             "Put on sale").invoke()
-    read_run = app.runs[-1]
-    #  The fresh list still has no product id for this listing.
-    Path(read_run["args"][1]).write_text(json.dumps({"items": [
-        {"id": 102, "title": "1973-74 O-Pee-Chee Joe Watson #91 EX-MT",
-         "sku": "OPC73-91", "inventory": 0, "status": "Archived"}]}),
-        encoding="utf-8")
-    with patch.object(gui, "TOOL_ACTION", tools):
-        read_run["on_done"](0)
-    check("a listing the site gives no product id for is not written",
-          all("--set-file" not in run["args"]
-              for run in app.runs[runs_before + 1:]),
-          str(app.runs[runs_before:]))
-    check("and the panel says where it has to be changed instead",
-          any("vendor dashboard" in str(payload)
-              for _kind, payload in harness._BOX.shown) and
-          any("no product id" in text for _tag, text in app.lines),
-          str(harness._BOX.shown[-1:]) + str(app.lines[-2:]))
+          any("Change this listing?" in str(title)
+              for title in opened["asked"]), str(opened["asked"]))
 
     # ---- a plugin that refuses one anyway is still handled
     report = cs_edit.report([entry], refusal)
@@ -986,19 +987,41 @@ def test_a_read_with_no_product_ids_at_all():
     harness._BOX.askyesno = lambda title, *a, **k: (answers.append(title),
                                                    True)[1]
     app.opened[:] = []
+    sent = []
+
+    def fake_state(url, cookie, to, expect=None, listing_id="", listing=None,
+                   **kwargs):
+        sent.append({"url": url, "to": to, "id": listing_id})
+        return {"verdict": "written", "to": to, "was": "archived",
+                "now": "active", "written": True, "why": "",
+                "card": (listing or {}).get("name") or ""}
+
+    def sync_background(app_, work, done):
+        return done(work(), None)
+
     with patch.object(gui, "TOOL_ACTION",
-                      lambda action: "/plugins/cs/edit.py"):
+                      lambda action: "/plugins/cs/edit.py"), \
+            patch.object(gui.cs_state, "change", fake_state), \
+            patch.object(gui, "in_background", sync_background):
         find(parent, gui.ttk.Button,
              "Put on sale").invoke()
-    check("nothing is sent", len(app.runs) == runs_before, str(app.runs[-1:]))
+    check("a read with no product ids is not a dead end: the state is "
+          "changed at the listing's own record",
+          len(sent) == 1 and sent[0]["id"] == "102" and
+          sent[0]["to"] == "active" and
+          "api/data/product/102" in sent[0]["url"], str(sent))
+    check("nothing is sent through the plugin", len(app.runs) == runs_before,
+          str(app.runs[-1:]))
     check("the panel does not offer to read the same nothing again",
-          answers == ["That listing has to be changed on the site"],
+          not any("Read the listings again?" in str(title) for title in answers),
           str(answers))
-    check("it opens the listing's own page so it can be changed there",
-          app.opened == ["https://cs.example/l/102"], str(app.opened))
-    check("and says nothing in the read can be addressed",
-          any("no listing in that read carried a product id" in text.lower()
-              for _tag, text in app.lines), str(app.lines[-3:]))
+    check("and the row it changed reads as on sale",
+          any("Watson" in text and "on sale" in text
+              for text in listing_box(parent).items),
+          str(listing_box(parent).items))
+    check("while the read still says what no product id blocks",
+          any("vendor dashboard" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
 
 
 def test_a_reader_that_says_zero():
@@ -1083,18 +1106,33 @@ def test_a_reader_that_says_zero():
     harness._BOX.askyesno = lambda title, *a, **k: (answers.append(title),
                                                    True)[1]
     app.opened[:] = []
+    sent = []
+
+    def fake_state(url, cookie, to, expect=None, listing_id="", listing=None,
+                   **kwargs):
+        sent.append({"url": url, "to": to, "id": listing_id})
+        return {"verdict": "written", "to": to, "was": "archived",
+                "now": "active", "written": True, "why": "",
+                "card": (listing or {}).get("name") or ""}
+
+    def sync_background(app_, work, done):
+        return done(work(), None)
+
     with patch.object(gui, "TOOL_ACTION",
-                      lambda action: "/plugins/cs/edit.py"):
+                      lambda action: "/plugins/cs/edit.py"), \
+            patch.object(gui.cs_state, "change", fake_state), \
+            patch.object(gui, "in_background", sync_background):
         find(parent, gui.ttk.Button,
              "Put on sale").invoke()
     check("an edit is never sent to /api/products/0/",
           len(app.runs) == runs_before, str(app.runs[-1:]))
     check("the panel does not offer to read the same zeros again",
-          answers == ["That listing has to be changed on the site"],
+          not any("Read the listings again?" in str(title) for title in answers),
           str(answers))
-    check("it opens the listing so it can be changed there",
-          app.opened == ["https://cs.example/l/102"], str(app.opened))
-    check("and says the zero out loud",
+    check("and the state is changed at the listing's own record instead",
+          len(sent) == 1 and sent[0]["id"] == "102" and
+          sent[0]["to"] == "active", str(sent))
+    check("and it says the zero out loud",
           any("product_id 0" in text for _tag, text in app.lines),
           str(app.lines[-3:]))
 
@@ -1452,7 +1490,7 @@ def test_the_diagnosis_file():
                                   stages=["read", "ids"], plugin="1.0.38",
                                   command="cs-stock.py --stock-out cs-stock.json",
                                   detail=detail, total=2596, editable=0,
-                                  app_version="3.52")
+                                  app_version="3.53")
     check("the file carries the reader's own count line",
           "2596 listings, 0 with a real product id" in text, "")
     check("the app's own count is beside it, so the two can be compared",
@@ -1806,7 +1844,8 @@ def test_the_readers_own_resolution_counts():
     check("and it says plainly that reading again cannot fix these rows",
           "not something reading again can fix" in gap and
           "vendor dashboard" in gap and
-          "stock.set names the listing itself" in gap, gap)
+          "comparison panel's stock.set" in gap and
+          "changed at its own record" in gap, gap)
     check("while not claiming the stock write is known to work here",
           "writes those to the listing itself" not in gap, gap)
 
@@ -1907,7 +1946,7 @@ def test_the_real_diagnosis_from_the_shop():
                 "--cookie-file cookie.txt",
         detail={"url": cs_edit.detail_url(row["id"]), "status": 200,
                 "content_type": "application/json", "body": json.dumps(record)},
-        total=2596, editable=0, app_version="3.52",
+        total=2596, editable=0, app_version="3.53",
         source="the read this window made at 2026-11-02 13:03:59")
 
     check("the file no longer carries the progress markers",
@@ -2160,37 +2199,66 @@ def test_a_comparison_read_is_not_a_reader_defect():
     with patch.object(gui, "TOOL_ACTION",
                       lambda action: "/plugins/cs/stock.py"):
         find(parent, gui.ttk.Button, "Archive").invoke()
-    check("archiving asks to read the listings, not to report the plugin",
-          asked and "Read the listings before this change?" in asked[0],
+    check("archiving asks nothing about a read and reports nothing",
+          asked and asked[0].startswith("Archive this listing?"),
           str(asked[:2]))
+    check("it does not start a read for it",
+          len(app.runs) == runs_before, str(app.runs[runs_before:]))
     said = [text for _tag, text in app.lines]
-    check("and says why the list cannot be sent",
-          any("comparison's read" in text and "product lookups" in text
-              for text in said), str(said[-3:]))
-    check("it starts the panel's own read - with no skip flag",
-          len(app.runs) == runs_before + 1 and
-          "--no-product-lookups" not in " ".join(app.runs[-1]["args"]),
-          str(app.runs[-1]["args"]) if app.runs else "")
+    check("and it says where the state is written",
+          any("own record" in text for text in said), str(said[-3:]))
 
-    #  That read comes back with product ids; the picked row is picked again
-    #  and the archive goes ahead by itself.
-    run = app.runs[-1]
-    Path(run["args"][1]).write_text(json.dumps({"items": LISTINGS}),
-                                    encoding="utf-8")
+    #  The record road, which needs no product id: the state is written at the
+    #  listing's own id and read back. Nothing about the plugin, and no
+    #  paragraph about the vendor's data.
+    folder3 = Path(tempfile.mkdtemp())
+    harness.install_plugin("1.0.40", folder3 / "plugin")
+    gui.BASE = folder3
+    (folder3 / "cs-stock.json").write_text(json.dumps({"items": rows}),
+                                          encoding="utf-8")
+    (folder3 / "cs-stock-meta.json").write_text(json.dumps(
+        {"plugin": "1.0.40", "count": len(rows), "command": command}),
+        encoding="utf-8")
+    app3 = harness.FakeApp(folder3)
+    parent3 = harness.FakeWidget()
+    gui.build_csledit(parent3, app3)
+    box3 = listing_box(parent3)
+    for index, text in enumerate(box3.items):
+        if "Gretzky" in text:
+            box3.selection_set(index)
+            break
+    asked3 = []
+    harness._BOX.askyesno = lambda title, *a, **k: (asked3.append(str(title)),
+                                                   True)[1]
+    sent = []
+
+    def fake_state(url, cookie, to, expect=None, listing_id="", listing=None,
+                   **kwargs):
+        sent.append({"url": url, "to": to, "expect": expect, "id": listing_id})
+        return {"verdict": "written", "to": to, "was": "active",
+                "now": "archived", "written": True, "why": "",
+                "card": (listing or {}).get("name") or ""}
+
+    def sync_background(app_, work, done):
+        return done(work(), None)
+
+    runs_before = len(app3.runs)
     with patch.object(gui, "TOOL_ACTION",
-                      lambda action: "/plugins/cs/edit.py"):
-        run["on_done"](0)
-    check("after the read the same listing is picked again, by itself",
-          any("Archive" in said and "Gretzky" in said for said in asked[1:]),
-          str(asked))
-    check("and the archive is confirmed without asking for the row again",
-          len(asked) == 2, str(asked))
-    plan = folder / "cs-listing-update.json"
-    check("the plan it sent is the archived state of that listing",
-          plan.is_file() and
-          json.loads(plan.read_text(encoding="utf-8"))["items"][0]["id"] == 103
-          and json.loads(plan.read_text(encoding="utf-8"))["items"][0]["status"]
-          == "archived", plan.read_text(encoding="utf-8") if plan.is_file() else "")
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui.cs_state, "change", fake_state), \
+            patch.object(gui, "in_background", sync_background):
+        find(parent3, gui.ttk.Button, "Archive").invoke()
+    check("a comparison read's state is changed at the listing's own record",
+          len(sent) == 1 and sent[0]["id"] == "103" and
+          sent[0]["to"] == "archived" and
+          "api/data/product/103" in sent[0]["url"], str(sent))
+    check("nothing is read, and nothing goes through the plugin",
+          len(app3.runs) == runs_before, str(app3.runs[runs_before:]))
+    texts3 = [text for _tag, text in app3.lines]
+    check("and no paragraph about the reader is printed for it",
+          not any("defect in the reader" in text or
+                  "not something reading again can fix" in text
+                  for text in texts3), str(texts3[-3:]))
 
     #  ---- the same list, and the question answered No: nothing is sent
     folder2 = Path(tempfile.mkdtemp())
@@ -2256,15 +2324,34 @@ def test_a_comparison_read_is_not_a_reader_defect():
     asked4 = []
     harness._BOX.askyesno = lambda title, question="", **kw: (
         asked4.append("%s | %s" % (title, question)), True)[1]
+    sent4 = []
+
+    def fake_state4(url, cookie, to, expect=None, listing_id="", listing=None,
+                    **kwargs):
+        sent4.append({"url": url, "to": to, "id": listing_id})
+        return {"verdict": "written", "to": to, "was": "active",
+                "now": "archived", "written": True, "why": "",
+                "card": (listing or {}).get("name") or ""}
+
+    def sync4(app_, work, done):
+        return done(work(), None)
+
     runs_before = len(app4.runs)
     with patch.object(gui, "TOOL_ACTION",
-                      lambda action: "/plugins/cs/stock.py"):
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui.cs_state, "change", fake_state4), \
+            patch.object(gui, "in_background", sync4):
         find(parent4, gui.ttk.Button, "Archive").invoke()
-    check("and archiving still offers the read that fills the ids in",
-          asked4 and "Read the listings before this change?" in asked4[0] and
-          len(app4.runs) == runs_before + 1, str(asked4[:1]))
-    check("the question says plainly that nothing recorded the read",
-          asked4 and "nothing beside it records which read" in asked4[0],
+    check("and archiving still needs no read and no product id",
+          not any("Read the listings before this change?" in said
+                  for said in asked4) and len(app4.runs) == runs_before,
+          str(asked4[:1]) + str(app4.runs[runs_before:]))
+    check("because the state is written at the listing's own record",
+          len(sent4) == 1 and sent4[0]["id"] == "103" and
+          sent4[0]["to"] == "archived" and
+          "api/data/product/103" in sent4[0]["url"], str(sent4))
+    check("and the question names the listing and the state",
+          asked4 and "Archive 1989 O-Pee-Chee Wayne Gretzky #1" in asked4[0],
           str(asked4[:1]))
 
     #  ---- a read that DID look the ids up and found none is still a reader

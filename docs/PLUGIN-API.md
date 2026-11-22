@@ -808,7 +808,11 @@ answer:
   product id is not needed *to address* the record; which fields it accepts is
   still unproven, and the core says so rather than acting on it.
 - `Allow: GET, HEAD` only - the route is read-only and "not editable on
-  CanadianShopper" is final for title, price and state.
+  CanadianShopper" is final for title and price. A state change is still
+  attempted, because it is one field whose answer is read back rather than
+  assumed - and a route that refuses it says so in its own status, which is
+  reported as the refusal it is. No form's worth of fields is written on this
+  answer.
 - `405`, `501`, or `204`/`200` with no `Allow` header - inconclusive. Many
   servers answer `OPTIONS` that way without meaning the route is read-only
   (`204 No Content` is a common "handled, nothing to say"), so the core reports
@@ -824,8 +828,8 @@ a read.
 **What each answer licenses, agreed with the plugin's author.** The method
 answer is a gate, not a decision to edit:
 
-- **`GET, HEAD` only** - no listing-record write path is added; "not editable on
-  CanadianShopper" is final for those fields.
+- **`GET, HEAD` only** - no *form's worth* of listing-record fields is added;
+  "not editable on CanadianShopper" is final for title and price.
 - **`405`, `501`, no `Allow`** - inconclusive; no write is attempted and none is
   designed.
 - **`PATCH` or `PUT` advertised** - the method is established and the field
@@ -1067,16 +1071,39 @@ listings themselves:
   entry naming `id`, `sku`, `title`, `card` or `name` confirms the change just
   as a product id does, so a writer that resolves internally and reports what
   it resolved needs no change here.
-- **Editing is blocked by it, and said to be.** With no product reference in
-  any detail record, `marketplace.listing_update` refuses each of those
-  listings before writing, so the edit panel says reading again cannot fix
-  them and leaves title, price and state to the vendor dashboard. Stock counts
-  are the exception:
+- **Editing a title or a price is blocked by it, and said to be.** With no
+  product reference in any detail record, `marketplace.listing_update` refuses
+  each of those listings before writing, so the edit panel says reading again
+  cannot fix them and leaves title and price to the vendor dashboard - while
+  the listing's own record takes its state and the comparison panel takes its
+  stock count. Stock counts are the exception:
 - **Stock counts are not blocked by any of this.** The comparison panel's
   **Set CanadianShopper to the website's counts...** writes through `stock.set`,
   which addresses the listing rather than a product, so a shop whose reader
-  reports no product ids can still have its stock corrected - only title, price
-  and state need the listing panel.
+  reports no product ids can still have its stock corrected.
+- **A listing's state is not blocked by it either.** The record at
+  `/api/data/product/<listing-id>` is keyed by the id the reader reports and
+  carries the listing's `status`, so **Archive** and **Put on sale** write that
+  one field there - one request per listing, the record read before it (its own
+  id must be the listing that was chosen, and its state must be the one the
+  person confirmed) and read again afterwards (see `cs_state`). A site that
+  answers 200 and keeps the old state is reported as having kept it, in those
+  words, with the vendor dashboard named as where the change has to be made; a
+  state neither held nor asked for is named rather than accepted. This is not a
+  proof and not the plugin's path: `marketplace.listing_update` is unchanged and
+  is still what title and price need - which is why they remain the two fields
+  that have to be changed in the dashboard.
+
+  Two things keep that road honest. It cannot act on a field blindly: the
+  record is read before the write (its id must be the listing that was chosen,
+  and its state the one the person confirmed) and again afterwards, so a site
+  that accepts the request and keeps the old state is reported as having kept
+  it rather than as a success. And it can only ever move one field of one
+  listing: nothing else is in the body, no field can ride along with another,
+  and a state the record comes back with that is neither the one it held nor
+  the one sent is named - "check that listing" - not passed off as done. It is
+  a change a person asked for by name, not a trial: that is why it is not a
+  proof, and why it is not part of the record form.
 
 Two rules follow for a reader:
 

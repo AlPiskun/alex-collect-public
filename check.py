@@ -67,6 +67,7 @@ ORDER = [
     "test-cs-edit.py",
     "test-cs-proof.py",
     "test-cs-record.py",
+    "test-cs-state.py",
     "test-cs-gallery.py",
     "test-cs-picture.py",
     "test-cs-stage.py",
