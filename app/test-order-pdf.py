@@ -75,7 +75,11 @@ def order_for(quote, **overrides):
         "id": 4321, "number": "4321", "status": "processing",
         "currency": "CAD", "date_created": "2026-10-30T14:00:00",
         "date_paid": "2026-10-30T14:05:00",
-        "total": "12.50", "discount_total": "2.00", "shipping_total": "0.00",
+        #  An order as the app's own writer builds one: the discount is a
+        #  negative fee line ("Discount 10%", or the quote's "Deposit taken"),
+        #  and Woo's "discount_total" - which only a coupon fills in - stays
+        #  zero. 15.00 of cards less the 2.00 fee is the 13.00 charged.
+        "total": "13.00", "discount_total": "0.00", "shipping_total": "0.00",
         "total_tax": "0.00", "prices_include_tax": True,
         "fee_lines": [{"name": "Deposit taken", "total": "-2.00"}],
         "billing": {"first_name": "Dana", "last_name": "Whitfield",
@@ -132,6 +136,13 @@ def test_facts():
     check("the discount is named as the order named it",
           sheet["discount"] == 2.0 and sheet["discount_label"] ==
           "Deposit taken", (sheet["discount"], sheet["discount_label"]))
+    check("and the row it used to leave behind is not on the sheet",
+          sheet["other"] == 0.0, (sheet["subtotal"], sheet["discount"],
+                                  sheet["other"], sheet["total"]))
+    check("the discount is a line of its own, named as the order named it",
+          sheet["discount_lines"] == [{"label": "Deposit taken",
+                                       "amount": 2.0}],
+          sheet["discount_lines"])
     check("the sheet's own figures add up to the order's total",
           round(sheet["subtotal"] - sheet["discount"] + sheet["shipping"]
                 + sheet["tax"] + sheet["other"], 2) == sheet["total"],
@@ -211,6 +222,122 @@ def test_facts():
     odd = order_pdf.document(order=order_for(quote, total="16.00"))
     check("a charge nothing explains is named rather than hidden",
           odd["other"] == 3.0, odd["other"])
+
+    #  ---- a coupon, as WooCommerce itself states one
+    #  Woo states a line twice: "subtotal" before the coupon and "total" after
+    #  it. Reading "total" as the row made the coupon print twice - once on the
+    #  Discount line and once as an "Other" charge equal to it, which is the
+    #  sheet this was written for.
+    couponed = order_pdf.document(order={
+        "number": "5001", "status": "processing", "currency": "CAD",
+        "total": "48.50", "discount_total": "4.00", "shipping_total": "0.00",
+        "total_tax": "0.00", "prices_include_tax": True,
+        "fee_lines": [],
+        "line_items": [
+            {"name": "1989 O-Pee-Chee Batman #1 NM 7", "quantity": 1,
+             "price": 40.0, "subtotal": "40.00", "total": "36.00"},
+            {"name": "1989 O-Pee-Chee Batman #2 EX-MT 6", "quantity": 1,
+             "price": 12.5, "subtotal": "12.50", "total": "12.50"}]})
+    check("a coupon order's rows are printed at their price, before the "
+          "coupon",
+          [item["total"] for item in couponed["items"]] == [40.0, 12.5],
+          couponed["items"])
+    check("so the coupon is taken off once, on its own line",
+          couponed["discount"] == 4.0 and
+          couponed["discount_lines"] == [{"label": "Discount",
+                                          "amount": 4.0}],
+          (couponed["discount"], couponed["discount_lines"]))
+    check("and no Other row is left to hold it a second time",
+          couponed["other"] == 0.0,
+          (couponed["subtotal"], couponed["discount"], couponed["other"],
+           couponed["total"]))
+    check("the column still adds up to what the customer was charged",
+          round(couponed["subtotal"] - couponed["discount"]
+                + couponed["shipping"] + couponed["tax"]
+                + couponed["other"], 2) == couponed["total"],
+          (couponed["subtotal"], couponed["discount"], couponed["other"],
+           couponed["total"]))
+
+    #  The same money recorded twice - a coupon and a fee line for it, as a
+    #  plugin that writes its own discount can do - is named once, not twice
+    #  and not as an "Other" charge.
+    twice = order_pdf.document(order={
+        "number": "5002", "currency": "CAD", "total": "48.50",
+        "discount_total": "4.00", "shipping_total": "0.00",
+        "prices_include_tax": True,
+        "fee_lines": [{"name": "Discount 10%", "total": "-4.00"}],
+        "line_items": [{"name": "A card", "quantity": 1, "price": 40.0,
+                        "total": "40.00"},
+                       {"name": "Another card", "quantity": 1, "price": 12.5,
+                        "total": "12.50"}]})
+    check("the same discount recorded twice is named once",
+          twice["discount"] == 4.0 and len(twice["discount_lines"]) == 1,
+          (twice["discount"], twice["discount_lines"]))
+    check("and it is not left on the sheet as an Other charge either",
+          twice["other"] == 0.0, twice["other"])
+
+    #  Two genuinely different sums taken off stay two lines: a coupon and a
+    #  deposit are not the same money.
+    both = order_pdf.document(order={
+        "number": "5003", "currency": "CAD", "total": "46.50",
+        "discount_total": "4.00", "shipping_total": "0.00",
+        "prices_include_tax": True,
+        "fee_lines": [{"name": "Deposit taken", "total": "-2.00"}],
+        "line_items": [{"name": "A card", "quantity": 1, "price": 40.0,
+                        "total": "40.00"},
+                       {"name": "Another card", "quantity": 1, "price": 12.5,
+                        "total": "12.50"}]})
+    check("a coupon and a deposit are two lines, not one",
+          both["discount"] == 6.0 and
+          [line["label"] for line in both["discount_lines"]] ==
+          ["Discount", "Deposit taken"],
+          (both["discount"], both["discount_lines"]))
+    check("and both are off the total, with nothing left over",
+          both["other"] == 0.0, both["other"])
+
+    #  ---- what the totals block actually writes on the page
+    def totals_rows(document):
+        """The words the totals block draws, top to bottom."""
+        drawn = []
+
+        class Draw:
+            def text(self, xy, text, font=None, fill=None):
+                drawn.append(str(text))
+
+            def rounded_rectangle(self, *args, **kwargs):
+                pass
+
+        class Scribe:
+            margin, right = 40, 560
+            colour, on_colour = (0, 0, 0), (255, 255, 255)
+            draw = Draw()
+
+            def pt(self, value):
+                return int(value)
+
+            def text_width(self, text, font=None):
+                return len(str(text)) * 5
+
+        fonts = {key: None for key in ("body", "body_bold", "label", "h2")}
+        order_pdf._draw_totals(Scribe(), document, fonts, 0)
+        return drawn
+
+    printed = totals_rows(couponed)
+    check("the printed block has the coupon and no Other row",
+          "Discount" in printed and "Other" not in printed, printed)
+    check("and the coupon is written as money off",
+          "\u2212C$4.00" in printed, printed)
+    printed_fee = totals_rows(sheet)
+    check("the block prints the order's own name for its discount",
+          printed_fee[:4] == ["Subtotal", "C$15.00", "Deposit taken",
+                              "\u2212C$2.00"], printed_fee)
+    check("and no Other row on it either", "Other" not in printed_fee,
+          printed_fee)
+    check("the charge the sheet cannot name is still printed",
+          "Other" in totals_rows(odd), totals_rows(odd))
+    check("and only when there is one",
+          "Other" not in totals_rows(order_pdf.document(
+              order=order_for(quote, total="13.00"))), "")
 
     unknown = order_pdf.document(order=order_for(quote, status="wc-custom"))
     check("a state this file has not met is printed rather than hidden",

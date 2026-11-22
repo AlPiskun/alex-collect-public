@@ -144,7 +144,14 @@ def _items_from_order(order, quote_images):
             continue
         quantity = max(1, int(row.get("quantity") or 1))
         price = _number(row.get("price"))
-        total = _number(row.get("total"))
+        #  Woo states a line twice - "subtotal" before any discount and
+        #  "total" after it. The sheet takes the discount off once, on its own
+        #  line, so a row is printed at the before-discount amount: reading
+        #  "total" here is what made a coupon appear twice, once as the
+        #  Discount line and again as an "Other" charge equal to it.
+        total = _number(row.get("subtotal"))
+        if total is None:
+            total = _number(row.get("total"))
         if total is None and price is not None:
             total = price * quantity
         items.append({"name": _text(row.get("name")) or "Card",
@@ -168,6 +175,30 @@ def _items_from_quote(quote):
     return items
 
 
+def _off_lines(order):
+    """The money an order took off, as the lines the sheet prints for it.
+
+    Woo records money off in two places: a coupon arrives as ``discount_total``,
+    and a fee line with a negative total - which is how the order this app
+    builds from a quote or from the order writer carries its discount. Only the
+    coupon was read before, so a negative fee was left over as an "Other"
+    charge equal to the discount it already was.
+    """
+    lines = []
+    coupon = _number((order or {}).get("discount_total")) or 0.0
+    if abs(coupon) >= 0.01:
+        lines.append({"label": "Discount", "amount": round(abs(coupon), 2)})
+    for fee in (order or {}).get("fee_lines") or []:
+        if not isinstance(fee, dict):
+            continue
+        amount = _number(fee.get("total"))
+        if amount is None or amount > -0.01:
+            continue
+        lines.append({"label": _text(fee.get("name")) or "Fee",
+                      "amount": round(-amount, 2)})
+    return lines
+
+
 def _totals_from_order(order, items):
     """Subtotal, discount, shipping and total, as the order states them.
 
@@ -177,40 +208,58 @@ def _totals_from_order(order, items):
     """
     known = [item["total"] for item in items if item["total"] is not None]
     subtotal = round(sum(known), 2) if known else None
-    discount = _number(order.get("discount_total")) if order else None
+    off = _off_lines(order)
     shipping = _number(order.get("shipping_total")) if order else None
     total = _number(order.get("total")) if order else None
     #  A shop that prices its products with the tax already in them has no
     #  tax line of its own, and printing one would read as a second charge.
     tax = 0.0 if (not order or order.get("prices_include_tax")) else \
         (_number(order.get("total_tax")) or 0.0)
+
+    def remainder(lines):
+        """What the total holds after these lines - the sheet's "Other"."""
+        amount = round(sum(line["amount"] for line in lines), 2)
+        return round(total - (subtotal - amount + (shipping or 0) + tax), 2)
+
+    #  A shop can record the same money twice - a coupon and a fee line for it,
+    #  which is what a plugin that writes its own discount alongside Woo's does.
+    #  When counting both leaves a remainder and dropping exactly one line
+    #  clears it, that line was the same money: the sheet names it once.
+    if subtotal is not None and total is not None and abs(remainder(off)) >= 0.01 \
+            and len(off) > 1:
+        for dropped in off:
+            rest = [line for line in off if line is not dropped]
+            if rest and abs(remainder(rest)) < 0.01:
+                off = rest
+                break
+    discount = round(sum(line["amount"] for line in off), 2)
     if total is None and subtotal is not None:
-        total = round(subtotal - (discount or 0) + (shipping or 0) + tax, 2)
+        total = round(subtotal - discount + (shipping or 0) + tax, 2)
     if subtotal is None and total is not None:
-        subtotal = round(total + (discount or 0) - (shipping or 0) - tax, 2)
-    #  Anything left over is a charge this sheet has no line for - a coupon,
-    #  a handling fee from another plugin. It is named rather than hidden, so
-    #  the column always adds up to the total the customer was charged.
+        subtotal = round(total + discount - (shipping or 0) - tax, 2)
+    #  Anything left over is a charge this sheet has no line for - a handling
+    #  fee from another plugin, a deposit already taken. It is named rather
+    #  than hidden, so the column always adds up to the total the customer was
+    #  charged - and a discount, which this sheet does have lines for, is never
+    #  left in here.
     other = 0.0
     if subtotal is not None and total is not None:
-        other = round(total - (subtotal - (discount or 0) + (shipping or 0)
-                               + tax), 2)
+        other = remainder(off)
         if abs(other) < 0.01:
             other = 0.0
     label = ""
-    for fee in order.get("fee_lines") or []:
-        if not isinstance(fee, dict):
-            continue
-        if (_number(fee.get("total")) or 0) < 0:
-            label = _text(fee.get("name"))
+    for line in off:
+        if line["label"] != "Discount":
+            label = line["label"]
             break
     ship_label = "Shipping"
     for line in order.get("shipping_lines") or []:
         if isinstance(line, dict) and _text(line.get("method_title")):
             ship_label = _text(line.get("method_title"))
             break
-    return {"subtotal": subtotal, "discount": discount or 0.0,
-            "discount_label": label or "Discount",
+    return {"subtotal": subtotal, "discount": discount,
+            "discount_label": label or (off[0]["label"] if off else "Discount"),
+            "discount_lines": off,
             "shipping": shipping or 0.0, "shipping_label": ship_label,
             "tax": tax, "other": other, "total": total}
 
@@ -263,7 +312,8 @@ def document(quote=None, order=None, look=None, currency="", today=None):
         sums = {"subtotal": totals.get("subtotal"),
                 "discount": totals.get("discount") or 0.0,
                 "discount_label": totals.get("discount_label") or "Discount",
-                "shipping": 0.0, "shipping_label": "Shipping",
+                "discount_lines": [], "shipping": 0.0,
+                "shipping_label": "Shipping",
                 "tax": 0.0, "other": 0.0, "total": totals.get("total")}
 
     number = (_text(order.get("number")) or _text(order.get("id"))
@@ -296,6 +346,7 @@ def document(quote=None, order=None, look=None, currency="", today=None):
         "subtotal": sums.get("subtotal"),
         "discount": sums.get("discount") or 0.0,
         "discount_label": sums.get("discount_label") or "Discount",
+        "discount_lines": sums.get("discount_lines") or [],
         "shipping": sums.get("shipping") or 0.0,
         "shipping_label": sums.get("shipping_label") or "Shipping",
         "tax": sums.get("tax") or 0.0,
@@ -505,10 +556,19 @@ def _draw_totals(page, document, fonts, y):
     body = fonts["body"]
     amount_font = fonts["body_bold"]
     lines = [("Subtotal", quote_model.money(document.get("subtotal"), currency))]
-    if (document.get("discount") or 0) > 0:
-        lines.append((document.get("discount_label") or "Discount",
-                      "\u2212" + quote_model.money(document["discount"],
-                                                   currency)))
+    #  One line per thing that was taken off, so an order holding a coupon and
+    #  a fee line for it - or a quote's discount, which arrives as a fee - reads
+    #  as the money it is rather than a single soup of a discount.
+    off = list(document.get("discount_lines") or [])
+    if not off and (document.get("discount") or 0) > 0:
+        off = [{"label": document.get("discount_label") or "Discount",
+                "amount": document.get("discount")}]
+    for line in off:
+        amount = _number(line.get("amount")) or 0.0
+        if amount <= 0:
+            continue
+        lines.append((_text(line.get("label")) or "Discount",
+                      "\u2212" + quote_model.money(amount, currency)))
     if (document.get("shipping") or 0) > 0:
         lines.append((document.get("shipping_label") or "Shipping",
                       quote_model.money(document["shipping"], currency)))
