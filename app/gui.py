@@ -84,7 +84,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.54"
+VERSION = "3.55"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -285,6 +285,126 @@ def cs_plugin_note(what=""):
             "missing).\n\nNothing was read and nothing was written. Install "
             "the plugin from the Plugins panel and this button will work."
             % (what or "This"))
+
+
+#: The word a person types before a listing is deleted. Every other write in
+#: this app is a Yes and a read-back; deleting is the one click that cannot be
+#: undone from here, so it asks for the word the publisher asks for - and it is
+#: asked once, beside the listings it will delete, not in a second dialog.
+DELETE_WORD = "DELETE"
+
+
+def delete_lines(items, limit=15):
+    """One line per listing about to be deleted, with its own id."""
+    lines = []
+    for item in items or []:
+        details = []
+        state = str(item.get("state") or "").strip()
+        if state:
+            details.append(state)
+        count = item.get("qty")
+        if count is not None:
+            details.append("%s in stock" % count)
+        lines.append("  %s  (id %s)%s"
+                     % (item.get("name") or "a listing", item.get("id") or "?",
+                        " - " + ", ".join(details) if details else ""))
+    if limit is not None and len(lines) > limit:
+        lines = lines[:limit] + ["  ... and %d more" % (len(lines) - limit)]
+    return lines
+
+
+def ask_delete(parent, items):
+    """The typed word, beside the listings it would delete. True when typed."""
+    one = len(items) == 1
+    typed = simpledialog.askstring(
+        "Delete %d listing%s from CanadianShopper?" %
+        (len(items), "" if one else "s"),
+        "This deletes the listing%s itself - not the state, not a field: the "
+        "record goes.\n\n"
+        "Each record is read first (its own id has to be the listing below), "
+        "then deleted, then read again. A site that only moves a listing to "
+        "its bin is reported as that, and one that ignores the delete is "
+        "reported as unchanged rather than as deleted.\n\n%s\n\n"
+        "Your website is not changed, and this app does not touch the "
+        "listing's photos.\n\nType %s to delete %s."
+        % ("" if one else "s", "\n".join(delete_lines(items)), DELETE_WORD,
+           "it" if one else "them"),
+        initialvalue="", parent=parent)
+    return str(typed or "").strip().upper() == DELETE_WORD
+
+
+def delete_listings(app, parent, items, say=None, summary=None, then=None):
+    """Delete listings at their own records, after the word has been typed.
+
+    ``items`` is ``[{id, name, state, qty}]``. Nothing is sent for an item with
+    no listing id, and nothing is sent at all until the word is typed. What the
+    site did is what is reported - ``deleted``, ``trashed`` (kept in the site's
+    bin), ``left`` (accepted and unchanged), refused, or unreadable - and
+    ``then`` is given the ``(item, result)`` pairs that are really gone.
+    """
+    say = say or (lambda text, tag="dim": app.console_line(text, tag))
+    items = [dict(item) for item in items or []
+             if str(item.get("id") or "").strip()]
+    if not items:
+        messagebox.showinfo(
+            "Nothing to delete",
+            "Nothing here names a CanadianShopper listing, so nothing can be "
+            "deleted.", parent=parent)
+        return False
+    if not ask_delete(parent, items):
+        say("Nothing was deleted: the word %s was not typed." % DELETE_WORD,
+            "dim")
+        if summary is not None:
+            summary.configure(text="Nothing was deleted.")
+        return False
+    cookie = load_cookie_text() or ""
+    one = len(items) == 1
+    say("Deleting %s from CanadianShopper, then reading the record back..."
+        % ("that listing" if one else "%d listings" % len(items)), "cmd")
+    if summary is not None:
+        summary.configure(text="Deleting %s, then reading %s back..."
+                          % ("the listing" if one else "%d listings" % len(items),
+                             "it" if one else "each"))
+
+    def work():
+        answers = []
+        for item in items:
+            listing_id = str(item["id"])
+            answers.append((item, cs_state.remove(
+                cs_record.url_for(listing_id, CS_HOME), cookie,
+                listing_id=listing_id,
+                listing={"name": item.get("name") or ""})))
+        return answers
+
+    def done(answers, error):
+        if error is not None:
+            say("The listing could not be deleted: %s. Nothing was deleted by "
+                "this attempt." % error, "err")
+            if summary is not None:
+                summary.configure(text="The listing could not be deleted: %s"
+                                  % error)
+            if then is not None:
+                then([])
+            return
+        gone = []
+        for item, result in answers:
+            say(cs_state.remove_sentence(result, item.get("name") or ""),
+                "ok" if cs_state.removed(result) else "err")
+            if cs_state.removed(result):
+                gone.append((item, result))
+        if summary is not None:
+            if gone:
+                summary.configure(
+                    text=("%s deleted from CanadianShopper; your website was "
+                          "not changed." % ("The listing" if len(gone) == 1
+                                            else "%d listings" % len(gone))))
+            else:
+                summary.configure(text="Nothing was deleted.")
+        if then is not None:
+            then(gone)
+
+    in_background(app, work, done)
+    return True
 
 
 SETTINGS_FILE = BASE / "gui-settings.json"
@@ -2299,6 +2419,8 @@ TOOLTIPS = {
     "Put the archived cards back on sale...": "For every card this comparison found archived on CanadianShopper with stock on your website, write that one field at each listing's own record - shown and confirmed first, read back afterwards, and nothing else about the listing is touched; a draft is published instead, and your website is never changed",
     "Put the selected cards back on sale...": "The same write for just the archived cards selected in the list, after a confirmation listing them",
     "Archive the selected cards...": "Put the selected cards away on CanadianShopper by writing that one field at each listing's own record, read back afterwards - your website is not changed, so the card stays on sale there",
+    "Delete the selected cards...": "Delete the selected listings from CanadianShopper itself - the record, not a state - after typing DELETE beside the cards it will delete; each record is read, deleted and read again, so a site that only bins a listing says so, and your website is never touched",
+    "Delete the selected listing...": "Delete the clicked listings from CanadianShopper itself, one record at a time, after typing DELETE beside them; nothing on your website is changed, and a site that only moves a listing to its bin is reported as that rather than as deleted",
     "Set CanadianShopper to the website's counts...": "The usual fix: for every card whose two counts differ, set CanadianShopper's count to the website's count - always shown and confirmed first, write permission only",
     "Fix the selected cards...": "Set CanadianShopper to the website's count for just the rows selected in the list, after a confirmation listing them",
     "Set the website to the selected cards' counts...": "The reverse fix: set the website's stock count to the count the other site reports, for the selected cards - always shown and confirmed first; needs WooCommerce keys with Read/Write access",
@@ -8284,6 +8406,62 @@ def build_stock(parent, app, site_id="cs"):
 
         in_background(app, work, arrived)
 
+    def delete_selected():
+        """Delete the selected listings from the shop, at their own records.
+
+        Deleting is one listing's business - the card in front of you, named by
+        its id - so it is never offered for the whole list. A card that only
+        exists on your website has no listing there to delete, and is said to
+        be that rather than sent nowhere.
+        """
+        rows = selected_rows()
+        if not rows:
+            messagebox.showinfo(
+                "Which cards?",
+                "Select the cards to delete in the list first: deleting is "
+                "never done to a whole list from here, and each listing is "
+                "named before anything is sent.",
+                parent=box.winfo_toplevel())
+            return
+        items = [{"id": row.get("other_id"),
+                  "name": row.get("card") or "",
+                  "state": stock_compare.status_words(
+                      {"status": row.get("state") or ""}),
+                  "qty": row.get("other")}
+                 for row in rows if row.get("other_id") not in (None, "")]
+        if not items:
+            messagebox.showinfo(
+                "Nothing to delete",
+                "None of the selected cards is on %s, so there is no listing "
+                "there to delete." % state["label"],
+                parent=box.winfo_toplevel())
+            app.console_line(
+                "Nothing was deleted: a card that only exists on your website "
+                "has no listing on %s." % state["label"], "dim")
+            return
+
+        def then(gone):
+            if not gone:
+                return
+            wanted = {str(item.get("id")) for item, _result in gone}
+            state["pairs"] = [
+                pair for pair in state.get("pairs") or []
+                if str((pair.get("other") or {}).get("id")) not in wanted]
+            state["only_other"] = [
+                item for item in state.get("only_other") or []
+                if str(item.get("id")) not in wanted]
+            state["rows"] = [
+                row for row in state.get("rows") or []
+                if str(row.get("other_id")) not in wanted]
+            redraw()
+            app.console_line(
+                "%d card%s deleted from %s. Compare again to confirm."
+                % (len(wanted), "" if len(wanted) == 1 else "s",
+                   state["label"]), "ok")
+
+        delete_listings(app, box.winfo_toplevel(), items, summary=summary,
+                        then=then)
+
     def put_back_all():
         change_state(None, "active")
 
@@ -10419,6 +10597,8 @@ def build_stock(parent, app, site_id="cs"):
         state_row2.pack(anchor="w", pady=(3, 0))
         ttk.Button(state_row2, text="Archive the selected cards...",
                    command=archive_selected).pack(side="left")
+        ttk.Button(state_row2, text="Delete the selected cards...",
+                   command=delete_selected).pack(side="left", padx=6)
         third_l = ttk.Frame(cs_rows)
         third_l.pack(anchor="w", pady=(3, 0))
         ttk.Button(third_l, text="List the selected cards on CanadianShopper...",
@@ -10535,7 +10715,15 @@ def build_stock(parent, app, site_id="cs"):
                        "write the same import file the batch pipeline writes, "
                        "from the website product itself, then offer to import "
                        "it and publish the drafts - all with the publisher's "
-                       "own confirmations, including the typed PUBLISH.",
+                       "own confirmations, including the typed PUBLISH. A card "
+                       "archived there while your website still stocks it has "
+                       "its own two buttons: Put the archived cards back on "
+                       "sale... writes that one field at each listing's own "
+                       "record and reads it back. And a card that should not "
+                       "exist on the shop at all - a duplicate, a scrap card - "
+                       "can be deleted from here: Delete the selected cards... "
+                       "reads the record, deletes it and reads it again, and "
+                       "asks for the word DELETE beside the cards first.",
                   style="Dim.TLabel", wraplength=680,
                   justify="left").pack(anchor="w", pady=(6, 0))
         return
@@ -11768,6 +11956,54 @@ def build_csledit(parent, app):
             say("The edit was not confirmed; nothing was written.", "dim")
             return
         apply_change(item, entry)
+
+    def delete_selected():
+        """Delete the clicked listings from the shop, at their own records.
+
+        Deleting is the one thing here that cannot be undone from this app, so
+        the word DELETE is typed beside the listings it will delete, and every
+        record is read first (its own id has to be the listing clicked), then
+        deleted, then read again - a site that only bins a listing is reported
+        as that. A row with no listing id sends nothing.
+        """
+        rows = chosen_rows()
+        if not rows:
+            selected()                    # the question a person expects
+            return
+        items = [{"id": cs_edit.listing_id(item),
+                  "name": item.get("name") or "",
+                  "state": stock_compare.status_words(
+                      {"status": item.get("status") or ""}),
+                  "qty": item.get("inventory", item.get("qty"))}
+                 for item in rows if cs_edit.listing_id(item)]
+        if not items:
+            messagebox.showinfo(
+                "Nothing to delete",
+                "None of the clicked listings names its own record, so there "
+                "is nothing here to delete. Read the listings again first.",
+                parent=box.winfo_toplevel())
+            say("Nothing was deleted: no clicked row carries a listing id.",
+                "dim")
+            return
+        if len(items) < len(rows):
+            say("%d of the clicked listings name no record id, so %s left "
+                "alone." % (len(rows) - len(items),
+                            "it was" if len(items) == 1 else "%s were"
+                            % (len(rows) - len(items))), "dim")
+
+        def then(gone):
+            if not gone:
+                return
+            wanted = {str(item.get("id")) for item, _result in gone}
+            state["items"] = [item for item in state["items"]
+                              if str(cs_edit.listing_id(item)) not in wanted]
+            run_search()
+            say("%d listing%s deleted from CanadianShopper. Reading the "
+                "listings again is what confirms it."
+                % (len(wanted), "" if len(wanted) == 1 else "s"), "ok")
+
+        delete_listings(app, box.winfo_toplevel(), items, say=say,
+                        summary=summary, then=then)
 
     def set_state(kind):
         """Put one listing, or every clicked one, on sale or away.
@@ -13816,6 +14052,13 @@ def build_csledit(parent, app):
                              command=lambda: set_state("archived"))
     archive_btn.pack(side="left")
     add_tooltip(archive_btn, TOOLTIPS["Archive"])
+    #  Deleting is not a state and not a field: the record itself goes. It is
+    #  the one action here that cannot be undone from this app, so it asks for
+    #  the word DELETE beside the listings it would delete.
+    delete_btn = ttk.Button(first_row, text="Delete the selected listing...",
+                            command=delete_selected)
+    delete_btn.pack(side="left", padx=6)
+    add_tooltip(delete_btn, TOOLTIPS["Delete the selected listing..."])
     second_row = ttk.Frame(actions)
     second_row.pack(anchor="w", pady=(3, 0))
     open_btn = ttk.Button(second_row,
@@ -13844,7 +14087,12 @@ def build_csledit(parent, app):
         "run: every listing is named before anything is sent, and one that "
         "cannot be sent stops the change rather than half-doing it. The "
         "confirmation names every field that changes, only the changed fields "
-        "are sent, and nothing on your website is touched. Editing a listing "
+        "are sent, and nothing on your website is touched. A listing that "
+        "should not exist on the shop at all is deleted with Delete the "
+        "selected listing... - the record itself, not a field: it is read "
+        "first, deleted, and read again, the word DELETE is typed beside the "
+        "listings it will delete, and a site that only bins a listing says so "
+        "rather than being reported as a deletion. Editing a listing "
         "needs plugin %s or newer; reading needs the stock reader (1.0.25+ "
         "reports the archived ones too)." % CS_LISTING_UPDATE_VERSION))
 

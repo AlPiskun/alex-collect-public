@@ -1490,7 +1490,7 @@ def test_the_diagnosis_file():
                                   stages=["read", "ids"], plugin="1.0.38",
                                   command="cs-stock.py --stock-out cs-stock.json",
                                   detail=detail, total=2596, editable=0,
-                                  app_version="3.54")
+                                  app_version="3.55")
     check("the file carries the reader's own count line",
           "2596 listings, 0 with a real product id" in text, "")
     check("the app's own count is beside it, so the two can be compared",
@@ -1946,7 +1946,7 @@ def test_the_real_diagnosis_from_the_shop():
                 "--cookie-file cookie.txt",
         detail={"url": cs_edit.detail_url(row["id"]), "status": 200,
                 "content_type": "application/json", "body": json.dumps(record)},
-        total=2596, editable=0, app_version="3.54",
+        total=2596, editable=0, app_version="3.55",
         source="the read this window made at 2026-11-02 13:03:59")
 
     check("the file no longer carries the progress markers",
@@ -3018,6 +3018,106 @@ def select(parent, word):
             box.selection_set(index)
             return index
     raise AssertionError("no row for %r in %r" % (word, box.items))
+
+
+def test_the_panel_deletes_a_listing_on_the_word():
+    """Deleting: the record goes, and only after the word is typed.
+
+    This is the one action in the panel that cannot be undone from it, so the
+    checks are about the guards rather than the request: no listing clicked, no
+    word, a different word and a closed question all delete nothing, and the
+    one that does sends a single DELETE to that listing's own record.
+    """
+    print()
+    print("== 5f. deleting a listing, after the word DELETE ==")
+    shown, deleted, typed = [], [], []
+
+    def fake_remove(url, cookie_text, listing_id="", listing=None, **kwargs):
+        deleted.append({"url": url, "id": listing_id,
+                        "name": (listing or {}).get("name") or ""})
+        return {"verdict": "deleted", "deleted": True,
+                "card": (listing or {}).get("name") or "",
+                "why": "The record is gone, read back after the delete."}
+
+    #  The harness's own box, which is what every other check reads: a private
+    #  list here would swallow the messages the tests after this one look for,
+    #  and a box left answering "yes" is a different test altogether.
+    harness._BOX.shown[:] = []
+    shown = harness._BOX.shown
+    harness._BOX.showinfo = (lambda kind: lambda *a, **k:
+                             harness._BOX.shown.append((kind, a)))("showinfo")
+
+    def sync_background(app_, work, done):
+        return done(work(), None)
+
+    settings = {"cookie": Path(tempfile.mkdtemp()) / "cookie.txt"}
+
+    def press(panel_button, answer):
+        with patch.object(gui, "simpledialog") as prompt, \
+                patch.object(gui.cs_state, "remove", fake_remove), \
+                patch.object(gui, "in_background", sync_background), \
+                patch.object(gui, "CS_COOKIE_FILE", settings["cookie"]):
+            prompt.askstring = lambda title, message="", **k: (
+                typed.append((title, message)), answer)[1]
+            panel_button.invoke()
+
+    #  A panel that has read nothing: no row, so nothing to delete.
+    folder, app, parent = build_panel()
+    cookie = folder / "cookie.txt"
+    cookie.write_text("session_token=secret-value\n", encoding="utf-8")
+    settings["cookie"] = cookie
+    button = find(parent, gui.ttk.Button, "Delete the selected listing...")
+    check("the panel offers to delete a listing", button is not None,
+          str([w.cget("text") for w in parent.walk()
+               if isinstance(w, gui.ttk.Button)]))
+    app.lines[:] = []
+    press(button, "DELETE")
+    check("with no listing clicked it asks which one, and deletes nothing",
+          shown and "Which listing?" in shown[-1][1][0] and not deleted and
+          not typed, str(shown[-1:]) + str(deleted))
+
+    with patch.object(gui, "TOOL_ACTION",
+                      lambda action: "/plugins/cs/stock.py"), \
+            patch.object(gui, "in_background", sync_background):
+        read_into(app, folder, parent)
+    select(parent, "Joe Watson")
+
+    shown[:] = []
+    app.lines[:] = []
+    press(button, None)
+    check("closing the question deletes nothing", not deleted, str(deleted))
+    check("and the panel says the word was not typed",
+          any("was not typed" in text for _tag, text in app.lines),
+          str(app.lines[-2:]))
+
+    press(button, "yes please")
+    check("another word is not the word: still nothing deleted",
+          not deleted, str(deleted))
+
+    shown[:] = []
+    app.lines[:] = []
+    press(button, " DELETE ")
+    check("the word deletes that one listing",
+          len(deleted) == 1 and deleted[0]["id"] == "102", str(deleted))
+    check("at the listing's own record",
+          deleted and deleted[0]["url"].endswith("/api/data/product/102"),
+          str(deleted))
+    check("the question named the listing, its id and the word to type",
+          typed and "Joe Watson" in typed[-1][1] and "102" in typed[-1][1] and
+          "Type DELETE" in typed[-1][1], str(typed[-1:]))
+    check("it also said the website is not changed and the photos are left",
+          typed and "Your website is not changed" in typed[-1][1] and
+          "photos" in typed[-1][1], str(typed[-1:]))
+    check("the console says the record is gone, read back after it",
+          any("record is gone" in text for _tag, text in app.lines),
+          str(app.lines[-3:]))
+    check("and the listing leaves the list",
+          all("Joe Watson" not in text for text in listing_box(parent).items),
+          str(listing_box(parent).items))
+
+    harness._BOX.showinfo = (lambda kind: lambda *a, **k:
+                             harness._BOX.shown.append((kind, a)))("showinfo")
+    harness._BOX.askyesno = lambda *a, **k: False
 
 
 def test_the_gallery_is_never_written_off():
@@ -5015,6 +5115,7 @@ def main():
     test_the_panel_writes_a_proof()
     test_a_photo_can_be_put_in_the_gallery()
     test_a_photo_can_be_taken_off_the_gallery()
+    test_the_panel_deletes_a_listing_on_the_word()
     test_the_gallery_is_never_written_off()
     test_the_panel_sets_a_proven_price()
     test_the_edit_button_takes_the_price_road()

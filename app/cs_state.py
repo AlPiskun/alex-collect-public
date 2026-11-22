@@ -31,6 +31,13 @@ controlled, reversible trial on a live listing (see ``cs_proof.UNPROVABLE``,
 which is why ``status`` is not one of its fields), while this is a change a
 person asked for by name, confirmed by name, and then checked. A state change
 that is not kept is reported as not kept - it is never assumed.
+
+``remove`` is here for the other thing a person asks of a listing by name: to
+delete it. It is the same address and the same two reads, with ``DELETE`` as
+the method - the record is read first (its id must be the listing chosen), the
+delete is sent, and the record is read again, because *gone*, *in the site's
+bin* and *still there* are three different answers and only one of them is a
+deletion. Nothing about a delete is guessed either.
 """
 from __future__ import annotations
 
@@ -46,6 +53,11 @@ WORDS = {"active": "active", "archived": "archived"}
 
 #: What a person reads for each state.
 LABELS = {"active": "on sale", "archived": "archived"}
+
+#: Words a vendor uses for a record that has been put in its bin. A record
+#: still answering under one of these has been taken out of the shop, but it is
+#: recoverable from the dashboard, which is not the same answer as *gone*.
+BIN_WORDS = {"trash", "trashed", "deleted", "removed", "recycled", "bin"}
 
 
 def word_for(state):
@@ -249,6 +261,166 @@ def change(url, cookie, to, expect=None, listing_id="", listing=None,
                           else "something this app does not know",
                           label_for(result["was"]), label_for(wanted))))
     return result
+
+
+def in_bin(value):
+    """Whether a record's own state word says it is in the site's bin."""
+    raw = " ".join(str(value or "").strip().lower().split())
+    return bool(raw) and (raw in BIN_WORDS or raw.replace(" ", "_") in BIN_WORDS)
+
+
+def remove(url, cookie, listing_id="", listing=None, fetch=None, send=None):
+    """Delete one listing's record, and read it back.
+
+    ``deleted``   the record is not there any more (or answers 404/410);
+    ``trashed``   the site kept the record and put it in its bin - out of the
+                  shop, and recoverable from the dashboard;
+    ``left``      the site accepted the delete and the record is unchanged:
+                  nothing was deleted at this address;
+    ``refused``   a request was answered with anything but a success;
+    ``unreadable`` the record could not be read first, so nothing was sent;
+    ``unknown``   the delete was accepted and the record could not be read
+                  back - the one answer that has to be checked by hand.
+
+    Nothing is deleted on a guess: an id-less row, a record that names another
+    listing and a record that cannot be read all send nothing.
+    """
+    fetch = fetch or cs_proof.read_record
+    send = send or cs_record.delete_record
+    listing = listing or {}
+    listing_id = str(listing_id or "").strip()
+    result = {"url": url, "id": listing_id,
+              "card": str(listing.get("name") or listing.get("title") or ""),
+              "verdict": "", "why": "", "status": 0, "state": "", "raw": "",
+              "deleted": False, "steps": [], "body": ""}
+    if not url or not cs_edit.is_id(listing_id):
+        result.update(verdict="unreadable",
+                      why=("There is no record id to address, so nothing was "
+                           "deleted."))
+        return result
+
+    status, body = fetch(url, cookie)
+    result["steps"].append({"step": "GET the record", "status": status})
+    if status in (404, 410):
+        result.update(verdict="deleted", deleted=True,
+                      why=("The record is not there any more, so nothing was "
+                           "sent: there is nothing to delete."))
+        return result
+    record = cs_proof._record(body) if status == 200 else None
+    if record is None:
+        result.update(verdict="unreadable",
+                      why=("The record could not be read (%s), so nothing was "
+                           "deleted: what would be deleted could not be "
+                           "checked."
+                           % ("HTTP %s" % status if status else "no answer")))
+        return result
+
+    found_id = cs_record._record_id(record)
+    if not found_id or found_id.strip() != listing_id:
+        result["steps"].append({"step": "the record names %s"
+                                % (found_id or "no id"), "status": 200})
+        result.update(
+            verdict="refused",
+            why=("The record at that address says it is listing %s, not %s. "
+                 "Nothing was deleted: deleting the wrong listing is the one "
+                 "mistake this must never make."
+                 % (found_id or "(no id)", listing_id)))
+        return result
+
+    _found, raw_was = record_state(record)
+    result["raw"] = "" if raw_was is None else str(raw_was)
+    result["state"] = state_of(raw_was)
+    result["title"] = str(record.get("title") or result["card"] or "")
+
+    deleted_status, deleted_body = send(url, cookie)
+    result["status"] = deleted_status
+    result["steps"].append({"step": "DELETE the record",
+                            "status": deleted_status,
+                            "body": "" if 200 <= deleted_status < 300
+                            else cs_record._snippet(deleted_body)})
+    if not 200 <= deleted_status < 300:
+        result.update(
+            verdict="refused",
+            why=("The site refused to delete the listing (%s). Nothing was "
+                 "deleted: %s"
+                 % ("HTTP %s" % deleted_status if deleted_status
+                    else (str(deleted_body) or "no answer"),
+                    ("this address does not take a delete - a listing is "
+                     "deleted in the vendor dashboard."
+                     if deleted_status in (403, 405, 501) else
+                     "the listing is unchanged."))))
+        return result
+
+    after_status, after_body = fetch(url, cookie)
+    result["steps"].append({"step": "GET the record", "status": after_status})
+    if after_status in (404, 410):
+        result.update(verdict="deleted", deleted=True,
+                      why="The record is gone, read back after the delete.")
+        return result
+    if after_status != 200:
+        result.update(verdict="unknown",
+                      why=("The site accepted the delete but the record could "
+                           "not be read back (%s), so this app cannot say "
+                           "whether the listing is gone. Check it on "
+                           "CanadianShopper before doing anything else."
+                           % ("HTTP %s" % after_status if after_status
+                              else "no answer")))
+        return result
+    after_record = cs_proof._record(after_body)
+    if after_record is None:
+        result.update(verdict="unknown",
+                      why=("The site accepted the delete and the record "
+                           "answered with nothing readable, so this app "
+                           "cannot say whether the listing is gone. Check it "
+                           "on CanadianShopper before doing anything else."))
+        return result
+    if cs_record._record_id(after_record) not in (None, "", listing_id):
+        result.update(verdict="other",
+                      why=("The address now answers as listing %s. Check that "
+                           "listing on CanadianShopper before doing anything "
+                           "else." % cs_record._record_id(after_record)))
+        return result
+    _found, raw_now = record_state(after_record)
+    result["raw_after"] = "" if raw_now is None else str(raw_now)
+    if in_bin(raw_now):
+        result.update(verdict="trashed", deleted=True,
+                      state=state_of(raw_now),
+                      why=("The site took the listing out of the shop and kept "
+                           "its record in the bin (%s). It can be restored "
+                           "from the vendor dashboard." % raw_now))
+        return result
+    result.update(verdict="left",
+                  why=("The site accepted the delete and the record is still "
+                       "there%s: nothing was deleted at this address. A "
+                       "listing is deleted in the vendor dashboard."
+                       % (" (%s)" % raw_now if str(raw_now or "").strip()
+                          else "")))
+    return result
+
+
+def removed(result):
+    """Whether a delete result is a listing that is no longer in the shop."""
+    return str((result or {}).get("verdict") or "") in ("deleted", "trashed")
+
+
+def remove_sentence(result, name=""):
+    """The one line a person reads for one delete."""
+    result = result or {}
+    card = str(name or result.get("card") or result.get("title")
+               or "That listing").strip()
+    verdict = str(result.get("verdict") or "")
+    if verdict == "deleted":
+        return ("%s: deleted from CanadianShopper - the record is gone, read "
+                "back after the delete (your website was not touched)." % card)
+    if verdict == "trashed":
+        return ("%s: taken out of the shop and kept in CanadianShopper's "
+                "bin - %s - so it can be restored from the vendor dashboard."
+                % (card, result.get("why") or "the record is still there"))
+    if verdict == "left":
+        return "%s: %s" % (card, result.get("why")
+                           or "The listing was not deleted.")
+    return "%s: %s" % (card, result.get("why")
+                       or "The listing was not deleted.")
 
 
 def sentence(result, name=""):

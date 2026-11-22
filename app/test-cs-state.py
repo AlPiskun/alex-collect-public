@@ -253,11 +253,178 @@ def test_what_is_never_sent():
           "")
 
 
+class Deleting:
+    """A record, and the ways a site answers a DELETE.
+
+    Deleting a listing is the one request in this app that cannot be undone
+    from it, so the shapes it has to get right are all here: the record that
+    goes, the record the site keeps in its bin, the record it leaves exactly as
+    it was, the refusal, and a read the app cannot make at all.
+    """
+
+    def __init__(self, record=None, gone=True, bin_word="", keep=False,
+                 refuse=0, fail_reads=(), id_in_record=True,
+                 before_gone=False, new_id=""):
+        self.record = dict(RECORD if record is None else record)
+        if not id_in_record:
+            self.record.pop("id", None)
+        self.gone = gone
+        self.bin_word = bin_word
+        self.keep = keep
+        self.refuse = refuse
+        self.fail_reads = set(fail_reads)
+        self.before_gone = before_gone
+        self.new_id = new_id
+        self.reads = 0
+        self.deleted = []
+
+    def fetch(self, url="", cookie=""):
+        self.reads += 1
+        if self.reads in self.fail_reads:
+            return 500, "<html>read failed</html>"
+        if self.before_gone:
+            return 404, '{"message": "Not found"}'
+        if self.deleted and self.gone and not self.keep:
+            return 404, '{"message": "Not found"}'
+        record = dict(self.record)
+        if self.deleted and self.new_id:
+            record["id"] = self.new_id
+        return 200, json.dumps(record)
+
+    def send(self, url, cookie):
+        self.deleted.append(url)
+        if self.refuse:
+            return self.refuse, "<html>denied</html>"
+        if self.keep:
+            return 204, ""
+        if self.bin_word:
+            self.record["status"] = self.bin_word
+        return 204, ""
+
+
+def remover(site, **changes):
+    options = dict(url=URL, cookie="session=1", listing_id=LISTING_ID,
+                   listing={"name": "#319 Val Fonteyne 1972-73 O-Pee-Chee"},
+                   fetch=site.fetch, send=site.send)
+    options.update(changes)
+    return cs_state.remove(**options)
+
+
+def test_deleting_a_listing():
+    print()
+    print("== 5. deleting a listing, and reading the record afterwards ==")
+    site = Deleting()
+    result = remover(site)
+    check("a record that goes is reported as deleted",
+          result["verdict"] == "deleted" and cs_state.removed(result),
+          str(result))
+    check("one delete, at the listing's own record",
+          site.deleted == [URL], str(site.deleted))
+    check("the record was read before and after it", site.reads == 2,
+          str(site.reads))
+    check("and the sentence says the record is gone, read back after it",
+          "record is gone" in cs_state.remove_sentence(result),
+          cs_state.remove_sentence(result))
+    check("and that the website was not touched",
+          "your website was not touched" in cs_state.remove_sentence(result),
+          cs_state.remove_sentence(result))
+
+    site = Deleting(gone=False, bin_word="Trash")
+    result = remover(site)
+    check("a site that keeps the record in its bin says so",
+          result["verdict"] == "trashed" and cs_state.removed(result),
+          str(result))
+    check("and the sentence names the bin and the dashboard",
+          "bin" in cs_state.remove_sentence(result) and
+          "vendor dashboard" in cs_state.remove_sentence(result),
+          cs_state.remove_sentence(result))
+
+    site = Deleting(gone=False, keep=True)
+    result = remover(site)
+    check("accepted and unchanged is not a deletion",
+          result["verdict"] == "left" and not cs_state.removed(result),
+          str(result))
+    check("and it says the listing is still there, and where to delete it",
+          "still there" in cs_state.remove_sentence(result) and
+          "vendor dashboard" in cs_state.remove_sentence(result),
+          cs_state.remove_sentence(result))
+
+    site = Deleting(refuse=405)
+    result = remover(site)
+    check("a refused delete keeps the site's own status",
+          result["verdict"] == "refused" and result["status"] == 405,
+          str(result))
+    check("and a 405 says this address does not take a delete",
+          "does not take a delete" in result["why"] and
+          "vendor dashboard" in result["why"], result["why"])
+
+
+def test_a_delete_is_never_sent_on_a_guess():
+    print()
+    print("== 6. what a delete will not do ==")
+    site = Deleting(id_in_record=False)
+    result = remover(site)
+    check("a record that names no listing is not deleted",
+          result["verdict"] == "refused" and not site.deleted, str(result))
+    site = Deleting(record=dict(RECORD, id="someone-else"))
+    result = remover(site)
+    check("nor is a record that names a different one",
+          result["verdict"] == "refused" and not site.deleted and
+          "someone-else" in result["why"], str(result))
+    check("and it says deleting the wrong listing is the mistake it must "
+          "never make",
+          "deleting the wrong listing" in result["why"], result["why"])
+    site = Deleting(fail_reads=(1,))
+    result = remover(site)
+    check("a record that cannot be read is not deleted",
+          result["verdict"] == "unreadable" and not site.deleted,
+          str(result))
+    check("and nothing at all is asked of the site",
+          site.reads == 1 and not site.deleted, str(site.reads))
+    site = Deleting(before_gone=True)
+    result = remover(site)
+    check("a record that is already gone sends no delete",
+          result["verdict"] == "deleted" and not site.deleted, str(result))
+    check("and says there is nothing to delete", "nothing was sent" in
+          result["why"], result["why"])
+    site = Deleting()
+    result = remover(site, listing_id="")
+    check("no record id, no request at all",
+          result["verdict"] == "unreadable" and site.reads == 0 and
+          not site.deleted, str(site.reads))
+    result = remover(Deleting(), url="")
+    check("no address, no request at all",
+          result["verdict"] == "unreadable" and result["steps"] == [],
+          str(result))
+
+    site = Deleting(fail_reads=(2,))
+    result = remover(site)
+    check("a delete that cannot be read back is unconfirmed, not deleted",
+          result["verdict"] == "unknown" and not cs_state.removed(result),
+          str(result))
+    check("and says to check that listing before anything else",
+          "Check it on CanadianShopper" in result["why"], result["why"])
+    site = Deleting(gone=False, new_id="another-listing")
+    result = remover(site)
+    check("an address that answers as another listing is named, not assumed",
+          result["verdict"] == "other" and "another-listing" in result["why"],
+          str(result))
+
+    check("the words that mean a record is in the bin are known",
+          cs_state.in_bin("Trash") and cs_state.in_bin("deleted") and
+          cs_state.in_bin("recycled"), "")
+    check("and a state that is not one of them is not a deletion",
+          not cs_state.in_bin("archived") and not cs_state.in_bin("active") and
+          not cs_state.in_bin(""), "")
+
+
 def main():
     test_the_words()
     test_putting_a_listing_back_on_sale()
     test_a_site_that_does_not_keep_it()
     test_what_is_never_sent()
+    test_deleting_a_listing()
+    test_a_delete_is_never_sent_on_a_guess()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))
