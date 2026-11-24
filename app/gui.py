@@ -84,7 +84,7 @@ from user_settings import (default_scan_dir, has_woo_credentials,
                            restrict_file_permissions, site_admin_url,
                            sync_site_url_to_woo_keys)
 
-VERSION = "3.55"
+VERSION = "3.56"
 
 DEFAULT_SCAN_DIR = default_scan_dir()
 APP_NAME = "Alex Collect Control Panel"
@@ -2379,7 +2379,7 @@ TOOLTIPS = {
     "Find products with no brand": "Read every product on the website and name the ones with nothing in the shop's Brands list, with the brand each one's own title names; a brand the shop does not have yet is created there, and nothing is written until the list is shown and agreed to",
     "Find products with no keyword": "Read every product on the website and name the ones with no Rank Math focus keyword, with the search phrase each one's own title states - the year, the maker and the player, never the whole title; nothing is written until the list is shown and agreed to, and a keyword a product already has is never replaced",
     "Find products with no category": "Read every product on the website and name the ones in no category of their own, with the category the sport in their own words picks - the same rule the batch uses; a category the shop does not have is created under the same parent, and nothing is written until the list is shown and agreed to",
-    "Find products with no SKU": "Read every product on the website and name the ones with no SKU, with the SKU the batch would give them from the card's own title; a SKU another product already holds is left out of the list, and nothing is written until it is shown and agreed to",
+    "Find products with no SKU": "Read every product on the website and name the ones with no SKU, with the SKU the batch would give them from the card's own title - and for a title that says too little for that, an SKU made up from what it does say plus random digits, which is shown before anything is written; a SKU another product already holds is left out of the list, and nothing is written until it is shown and agreed to",
     "Find products with no tags": "Read every product on the website and name the ones with no tags at all, with the words their own title already states - the year, the maker, the player and the number; nothing is written until the list is shown and agreed to, and a tag anybody typed is never replaced",
     "Compare the last read instead (no new read)": "Compare now against the CanadianShopper list already on disk from an earlier read - it is named with its age wherever its counts appear, so nothing is mistaken for a fresh count, and no read is started",
     "Save the limit": "Remember this number in User Settings, where the same value is used by Fill your eBay store every time it chooses",
@@ -5983,9 +5983,11 @@ MISSING_PROMISES = {
     "categories": "A category the shop does not have is created under the "
                   "same parent the batch uses. Only the category is written: "
                   "a product with none gets one, and nothing else moves.",
-    "sku": "Only the SKU is written, and only on a product that has none. The "
-           "website holds one product per SKU, so a SKU another product "
-           "already has is left out of the list rather than fought over.",
+    "sku": "Only the SKU is written, and only on a product that has none - its "
+           "title, price, stock, photos and state are untouched. The website "
+           "holds one product per SKU, so a SKU another product already has "
+           "is left out of the list rather than fought over, and a made-up "
+           "SKU is only ever a value nothing else on the shop holds.",
     "tags": "Only products with no tags at all are on the list, so no tag "
             "anybody typed is replaced.",
 }
@@ -6001,6 +6003,12 @@ def build_missing_fields(parent, app):
     the words that would fill it: the card's own title, read with the batch's
     rules (``product_fields``/``card_words``), so a value filled in here and a
     value a batch writes are the same value.
+
+    A SKU is the exception to "a title that does not say it gets nothing":
+    a product without one cannot be addressed by the shop, the CSV or the
+    comparison, so a title that states too little is still given a SKU made
+    from what it does say plus random digits (``product_fields.loose_sku``) -
+    shown with the rest, explained, and never one another product holds.
 
     Nothing is written until the list has been shown and agreed to, a product
     that already has the field is never on the list, and a title that does not
@@ -6159,9 +6167,11 @@ def build_missing_fields(parent, app):
 
             app.console_line(product_fields.summary(found), "warn")
             for entry in found["ready"][:20]:
-                app.console_line("  %s  ->  %s" % (
+                app.console_line("  %s  ->  %s%s" % (
                     str(entry.get("name") or "")[:70],
-                    product_fields.describe(entry)), "dim")
+                    product_fields.describe(entry),
+                    "  (made up from its title)" if entry.get("loose")
+                    else ""), "dim")
             if len(found["ready"]) > 20:
                 app.console_line("  ... and %d more." %
                                  (len(found["ready"]) - 20), "dim")
@@ -6178,25 +6188,49 @@ def build_missing_fields(parent, app):
             if not found["ready"]:
                 state["running"] = False
                 app.console_line(
-                    "None of their titles says enough to fill a %s in, so "
-                    "nothing is offered to write." % word, "dim")
+                    "Nothing is offered to write: none of the products above "
+                    "can be given a %s that is not a guess." % word, "dim")
                 return
 
-            body = "\n".join("%s\n      ->  %s" % (
+            made = [entry for entry in found["ready"]
+                    if entry.get("loose")]
+            body = "\n".join("%s\n      ->  %s%s" % (
                 str(entry.get("name") or "")[:70],
-                product_fields.describe(entry))
+                product_fields.describe(entry),
+                "   (made up from its title)" if entry.get("loose") else "")
                 for entry in found["ready"][:10])
             if len(found["ready"]) > 10:
                 body += "\n... and %d more (see the console)." % (
                     len(found["ready"]) - 10)
-            asked = ("%d product%s on your website have no %s. Their own "
-                     "titles give these words:\n\n%s\n\n" % (
+            asked = ("%d product%s on your website have no %s. This is what "
+                     "would be written:\n\n%s\n\n" % (
                          len(found["ready"]),
                          "" if len(found["ready"]) == 1 else "s", word, body))
+            if made:
+                #  A made-up SKU is the one value here that is not read out of
+                #  the title, so the question says plainly where it comes from
+                #  and what it can never be.
+                asked += (
+                    "%d of those have a title that says too little for a "
+                    "whole SKU, so %s is made up from what the title does say "
+                    "- the maker, year, number, player or grade it names - "
+                    "plus %d random digits, checked against every SKU the "
+                    "website already holds so no product can be given "
+                    "another's.\n\n"
+                    % (len(made), "its SKU" if len(made) == 1 else "their SKUs",
+                       product_fields.LOOSE_DIGITS))
             if found["unsure"]:
-                asked += ("%d more have no %s either, and their titles do "
-                          "not say what to fill in - they are left alone.\n\n"
-                          % (len(found["unsure"]), word))
+                if field == "sku":
+                    asked += (
+                        "%d more have no %s either and are left alone: the SKU "
+                        "they work out to is another product's already, or two "
+                        "products here work out to the same one - the console "
+                        "names each.\n\n"
+                        % (len(found["unsure"]), word))
+                else:
+                    asked += ("%d more have no %s either, and their titles do "
+                              "not say what to fill in - they are left alone.\n\n"
+                              % (len(found["unsure"]), word))
             asked += MISSING_PROMISES.get(field, "")
             if not messagebox.askyesno(MISSING_QUESTIONS.get(
                     field, "Fill in the missing %s?" % word), asked,
@@ -6258,10 +6292,14 @@ def build_missing_fields(parent, app):
                                      "err")
                 if found["unsure"]:
                     app.console_line(
-                        "%d product%s still have no %s, because their own "
-                        "titles do not say what to put there."
+                        "%d product%s still have no %s, %s"
                         % (len(found["unsure"]),
-                           "" if len(found["unsure"]) == 1 else "s", word),
+                           "" if len(found["unsure"]) == 1 else "s", word,
+                           "because the SKU each works out to is spoken for by "
+                           "another product - see the console above."
+                           if field == "sku" else
+                           "because their own titles do not say what to put "
+                           "there."),
                         "dim")
 
             in_background(app, writing, written)

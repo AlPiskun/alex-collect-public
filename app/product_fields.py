@@ -18,10 +18,20 @@ Two rules run through all of it, because this writes to a live shop:
   empty is one the title cannot settle, and those are counted and named with
   the reason rather than given a guess - an invented brand on a live listing
   is worse than no brand.
+
+A SKU is the one field this does not hold for, because a SKU is not a claim
+about the card: it is the identifier the shop, the CSV and the comparison tell
+two products apart by, and a product without one is a product nothing can
+address. So a title that states too little for the batch's own SKU (year,
+number and player) still gets one - **what it does say, plus random digits** -
+shown with everything else before anything is written, and never a SKU another
+product already holds. A brand, a keyword, a category or a tag invented the
+same way would be a lie about the card; a made-up SKU is only an address.
 """
 from __future__ import annotations
 
 import html
+import random
 import re
 
 import card_words
@@ -265,6 +275,76 @@ def value_for(product, field, taken=None):
     raise ValueError("no such field: %r" % (field,))
 
 
+#  How a SKU is made up when the title does not state the batch's three facts.
+#: Four digits is 10,000 tails, which is far more than a shop of a few thousand
+#: products needs; the tail is drawn again when it collides, so the size is the
+#: length of the SKU and not a limit on how many products can have one.
+LOOSE_DIGITS = 4
+#: How many tails are drawn before a product is left alone instead. With
+#: 10,000 tails and a few thousand products, sixty draws failing is not a thing
+#: that happens - it is here so the loop cannot be an infinite one.
+LOOSE_TRIES = 60
+_RNG = random.Random()
+
+#: What the audit says about a SKU it made up, in the words a window shows.
+LOOSE_NOTE = ("made up from what its title says plus %d random digits - its "
+              "title does not state the year, number and player the batch's "
+              "own SKU is made of" % LOOSE_DIGITS)
+
+
+def loose_parts(title, facts=None):
+    """The pieces of a made-up SKU: what the title does say, in SKU order.
+
+    The same order the batch's own SKU uses - maker and year, card number,
+    player, grade - so a made-up SKU still reads like the others and sorts
+    beside the card it belongs to. A title that states none of it is named by
+    its own first words, because those are still the only thing there is.
+    """
+    facts = facts or card_words.facts(title)
+    parts = []
+    code = card_words.brand_code(facts["brand"]) if facts["brand"] else ""
+    year = str(facts["year"] or "").strip()
+    if code and year:
+        parts.append(code + year)
+    elif code:
+        parts.append(code)
+    elif year:
+        parts.append(year)
+    if facts["card_num"]:
+        parts.append(str(facts["card_num"]))
+    if facts["last"]:
+        parts.append(str(facts["last"]))
+    if facts["grade"]:
+        parts.append(card_words.grade_slug(facts["grade"]))
+    if not parts:
+        parts = [word for word in str(title or "").split()[:2] if word]
+    return [piece for piece in (card_words.sku_component(part) for part in parts)
+            if piece]
+
+
+def loose_sku(title, taken=(), rng=None, facts=None):
+    """A SKU made from what a title says plus random digits, or ``""``.
+
+    ``taken`` is every SKU already spoken for - the shop's own and the ones
+    this audit is proposing - and the tail is drawn again until this one is not
+    among them, so a made-up SKU is never one another product holds. The value
+    is fixed for the audit that made it: what the preview shows is exactly what
+    the write sends.
+    """
+    rng = rng or _RNG
+    head = "-".join(loose_parts(title, facts=facts))
+    if not head:
+        return ""
+    spoken = {str(sku).strip().lower() for sku in taken or ()}
+    span = 10 ** LOOSE_DIGITS
+    for _attempt in range(LOOSE_TRIES):
+        tail = "%0*d" % (LOOSE_DIGITS, rng.randrange(span))
+        sku = "%s-%s" % (head, tail)
+        if sku.lower() not in spoken:
+            return sku
+    return ""
+
+
 def describe(entry):
     """One ``value`` as the words a window shows."""
     value = entry.get("value")
@@ -274,13 +354,52 @@ def describe(entry):
     return str(value or "")
 
 
-def audit(products, field):
+def _fill_made_up_skus(result, taken, rng=None):
+    """Give every title that states too little a SKU made from what it does.
+
+    Only those. A title the batch's own rule *can* read, whose SKU is spoken
+    for - by the shop or by a second product here - is left alone, because that
+    is a product that already exists or two products that need a decision, not
+    a title that says too little; a made-up SKU there would hide the duplicate
+    instead of naming it.
+    """
+    spoken = {str(sku).strip().lower() for sku in taken}
+    for entry in result["missing"]:
+        if entry["settled"]:
+            spoken.add(str(entry["value"]).strip().lower())
+    for entry in result["missing"]:
+        if entry["settled"]:
+            continue
+        #  The SEO title is what a value is read from, and the product's own
+        #  name is the same words when the shop never had an SEO title.
+        text = str(entry.get("title") or entry.get("name") or "").strip()
+        facts = card_words.facts(text)
+        if facts["sku"]:
+            continue
+        sku = loose_sku(text, taken=spoken, rng=rng, facts=facts)
+        if not sku:
+            entry["note"] = ("its title says nothing a SKU could be made from")
+            continue
+        spoken.add(sku.lower())
+        entry["value"] = sku
+        entry["settled"] = True
+        entry["loose"] = True
+        entry["note"] = LOOSE_NOTE
+
+
+def audit(products, field, rng=None):
     """The products with nothing in one field, and what would fill it.
 
     ``missing`` is every product the field is absent from; ``ready`` are the
     ones a value can be worked out for, and ``unsure`` the rest - each with the
     sentence that says why its title is not enough, because a list that said
     nothing about them would look like a shop with nothing to do.
+
+    For a SKU, a title that states too little is not the end of it: the entry
+    is filled with a made-up SKU (``loose`` is set, and its ``note`` says how
+    it was made) from everything the title does say, with a random tail that is
+    checked against every SKU already spoken for. ``rng`` is the source of
+    those digits, so a check can be run twice and get the same list.
     """
     products = [p for p in products or [] if isinstance(p, dict)]
     result = {"field": field, "word": FIELD_WORDS.get(field, field),
@@ -326,6 +445,7 @@ def audit(products, field):
                 entry["note"] = ("%d products here work out to that one SKU, "
                                  "and a website holds one product per SKU"
                                  % len(entries))
+        _fill_made_up_skus(result, taken, rng)
 
     for entry in result["missing"]:
         (result["ready"] if entry["settled"] else result["unsure"]).append(entry)
@@ -343,16 +463,23 @@ def summary(result):
     missing = result.get("missing") or []
     if not missing:
         return "Every one of the %d products has a %s." % (total, field)
-    ready = len(result.get("ready") or [])
+    ready = result.get("ready") or []
+    made = [entry for entry in ready if entry.get("loose")]
+    from_title = len(ready) - len(made)
     line = "%d of %d products have no %s" % (len(missing), total, field)
-    if ready:
+    if from_title:
         line += ", and %d of those can be filled in from the card's own title" \
-                % ready
+                % from_title
+    if made:
+        everyone = len(made) == len(ready) and len(made) > 1
+        line += (", and %s given a SKU made up from what %s plus random digits"
+                 % ("all %d of those can be" % len(made) if everyone
+                    else "%d of those can be" % len(made),
+                    "its title says" if len(made) == 1 else "their titles say"))
     unsure = len(result.get("unsure") or [])
     if unsure:
-        line += "; %d %s not, and %s left alone" % (
-            unsure, "can" if unsure == 1 else "cannot",
-            "it is" if unsure == 1 else "they are")
+        line += ("; %d cannot be filled in, and %s left alone"
+                 % (unsure, "it is" if unsure == 1 else "they are"))
     return line + "."
 
 
