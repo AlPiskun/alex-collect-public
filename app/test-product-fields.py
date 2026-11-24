@@ -16,6 +16,7 @@ remembers them.
 """
 import importlib.util
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -295,8 +296,12 @@ def test_the_audit():
           str(sku["missing"]))
     check("and the one whose title works out to a SKU the website already "
           "holds is left alone rather than fought over",
-          sku["ready"] == [] and "already another product" in
-          sku["unsure"][0]["note"], str(sku["unsure"]))
+          [entry["id"] for entry in sku["unsure"]] == [1] and
+          "already another product" in sku["unsure"][0]["note"],
+          str(sku["unsure"]))
+    check("while the one whose title says too little is still given a SKU",
+          [entry["id"] for entry in sku["ready"]] == [2] and
+          sku["ready"][0].get("loose") is True, str(sku["ready"]))
 
     #  Two products whose titles work out to one SKU cannot both have it.
     twins = [product(21, title), product(22, title)]
@@ -341,6 +346,143 @@ def test_the_audit():
           "1 of those can be filled" in product_fields.summary(found) and
           "left alone" in product_fields.summary(found),
           product_fields.summary(found))
+
+
+class Digits:
+    """A random source that gives exactly the tails a check asks for."""
+
+    def __init__(self, *values):
+        self.values = list(values)
+        self.asked = 0
+
+    def randrange(self, stop):
+        self.asked += 1
+        return self.values.pop(0) % stop
+
+
+def test_a_title_that_says_too_little_still_gets_a_sku():
+    """A made-up SKU: what the title says, plus digits, and never another's.
+
+    A SKU is the one field a shop cannot leave empty, because it is how the
+    website, the CSV and the comparison tell two products apart - so a title
+    that does not state the year, number and player still gets one. What is
+    checked here is that it is made from the facts the title *does* state, that
+    it is never a SKU somebody else holds, and that it never steals the SKU a
+    title that says enough would have had.
+    """
+    print()
+    print("== 2b. a title that says too little still gets a SKU ==")
+    shape = re.compile(r"^TOPPS1966-67-83-\d{4}$")
+    made = product_fields.loose_sku("#83 Robert Baun 1966-67 Topps",
+                                     rng=product_fields.random.Random(3))
+    check("the maker, the year and the number the title does state are in it",
+          bool(shape.match(made)), made)
+    check("and the tail is random digits, at the length the app says",
+          made.rsplit("-", 1)[-1].isdigit() and
+          len(made.rsplit("-", 1)[-1]) == product_fields.LOOSE_DIGITS, made)
+
+    check("a title with no card facts at all is named by its own words",
+          product_fields.loose_sku(
+              "A mystery card", rng=product_fields.random.Random(3)
+          ).startswith("A-mystery-"), "")
+    check("a product whose SEO title is empty is named by its own name",
+          product_fields.audit(
+              [product(59, "#83 Robert Baun 1966-67 Topps", meta_data=[
+                  {"id": 1, "key": "rank_math_title", "value": ""}])],
+              "sku", rng=product_fields.random.Random(5))["ready"][0]["value"]
+          .startswith("TOPPS1966-67-83-"), "")
+    check("and a title with nothing in it at all gets no SKU",
+          product_fields.loose_sku("", rng=product_fields.random.Random(3)) == ""
+          and product_fields.loose_sku("   ") == "", "")
+
+    #  A tail already spoken for is drawn again, not written twice.
+    rng = Digits(42, 42, 7)
+    sku = product_fields.loose_sku("A mystery card",
+                                   taken={"A-mystery-0042", "a-MYSTERY-0042"},
+                                   rng=rng)
+    check("a tail another product already holds is drawn again",
+          sku == "A-mystery-0007" and rng.asked == 3, "%r %d" % (sku, rng.asked))
+    rng = Digits(*([5] * product_fields.LOOSE_TRIES))
+    check("a shop that somehow holds every tail leaves the product alone",
+          product_fields.loose_sku("A mystery card", taken={"A-mystery-0005"},
+                                   rng=rng) == "", "")
+
+    #  Two hunts: the audit, and what it would write.
+    site = [product(51, "#83 Robert Baun 1966-67 Topps"),
+            product(52, "A mystery card"),
+            product(53, "1991 O-Pee-Chee Dallas Smith #12 EX-MT 6")]
+    found = product_fields.audit(site, "sku",
+                                 rng=product_fields.random.Random(5))
+    values = [entry["value"] for entry in found["ready"]]
+    check("every product whose title says too little is on the list",
+          len(values) == 3 and all(values), str(values))
+    check("with the made-up ones marked, and the title's own SKU not",
+          [bool(entry.get("loose")) for entry in found["ready"]] ==
+          [True, True, False], str(found["ready"]))
+    check("the made-up value is what the same seed asked for twice",
+          values == [entry["value"] for entry in product_fields.audit(
+              site, "sku", rng=product_fields.random.Random(5))["ready"]],
+          str(values))
+    check("and each one says how it was made",
+          all(product_fields.LOOSE_NOTE == entry["note"]
+              for entry in found["ready"] if entry.get("loose")), "")
+    check("no two products are given the same SKU",
+          len({value.lower() for value in values}) == len(values), str(values))
+
+    #  A thousand thin titles: every one of them different, none colliding.
+    crowd = [product(1000 + index, "#%d A mystery card" % index)
+             for index in range(1000)]
+    every = product_fields.audit(crowd, "sku",
+                                 rng=product_fields.random.Random(11))
+    listed = [entry["value"] for entry in every["ready"]]
+    check("a thousand made-up SKUs are a thousand different SKUs",
+          len(listed) == 1000 and len({value.lower() for value in listed}) == 1000,
+          "%d values, %d distinct" % (len(listed),
+                                      len({value.lower() for value in listed})))
+
+    #  The SKU a title that *does* say enough would have is never taken.
+    mixed = [product(61, "1991 O-Pee-Chee Dallas Smith #12 EX-MT 6"),
+             product(62, "1991 O-Pee-Chee Dallas Smith #12 EX-MT 6 EX-MT"),
+             product(63, "A mystery card")]
+    audit = product_fields.audit(mixed, "sku",
+                                 rng=product_fields.random.Random(5))
+    taken = {entry["value"].lower() for entry in audit["ready"]}
+    check("a made-up SKU never takes the one a fuller title works out to",
+          len(taken) == len(audit["ready"]), str(audit["ready"]))
+
+    #  Two products of one card still need a decision, not random digits.
+    twins = [product(71, "1991 O-Pee-Chee Dallas Smith #12 EX-MT 6"),
+             product(72, "1991 O-Pee-Chee Dallas Smith #12 EX-MT 6")]
+    twin_audit = product_fields.audit(twins, "sku",
+                                      rng=product_fields.random.Random(5))
+    check("two titles that work out to one SKU are still left alone",
+          twin_audit["ready"] == [] and len(twin_audit["unsure"]) == 2,
+          str(twin_audit))
+    check("and neither is given a made-up SKU to hide the duplicate",
+          all(not entry.get("loose") for entry in twin_audit["missing"]), "")
+
+    #  A SKU another product already holds is a duplicate, not a thin title.
+    clash = [product(81, "1991 O-Pee-Chee Dallas Smith #12 EX-MT 6"),
+             product(82, "A mystery card",
+                     sku="OPC1991-12-Smith-EX-MT-6")]
+    clash_audit = product_fields.audit(clash, "sku",
+                                       rng=product_fields.random.Random(5))
+    check("a product whose derived SKU is taken is not given a random one",
+          [entry["id"] for entry in clash_audit["unsure"]] == [81] and
+          not clash_audit["unsure"][0].get("loose"), str(clash_audit))
+
+    check("the summary says how many are made up, and how",
+          "made up from what its title says plus random digits" in
+          product_fields.summary(found) or
+          "made up from what their titles say plus random digits" in
+          product_fields.summary(found), product_fields.summary(found))
+    check("and it never stumbles over its own grammar",
+          "cannot not" not in product_fields.summary(found) and
+          "cannot not" not in product_fields.summary(twin_audit),
+          product_fields.summary(twin_audit))
+    check("a list with nothing left alone says nothing about leaving alone",
+          "left alone" not in product_fields.summary(every),
+          product_fields.summary(every))
 
 
 # ------------------------------------------------------------------ 3. writes
@@ -680,12 +822,104 @@ def test_the_panel_reads_and_asks():
           str(seen))
 
 
+def test_the_panel_says_where_a_made_up_sku_came_from():
+    """The made-up SKU is a value the person agrees to, not a surprise.
+
+    It is the one thing this panel writes that is not read out of the title, so
+    the question has to say how it was made, the console has to mark it, and
+    the write has to send exactly the value that was shown.
+    """
+    print()
+    print("== 6. a made-up SKU is shown, explained and agreed to ==")
+    app, parent, folder = panel_with_buttons()
+    products = [product(1, "#83 Robert Baun 1966-67 Topps"),
+                product(2, "A mystery card")]
+    written, asked, said = [], [], []
+
+    def fake_write(site, key, secret, field, entry, **kwargs):
+        written.append((field, entry.get("id"), entry.get("value")))
+        return {"wrote": entry.get("value"), "kept": True, "answer": {},
+                "kept_text": product_fields.describe(entry)}
+
+    button = find(parent, gui.ttk.Button, "Find products with no SKU")
+    check("the panel offers the SKU check", button is not None, "")
+
+    def run(answer):
+        app.lines[:] = []
+        asked[:] = []
+        written[:] = []
+        harness._BOX.askyesno = lambda title, question="", **kw: (
+            asked.append((title, question)), answer)[1]
+        with patch.object(gui, "read_woo_credentials",
+                          lambda path=None: ("https://shop.example", "ck_a",
+                                             "cs_b")), \
+                patch.object(gui.woo_create, "read_all_products",
+                             lambda site, key, secret, **kwargs: products), \
+                patch.object(gui.product_fields, "write", fake_write), \
+                patch.object(gui.product_fields, "_RNG",
+                             product_fields.random.Random(5)), \
+                patch.object(gui, "in_background", sync_background), \
+                patch.object(gui, "BASE", folder):
+            button.invoke()
+
+    run(False)
+    check("the console marks the SKU it made up",
+          any("(made up from its title)" in text for _tag, text in app.lines),
+          str(app.lines[-8:]))
+    check("and shows the shape the title gave it",
+          any("TOPPS1966-67-83-" in text for _tag, text in app.lines),
+          str(app.lines[-8:]))
+    check("the question says how many were made up and how",
+          asked and "random digits" in asked[0][1] and
+          "%d random digits" % product_fields.LOOSE_DIGITS in asked[0][1],
+          str(asked[:1]))
+    check("it says the made-up SKU is checked against the website's own",
+          asked and "checked against every SKU the website already holds"
+          in asked[0][1], str(asked[:1]))
+    check("and a No writes nothing at all", written == [], str(written))
+
+    run(True)
+    check("a Yes writes exactly the SKU the list showed, once each",
+          len(written) == 2 and
+          all(field == "sku" for field, _id, _value in written), str(written))
+    expected = [entry["value"] for entry in product_fields.audit(
+        products, "sku", rng=product_fields.random.Random(5))["ready"]]
+    check("with exactly the values the same preview would show",
+          [value for _field, _id, value in written] == expected,
+          str(written) + " " + str(expected))
+    check("each ending in four digits, so no two can be one SKU",
+          all(re.match(r"^[A-Za-z0-9-]+-\d{4}$", value)
+              for _field, _id, value in written), str(written))
+    check("and the console says the answer was read back",
+          any("read back" in text for _tag, text in app.lines),
+          str(app.lines[-4:]))
+    check("nothing is reported as left alone when nothing was",
+          not any("still have no SKU" in text for _tag, text in app.lines),
+          str(app.lines[-4:]))
+
+    #  Every title left is a duplicate of a SKU that is spoken for: nothing is
+    #  offered, and the panel says why rather than promising a write.
+    products[:] = [product(9, "1991 O-Pee-Chee Dallas Smith #12 EX-MT 6"),
+                   product(10, "another card",
+                           sku="OPC1991-12-Smith-EX-MT-6")]
+    run(True)
+    check("with only spoken-for SKUs left, nothing is written",
+          written == [], str(written))
+    check("and it says nothing here can be filled in without a guess",
+          any("Nothing is offered to write" in text
+              for _tag, text in app.lines), str(app.lines[-4:]))
+    harness._BOX.showinfo = (lambda kind: lambda *a, **k:
+                             harness._BOX.shown.append((kind, a)))("showinfo")
+
+
 def main():
     test_the_title_says_it()
     test_the_audit()
+    test_a_title_that_says_too_little_still_gets_a_sku()
     test_the_writes()
     test_the_panel_offers_them()
     test_the_panel_reads_and_asks()
+    test_the_panel_says_where_a_made_up_sku_came_from()
     print()
     if FAIL:
         print("FAILED %d   PASSED %d" % (FAIL, PASS))
